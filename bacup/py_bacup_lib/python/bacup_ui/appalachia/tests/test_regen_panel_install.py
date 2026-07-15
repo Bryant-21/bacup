@@ -125,7 +125,7 @@ def test_run_install_audit_none_mode_uses_output_root(monkeypatch):
     assert recorded["ini_path"] is None
 
 
-def test_repair_install_ini_passes_missing_registration(monkeypatch):
+def test_repair_install_ini_passes_deployed_archives(monkeypatch):
     monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: Path("X:/app"))
     panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
     panel.install_location = "game"
@@ -134,12 +134,25 @@ def test_repair_install_ini_passes_missing_registration(monkeypatch):
     panel._install_audit = SimpleNamespace(
         ini_path=ini_path,
         missing_registration=["SeventySix - Main.ba2", "SeventySix - Textures.ba2"],
+        rows=[
+            SimpleNamespace(
+                name="SeventySix - Main.ba2", kind="ba2", deployed=True
+            ),
+            SimpleNamespace(
+                name="SeventySix - Textures.ba2", kind="ba2", deployed=True
+            ),
+        ],
     )
 
     repaired = {}
 
-    def fake_repair(*, ini_path, base_ini_path, archive_names):
-        repaired.update(ini_path=ini_path, base_ini_path=base_ini_path, archive_names=archive_names)
+    def fake_repair(*, ini_path, base_ini_path, archive_names, plugin_name):
+        repaired.update(
+            ini_path=ini_path,
+            base_ini_path=base_ini_path,
+            archive_names=archive_names,
+            plugin_name=plugin_name,
+        )
         return archive_names
 
     audited = {"count": 0}
@@ -159,4 +172,5 @@ def test_repair_install_ini_passes_missing_registration(monkeypatch):
         "SeventySix - Main.ba2",
         "SeventySix - Textures.ba2",
     ]
+    assert repaired["plugin_name"] == "SeventySix.esm"
     assert audited["count"] == 1  # re-audits after repair

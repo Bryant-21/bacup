@@ -923,6 +923,29 @@ def _fo4_ini_archive_names_for_plugins(
     return _unique_archive_names(archive_names)
 
 
+def _reconcile_runtime_archive_ini_entries(
+    archive_names: list[str],
+    *,
+    plugin_names: list[str],
+    ini_path: Path,
+    base_ini_path: Path,
+) -> tuple[list[str], list[str]]:
+    existing_names = _fo4_ini_archive_names_for_plugins(
+        plugin_names,
+        ini_path=ini_path,
+    )
+    removed = _remove_fo4_archive_ini_entries(
+        _unique_archive_names([*existing_names, *archive_names]),
+        ini_path=ini_path,
+    )
+    added = _register_runtime_archive_ini_entries(
+        archive_names,
+        ini_path=ini_path,
+        base_ini_path=base_ini_path,
+    )
+    return removed, added
+
+
 def _invariant_worker_count(conversion_workers: int | None) -> int:
     workers = (
         conversion_workers
@@ -2551,23 +2574,13 @@ def _deploy_post_steps(
     else:
         removed_ini_entries = []
         cleaned_ini_overrides = 0
-    runtime_archive_entries = _unique_archive_names(
-        [
-            *_fo4_ini_archive_names_for_plugins(
-                archive_plugin_names,
-                ini_path=runtime_ini_target,
-            ),
-            *archive_entries,
-        ]
-    )
-    removed_runtime_ini_entries = _remove_fo4_archive_ini_entries(
-        runtime_archive_entries,
-        ini_path=runtime_ini_target,
-    )
-    registered_ini_entries = _register_runtime_archive_ini_entries(
-        archive_entries,
-        ini_path=runtime_ini_target,
-        base_ini_path=paths.target_game_ini_path,
+    removed_runtime_ini_entries, registered_ini_entries = (
+        _reconcile_runtime_archive_ini_entries(
+            archive_entries,
+            plugin_names=archive_plugin_names,
+            ini_path=runtime_ini_target,
+            base_ini_path=paths.target_game_ini_path,
+        )
     )
     timing_report.record(
         "deploy",

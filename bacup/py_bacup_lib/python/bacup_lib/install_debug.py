@@ -15,7 +15,9 @@ from bacup_lib.regen_pipeline import (
     _FO4_ARCHIVE_MAIN_KEY,
     _FO4_ARCHIVE_TEXTURE_KEY,
     _archive_ini_values_by_key,
-    _register_runtime_archive_ini_entries,
+    _fo4_ini_archive_names_for_plugins,
+    _reconcile_runtime_archive_ini_entries,
+    _unique_archive_names,
 )
 
 _ARCHIVE_KEYS = (
@@ -39,6 +41,7 @@ class ArchiveAuditReport:
     ini_path: Path | None
     rows: list[ArchiveAuditRow]
     missing_registration: list[str]  # ba2 names deployed but NOT registered in the INI
+    stale_registration: list[str]  # registered for this plugin but no longer deployed
     note: str | None = None
 
 
@@ -61,6 +64,7 @@ def audit_archive_ini(
     ]
 
     registered_names: set[str] | None = None
+    stale_registration: list[str] = []
     note: str | None = None
     if ini_path is None:
         note = "No INI target for this install location."
@@ -68,12 +72,26 @@ def audit_archive_ini(
         note = f"INI not found: {ini_path}"
     else:
         values_by_key = _archive_ini_values_by_key(ini_path, _ARCHIVE_KEYS)
-        registered_names = {name for values in values_by_key.values() for name in values}
+        registered_names = {
+            name.lower() for values in values_by_key.values() for name in values
+        }
 
+    archive_names = [
+        archive_path.name for archive_path in discover_mod_archives(deploy_dir, mod_name)
+    ]
+    if registered_names is not None:
+        deployed_names = {name.lower() for name in archive_names}
+        stale_registration = [
+            name
+            for name in _fo4_ini_archive_names_for_plugins(
+                [plugin_name],
+                ini_path=ini_path,
+            )
+            if name.lower() not in deployed_names
+        ]
     missing_registration: list[str] = []
-    for archive_path in discover_mod_archives(deploy_dir, mod_name):
-        name = archive_path.name
-        registered = None if registered_names is None else name in registered_names
+    for name in archive_names:
+        registered = None if registered_names is None else name.lower() in registered_names
         rows.append(ArchiveAuditRow(name=name, kind="ba2", deployed=True, registered=registered))
         if registered is False:
             missing_registration.append(name)
@@ -83,6 +101,7 @@ def audit_archive_ini(
         ini_path=ini_path,
         rows=rows,
         missing_registration=missing_registration,
+        stale_registration=stale_registration,
         note=note,
     )
 
@@ -92,20 +111,18 @@ def repair_archive_ini(
     ini_path: Path,
     base_ini_path: Path,
     archive_names: list[str],
+    plugin_name: str,
 ) -> list[str]:
-    """Register archive_names into ini_path's [Archive] lists (reusing
-    _register_runtime_archive_ini_entries). Return the names that were newly
-    added (computed by diffing the registered set before vs after)."""
+    """Replace this plugin's archive entries with its currently deployed names."""
     before_values = _archive_ini_values_by_key(ini_path, _ARCHIVE_KEYS)
-    before = {name for values in before_values.values() for name in values}
+    before = {name.lower() for values in before_values.values() for name in values}
 
-    _register_runtime_archive_ini_entries(
-        archive_names,
+    current_names = _unique_archive_names(archive_names)
+    _reconcile_runtime_archive_ini_entries(
+        current_names,
+        plugin_names=[plugin_name],
         ini_path=ini_path,
         base_ini_path=base_ini_path,
     )
 
-    after_values = _archive_ini_values_by_key(ini_path, _ARCHIVE_KEYS)
-    after = {name for values in after_values.values() for name in values}
-
-    return sorted(after - before)
+    return sorted(name for name in current_names if name.lower() not in before)

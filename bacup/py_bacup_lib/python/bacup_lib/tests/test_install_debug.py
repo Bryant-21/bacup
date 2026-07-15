@@ -58,6 +58,7 @@ def test_audit_reports_deployed_and_registered_state(tmp_path: Path) -> None:
     assert main_row.registered is False
 
     assert report.missing_registration == [_MAIN_BA2]
+    assert report.stale_registration == []
 
 
 def test_repair_registers_missing_names_and_reaudit_is_clean(tmp_path: Path) -> None:
@@ -76,7 +77,8 @@ def test_repair_registers_missing_names_and_reaudit_is_clean(tmp_path: Path) -> 
     added = repair_archive_ini(
         ini_path=ini_path,
         base_ini_path=base_ini_path,
-        archive_names=report.missing_registration,
+        archive_names=[row.name for row in report.rows if row.kind == "ba2"],
+        plugin_name=_PLUGIN_NAME,
     )
     assert added == [_MAIN_BA2]
 
@@ -87,6 +89,7 @@ def test_repair_registers_missing_names_and_reaudit_is_clean(tmp_path: Path) -> 
         plugin_name=_PLUGIN_NAME,
     )
     assert repaired_report.missing_registration == []
+    assert repaired_report.stale_registration == []
     rows_by_name = {row.name: row for row in repaired_report.rows}
     assert rows_by_name[_MAIN_BA2].registered is True
     assert rows_by_name[_TEXTURES_BA2].registered is True
@@ -107,6 +110,7 @@ def test_audit_with_no_ini_path_reports_none_and_note(tmp_path: Path) -> None:
     assert {row.name for row in ba2_rows} == {_MAIN_BA2, _TEXTURES_BA2}
     assert all(row.registered is None for row in ba2_rows)
     assert report.missing_registration == []
+    assert report.stale_registration == []
 
 
 def test_audit_with_missing_ini_file_reports_none_and_note(tmp_path: Path) -> None:
@@ -124,3 +128,55 @@ def test_audit_with_missing_ini_file_reports_none_and_note(tmp_path: Path) -> No
     ba2_rows = [row for row in report.rows if row.kind == "ba2"]
     assert all(row.registered is None for row in ba2_rows)
     assert report.missing_registration == []
+    assert report.stale_registration == []
+
+
+def test_repair_replaces_renamed_archive_shards_and_preserves_other_mods(
+    tmp_path: Path,
+) -> None:
+    deploy_dir = tmp_path / "Data"
+    deploy_dir.mkdir()
+    current_names = [
+        "SeventySix - Sounds1.ba2",
+        "SeventySix - Sounds2.ba2",
+        "SeventySix - Textures1.ba2",
+    ]
+    for name in current_names:
+        (deploy_dir / name).write_bytes(b"archive")
+    ini_path = tmp_path / "Fallout4Custom.ini"
+    ini_path.write_text(
+        "[Archive]\n"
+        "sResourceArchiveList=Fallout4 - Voices.ba2, OtherMod - Main.ba2, "
+        "SeventySix - Sounds.ba2\n"
+        "sResourceIndexFileList=Fallout4 - Textures1.ba2, "
+        "SeventySix - Textures.ba2\n",
+        encoding="utf-8",
+    )
+
+    report = audit_archive_ini(
+        deploy_dir=deploy_dir,
+        ini_path=ini_path,
+        mod_name=_MOD_NAME,
+        plugin_name=_PLUGIN_NAME,
+    )
+
+    assert report.missing_registration == current_names
+    assert report.stale_registration == [
+        "SeventySix - Sounds.ba2",
+        "SeventySix - Textures.ba2",
+    ]
+
+    repair_archive_ini(
+        ini_path=ini_path,
+        base_ini_path=tmp_path / "Fallout4.ini",
+        archive_names=current_names,
+        plugin_name=_PLUGIN_NAME,
+    )
+
+    content = ini_path.read_text(encoding="utf-8")
+    assert "SeventySix - Sounds.ba2" not in content
+    assert "SeventySix - Textures.ba2" not in content
+    assert all(name in content for name in current_names)
+    assert "Fallout4 - Voices.ba2" in content
+    assert "Fallout4 - Textures1.ba2" in content
+    assert "OtherMod - Main.ba2" in content

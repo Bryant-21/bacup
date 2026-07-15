@@ -1630,7 +1630,12 @@ class RegenPanel:
             repair_archive_ini(
                 ini_path=self._install_audit.ini_path,
                 base_ini_path=paths.target_game_ini_path,
-                archive_names=self._install_audit.missing_registration,
+                archive_names=[
+                    row.name
+                    for row in self._install_audit.rows
+                    if row.kind == "ba2" and row.deployed
+                ],
+                plugin_name=self._pair().output_plugin_name,
             )
             self._run_install_audit()
         except Exception as exc:  # surface in UI, never crash the panel
@@ -1660,8 +1665,16 @@ class RegenPanel:
                 f"{'OK' if ok else 'MISSING'}  {row.name}  "
                 f"(deployed={row.deployed}, registered={row.registered})",
             )
-        if report.missing_registration and report.ini_path is not None:
-            if imgui.button(f"Add missing entries{_NS}_repair"):
+        stale_registration = getattr(report, "stale_registration", [])
+        for name in stale_registration:
+            imgui.text_colored(
+                imgui.ImVec4(1.0, 0.7, 0.3, 1.0),
+                f"STALE  {name}  (no matching deployed archive)",
+            )
+        if (
+            report.missing_registration or stale_registration
+        ) and report.ini_path is not None:
+            if imgui.button(f"Update archive entries{_NS}_repair"):
                 self._repair_install_ini()
 
     def _draw_preflight_modal(self) -> None:

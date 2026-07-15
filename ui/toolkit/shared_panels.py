@@ -11,6 +11,9 @@ try:
     from ui.ai.terminal_panel import TerminalPanel, ChatSession, _BACKENDS
 except ImportError:
     AI_AVAILABLE = False
+    TerminalPanel = None
+    ChatSession = None
+    _BACKENDS = {}
 
 
 class AIChatPanel:
