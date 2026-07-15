@@ -1,0 +1,30 @@
+version: 1
+
+ammo:
+  Ammo10mm:
+    master: Fallout4.esm
+    form_id: "0001F276"
+  Ammo4570:
+    master: DLCCoast.esm
+    form_id: "0002C8B1"
+  Ammo5mm:
+    master: Fallout4.esm
+    form_id: "0001F66C"
+  Ammo308:
+    master: Fallout4.esm
+    form_id: "0001F66B"
+  Ammo44:
+    master: Fallout4.esm
+    form_id: "0009221C"
+  Ammo50MG:
+    master: Fallout4.esm
+    form_id: "0001F279"
+  Ammo556mm:
+    master: Fallout4.esm
+    form_id: "0001F278"
+  Ammo762mm:
+    master: DLCNukaWorld.esm
+    form_id: "00037897"
+  AmmoShotgunShell:
+    master: Fallout4.esm
+    form_id: "0001F673"

@@ -1,0 +1,2 @@
+"""BSA Viewer workspace package."""
+

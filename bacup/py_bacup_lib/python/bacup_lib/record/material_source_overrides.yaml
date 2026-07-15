@@ -1,0 +1,15 @@
+# Material source path overrides for FO76->FO4 conversion.
+# Keys: asset source_path (case-insensitive, forward or back slashes).
+# Values: data-relative replacement source_path values.
+#
+# C-7: FO76 StormLightningHarvester/GlassDome.BGEM uses EyeCubeMap (environmental asset,
+# wrong for a weapon receiver glass lens). Override to fan-correct version with
+# mipblur_DefaultOutside1.dds cubemap + glassbulge_n.dds normal.
+
+# TEMP_GroundTexture01 is a Bethesda dev placeholder that leaked into shipping data
+# (referenced by ~26k NIFs via "C:\Projects\76\Build\PC\Data\..." absolute paths).
+# Its DDSes ship as a debug pattern. Bethesda's own FO76 MSWP records swap this BGSM
+# at runtime — Appalachia's CustomMaterialSwap0032D4A1 picks ForestRocks01 — so the
+# raw textures are never meant to render. Mirror that intent by swapping the source
+# BGSM before conversion.
+"materials/landscape/ground/temp_groundtexture01.bgsm": "materials/landscape/ground/forestrocks01.bgsm"

@@ -1,0 +1,16 @@
+record_type: WEAP
+eid: WeapNV10mmPistol
+form_id: 0CAFE0
+fields:
+- FULL:
+    TargetLanguage: English
+    Values:
+    - Value: 10mm Pistol
+- AnimationType: Pistol
+- MODL:
+    Filename: Meshes/Weapons/10mmpistol.nif
+- ModelMod1: Meshes/Weapons/10mmpistolExtMag.nif
+- Ammo: 000123:FalloutNV.esm
+- ModSlot1Linked: IMODNV10mmExtMag
+- AttackAnimation:
+    Filename: Meshes/Weapons/10mmpistolFire.kf

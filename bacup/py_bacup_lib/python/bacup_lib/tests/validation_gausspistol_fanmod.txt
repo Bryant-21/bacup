@@ -1,0 +1,627 @@
+================================================================================
+GAUSS PISTOL VALIDATION: FO76 Pipeline vs Fan Mod Conversion
+================================================================================
+
+----------------------------------------------------------------------
+PAIR: Character 1st Person
+  FO76: X:\extracted\fo76\meshes\actors\character\_1stperson\animations\gausspistol
+  Fan:  X:\refs\fanmods\Gauss Pistol\Meshes\Actors\Character\_1stPerson\Animations\gausspistol
+----------------------------------------------------------------------
+
+  Matched files: 53
+
+  FILE: drummag/wpnreload.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=111  FAN=109
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: grenademag/wpnreload.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=111  FAN=109
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnafterjiggleadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnafterjigglefireautoadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnafterjigglefireautosightedadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnafterjigglefiresingleadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnafterjigglefiresinglesightedadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnafterjigglesightedadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnafterjigglesneakdown.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnafterjigglesneakup.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnchargeholdreadyadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=105  FAN=104
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnchargeholdsightedadd.hkx
+    FAIL — 9 discrepancies:
+        object_count: OURS=105  FAN=20
+        bone_indices_count: OURS=94  FAN=0
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=NORMAL
+        anim_class: OURS=None  FAN=hkaSplineCompressedAnimation
+        num_transform_tracks: OURS=None  FAN=12
+        annotation_track_count: OURS=None  FAN=12
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnequip.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=105  FAN=103
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnequipfast.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=105  FAN=103
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnfireautoreadyback.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=124  FAN=122
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnfireautoreadyforward.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=124  FAN=122
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnfireautosighted.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=124  FAN=122
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnfiresingleready.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=105  FAN=103
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnfiresinglereadya.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=105  FAN=103
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnfiresinglereadyb.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=105  FAN=103
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnfiresinglesighted.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=105  FAN=103
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpngrenadethrow.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=107  FAN=105
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnidlegundown.hkx
+    FAIL — 8 discrepancies:
+        object_count: OURS=104  FAN=102
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=None  FAN=hkaInterleavedUncompressedAnimation
+        num_transform_tracks: OURS=None  FAN=94
+        annotation_track_count: OURS=None  FAN=94
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnidleready.hkx
+    FAIL — 8 discrepancies:
+        object_count: OURS=104  FAN=102
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=None  FAN=hkaInterleavedUncompressedAnimation
+        num_transform_tracks: OURS=None  FAN=94
+        annotation_track_count: OURS=None  FAN=94
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnidlereadya.hkx
+    FAIL — 9 discrepancies:
+        object_count: OURS=105  FAN=103
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=None  FAN=hkaInterleavedUncompressedAnimation
+        num_transform_tracks: OURS=None  FAN=94
+        annotation_track_count: OURS=None  FAN=95
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        annotation_events: OURS=[]  FAN=['SoundPlay.WPNIdleA']
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnidlereadyb.hkx
+    FAIL — 9 discrepancies:
+        object_count: OURS=105  FAN=103
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=None  FAN=hkaInterleavedUncompressedAnimation
+        num_transform_tracks: OURS=None  FAN=94
+        annotation_track_count: OURS=None  FAN=95
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        annotation_events: OURS=[]  FAN=['SoundPlay.WPNIdleB']
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnidlereadyc.hkx
+    FAIL — 9 discrepancies:
+        object_count: OURS=105  FAN=103
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=None  FAN=hkaInterleavedUncompressedAnimation
+        num_transform_tracks: OURS=None  FAN=94
+        annotation_track_count: OURS=None  FAN=95
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        annotation_events: OURS=[]  FAN=['SoundPlay.WPNIdleC']
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnidlereadyd.hkx
+    FAIL — 9 discrepancies:
+        object_count: OURS=105  FAN=103
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=None  FAN=hkaInterleavedUncompressedAnimation
+        num_transform_tracks: OURS=None  FAN=94
+        annotation_track_count: OURS=None  FAN=95
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        annotation_events: OURS=[]  FAN=['SoundPlay.WPNIdleD']
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnidlesighted.hkx
+    FAIL — 8 discrepancies:
+        object_count: OURS=104  FAN=102
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=None  FAN=hkaInterleavedUncompressedAnimation
+        num_transform_tracks: OURS=None  FAN=94
+        annotation_track_count: OURS=None  FAN=94
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnidlesightedwobble.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnjumpfalladd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnjumpimpactland.hkx
+    FAIL — 7 discrepancies:
+        object_count: OURS=104  FAN=106
+        bone_indices_count: OURS=94  FAN=0
+        annotation_track_count: OURS=94  FAN=98
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        annotation_events: OURS=[]  FAN=['FootLeft', 'SyncLeft', 'FootRight', 'SyncRight']
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnjumplandadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=104  FAN=103
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnjumpstartadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=104  FAN=103
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnmelee.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=109  FAN=107
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnmeleebayonet.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=109  FAN=107
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnminethrow.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=107  FAN=105
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnpitchdownreadyadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnpitchdownsightedadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnpitchupreadyadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnpitchupsightedadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnreload.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=111  FAN=109
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnrunforwardready.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=106  FAN=104
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnrungundown.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=106  FAN=104
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnsprint.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=108  FAN=106
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnturnleftjiggleadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnturnleftreadyadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnturnleftsightedadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnturnrightjiggleadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnturnrightreadyadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnturnrightsightedadd.hkx
+    FAIL — 4 discrepancies:
+        object_count: OURS=103  FAN=102
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=ADDITIVE
+        variant_name: OURS=Resource Data  FAN=Merged Animation Container
+        pointers: OURS=null:1/valid:3  FAN=null:0/valid:3
+  FILE: wpnunequip.hkx
+    FAIL — 8 discrepancies:
+        object_count: OURS=105  FAN=102
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        annotation_track_count: OURS=95  FAN=94
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        annotation_events: OURS=['UncullBone.WeaponBolt']  FAN=[]
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnwalkforwardsighted.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=106  FAN=104
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+
+----------------------------------------------------------------------
+PAIR: Character 3rd Person
+  FO76: X:\extracted\fo76\meshes\actors\character\animations\weapon\gausspistol
+  Fan:  X:\refs\fanmods\Gauss Pistol\Meshes\Actors\Character\animations\weapon\gausspistol
+----------------------------------------------------------------------
+
+  Fan-only files (10):
+    player/wpnassemblypose.hkx
+    player/wpnchargeholdreadyadd.hkx
+    player/wpnchargeholdreadyslave.hkx
+    player/wpnfiresinglereadyslave.hkx
+    player/wpnreload.hkx
+    synth/wpnassemblypose.hkx
+    synth/wpnchargeholdreadyadd.hkx
+    synth/wpnchargeholdreadyslave.hkx
+    synth/wpnfiresinglereadyslave.hkx
+    synth/wpnreload.hkx
+
+  Matched files: 5
+
+  FILE: wpnassemblypose.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=105  FAN=103
+        bone_indices_count: OURS=95  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnchargeholdreadyadd.hkx
+    FAIL — 7 discrepancies:
+        object_count: OURS=107  FAN=105
+        bone_indices_count: OURS=95  FAN=0
+        blend_hint: OURS=ADDITIVE_DEPRECATED  FAN=NORMAL
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnchargeholdreadyslave.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=105  FAN=103
+        bone_indices_count: OURS=95  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnfiresinglereadyslave.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=106  FAN=104
+        bone_indices_count: OURS=95  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnreload.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=109  FAN=107
+        bone_indices_count: OURS=95  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+
+----------------------------------------------------------------------
+PAIR: PowerArmor 1st Person
+  FO76: X:\extracted\fo76\meshes\actors\powerarmor\_1stperson\animations\gausspistol
+  Fan:  X:\refs\fanmods\Gauss Pistol\Meshes\Actors\powerarmor\_1stperson\animations\gausspistol
+----------------------------------------------------------------------
+
+  Matched files: 4
+
+  FILE: wpnrunforwardready.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=106  FAN=104
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnrungundown.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=106  FAN=104
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnsprint.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=108  FAN=106
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnwalkforwardsighted.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=106  FAN=104
+        bone_indices_count: OURS=94  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+
+----------------------------------------------------------------------
+PAIR: PowerArmor 3rd Person
+  FO76: X:\extracted\fo76\meshes\actors\powerarmor\animations\weapons\gausspistol
+  Fan:  X:\refs\fanmods\Gauss Pistol\Meshes\Actors\powerarmor\animations\Weapons\gausspistol
+----------------------------------------------------------------------
+
+  Matched files: 4
+
+  FILE: wpnassemblypose.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=120  FAN=118
+        bone_indices_count: OURS=110  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnchargeholdreadyslave.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=120  FAN=118
+        bone_indices_count: OURS=110  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnfiresinglereadyslave.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=121  FAN=119
+        bone_indices_count: OURS=110  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+  FILE: wpnreload.hkx
+    FAIL — 6 discrepancies:
+        object_count: OURS=130  FAN=128
+        bone_indices_count: OURS=110  FAN=0
+        anim_class: OURS=hkaSplineCompressedAnimation  FAN=hkaInterleavedUncompressedAnimation
+        variant_name: OURS=Resource Data  FAN=Animation Container
+        bone_indices_content: OURS=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 ...  FAN=(empty)
+        pointers: OURS=null:0/valid:4  FAN=null:0/valid:3
+
+================================================================================
+SUMMARY
+================================================================================
+Total files compared: 66
+  PASS:  0
+  FAIL:  66
+  ERROR: 0
+  Pass rate: 0.0%
+
+================================================================================
+CRITICAL: Fan Mod Field Values (tiebreaker reference)
+================================================================================
+
+  anim_class:
+    hkaInterleavedUncompressedAnimation: 41 files
+    hkaSplineCompressedAnimation: 4 files
+  annotation_track_count:
+    95: 12 files
+    96: 7 files
+    94: 6 files
+    101: 3 files
+    114: 3 files
+    97: 3 files
+    98: 3 files
+    99: 3 files
+    110: 2 files
+    12: 1 files
+    111: 1 files
+    120: 1 files
+  blend_hint:
+    NORMAL: 43 files
+    ADDITIVE: 23 files
+  bone_indices_count:
+    0: 43 files
+    94: 23 files
+  bone_indices_style:
+    empty: 43 files
+    explicit: 23 files
+  forward_axis:
+    Root: 66 files
+  has_annotations:
+    yes: 34 files
+    no: 32 files
+  num_transform_tracks:
+    94: 35 files
+    95: 5 files
+    110: 4 files
+    12: 1 files
+  object_count:
+    102: 24 files
+    103: 14 files
+    104: 8 files
+    109: 3 files
+    122: 3 files
+    105: 3 files
+    106: 3 files
+    107: 3 files
+    118: 2 files
+    20: 1 files
+    119: 1 files
+    128: 1 files
+  root_container_count:
+    1: 66 files
+  variant_name:
+    Animation Container: 43 files
+    Merged Animation Container: 23 files
+  version_string:
+    hk_2014.1.0-r1: 66 files

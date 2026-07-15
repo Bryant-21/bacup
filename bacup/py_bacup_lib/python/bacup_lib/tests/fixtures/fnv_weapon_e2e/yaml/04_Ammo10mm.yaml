@@ -1,0 +1,8 @@
+record_type: AMMO
+eid: Ammo10mm
+form_id: '000123'
+fields:
+- FULL:
+    TargetLanguage: English
+    Values:
+    - Value: 10mm Round

@@ -1,0 +1,29 @@
+archetype: insect_winged
+behavior_name: InsectWingedEverything
+root_behavior_name: InsectWingedRootBehavior
+project_name: InsectWingedProject
+character_name: InsectWinged
+model_after: bloatfly
+states:
+  - name: HoverIdle
+    role: idle
+    loop: true
+  - name: Flight
+    role: locomotion
+    loop: true
+  - name: Attack
+    role: attack
+  - name: Special
+    role: special
+  - name: Death
+    role: death
+transitions:
+  - event: move
+    from: HoverIdle
+    to: Flight
+  - event: attack
+    from: Flight
+    to: Attack
+  - event: special
+    from: Attack
+    to: Special

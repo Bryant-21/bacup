@@ -1,0 +1,12 @@
+record_type: IMOD
+eid: IMODNV10mmExtMag
+form_id: 0BEEF0
+fields:
+- FULL: Extended Magazine
+- Data:
+    Value: 50
+    Weight: 0.2
+    Modifiers:
+    - Field: AmmoCapacity
+      Value: 6.0
+      Operation: Add

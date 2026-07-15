@@ -1,0 +1,81 @@
+name: Build BACUP
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  test:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            py_creation_lib -> py_creation_lib/target
+            bacup/py_bacup_lib -> bacup/py_bacup_lib/target
+      - run: uv sync
+      - run: uv run pytest
+  gate:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          MAJOR="${VERSION%%.*}"
+          if [ "$MAJOR" -lt 1 ]; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+  release:
+    needs: gate
+    if: needs.gate.outputs.should_release == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            py_creation_lib -> py_creation_lib/target
+            bacup/py_bacup_lib -> bacup/py_bacup_lib/target
+      - run: uv sync
+      - name: Build BACUP exe
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File bacup/build_bacup.ps1
+      - name: Zip
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist/BACUP.exe)) { throw "dist/BACUP.exe not found (onefile build output)" }
+          Compress-Archive -Path dist/BACUP.exe, dist/mods -DestinationPath "BACUP-${{ needs.gate.outputs.version }}-win64.zip"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ needs.gate.outputs.version }}" --target ${{ github.sha }} "BACUP-${{ needs.gate.outputs.version }}-win64.zip" --title "v${{ needs.gate.outputs.version }}" --generate-notes

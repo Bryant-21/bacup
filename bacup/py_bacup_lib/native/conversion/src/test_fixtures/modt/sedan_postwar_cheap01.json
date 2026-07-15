@@ -1,0 +1,65 @@
+{
+  "name": "Sedan_Postwar_Cheap01",
+  "record": {
+    "type": "STAT",
+    "form_id": "21DBB1",
+    "editor_id": "Sedan_Postwar_Cheap01",
+    "source": "Fallout4.esm"
+  },
+  "modl": "Vehicles\\Automotive\\Sedan_Postwar_Cheap01.nif",
+  "material_swap": {
+    "materials\\vehicles\\automotive\\sedan01_rust.bgsm": "Materials\\Vehicles\\Automotive\\Sedan_Postwar_Cheap01.bgsm"
+  },
+  "mode": "B (material swap)",
+  "modt_hex": "040000000800000000000000040000000300000066B2BCEB64647300A2FB287ABFDEBA8864647300A2FB287A72C1EAAA64647300A2FB287AABADECC964647300A2FB287AB544392964647300A2FB287A0F2C2A00646473001CDB88C5A1376F6864647300A2FB287AFC1D6EB464647300A2FB287A5503C4586267736D82C5BC28B5B582B86267736D82C5BC28C502F8456267736DD550C98A",
+  "srgb_count": 4,
+  "addon_nodes": [],
+  "textures": [
+    {
+      "path": "textures\\Vehicles\\Automotive\\Sedan02_Postwar_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Vehicles\\Automotive\\Sedan02_Postwar_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\Vehicles\\Automotive\\Sedan02_Postwar_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    },
+    {
+      "path": "textures\\Shared\\Cubemaps\\mipblur_DefaultOutside1.dds",
+      "role": "envmap",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Vehicles\\Automotive\\Sedan01_Rust_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Vehicles\\Automotive\\Sedan01_Rust_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\Vehicles\\Automotive\\Sedan01_Rust_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    },
+    {
+      "path": "textures\\Vehicles\\Automotive\\StationWagon01LGrad.dds",
+      "role": "greyscale",
+      "srgb": true
+    }
+  ],
+  "materials": [
+    "Materials\\Vehicles\\Automotive\\Sedan02_Postwar.BGSM",
+    "Materials\\Template\\VehicleTemplate_Wet.bgsm",
+    "Materials\\Vehicles\\Automotive\\Sedan_Postwar_Cheap01.bgsm"
+  ],
+  "note": "textures/materials are an unordered SET; vanilla MODT stores them in CK BSTScatterTable iteration order (see README)."
+}

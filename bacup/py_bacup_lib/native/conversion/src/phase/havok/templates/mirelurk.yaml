@@ -1,0 +1,29 @@
+archetype: mirelurk
+behavior_name: MirelurkEverything
+root_behavior_name: MirelurkRootBehavior
+project_name: MirelurkProject
+character_name: Mirelurk
+model_after: mirelurk
+states:
+  - name: Idle
+    role: idle
+    loop: true
+  - name: Locomotion
+    role: locomotion
+    loop: true
+  - name: Attack
+    role: attack
+  - name: HitReact
+    role: hit_react
+  - name: Death
+    role: death
+transitions:
+  - event: move
+    from: Idle
+    to: Locomotion
+  - event: attack
+    from: Locomotion
+    to: Attack
+  - event: hit
+    from: Attack
+    to: HitReact

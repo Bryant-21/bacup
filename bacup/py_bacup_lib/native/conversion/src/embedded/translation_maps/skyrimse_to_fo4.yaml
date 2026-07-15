@@ -1,0 +1,461 @@
+skip_records:
+  - COLL
+  - NAVI
+
+WEAP:
+  fields:
+    OBND: OBND
+    MODL: MODL
+    CNAM: CNAM
+    CRDT: CRDT
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, German, French, Spanish, Italian, Japanese, Polish, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, German, French, Spanish, Italian, Japanese, Polish, Russian]
+    Data:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    DNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    ETYP:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    BIDS:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    BAMT:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    EITM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    INAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+AMMO:
+  fields:
+    OBND: OBND
+    MODL: MODL
+    DATA: DATA
+    Data: Data
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, German, French, Spanish, Italian, Japanese, Polish, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, German, French, Spanish, Italian, Japanese, Polish, Russian]
+    KWDA:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+PROJ:
+  fields:
+    OBND: OBND
+    MODL: MODL
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, German, French, Spanish, Italian, Japanese, Polish, Russian]
+    DATA:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    Data:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    NAM1:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    NAM2:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+EXPL:
+  fields:
+    OBND: OBND
+    MODL: MODL
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, German, French, Spanish, Italian, Japanese, Polish, Russian]
+    DATA:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    Data:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    EITM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    MNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+ARMO:
+  fields:
+    OBND: OBND
+    MODL: MODL
+    DATA: DATA
+    BOD2: BOD2
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, German, French, Spanish, Italian, Japanese, Polish, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, German, French, Spanish, Italian, Japanese, Polish, Russian]
+    BodyTemplate:
+      type: restructure
+      mapping:
+        BodyTemplate: BipedBodyTemplate
+    KWDA:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    RNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    ETYP:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    BIDS:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    BAMT:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    EITM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+ARMA:
+  fields:
+    MODL: MODL
+    BOD2: BOD2
+    Data: Data
+  transforms:
+    BodyTemplate:
+      type: restructure
+      mapping:
+        BodyTemplate: BipedBodyTemplate
+    RNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    DNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    SNDD:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    ONAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+NPC_:
+  fields:
+    OBND: OBND
+    FULL: FULL
+    SHRT: SHRT
+    Configuration: Configuration
+    DATA: DATA
+    AIDT: AIData
+    AIData: AIData
+    NAM5: NAM5
+    NAM6: NAM6
+    NAM8: NAM8
+  transforms:
+    RNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    VTCK:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    CNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    CSCR:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    DOFT:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    CNTO:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    COED:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    PKID:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    SPLO:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    TPLT:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    INAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    WNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    HCLF:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    ECOR:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+RACE:
+  fields:
+    FULL: FULL
+    DESC: DESC
+    DATA: DATA
+    BOD2: BOD2
+    NAM1: NAM1
+    NAM5: NAM5
+    NAM7: NAM7
+    NAM8: NAM8
+  transforms:
+    BodyTemplate:
+      type: restructure
+      mapping:
+        BodyTemplate: BipedBodyTemplate
+    KWDA:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    SPLO:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    WNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    HCLF:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    RNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    VTCK:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+MGEF:
+  fields:
+    DATA: DATA
+    Data: Data
+    SNDD: SNDD
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, German, French, Spanish, Italian, Japanese, Polish, Russian]
+    KWDA:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    Sounds:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    CTDA:
+      type: translate_conditions
+      source_game: skyrimse
+      source_esm: Skyrim_Merged.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+COBJ:
+  transforms:
+    CNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    BNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    CTDA:
+      type: translate_conditions
+      source_game: skyrimse
+      source_esm: Skyrim_Merged.esm
+      target_esm: Fallout4.esm
+    NAM1:
+      type: wrap_in_list
+      target: NAM1
+      wrapper_key: Count
+  defaults: {}
+
+ALCH:
+  fields:
+    OBND: OBND
+    MODL: MODL
+    DATA: DATA
+    ENIT: ENIT
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, German, French, Spanish, Italian, Japanese, Polish, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, German, French, Spanish, Italian, Japanese, Polish, Russian]
+    KWDA:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    ETYP:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+    EffectData:
+      type: translate_effects
+      source_esm: Skyrim.esm
+      target_esm: Fallout4.esm
+      default_data:
+        Magnitude: 0.0
+  defaults: {}
+
+CSTY:
+  fields:
+    DATA: DATA
+  defaults: {}
+
+# Numeric CTDA function ids are source-game-specific. Route condition-bearing
+# records through the Skyrim table; unknown ids are dropped conservatively.
+FACT:
+  transforms:
+    CTDA:
+      type: translate_conditions
+      source_game: skyrimse
+      source_esm: Skyrim_Merged.esm
+      target_esm: Fallout4.esm
+SNDR:
+  transforms:
+    CTDA:
+      type: translate_conditions
+      source_game: skyrimse
+      source_esm: Skyrim_Merged.esm
+      target_esm: Fallout4.esm
+MUST:
+  transforms:
+    CTDA:
+      type: translate_conditions
+      source_game: skyrimse
+      source_esm: Skyrim_Merged.esm
+      target_esm: Fallout4.esm
+IDLE:
+  transforms:
+    CTDA:
+      type: translate_conditions
+      source_game: skyrimse
+      source_esm: Skyrim_Merged.esm
+      target_esm: Fallout4.esm
+CPTH:
+  transforms:
+    CTDA:
+      type: translate_conditions
+      source_game: skyrimse
+      source_esm: Skyrim_Merged.esm
+      target_esm: Fallout4.esm

@@ -1,0 +1,26 @@
+# Extra dependencies to inject into the walker graph for specific WEAP EditorIDs.
+# Use when the FO76 source data does not encode a dependency that must be
+# included (e.g. a PROJ or NIF that is never referenced by any FO76 record).
+#
+# Keys: WEAP EditorID (exact match, case-sensitive).
+# Each entry may have:
+#   form_keys: list of FormKeys to walk (records and their sub-dependencies)
+#   nif_paths: list of NIF asset paths to include directly (no record walk)
+
+# C-3/H-2: Meltdown beam PROJ + 4 orphaned effect NIFs.
+# ProjectileLaserMeltdownBeam (7A316D) is not referenced by any FO76 record —
+# its Model NIF (MeltdownLaserBlueBeam.nif) is pulled by walking the PROJ.
+# The other 4 beam/effect NIFs are also unreferenced by any FO76 record;
+# they are injected directly as asset paths.
+# weap_extra_data: fields to inject into ExtraData of the translated WEAP.
+#   Values that are FO76 FormKeys get remapped to the converted ESP's FK.
+meltdown:
+  form_keys:
+    - 7A316D:SeventySix.esm  # ProjectileLaserMeltdownBeam
+  nif_paths:
+    - effects/meltdownfx/MPSMeltdownLaserImpactSparks.nif
+    - effects/meltdownfx/MPSMeltdownSmokeLaserImpact.nif
+    - effects/meltdownfx/MPSMeltdownWaveImpact.nif
+    - effects/meltdownfx/MeltdownTracerBeamConcept.nif
+  weap_extra_data:
+    ProjectileOverride: 7A316D:SeventySix.esm  # -> converted ProjectileLaserMeltdownBeam FK

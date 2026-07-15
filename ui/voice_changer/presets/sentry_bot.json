@@ -1,0 +1,18 @@
+{
+  "name": "Sentry Bot",
+  "description": "Fallout Sentry Bot — deep pitch-shifted voice with sweeping phaser, metallic chorus, heavy reverb, and crushing compression. Massive and menacing.",
+  "chain": [
+    {"type": "PitchShift", "enabled": true, "params": {"semitones": -8.0}},
+    {"type": "HighpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 50}},
+    {"type": "LowpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 4000, "rolloff_db_per_oct": 18}},
+    {"type": "LowShelfFilter", "enabled": true, "params": {"cutoff_frequency_hz": 100, "gain_db": 6.0}},
+    {"type": "PeakFilter", "enabled": true, "params": {"cutoff_frequency_hz": 2100, "gain_db": 10.0, "q": 1.8}},
+    {"type": "PeakFilter", "enabled": true, "params": {"cutoff_frequency_hz": 500, "gain_db": 4.0, "q": 0.8}},
+    {"type": "Phaser", "enabled": true, "params": {"rate_hz": 1.5, "depth": 0.6, "feedback": 0.4, "mix": 0.4}},
+    {"type": "Chorus", "enabled": true, "params": {"rate_hz": 0.8, "depth": 0.3, "mix": 0.25, "feedback": 0.1}},
+    {"type": "CombFilter", "enabled": true, "params": {"delay_seconds": 0.018, "decay": 0.5}},
+    {"type": "Reverb", "enabled": true, "params": {"room_size": 0.6, "wet_level": 0.35, "damping": 0.5}},
+    {"type": "Compressor", "enabled": true, "params": {"threshold_db": -12.0, "ratio": 6.0}},
+    {"type": "Gain", "enabled": true, "params": {"gain_db": 2.0}}
+  ]
+}

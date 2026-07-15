@@ -1,0 +1,29 @@
+archetype: robot_securitron
+behavior_name: RobotSecuritronEverything
+root_behavior_name: RobotSecuritronRootBehavior
+project_name: RobotSecuritronProject
+character_name: RobotSecuritron
+model_after: securitron
+states:
+  - name: Idle
+    role: idle
+    loop: true
+  - name: Patrol
+    role: locomotion
+    loop: true
+  - name: Attack
+    role: attack
+  - name: HitReact
+    role: hit_react
+  - name: Shutdown
+    role: death
+transitions:
+  - event: move
+    from: Idle
+    to: Patrol
+  - event: stop
+    from: Patrol
+    to: Idle
+  - event: attack
+    from: Patrol
+    to: Attack

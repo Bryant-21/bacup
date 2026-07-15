@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bacup-workspace"
+version = "1.0.0"
+description = "B.A.C.U.P. — Bethesda Asset Conversion Utility Program"
+license = {text = "GPL-3.0-only"}
+requires-python = ">=3.11"
+dependencies = [
+    # --- preprocessors (db/) ---
+    "beautifulsoup4",
+    "html2text",
+    "numpy>=2.2.6",
+    # --- ui (merged from ui/pyproject.toml) ---
+    "setuptools",
+    "markdown>=3.5",
+    "pillow>=12.1.1",
+    "imgui-bundle>=1.6.0",     # imgui + hello_imgui + imguizmo
+    "moderngl>=5.11",          # OpenGL rendering
+    "PyGLM>=2.7",              # matrix/vector math
+    "watchdog>=4.0",           # texture hot-reload
+    "pywinpty>=2.0",           # AI terminal PTY
+    "pyte>=0.8",               # VT terminal emulator
+    "fastmcp>=2.0",            # MCP server framework (SSE transport for UI)
+    "uvicorn>=0.34",           # ASGI server for SSE MCP
+    "imagequant>=1.1.5",
+    "opencv-python-headless>=4.13.0.92",
+    "lz4>=4.4.5",
+    "trimesh>=4.0",                    # legacy trimesh scene loading (simple_renderer)
+    # --- release audio & spellcheck ---
+    "language-tool-python>=2.8",   # grammar/spell checking (downloads LanguageTool on first use)
+    "pyyaml>=6.0",                  # YAML parsing for spellcheck & transcript extraction
+    "ruamel.yaml>=0.18",            # round-trip YAML for translation backend
+    "orjson>=3.10",                  # fast JSON for ESP authoring-dir export/import
+    # --- cli ---
+    "click>=8.1",                   # modkit CLI framework
+    # --- swf editor ---
+    "vtracer>=0.6",                     # bitmap-to-vector tracing (raster→SVG import)
+    "earcut>=1.1",                      # polygon triangulation (tessellated vector rendering)
+    "pyclipper>=1.4",                    # path boolean operations (union, subtract, intersect)
+    "cairosvg>=2.9.0",
+    # --- voice changer ---
+    "pedalboard>=0.9.0",               # DSP effect chain + VST3 loading
+    "sounddevice>=0.4.6",              # audio record/playback
+    "soundfile>=0.12.0",               # WAV I/O
+    "pyghidra>=3.0.2",
+    "PyOgg",
+    # --- native extensions ---
+    "py-creation-lib",
+    "bacup-lib",
+    "zstandard>=0.25.0",
+]
+
+[tool.uv.sources]
+"py-creation-lib" = { path = "py_creation_lib", editable = true }
+"bacup-lib" = { path = "bacup/py_bacup_lib", editable = true }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*", "ui*"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "py_creation_lib/python", "bacup/py_bacup_lib/python"]
+testpaths = ["app", "ui", "bacup/tests", "bacup/py_bacup_lib/python"]
+addopts = "-v --tb=short"
+markers = [
+    "integration: tests that use local game installs or heavier external tooling",
+    "isolated: tests that should run in a separate subprocess or shard",
+]
+
+[dependency-groups]
+dev = ["maturin>=1.7", "pytest>=9.0.2", "pytest-asyncio>=1.3.0", "pytest-xdist>=3.8.0", "ruff"]

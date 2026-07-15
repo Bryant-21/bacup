@@ -1,0 +1,220 @@
+================================================================================
+ROBOT (MR. HANDY) ANIMATION CONVERSION VALIDATION REPORT
+================================================================================
+
+Total file pairs: 82
+  PASS:  81
+  FAIL:  1
+  ERROR: 0
+
+COMMON FAILURE PATTERNS:
+  NULL_PTR: 7 occurrences
+
+--------------------------------------------------------------------------------
+PER-FILE RESULTS
+--------------------------------------------------------------------------------
+
+[PASS] animations/claw/attack_1.hkx
+
+[PASS] animations/claw/attack_2.hkx
+
+[PASS] animations/claw/attack_3.hkx
+
+[PASS] animations/claw/recoil_1.hkx
+
+[PASS] animations/death1.hkx
+
+[PASS] animations/death2.hkx
+
+[PASS] animations/death3.hkx
+
+[PASS] animations/dialogueidle_long1.hkx
+
+[PASS] animations/dialogueidle_long2.hkx
+
+[PASS] animations/dialogueidle_medium1.hkx
+
+[PASS] animations/dialogueidle_medium2.hkx
+
+[PASS] animations/dialogueidle_short1.hkx
+
+[PASS] animations/dialogueidle_short2.hkx
+
+[PASS] animations/dodgeleft.hkx
+
+[PASS] animations/dodgeright.hkx
+
+[PASS] animations/flamethrower/rangedattack_1.hkx
+
+[PASS] animations/flamethrower/rangedattacksinglefire_1.hkx
+
+[PASS] animations/furniturebar/enterfromstand.hkx
+
+[PASS] animations/furniturebar/exittostand.hkx
+
+[PASS] animations/furniturebar/posea_idle1.hkx
+
+[PASS] animations/furniturebar/posea_idleflavor1.hkx
+
+[PASS] animations/furniturewashingdishes/enterfromstand.hkx
+
+[PASS] animations/furniturewashingdishes/leftexittostand.hkx
+
+[PASS] animations/furniturewashingdishes/posea_idle1.hkx
+
+[PASS] animations/getupright.hkx
+
+[PASS] animations/headautofire.hkx
+
+[PASS] animations/hitreactionleftarm.hkx
+
+[PASS] animations/hitreactionlefteye.hkx
+
+[PASS] animations/hitreactionmidarm.hkx
+
+[PASS] animations/hitreactionmideye.hkx
+
+[PASS] animations/hitreactionrightarm.hkx
+
+[PASS] animations/hitreactionrighteye.hkx
+
+[PASS] animations/hitreactionthruster.hkx
+
+[PASS] animations/idle.hkx
+
+[PASS] animations/idle_eyefocus.hkx
+
+[PASS] animations/idle_gardeningtableplot_1.hkx
+
+[PASS] animations/idle_gardeningtableplot_2.hkx
+
+[PASS] animations/idle_maintenance.hkx
+
+[PASS] animations/idle_scanhigh.hkx
+
+[PASS] animations/idle_scanlow.hkx
+
+[PASS] animations/idle_welding.hkx
+
+[PASS] animations/idlesearch.hkx
+
+[PASS] animations/injured/idle.hkx
+
+[PASS] animations/injured/runforward.hkx
+
+[PASS] animations/injuredarmidle.hkx
+
+[PASS] animations/leftarmautofire.hkx
+
+[PASS] animations/leftarmsinglefire.hkx
+
+[PASS] animations/leftshoulderautofire.hkx
+
+[PASS] animations/leftshouldersinglefire.hkx
+
+[PASS] animations/onvertibird/enterfromstand.hkx
+
+[PASS] animations/onvertibird/exittostand.hkx
+
+[PASS] animations/onvertibird/posea_idle1.hkx
+
+[PASS] animations/pickup_low.hkx
+
+[PASS] animations/pickup_medium.hkx
+
+[PASS] animations/rightarmautofire.hkx
+
+[PASS] animations/rightarmsinglefire.hkx
+
+[PASS] animations/rightshoulderautofire.hkx
+
+[PASS] animations/rightshouldersinglefire.hkx
+
+[PASS] animations/rotateringccw_add.hkx
+
+[PASS] animations/rotateringcw_add.hkx
+
+[PASS] animations/runforward.hkx
+
+[PASS] animations/sawblade/attack_1.hkx
+
+[PASS] animations/sawblade/attack_2.hkx
+
+[PASS] animations/sawblade/attack_3.hkx
+
+[PASS] animations/sawblade/recoil_1.hkx
+
+[PASS] animations/sawingidle.hkx
+
+[PASS] animations/staggerforwardmedium.hkx
+
+[PASS] animations/staggerforwardsmall.hkx
+
+[PASS] animations/staggerlarge.hkx
+
+[PASS] animations/staggermedium.hkx
+
+[PASS] animations/staggersmall.hkx
+
+[PASS] animations/tounconscious.hkx
+
+[PASS] animations/turnleft.hkx
+
+[PASS] animations/turnleft180.hkx
+
+[PASS] animations/turnleft180tomove.hkx
+
+[PASS] animations/unconscioustoconscious.hkx
+
+[FAIL] behaviors/handybehavior.hkx
+       NULL_PTR: hkbStateMachine.wildcardTransitions is null, FO4 has #0650
+       NULL_PTR: hkbStateMachine.wildcardTransitions is null, FO4 has #0650
+       NULL_PTR: hkbStateMachine.wildcardTransitions is null, FO4 has #0650
+       NULL_PTR: hkbStateMachine.wildcardTransitions is null, FO4 has #0650
+       NULL_PTR: hkbStateMachine.wildcardTransitions is null, FO4 has #0650
+       NULL_PTR: hkbStateMachine.wildcardTransitions is null, FO4 has #0650
+       NULL_PTR: hkbStateMachine.wildcardTransitions is null, FO4 has #0650
+
+[PASS] behaviors/handylocomotioninjuredwrappingbehavior.hkx
+
+[PASS] behaviors/robotbehavior.hkx
+
+[PASS] characterassets/skeleton.hkx
+
+[PASS] characters/robotcharacter.hkx
+
+[PASS] robotproject.hkx
+
+--------------------------------------------------------------------------------
+UNMATCHED FILES
+--------------------------------------------------------------------------------
+
+FO76-only (18):
+  animations/ambushfabricator/ambush.hkx
+  animations/dynamicanimation/mrhandybooze.hkx
+  animations/dynamicanimation/mrhandyinitialize.hkx
+  animations/dynamicanimation/mrhandymedx.hkx
+  animations/dynamicanimation/mrhandymentats.hkx
+  animations/dynamicanimation/mrhandypsycho.hkx
+  animations/dynamicanimation/mrhandysweeping.hkx
+  animations/furniture/beekeeping/enterfromstand.hkx
+  animations/furniture/beekeeping/exittostand.hkx
+  animations/furniture/beekeeping/posea_idle1.hkx
+  animations/furniture/pod/enterfromstand.hkx
+  animations/furniture/pod/exittostand.hkx
+  animations/furniture/pod/posea_idle1.hkx
+  animations/furniture/sweeping/enterfromstand.hkx
+  animations/furniture/sweeping/exittostand.hkx
+  animations/furniture/sweeping/posea_idle1.hkx
+  behaviors/dialoguebehavior.hkx
+  behaviors/furniturebehavior.hkx
+
+FO4-only (8):
+  animations/getfood.hkx
+  animations/givefood.hkx
+  animations/giveholotape.hkx
+  animations/givepurifiedwater.hkx
+  animations/givestimpak.hkx
+  animations/idle_babyrattle.hkx
+  animations/idle_coffepot.hkx
+  animations/idle_dusting.hkx

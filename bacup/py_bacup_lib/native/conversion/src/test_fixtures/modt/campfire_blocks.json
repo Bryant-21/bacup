@@ -1,0 +1,89 @@
+{
+  "name": "CampFireMed01_Off_Blocks",
+  "record": {
+    "type": "STAT",
+    "form_id": "065585",
+    "editor_id": "CampFireMed01_Off_Blocks",
+    "source": "Fallout4.esm"
+  },
+  "modl": "Landscape\\CampFireMed01_Off_Blocks.nif",
+  "material_swap": {},
+  "mode": "A (no swap)",
+  "modt_hex": "040000000D000000000000000500000004000000BBF48FEF646473003BAC5C0A6298898C646473003BAC5C0A3B9658D164647300C6D74BEDE2FA5EB264647300C6D74BED4E3F7B6D64647300F44F6BF297537D0E64647300F44F6BF2D034AD3C64647300E58761BD0958AB5F64647300E58761BD17B17EBF64647300E58761BD89BAA8EE64647300F44F6BF2FC138B5264647300C6D74BED2C4BF9B264647300262C333B7C715C6C646473003BAC5C0AEFA99FA86267736D0881F794FA01F2676267736DACD27DDC987AF6A16267736DAA58E94EA12B4EE16267736D0881F794",
+  "srgb_count": 5,
+  "addon_nodes": [],
+  "textures": [
+    {
+      "path": "textures\\landscape\\rocks\\commonwealthrockslab02_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\landscape\\rocks\\commonwealthrockslab02_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\landscape\\rocks\\commonwealthrockslab02_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    },
+    {
+      "path": "textures\\landscape\\ground\\commonwealthdefault01_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\landscape\\ground\\commonwealthdefault01_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\landscape\\ground\\commonwealthdefault01_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    },
+    {
+      "path": "textures\\architecture\\diamondcity\\diamondbrickcinder01_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Architecture\\DiamondCity\\DiamondBrickCinder01_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\architecture\\diamondcity\\diamondbrickcinder01_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    },
+    {
+      "path": "textures\\cubemaps\\mudpond_e.dds",
+      "role": "envmap",
+      "srgb": true
+    },
+    {
+      "path": "textures\\landscape\\trees\\maplebark01_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\landscape\\trees\\maplebark01_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\landscape\\trees\\maplebark01_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    }
+  ],
+  "materials": [
+    "materials\\Landscape\\rockslab02.BGSM",
+    "materials\\Landscape\\Ground\\CommonwealthDefault01.bgsm",
+    "materials\\Architecture\\DiamondCity\\DiamondCityBrickCinder01Alpha.BGSM",
+    "materials\\Landscape\\maplebark01.BGSM"
+  ],
+  "note": "textures/materials are an unordered SET; vanilla MODT stores them in CK BSTScatterTable iteration order (see README)."
+}

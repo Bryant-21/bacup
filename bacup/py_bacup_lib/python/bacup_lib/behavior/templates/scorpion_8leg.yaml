@@ -1,0 +1,29 @@
+archetype: scorpion_8leg
+behavior_name: Scorpion8LegEverything
+root_behavior_name: Scorpion8LegRootBehavior
+project_name: Scorpion8LegProject
+character_name: Scorpion8Leg
+model_after: radscorpion
+states:
+  - name: Idle
+    role: idle
+    loop: true
+  - name: Locomotion
+    role: locomotion
+    loop: true
+  - name: Attack
+    role: attack
+  - name: Special
+    role: special
+  - name: Death
+    role: death
+transitions:
+  - event: move
+    from: Idle
+    to: Locomotion
+  - event: attack
+    from: Locomotion
+    to: Attack
+  - event: special
+    from: Attack
+    to: Special

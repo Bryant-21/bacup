@@ -1,0 +1,1050 @@
+skip_records:
+  # FO4 NAVI is rebuilt from the emitted NAVM graph with NVER=15. Copying the
+  # Gamebryo NVER=11/NVMI byte layout into FO4 is structurally invalid.
+  - NAVI
+  - NAVM
+  - PACK
+  - LVLN
+  - LVLC
+  - HDPT
+  - OUTF
+
+material_overrides:
+  bgsm_default:
+    bCastShadows: true
+
+CREA:
+  target_record_type: NPC_
+  fields:
+    Configuration: Configuration
+    AIData: AIData
+    DATA: DATA
+    DNAM: DNAM
+    DeathItem: DeathItem
+    Factions: Factions
+    ObjectBounds: ObjectBounds
+
+  transforms:
+    Name:
+      type: trim_languages
+      target: FULL
+      keep: [English]
+
+  drop:
+  - ModelFileName
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - Script
+  - Destructibles
+  - ActorEffect
+  - UnarmedAttackEffect
+  - UnarmedAttackAnimation
+  - ModelList
+  - ModelListTextures
+  - Voice
+  - Template
+  - CNTO
+  - COED
+  - Package
+  - Animations
+  - AttackReach
+  - CombatStyle
+  - BodyPartData
+  - TurningSpeed
+  - BaseScale
+  - FootWeight
+  - ImpactMaterialType
+  - SoundLevel
+  - InheritsSoundsFrom
+  - Type
+  - Sound
+  - SoundChance
+  - ImpactDataset
+  - MeleeWeaponList
+
+WEAP:
+  fields:
+    ModelFileName: ModelFileName
+    ObjectBounds: ObjectBounds
+    IconFileName: IconFileName
+    DATA: Data
+    DNAM: DNAM
+    CriticalData: CriticalData
+
+  transforms:
+    Name:
+      type: trim_languages
+      target: FULL
+      keep: [English]
+    ImpactDataSet:
+      type: remap_formkey
+      target: BlockBashImpactDataSet
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+
+  drop:
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - Script
+  - Effect
+  - Capacity
+  - Ammo
+  - Destructibles
+  - RepairList
+  - EquipmentType
+  - BipedModelList
+  - ShellCasingModelFileName
+  - ScopeModelFileName
+  - ScopeEffect
+  - WorldModelFileName
+  - VATSAttackName
+  - EmbeddedWeaponNode
+  - 1stPersonModel
+  - WeaponMod1
+  - WeaponMod2
+  - WeaponMod3
+  - Shoot3D
+  - ShootDist
+  - SoundGunShoot2D
+  - SoundGunShoot3DLooping
+  - SoundMeleeSwingGunNoAmmo
+  - SoundBlock
+  - SoundIdle
+  - SoundEquip
+  - SoundUnequip
+  - SoundMod1Shoot2D
+  - VATS
+  - SoundLevel
+  - SmallIconFileName
+  - ModelMod1
+  - ModelMod2
+  - ModelMod3
+  - ModelMod1And2
+  - ModelMod1And3
+  - ModelMod2And3
+  - ModelMod12And3
+  - 1stPersonModelMod1
+  - 1stPersonModelMod2
+  - 1stPersonModelMod3
+  - 1stPersonModelMod1And2
+  - 1stPersonModelMod1And3
+  - 1stPersonModelMod2And3
+  - 1stPersonModelMod12And3
+
+  defaults:
+    Keywords: []
+    ObjectTemplates: []
+    AttachParentSlots: []
+    Description:
+      TargetLanguage: English
+      Values: []
+
+IMOD:
+  fields:
+    ModelFileName: ModelFileName
+    Data: Data
+    ObjectBounds: ObjectBounds
+    IconFileName: IconFileName
+
+  transforms:
+    Name:
+      type: trim_languages
+      keep: [English]
+
+  drop:
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - Script
+  - Description
+  - Destructibles
+  - SoundPickUp
+  - SoundDrop
+  - SmallIconFileName
+
+  defaults: {}
+
+COBJ:
+  drop:
+  - Name
+  - ModelFileName
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - IconFileName
+  - Script
+  - SoundPickUp
+  - SoundDrop
+  - DATA
+  - ObjectBounds
+  - SmallIconFileName
+
+  defaults: {}
+
+AMMO:
+  fields:
+    Name: Name
+    ModelFileName: ModelFileName
+    ObjectBounds: ObjectBounds
+    ShortName: ShortName
+
+  transforms:
+    Name:
+      type: trim_languages
+      keep: [English]
+    ShortName:
+      type: trim_languages
+      keep: [English]
+
+  drop:
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - IconFileName
+  - Script
+  - Destructibles
+  - SoundPickUp
+  - SoundDrop
+  - Data
+  - Data2
+  - Abbrev
+  - Effect
+  - SmallIconFileName
+
+  defaults:
+    Keywords: []
+    Description:
+      TargetLanguage: English
+      Values: []
+
+PROJ:
+  fields:
+    ModelFileName: ModelFileName
+    Name: Name
+
+  transforms:
+    SoundLevel:
+      type: enum_map
+      map:
+        Normal: 0
+        Silent: 0
+        Loud: 1
+        VeryLoud: 2
+      fallback: 0
+
+  drop:
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - Destructibles
+  - Data
+  - ObjectBounds
+
+EXPL:
+  fields:
+    ModelFileName: ModelFileName
+    Name: Name
+    Data: Data
+
+  transforms:
+    Enchantment:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+
+  drop:
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - ImageSpaceModifier
+  - PlacedImpactObject
+  - ObjectBounds
+
+NPC_:
+  fields:
+    Configuration: Configuration
+    Factions: Factions
+    AIData: AIData
+    DATA: DATA
+    DNAM: DNAM
+    HeadPart: HeadPart
+    ObjectBounds: ObjectBounds
+
+  transforms:
+    Name:
+      type: trim_languages
+      target: FULL
+      keep: [English]
+    Race:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    Voice:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    Class:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    DeathItem:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    Template:
+      type: remap_formkey
+      target: DefaultTemplate
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    CombatStyle:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+
+  drop:
+  - ModelFileName
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - Script
+  - Hair
+  - HairLength
+  - HairColor
+  - ImpactMaterialType
+  - UnarmedAttackAnimation
+  - UnarmedAttackEffect
+  - ActorEffect
+  - Destructibles
+  - CNTO
+  - COED
+  - Package
+  - Animations
+  - Eyes
+  - FacegenSymmetricGeometry
+  - FacegenAsymmetricGeometry
+  - FacegenSymmetricTexture
+  - Height
+  - Weight
+  - NAM5
+
+  defaults:
+    Keywords: []
+    Properties: []
+    Perks: []
+    BodyMorphRegionValues: {}
+    VirtualMachineAdapter:
+    Skin: "Null"
+
+ARMO:
+  fields:
+    ObjectBounds: ObjectBounds
+
+  transforms:
+    Name:
+      type: trim_languages
+      target: FULL
+      keep: [English]
+    Enchantment:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+
+  drop:
+  - Script
+  - BipedData
+  - Males
+  - Females
+  - RagdollConstraintTemplate
+  - Destructibles
+  - RepairList
+  - BipedModelList
+  - EquipmentType
+  - Data
+  - DNAM
+  - OverridesAnimationSounds
+  - AnimationSound
+  - AnimationSoundsTemplate
+
+  defaults:
+    Keywords: []
+    Race: "Null"
+    Resistances: []
+    AttachParentSlots: []
+    Description:
+      TargetLanguage: English
+      Values: []
+
+ARMA:
+  drop:
+  - Name
+  - ObjectBounds
+  - BipedData
+  - Males
+  - Females
+  - EquipmentType
+  - Data
+  - DNAM
+
+  defaults:
+    Race: "Null"
+
+RACE:
+  transforms:
+    Name:
+      type: trim_languages
+      target: FULL
+      keep: [English]
+    Description:
+      type: trim_languages
+      keep: [English]
+    ANAM:
+      type: rewrite_creature_anam
+
+  drop:
+  - XNAM
+  - DATA
+  - ONAM
+  - YNAM
+  - NAM2
+  - VTCK
+  - DNAM
+  - CNAM
+  - PNAM
+  - UNAM
+  - ATTR
+  - NAM0
+  - NAM1
+  - MNAM
+  - FNAM
+  - INDX
+  - ICON
+  - MODL
+  - MODT
+  - MODB
+  - MODS
+  - MODD
+  - HNAM
+  - ENAM
+  - FGGS
+  - FGGA
+  - FGTS
+  - SNAM
+  - HEAD
+  - MICO
+
+  defaults:
+    Keywords: []
+    Properties: []
+    BipedBodyTemplate: {}
+    Skin: "Null"
+    ActorEffect: []
+    Flags: []
+
+ACHR:
+  fields:
+    Base: Base
+    EncounterZone: EncounterZone
+    Bones: Bones
+    BipedRotation: BipedRotation
+    LevelModifier: LevelModifier
+    Count: Count
+    Radius: Radius
+    Health: Health
+    ActivateParents: ActivateParents
+    EnableParent: EnableParent
+    Emittance: Emittance
+    MultiBoundReference: MultiBoundReference
+    IgnoredBySandbox: IgnoredBySandbox
+    Scale: Scale
+    DATA: DATA
+
+  drop:
+  - LinkedDecals
+  - LinkedReference
+  - LinkedReferenceColor
+  - ActivationPrompt
+  - PatrolDatas
+  - MerchantContainer
+
+RGDL:
+  fields:
+    EDID: EDID
+
+  transforms:
+    DATA:
+      type: rgdl_to_bodt_default
+
+  drop:
+  - Version
+  - GeneralData
+  - ActorBase
+  - BodyPartData
+  - FeedbackData
+  - FeedbackDynamicBones
+  - PoseMatchingData
+  - DeathPose
+  - ANAM
+
+MGEF:
+  transforms:
+    Name:
+      type: trim_languages
+      keep: [English]
+    Description:
+      type: trim_languages
+      target: MagicItemDescription
+      keep: [English]
+
+  drop:
+  - IconFileName
+  - ModelFileName
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - Data
+  - Effect
+  - SmallIconFileName
+
+  defaults:
+    Keywords: []
+
+ALCH:
+  fields:
+    Weight: Weight
+    ObjectBounds: ObjectBounds
+
+  transforms:
+    Name:
+      type: trim_languages
+      keep: [English]
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+
+  drop:
+  - ModelFileName
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - IconFileName
+  - Script
+  - Destructibles
+  - EquipmentType
+  - EffectData
+  - BaseEffect
+  - EFIT
+  - Conditions
+  - SmallIconFileName
+
+  defaults:
+    Keywords: []
+    AddictionName:
+      TargetLanguage: English
+      Values: []
+
+BOOK:
+  fields:
+    Description: Description
+    ObjectBounds: ObjectBounds
+
+  transforms:
+    Name:
+      type: trim_languages
+      keep: [English]
+    Description:
+      type: trim_languages
+      keep: [English]
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+
+  drop:
+  - ModelFileName
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - IconFileName
+  - Script
+  - Destructibles
+  - Data
+  - SmallIconFileName
+
+  defaults:
+    Keywords: []
+    PreviewTransform: "Null"
+
+MISC:
+  fields:
+    ObjectBounds: ObjectBounds
+
+  transforms:
+    Name:
+      type: trim_languages
+      keep: [English]
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+
+  drop:
+  - ModelFileName
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - IconFileName
+  - Script
+  - Destructibles
+  - DATA
+  - SoundRandomLooping
+  - SmallIconFileName
+
+  defaults:
+    Keywords: []
+    Components: []
+    PreviewTransform: "Null"
+
+KEYM:
+  fields:
+    ObjectBounds: ObjectBounds
+
+  transforms:
+    Name:
+      type: trim_languages
+      keep: [English]
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+
+  drop:
+  - ModelFileName
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - Icons
+  - Script
+  - Destructibles
+  - DATA
+  - SoundRandomLooping
+
+  defaults:
+    PreviewTransform: "Null"
+
+STAT:
+  fields:
+    ModelFileName: ModelFileName
+    ObjectBounds: ObjectBounds
+
+  drop:
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - PassthroughSound
+  - SoundLoopingRandom
+
+MSTT:
+  fields:
+    ModelFileName: ModelFileName
+    ObjectBounds: ObjectBounds
+
+  transforms:
+    Name:
+      type: trim_languages
+      keep: [English]
+
+  drop:
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - Destructibles
+  - OnLocalMap
+  - Sound
+
+FURN:
+  fields:
+    ModelFileName: ModelFileName
+    ObjectBounds: ObjectBounds
+
+  transforms:
+    Name:
+      type: trim_languages
+      target: FULL
+      keep: [English]
+
+  drop:
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - Script
+  - Destructibles
+  - MarkerFlags
+
+  defaults:
+    Keywords: []
+    WorkbenchData:
+
+ACTI:
+  fields:
+    ModelFileName: ModelFileName
+    ObjectBounds: ObjectBounds
+
+  transforms:
+    Name:
+      type: trim_languages
+      keep: [English]
+
+  drop:
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - Script
+  - Destructibles
+  - SoundLooping
+  - SoundActivation
+  - RadioTemplate
+  - RadioStation
+  - WaterType
+  - ActivationPrompt
+
+  defaults:
+    Keywords: []
+    VirtualMachineAdapter:
+
+TXST:
+  fields:
+    TexturesRgbAs: TexturesRgbAs
+    DecalData: DecalData
+    Flags: Flags
+    ObjectBounds: ObjectBounds
+
+  defaults:
+    SmoothSpec: ""
+
+IPCT:
+  fields:
+    ModelFileName: ModelFileName
+    DATA: DATA
+    DecalData: DecalData
+    TextureSet: TextureSet
+
+  transforms:
+    Sound1:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+    Sound2:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+
+  drop:
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+
+  defaults:
+    TextureSet: "Null"
+
+CSTY:
+  drop:
+  - AdvancedStandard
+  - AdvancedAdvanced
+  - Simple
+
+  defaults:
+    RangedAccuracyMult: 0.5
+
+CLAS:
+  fields:
+    Description: Description
+
+  transforms:
+    Name:
+      type: trim_languages
+      keep: [English]
+    Description:
+      type: trim_languages
+      keep: [English]
+
+  drop:
+  - IconFileName
+  - DATA
+  - Attributes
+  - SmallIconFileName
+
+  defaults:
+    Properties: []
+
+LVLN:
+  fields:
+    ObjectBounds: ObjectBounds
+    ChanceNone: ChanceNone
+    Flags: Flags
+
+  transforms:
+    LeveledEntry:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+
+  drop:
+  - COED
+  - ModelFileName
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+
+LVLC:
+  target_record_type: LVLN
+  fields:
+    ObjectBounds: ObjectBounds
+    ChanceNone: ChanceNone
+    Flags: Flags
+
+  transforms:
+    LeveledEntry:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+
+  drop:
+  - COED
+  - ModelFileName
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+
+LVLI:
+  fields:
+    Flags: Flags
+    ChanceNone: ChanceNone
+    ObjectBounds: ObjectBounds
+
+  transforms:
+    LeveledEntry:
+      type: remap_formkey
+      source_esm: FalloutNV.esm
+      target_esm: Fallout4.esm
+
+  drop:
+  - Global
+  - COED
+
+IDLE:
+  fields:
+    Animations: Animations
+    Data: DATA
+
+  drop:
+  - ModelFileName
+  - Unknown
+  - ModelInformation
+  - AlternateTextures
+  - FaceGenModelFlags
+  - Conditions
+
+  defaults:
+    BehaviorGraph: ""
+    AnimationEvent: ""
+
+GLOB:
+  fields:
+    Type: Type
+    Value: Value
+
+  edid_prefix: "nv-"
+
+LAND:
+  fields:
+    Flags: Flags
+    VertexNormals: VertexNormals
+    VertexHeightMap: VertexHeightMap
+    VertexColors: VertexColors
+    AlphaLayerData: AlphaLayerData
+
+  transforms:
+    BTXT:
+      type: clamp_layer_index
+      key: Layer
+      min: -1
+      max: 2
+    ATXT:
+      type: clamp_layer_index
+      key: Layer
+      min: -1
+      max: 2
+
+REFR:
+  fields:
+    Base: Base
+    EncounterZone: EncounterZone
+    Bones: Bones
+    BipedRotation: BipedRotation
+    Primitive: Primitive
+    CollisionLayer: CollisionLayer
+    MultiBoundPrimitiveMarker: MultiBoundPrimitiveMarker
+    BoundHalfExtents: BoundHalfExtents
+    TeleportDestination: TeleportDestination
+    MapMarkers: MapMarkerData
+    LevelModifier: LevelModifier
+    LockData: LockData
+    Count: Count
+    Radius: Radius
+    Health: Health
+    LinkedReference: LinkedReference
+    ActivateParents: ActivateParents
+    EnableParent: EnableParent
+    Emittance: Emittance
+    MultiBoundReference: MultiBoundReference
+    ActionFlag: ActionFlag
+    OpenByDefault: OpenByDefault
+    IgnoredBySandbox: IgnoredBySandbox
+    PortalData: PortalData
+    OcclusionPlaneData: OcclusionPlaneData
+    Scale: Scale
+    DATA: DATA
+
+  drop:
+  - Unused
+  - AudioDatas
+  - SpecialRenderingFlags
+  - SpecialRenderingData
+  - Target
+  - PatrolDatas
+  - RadioData
+  - Radiation
+  - Charge
+  - Ammos
+  - ReflectedRefractedBy
+  - Water
+  - LinkedDecals
+  - LinkedReferenceColor
+  - ActivationPrompt
+  - NavmeshDoorLink
+  - SpeedTreeSeed
+  - RoomDatas
+  - LinkedOcclusionPlanes
+  - DistantLODData
+  - Owner
+  - FactionRank
+  - Global
+  - XLTW
+  - XNDP
+  - XESP
+  - XOWN
+
+WRLD:
+  fields:
+    EncounterZone: EncounterZone
+    ParentWorldspaces: ParentWorldspaces
+    Climate: Climate
+    Water: Water
+    LODWater: LODWater
+    LODWaterHeight: LODWaterHeight
+    LandData: LandData
+    Flags: Flags
+    Min: Min
+    Max: Max
+    Music: Music
+    Offsets: Offsets
+
+  transforms:
+    Name:
+      type: trim_languages
+      target: FULL
+      keep: [English]
+
+  drop:
+  - LODWaterHeight
+  - IconFileName
+  - WorldMapData
+  - WorldMapOffsetData
+  - ImageSpace
+  - CanopyShadow
+  - WaterNoiseTexture
+  - ImpactData
+  - FootstepMaterials
+  - SmallIconFileName
+
+  defaults:
+    NAM2: 0x18
+    NAM3: 0x18
+    ZNAM: 0x1ED25
+    CNAM: 0x15F
+
+SCPT:
+  delegate: fnv_legacy_scripting
+
+QUST:
+  delegate: fnv_legacy_scripting
+
+DIAL:
+  delegate: fnv_legacy_scripting
+
+INFO:
+  delegate: fnv_legacy_scripting
+
+SCEN:
+  delegate: fnv_legacy_scripting

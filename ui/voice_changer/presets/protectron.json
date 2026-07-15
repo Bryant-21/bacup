@@ -1,0 +1,15 @@
+{
+  "name": "Protectron",
+  "description": "Fallout Protectron — heavy metallic resonance with tight bandpass, comb filter ring, amplitude buzz, and cavernous reverb",
+  "chain": [
+    {"type": "HighpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 250, "rolloff_db_per_oct": 24}},
+    {"type": "LowpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 3000, "rolloff_db_per_oct": 24}},
+    {"type": "CombFilter", "enabled": true, "params": {"delay_seconds": 0.012, "decay": 0.65}},
+    {"type": "PeakFilter", "enabled": true, "params": {"cutoff_frequency_hz": 600, "gain_db": 10.0, "q": 1.5}},
+    {"type": "PeakFilter", "enabled": true, "params": {"cutoff_frequency_hz": 1100, "gain_db": 4.0, "q": 1.0}},
+    {"type": "Tremolo", "enabled": true, "params": {"frequency_hz": 108.0, "wet_level": 0.3}},
+    {"type": "Reverb", "enabled": true, "params": {"room_size": 0.6, "wet_level": 0.35, "damping": 0.7}},
+    {"type": "Compressor", "enabled": true, "params": {"threshold_db": -15.0, "ratio": 5.0}},
+    {"type": "Gain", "enabled": true, "params": {"gain_db": 0.0}}
+  ]
+}

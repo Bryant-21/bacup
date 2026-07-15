@@ -1,0 +1,13 @@
+# Static-link the Microsoft C runtime on windows-msvc so every C/C++
+# compile in the workspace matches esaxx-rs's MT_StaticRelease setting.
+# Without this the linker rejects the mix with "RuntimeLibrary mismatch".
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# flate2's zlib-ng backend (libz-ng-sys) builds vendored C via cmake. zlib-ng
+# enables CMP0091, so /MT in CFLAGS is ignored and the runtime defaults to the
+# *DLL* CRT, which won't link against the static-CRT umbrella. Point cmake at a
+# toolchain shim that forces the static, non-debug runtime. Only libz-ng-sys
+# uses cmake here (directxtex is a cc build), so this is scoped to that crate.
+[env]
+CMAKE_TOOLCHAIN_FILE = { value = ".cargo/zlib_ng_static_crt.cmake", relative = true, force = true }

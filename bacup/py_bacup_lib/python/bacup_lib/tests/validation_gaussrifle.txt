@@ -1,0 +1,135 @@
+================================================================================
+GAUSS RIFLE ANIMATION CONVERSION VALIDATION REPORT
+================================================================================
+
+Total file pairs: 49
+  PASS:  38
+  FAIL:  11
+  ERROR: 0
+
+COMMON FAILURE PATTERNS:
+  BLEND_HINT: 7 occurrences
+  NULL_PTR: 5 occurrences
+
+--------------------------------------------------------------------------------
+PER-FILE RESULTS
+--------------------------------------------------------------------------------
+
+[PASS] 1stperson/wpnafterjiggleadd.hkx
+
+[PASS] 1stperson/wpnafterjigglefireautoadd.hkx
+
+[PASS] 1stperson/wpnafterjigglefireautosightedadd.hkx
+
+[PASS] 1stperson/wpnafterjigglefiresingleadd.hkx
+
+[PASS] 1stperson/wpnafterjigglefiresinglesightedadd.hkx
+
+[PASS] 1stperson/wpnafterjigglesightedadd.hkx
+
+[PASS] 1stperson/wpnboltchargeready.hkx
+
+[PASS] 1stperson/wpnboltchargesighted.hkx
+
+[PASS] 1stperson/wpnchargeholdreadyadd.hkx
+
+[PASS] 1stperson/wpnchargeholdsightedadd.hkx
+
+[PASS] 1stperson/wpnequip.hkx
+
+[PASS] 1stperson/wpnequipfast.hkx
+
+[PASS] 1stperson/wpnfireautosighted.hkx
+
+[FAIL] 1stperson/wpnfiresingleready.hkx
+       NULL_PTR: hkaSplineCompressedAnimation.extractedMotion is null, FO4 has #0004
+
+[FAIL] 1stperson/wpnfiresinglereadya.hkx
+       NULL_PTR: hkaSplineCompressedAnimation.extractedMotion is null, FO4 has #0004
+
+[FAIL] 1stperson/wpnfiresinglereadyb.hkx
+       NULL_PTR: hkaSplineCompressedAnimation.extractedMotion is null, FO4 has #0004
+
+[PASS] 1stperson/wpnfiresinglesighted.hkx
+
+[PASS] 1stperson/wpngrenadethrow.hkx
+
+[PASS] 1stperson/wpnidlegundown.hkx
+
+[PASS] 1stperson/wpnidleready.hkx
+
+[PASS] 1stperson/wpnidlereadya.hkx
+
+[PASS] 1stperson/wpnidlereadyb.hkx
+
+[PASS] 1stperson/wpnidlereadyc.hkx
+
+[PASS] 1stperson/wpnidlesighted.hkx
+
+[PASS] 1stperson/wpnidlesightedwobble.hkx
+
+[FAIL] 1stperson/wpnjumpfalladd.hkx
+       BLEND_HINT: still ADDITIVE_DEPRECATED (should be ADDITIVE)
+
+[PASS] 1stperson/wpnjumpimpactland.hkx
+
+[FAIL] 1stperson/wpnjumplandadd.hkx
+       BLEND_HINT: still ADDITIVE_DEPRECATED (should be ADDITIVE)
+
+[FAIL] 1stperson/wpnjumpstartadd.hkx
+       BLEND_HINT: still ADDITIVE_DEPRECATED (should be ADDITIVE)
+
+[PASS] 1stperson/wpnmelee.hkx
+
+[PASS] 1stperson/wpnmeleebayonet.hkx
+
+[PASS] 1stperson/wpnminethrow.hkx
+
+[FAIL] 1stperson/wpnpitchdownreadyadd.hkx
+       BLEND_HINT: still ADDITIVE_DEPRECATED (should be ADDITIVE)
+
+[PASS] 1stperson/wpnpitchdownsightedadd.hkx
+
+[FAIL] 1stperson/wpnpitchupreadyadd.hkx
+       BLEND_HINT: still ADDITIVE_DEPRECATED (should be ADDITIVE)
+
+[PASS] 1stperson/wpnpitchupsightedadd.hkx
+
+[PASS] 1stperson/wpnreload.hkx
+
+[PASS] 1stperson/wpnrunforwardready.hkx
+
+[PASS] 1stperson/wpnrungundown.hkx
+
+[PASS] 1stperson/wpnsprint.hkx
+
+[FAIL] 1stperson/wpnturnleftreadyadd.hkx
+       BLEND_HINT: still ADDITIVE_DEPRECATED (should be ADDITIVE)
+
+[PASS] 1stperson/wpnturnleftsightedadd.hkx
+
+[FAIL] 1stperson/wpnturnrightreadyadd.hkx
+       BLEND_HINT: still ADDITIVE_DEPRECATED (should be ADDITIVE)
+
+[PASS] 1stperson/wpnturnrightsightedadd.hkx
+
+[PASS] 1stperson/wpnunequip.hkx
+
+[PASS] 1stperson/wpnwalkforwardsighted.hkx
+
+[FAIL] fx/behaviors\behavior.hkx
+       NULL_PTR: BGSGamebryoSequenceGenerator.variableBindingSet is null, FO4 has #0013
+       NULL_PTR: BGSGamebryoSequenceGenerator.variableBindingSet is null, FO4 has #0013
+
+[PASS] fx/characters\character.hkx
+
+[PASS] fx/gaussrifleweaponfx.hkx
+
+--------------------------------------------------------------------------------
+UNMATCHED FILES
+--------------------------------------------------------------------------------
+
+1st person FO4-only (3):
+  wpnrunleftready.hkx
+  wpnrunrightready.hkx
+  wpnwalkforwardready.hkx

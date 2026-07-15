@@ -1,0 +1,133 @@
+================================================================================
+44 PISTOL ANIMATION CONVERSION VALIDATION REPORT
+================================================================================
+
+Total file pairs: 56
+  PASS:  56
+  FAIL:  0
+  ERROR: 0
+
+--------------------------------------------------------------------------------
+PER-FILE RESULTS
+--------------------------------------------------------------------------------
+
+[PASS] 1stperson/wpnafterjiggleadd.hkx
+
+[PASS] 1stperson/wpnafterjigglefireautoadd.hkx
+
+[PASS] 1stperson/wpnafterjigglefireautosightedadd.hkx
+
+[PASS] 1stperson/wpnafterjigglefiresingleadd.hkx
+
+[PASS] 1stperson/wpnafterjigglefiresinglesightedadd.hkx
+
+[PASS] 1stperson/wpnafterjigglesightedadd.hkx
+
+[PASS] 1stperson/wpnboltchargeready.hkx
+
+[PASS] 1stperson/wpnboltchargesighted.hkx
+
+[PASS] 1stperson/wpnequip.hkx
+
+[PASS] 1stperson/wpnequipfast.hkx
+
+[PASS] 1stperson/wpnfireautoreadyback.hkx
+
+[PASS] 1stperson/wpnfireautoreadyforward.hkx
+
+[PASS] 1stperson/wpnfireautosighted.hkx
+
+[PASS] 1stperson/wpnfiresingleready.hkx
+
+[PASS] 1stperson/wpnfiresinglereadya.hkx
+
+[PASS] 1stperson/wpnfiresinglereadyb.hkx
+
+[PASS] 1stperson/wpnfiresinglesighted.hkx
+
+[PASS] 1stperson/wpngrenadethrow.hkx
+
+[PASS] 1stperson/wpnidlegundown.hkx
+
+[PASS] 1stperson/wpnidleready.hkx
+
+[PASS] 1stperson/wpnidlereadya.hkx
+
+[PASS] 1stperson/wpnidlereadyb.hkx
+
+[PASS] 1stperson/wpnidlereadyc.hkx
+
+[PASS] 1stperson/wpnidlereadyd.hkx
+
+[PASS] 1stperson/wpnidlesighted.hkx
+
+[PASS] 1stperson/wpnidlesightedwobble.hkx
+
+[PASS] 1stperson/wpnjumpfalladd.hkx
+
+[PASS] 1stperson/wpnjumpimpactland.hkx
+
+[PASS] 1stperson/wpnjumplandadd.hkx
+
+[PASS] 1stperson/wpnjumpstartadd.hkx
+
+[PASS] 1stperson/wpnmelee.hkx
+
+[PASS] 1stperson/wpnmeleebayonet.hkx
+
+[PASS] 1stperson/wpnminethrow.hkx
+
+[PASS] 1stperson/wpnpitchdownreadyadd.hkx
+
+[PASS] 1stperson/wpnpitchdownsightedadd.hkx
+
+[PASS] 1stperson/wpnpitchupreadyadd.hkx
+
+[PASS] 1stperson/wpnpitchupsightedadd.hkx
+
+[PASS] 1stperson/wpnreload.hkx
+
+[PASS] 1stperson/wpnrunforwardready.hkx
+
+[PASS] 1stperson/wpnrungundown.hkx
+
+[PASS] 1stperson/wpnsprint.hkx
+
+[PASS] 1stperson/wpnturnleftjiggleadd.hkx
+
+[PASS] 1stperson/wpnturnleftreadyadd.hkx
+
+[PASS] 1stperson/wpnturnleftsightedadd.hkx
+
+[PASS] 1stperson/wpnturnrightjiggleadd.hkx
+
+[PASS] 1stperson/wpnturnrightreadyadd.hkx
+
+[PASS] 1stperson/wpnturnrightsightedadd.hkx
+
+[PASS] 1stperson/wpnunequip.hkx
+
+[PASS] 1stperson/wpnwalkforwardsighted.hkx
+
+[PASS] 3rdperson/wpnassemblypose_left.hkx
+
+[PASS] 3rdperson/wpnfireautoreadyslave.hkx
+
+[PASS] 3rdperson/player/wpnassemblypose.hkx
+
+[PASS] 3rdperson/player/wpnboltchargeready.hkx
+
+[PASS] 3rdperson/player/wpnfireautoreadyslave.hkx
+
+[PASS] 3rdperson/player/wpnfiresinglereadyslave.hkx
+
+[PASS] 3rdperson/player/wpnreload.hkx
+
+--------------------------------------------------------------------------------
+UNMATCHED FILES
+--------------------------------------------------------------------------------
+
+1st person FO4-only (3):
+  wpnrunleftready.hkx
+  wpnrunrightready.hkx
+  wpnwalkforwardready.hkx

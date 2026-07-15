@@ -1,0 +1,86 @@
+# FNV GECK function -> Papyrus mapping.
+#
+# Entry shapes:
+#   papyrus: inline call or expression template
+#   expansion: multi-line statement block
+#   rewrite: drop_with_warning
+
+GetIsID:
+  papyrus: "({arg0} == {self})"
+  arg_kinds: [formkey]
+  return_kind: bool
+
+GetActorValue:
+  papyrus: "{self}.GetValue({arg0})"
+  arg_kinds: [actor_value]
+  return_kind: float
+
+Activate:
+  papyrus: "{arg0}.Activate({self}, false)"
+  arg_kinds: [actor]
+  return_kind: void
+
+GetPlayer:
+  papyrus: "Game.GetPlayer()"
+  arg_kinds: []
+  return_kind: actor
+
+Player:
+  papyrus: "Game.GetPlayer()"
+  arg_kinds: []
+  return_kind: actor
+
+PlayerRef:
+  papyrus: "Game.GetPlayer()"
+  arg_kinds: []
+  return_kind: actor
+
+GetStage:
+  papyrus: "{arg0}.GetStage()"
+  arg_kinds: [quest]
+  return_kind: int
+
+SetStage:
+  papyrus: "{arg0}.SetStage({arg1})"
+  arg_kinds: [quest, int]
+  return_kind: void
+
+StartQuest:
+  papyrus: "{arg0}.Start()"
+  arg_kinds: [quest]
+  return_kind: void
+
+StopQuest:
+  papyrus: "{arg0}.Stop()"
+  arg_kinds: [quest]
+  return_kind: void
+
+CompleteQuest:
+  papyrus: "{arg0}.CompleteAllObjectives()"
+  arg_kinds: [quest]
+  return_kind: void
+
+Disable:
+  papyrus: "{self}.Disable()"
+  arg_kinds: []
+  return_kind: void
+
+Enable:
+  papyrus: "{self}.Enable()"
+  arg_kinds: []
+  return_kind: void
+
+MoveTo:
+  papyrus: "{self}.MoveTo({arg0})"
+  arg_kinds: [object_reference]
+  return_kind: void
+
+RewardKarma:
+  rewrite: drop_with_warning
+  reason: "FO4 has no Karma system"
+  strict_failure: true
+
+GetIsCurrentWeather:
+  rewrite: drop_with_warning
+  reason: "FO4 weather checks must be rewritten against Weather records"
+  strict_failure: true

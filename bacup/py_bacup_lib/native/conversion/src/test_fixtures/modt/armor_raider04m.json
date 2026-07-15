@@ -1,0 +1,52 @@
+{
+  "name": "Armor_Raider04M",
+  "record": {
+    "type": "ARMA",
+    "form_id": "08158C",
+    "editor_id": "AA_Harness_Raider (MOD2 world model)",
+    "source": "Fallout4.esm"
+  },
+  "modl": "Armor\\Raider04\\Raider04M.nif",
+  "material_swap": {},
+  "mode": "A (no swap)",
+  "modt_hex": "040000000600000000000000020000000200000092EAB4F5646473003CFDCB4E4B86B296646473003CFDCB4EEBF15FB864647300D22BE9E4329D59DB64647300D22BE9E42C748C3B64647300D22BE9E4556F6776646473003CFDCB4E0887ABA26267736D07F13594EA2782256267736D1FF263B9",
+  "srgb_count": 2,
+  "addon_nodes": [],
+  "textures": [
+    {
+      "path": "textures\\actors\\character\\basehumanmale\\basemalebody_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Actors\\Character\\BaseHumanMale\\BaseMaleBody_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\actors\\character\\basehumanmale\\basemalebody_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    },
+    {
+      "path": "textures\\armor\\raider04\\raider04_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\armor\\raider04\\raider04_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\armor\\raider04\\raider04_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    }
+  ],
+  "materials": [
+    "Materials\\actors\\Character\\BaseHumanMale\\basehumanskin.bgsm",
+    "Materials\\Armor\\Raider04\\Raider04.BGSM"
+  ],
+  "note": "textures/materials are an unordered SET; vanilla MODT stores them in CK BSTScatterTable iteration order (see README)."
+}

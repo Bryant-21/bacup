@@ -1,0 +1,58 @@
+# FO76 hkaAnnotationTrack -> FO4 hkaAnnotationTrack event name mapping.
+#
+# FO76 and FO4 both use Havok annotation tracks — but FO76 adds new events
+# (path-tweening system, char-FX system, body-slam combat events, etc.) that
+# FO4's behavior graph runtime does not understand.  When these annotations
+# leak into a converted behavior, CK (and the runtime) can crash during
+# "sync data generation" for the affected behavior graph.
+#
+# Policy: only animation-track annotations are filtered.  Behavior-graph
+# eventNames arrays are left ALONE because their indices are referenced by
+# hkbStateMachineTransitionInfo.eventId / hkbEventDrivenModifier.activateEventId
+# and removing entries would silently shift every downstream index.  CK's
+# sync-data-gen crash is driven by annotation-track text matching, so
+# stripping annotations alone is sufficient.
+#
+# Conservative starting set — we only drop events that are confirmed
+# problematic AND appear in ogua megasloth anims but not in the
+# known-good snallygaster conversion.  Common events (SoundPlay.*,
+# CameraShake.*, Foot*, WeaponSweepAttack*, startAllowRotation,
+# startAnimationDriven, preHitFrame, HitFrame, weaponSwing, attackStop)
+# are NOT dropped — snallygaster has them and works fine in CK.
+
+# Exact string drops (FO76-only annotations with no FO4 behavior-graph handler).
+drop:
+  # FO76 path-tweening system (hkPathTweenerModifier) — not in FO4 runtime
+  - "PathTweenerStart"
+  - "PathTweenerEnd"
+  - "PathTweenerRotateStart"
+  - "PathTweenerRotateEnd"
+  - "hkPathTweenerStart"
+  - "hkPathTweenerEnd"
+  - "hkPathTweenerRotateStart"
+  - "hkPathTweenerRotateEnd"
+  # FO76 character-FX toggles
+  - "CharFXOn"
+  - "CharFXOff"
+  - "CharFXOnWild"
+  - "CharFXOffWild"
+  # FO76 body-slam combat events (ogua megasloth)
+  - "bothSlam"
+  - "leftSlam"
+  - "RightSlam"
+  - "rightSlam"
+  # Cross-creature behemoth salvo event that leaked into megasloth anims
+  - "FireBehemothSalvo"
+
+# Direct 1:1 mappings (most FO76 event names match FO4 verbatim).
+events: {}
+
+# Regex pattern-based mappings.
+#  - {1}..{N} in target is replaced by capture-group N from the match
+#  - target: null means the event is dropped (no FO4 equivalent)
+patterns:
+  # FO76 parameterized weapon-fire events (e.g. "weaponFire.1", "WeaponFire.2")
+  # collapse to the unparameterized FO4 form so the runtime can still handle
+  # them.  The parameter is cosmetic — FO4's fire system is index-driven.
+  - match: "^[wW]eaponFire\\.\\d+$"
+    target: "weaponFire"

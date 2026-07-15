@@ -1,0 +1,42 @@
+version: 1
+
+families:
+  PipeGun:
+    fo4_subgraph: "AnimSubgraph_PipeGun"
+    weapon_bones: ["Bip01 Magazine", "Bip01 Slide"]
+    bone_remap:
+      "Bip01 Magazine": "WeaponMagazine"
+      "Bip01 Slide": "WeaponBolt"
+
+  LaserRifle:
+    fo4_subgraph: "AnimSubgraph_LaserRifle"
+    weapon_bones: ["Bip01 LaserDial", "Bip01 LaserCell"]
+    bone_remap:
+      "Bip01 LaserDial": "WeaponOptics"
+      "Bip01 LaserCell": "WeaponMagazine"
+
+  HuntingRifle:
+    fo4_subgraph: "AnimSubgraph_HuntingRifle"
+    weapon_bones: ["Bip01 Bolt", "Bip01 BoltHandle"]
+    bone_remap:
+      "Bip01 Bolt": "WeaponBolt"
+      "Bip01 BoltHandle": "WeaponExtra1"
+
+  CombatShotgun:
+    fo4_subgraph: "AnimSubgraph_CombatShotgun"
+    weapon_bones: ["Bip01 Pump"]
+    bone_remap:
+      "Bip01 Pump": "WeaponBolt"
+
+weapons:
+  WeapNV10mmPistol: PipeGun
+  WeapNVPlasmaPistol: LaserRifle
+  WeapNVHuntingRifle: HuntingRifle
+  WeapNVCowboyRepeater: HuntingRifle
+  WeapNVCaravanShotgun: CombatShotgun
+  WeapNVRangerSequoia: PipeGun
+
+unclassified_fallbacks:
+  Pistol: PipeGun
+  Rifle: HuntingRifle
+  Heavy: CombatShotgun

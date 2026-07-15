@@ -1,0 +1,484 @@
+================================================================================
+FLOATER HKX VALIDATION: Pipeline Output vs Fan Mod
+================================================================================
+Total matched files: 53
+PASS: 1  FAIL: 52  ERROR: 0
+
+--------------------------------------------------------------------------------
+PER-FILE RESULTS
+--------------------------------------------------------------------------------
+
+[FAIL] animations/ambush/ambush_burrow/ambush.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/death_front.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/death_moving_forward.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/dodge_back.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/dodge_left.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/dodge_right.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/float_backward.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/float_forward.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/float_left.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/float_right.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/float_turninplace_left.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/float_turninplace_left180.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/float_turninplace_left45.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/float_turninplace_left90.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/float_turninplace_right.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/hit_flinch_backward.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/hit_flinch_forward.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/hit_flinch_head_backward.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/hit_flinch_head_forward.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/hit_flinch_head_left.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/hit_flinch_head_right.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/hit_flinch_left.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/hit_flinch_right.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/melee_bite_180.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/melee_bite_forward.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/melee_bite_front.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/melee_bite_left90.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/melee_bite_right90.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/melee_tentacle_180.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/melee_tentacle_forward.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/melee_tentacle_front.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/melee_tentacle_left90.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/melee_tentacle_right90.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/pose_additive.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/pose_ztransoffset_additive.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/posea_flavorpustules_additive.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/posea_idle1.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/range_beam_intro.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/range_beam_loop.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/range_beam_outro.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/range_fireball.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+
+[FAIL] animations/range_flashbang.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/recoil_melee_a_front.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/stagger_back_medium.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/stagger_back_small.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/stagger_front_medium.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/stagger_left_medium.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] animations/stagger_right_medium.hkx
+  object_count: converted=6 fan=5
+  extra_classes_in_converted: {'hkMemoryResourceContainer'}
+  converted_transform_tracks: 58
+  converted_float_tracks: 0
+  fan_transform_tracks: 58
+  fan_float_tracks: 0
+  variant_name: converted=Animation Container fan=Merged Animation Container
+
+[FAIL] behaviors/floatercore.hkx
+  object_count: converted=468 fan=374
+  extra_classes_in_converted: {'BSBehaviorGraphSwapGenerator', 'hkbModifier'}
+  missing_classes_from_converted: {'DynamicAnimationTaggingGenerator', 'hkbLayer'}
+  null_pointers: converted=523 fan=375
+
+[FAIL] behaviors/floaterrootbehavior.hkx
+  extra_classes_in_converted: {'BSGetTimeStepModifier'}
+  missing_classes_from_converted: {'BSModifyOnceModifier', 'BSLookAtModifier', 'hkbTimerModifier'}
+  null_pointers: converted=66 fan=60
+
+[FAIL] characterassets/skeleton.hkx
+  object_count: converted=99 fan=52
+  extra_classes_in_converted: {'hknpShapeMassProperties', 'hkRefCountedProperties'}
+  missing_classes_from_converted: {'hknpSphereShape'}
+  variant_name: converted=Merged Animation Container fan=Animation Container
+  null_pointers: converted=46 fan=23
+
+[FAIL] characters/floatercharacter.hkx
+  extra_classes_in_converted: {'hkbBindable'}
+  missing_classes_from_converted: {'hkbBoneIndexArray'}
+  null_pointers: converted=1 fan=4
+
+[PASS] floaterproject.hkx
+
+================================================================================
+FAN MOD SUMMARY TABLE
+================================================================================
+Field                               Fan Mod Values
+--------------------------------------------------------------------------------
+animation_class                     spline
+annotation_tracks                   0
+blend_hint_values                   ADDITIVE_DEPRECATED, NORMAL
+bone_indices_style                  explicit(58)
+class_version                       11
+contents_version                    hk_2014.1.0-r1
+variant_names                       , 0f_Continue, 15f_Blend, 1f_Flinch, 30f_Continue, 3f_Flinch, 6f_Blend, 9f_BlendToMotion, Action_SM, AdditiveAttackIdle, Animation Container, BSBehaviorGraphSwapGenerator, BSIsActiveModifier_DefaultState, BSIsActiveModifier_Inverted, BSLookAtModifier_headTracking, BSResetAttackStateOnce, BSResetAttacksState, B_Arm01, B_Arm02, B_Arm03, B_Arm04, Backward, BoneWeights_Partial, BoneWeights_Zero, BoneWeights_Zero00, COM, C_Mouth, CriticalHit, CriticalHit_MG, CriticalHit_MSG, Critical_Hit_Back, Critical_Hit_Front, Critical_Hit_Left, Critical_Hit_Right, DeathState, Death_Front01, Death_MG01, Death_Moving_Forward, Death_Moving_Forward01, Death_Moving_Forward_MG01, DefaultLayerGenerator, DefaultState, DefaultState_MG, DefaultState_ML, Directional_SM, DodgeBack, DodgeBack MG, DodgeLeft, DodgeLeft MG, DodgeRight, DodgeRight MG, Dodge_ML, DriveRagdollRB00, DynamicAnim, DynamicAnim StateMachine, DynamicAnimA, DynamicAnimB, DynamicAnimLooping, DynamicAnimLooping StateMachine, DynamicAnimLoopingGen_A, DynamicAnimLoopingGen_B, DynamicAnimLooping_A, DynamicAnimLooping_A_MG, DynamicAnimLooping_B, DynamicAnimLooping_B_MG, DynamicAnimLooping_MG, DynamicAnimMirrored, DynamicAnimMirrored StateMachine, DynamicAnimMirrored_A, DynamicAnimMirrored_A_MG, DynamicAnimMirrored_B, DynamicAnimMirrored_B_MG, DynamicAnimMirrored_MG, DynamicAnimSelfTrans_TransitionEffect, DynamicAnim_A, DynamicAnim_A_AVM, DynamicAnim_A_MG, DynamicAnim_B, DynamicAnim_B_AVM, DynamicAnim_B_MG, DynamicAnim_MG, DynamicAnim_ML, DynamicAnimationGen_A, DynamicAnimationGen_B, DynamicAnimationMirroredGen_A, DynamicAnimationMirroredGen_B, EnableMatchingRagdoll_EDM, Equip, EventsFromRangeModifier, Eye, EyeLid_Btm_C, EyeLid_Btm_L, EyeLid_Btm_R, EyeLid_Top_C, EyeLid_Top_L, EyeLid_Top_R, Fin, FlinchBody, FlinchBody_MSG, FlinchHead, FlinchHead_MSG, FlinchIdle, Flinch_SM, FloatBackward, FloatForward, FloatLeft, FloatRight, FloaterBaseState, FloaterCharacter, FloaterCore, FloaterCore.hkb, FloaterRootBehavior.hkb, Forward, FullRagdoll_EDM, Fully Ragdoll, Fully Ragdoll Mod, FullyRagdoll_MG, Get Up Modifier, Get Up Pose Matcher, GetUp Mod Gen, GetUp Mod List, GetUpFromRagdoll, GetUpTimerModifier, GetUp_FaceDown, GetUp_Faceup, HEAD, Head_Bulb, Head_Bulb_Scale01, Head_Bulb_Scale02, Hit_Flinch_Backward, Hit_Flinch_Forward, Hit_Flinch_Head_Backward, Hit_Flinch_Head_Forward, Hit_Flinch_Head_Left, Hit_Flinch_Head_Right, Hit_Flinch_Left, Hit_Flinch_Right, INCLUDE_IN_QUERY_AdditiveLayerBlend, INCLUDE_IN_QUERY_Additive_Attacks_SM, Idle, InstantBlend, InstantTransitionEffect, IsActive_AnimDriven, KeyframeFullRagdoll, L_Eye, L_Eyelid_BtmLeft, L_Eyelid_BtmRight, L_Eyelid_TopLeft, L_Eyelid_TopRight, L_Finger, L_ForeArm, L_Hand, L_Mouth1, L_Mouth2, L_UpperArm, Left, LocomotionBlend, LocomotionState, MatchAndSendGetup_ML, MeleeAttack_ML, MeleeBitFront_ML, MeleeBiteFront, MeleeBiteFront_MG, MeleeBiteLeft, MeleeBiteLeft_MG, MeleeBiteRight, MeleeBiteRight_MG, MeleeBite_180, MeleeBite_180_MG, MeleeBite_Forward, MeleeBite_Forward_MG, MeleeFront, MeleeFront_MG, MeleeLeft, MeleeLeft_MG, MeleeRight, MeleeRight_MG, Melee_180, Melee_180 MG, Melee_Bite_180, Melee_Bite_Forward, Melee_Bite_Front, Melee_Bite_Left90, Melee_Bite_Right90, Melee_Forward, Melee_Forward MG, Melee_Tentacle_180, Melee_Tentacle_Forward, Melee_Tentacle_Front, Melee_Tentacle_Left90, Melee_Tentacle_Right90, Merged Animation Container, ModifierGenerator, ModifierGenerator00, ModifierGenerator01, ModifierGenerator02, ModifierGenerator03, ModifierGenerator04, ModifierList, ModifierList01, ModifierList03, Pelvis, Pelvis_C_Scale01, Pelvis_C_Scale02, Pelvis_C_Scale03, Physics Ragdoll, Physics Scene Data, PoseA_FlavorPustules Additive, PoseMatching MSG, Pose_additive, Pose_zTransOffset Additive, Powered Ragdoll No Matching, PoweredRagdollMatching, R_Eye, R_EyeLid_Btm, R_EyeLid_Top, R_Finger, R_ForeArm, R_Hand, R_Mouth1, R_Mouth2, R_UpperArm, RagdollAndGetUp, RagdollAndGetupSM, Ragdoll_B_Arm001, Ragdoll_B_Arm002, Ragdoll_B_Arm003, Ragdoll_COM001, Ragdoll_HEAD001, Ragdoll_Head_Bulb001, Ragdoll_L_ForeArm001, Ragdoll_L_Hand001, Ragdoll_L_UpperArm001, Ragdoll_Pelvis001, Ragdoll_R_ForeArm001, Ragdoll_R_Hand001, Ragdoll_R_UpperArm001, Ragdoll_Spine001, Ragdoll_Tail001, Ragdoll_Tail002, Ragdoll_Tail003, Ragdoll_Tail004, Ragdoll_Tongue001, Ragdoll_Tongue002, Ragdoll_Tongue003, Ragdoll_Tongue004, Range_Beam_Intro, Range_Beam_Loop, Range_Beam_Outro, Range_Flashbang, RangedAttack, Reanimate Pose Matcher, ReanimatePoseMatcherMG, Recoil MG, Recoil Melee A Front, RecoilState, ReferencePoseGenerator, Right, Root, SetiCombatStateToZero_EEM, SkeletonMapper, Spine, Spine_C_Scale01, Spine_L_Scale01, Spine_L_Scale02, Spine_R_Scale01, Stagger Left, Stagger Right, StaggerForward, StaggerForwardSmall, StaggerForwardSmall_MG, StaggerForward_MG, StaggerLarge, StaggerLarge_MG, StaggerLeft, StaggerLeft_MG, StaggerMedium, StaggerMedium_MG, StaggerRight, StaggerRight_MG, StaggerSmall, StaggerSmall_MG, Stagger_ML, Stagger_ML01, StandingLocomotion_SM, StandingState, StandingStateMachine, Subgraphs, SwimmingPoseMatcher, Tail01, Tail02, Tail03, Tail04, Tail05, Tongue01, Tongue02, Tongue03, Tongue04, Tongue05, TurnLeft, TurnRight, Unequip, actionIdleStopTransitionEffect, attackStartTranstionEffect, bAnimationDriven IsActiveMod, bAnimationDriven_IsActiveMod, bAnimationDriven_IsActiveMod01, dynanmicAnimStartTransitionEffect, evadeTransition, hkbBehaviorGraph, hkbCharacterData, hkbProjectData, isFlinchDisabled, moveStartTransitionEffect, recoilStartTranstion, returnToDefaultTransitionEffect, staggerStartTransition
+
+================================================================================
+DISCREPANCY FREQUENCY
+================================================================================
+  extra_classes_in_converted: 52 files
+  object_count: 50 files
+  converted_transform_tracks: 48 files
+  converted_float_tracks: 48 files
+  fan_transform_tracks: 48 files
+  fan_float_tracks: 48 files
+  variant_name: 30 files
+  missing_classes_from_converted: 4 files
+  null_pointers: 4 files
+
+FO76-only files (6):
+  behaviors/ambushbehavior.hkx
+  behaviors/dialoguebehavior.hkx
+  behaviors/furniturebed.hkx
+  behaviors/furniturebehavior.hkx
+  behaviors/furniturefishingbehavior.hkx
+  behaviors/furniturenomirrorbehavior.hkx
+
+Fan mod-only files (1):
+  characterassets/heavy/skeleton.hkx

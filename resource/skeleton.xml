@@ -1,0 +1,516 @@
+<?xml version="1.0" encoding="ASCII" standalone="no"?>
+<hkpackfile classversion="11" contentsversion="hk_2014.1.0-r1">
+    <hksection name="__data__">
+        <hkobject class="hkRootLevelContainer" name="#90" signature="0x2772c11e">
+            <hkparam name="namedVariants" numelements="1">
+                <hkobject>
+                    <hkparam name="name">Merged Animation Container</hkparam>
+                    <hkparam name="className">hkaAnimationContainer</hkparam>
+                    <hkparam name="variant">#91</hkparam>
+                </hkobject>
+            </hkparam>
+        </hkobject>
+        <hkobject class="hkaAnimationContainer" name="#91" signature="0x26859f4c">
+            <!-- memSizeAndRefCount SERIALIZE_IGNORED -->
+            <hkparam name="skeletons" numelements="1">
+#92
+</hkparam>
+            <hkparam name="animations" numelements="0">
+</hkparam>
+            <hkparam name="bindings" numelements="0">
+</hkparam>
+            <hkparam name="attachments" numelements="0">
+</hkparam>
+            <hkparam name="skins" numelements="0">
+</hkparam>
+        </hkobject>
+        <hkobject class="hkaSkeleton" name="#92" signature="0xfec1cedb">
+            <!-- memSizeAndRefCount SERIALIZE_IGNORED -->
+            <hkparam name="name">Root</hkparam>
+            <hkparam name="parentIndices" numelements="94">
+65535 0 1 2 3 4 2 6 7 1 9 10 11 12 11 14 15 16 17 18 11 20 21 22
+23 18 24 19 26 28 28 28 28 28 33 33 33 33 33 28 28 28 15 42 21
+44 5 8 19 48 49 19 51 52 19 54 55 19 57 58 19 60 61 26 63 64 26
+66 67 26 69 70 26 72 73 26 75 76 0 0 0 0 28 28 28 28 19 19 19 26
+26 26 11 11</hkparam>
+            <hkparam name="bones" numelements="94">
+                <hkobject>
+                    <hkparam name="name">Root</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">COM</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">Pelvis</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LLeg_Thigh</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LLeg_Calf</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LLeg_Foot</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RLeg_Thigh</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RLeg_Calf</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RLeg_Foot</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">Spine1</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">Spine2</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">Chest</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">Neck</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">Head</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Collarbone</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_UpperArm</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_ForeArm1</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_ForeArm2</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_ForeArm3</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Hand</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Collarbone</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_UpperArm</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_ForeArm1</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_ForeArm2</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_ForeArm3</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">PipboyBone</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Hand</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponLeft</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">Weapon</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponBolt</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponExtra1</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponExtra2</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponExtra3</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponMagazine</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponMagazineChild1</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponMagazineChild2</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponMagazineChild3</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponMagazineChild4</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponMagazineChild5</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponOptics1</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponOptics2</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponTrigger</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_UpperTwist1</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_UpperTwist2</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_UpperTwist1</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_UpperTwist2</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LLeg_Toe1</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RLeg_Toe1</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger11</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger12</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger13</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger21</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger22</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger23</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger31</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger32</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger33</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger41</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger42</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger43</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger51</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger52</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">LArm_Finger53</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger11</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger12</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger13</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger21</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger22</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger23</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger31</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger32</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger33</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger41</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger42</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger43</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger51</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger52</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">RArm_Finger53</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">Camera</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">Camera Control</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">AnimObjectA</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">AnimObjectB</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponIKTargetL</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponIKTargetR</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponIKTargetLMirror</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">WeaponIKTargetRMirror</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">AnimObjectL1</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">AnimObjectL2</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">AnimObjectL3</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">AnimObjectR1</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">AnimObjectR2</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">AnimObjectR3</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">L_RibHelper</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+                <hkobject>
+                    <hkparam name="name">R_RibHelper</hkparam>
+                    <hkparam name="lockTranslation">false</hkparam>
+                </hkobject>
+            </hkparam>
+            <hkparam name="referencePose" numelements="94">
+
+(0.0 0.0 0.0 1.0)(-7.105427357601002E-15 -1.1536832882416501E-30 -4.235164736271502E-22 0.9999999403953552)(0.9999999403953552 0.9999999403953552 0.9999999403953552 1.0)
+(1.0933294106507674E-5 4.103904575458728E-5 68.9112777709961 0.0)(2.7127150303840608E-8 -0.7071065902709961 3.4692615713538544E-7 0.70710688829422)(0.9999998807907104 1.0 0.9999998807907104 0.0)
+(3.814697265625E-5 9.094947017729282E-12 -2.7284841053187847E-12 1.4458508303505369E-5)(5.329071365233699E-15 0.0 0.0 0.9999999403953552)(0.9999999403953552 0.9999999403953552 0.9999999403953552 0.0)
+(0.0 4.3082181946374476E-4 6.6150665283203125 4.420349723659456E-4)(-0.009808002039790154 0.9870703816413879 0.14578019082546234 -0.06590862572193146)(0.9999998211860657 0.9999997019767761 1.0000001192092896 0.0)
+(31.595169067382812 2.3365020751953125E-5 -1.52587890625E-5 -14.631465911865234)(1.3090674656268675E-5 -0.013113205321133137 -0.06147332116961479 0.9980224967002869)(1.0000001192092896 1.0 1.0 0.0)
+(31.942909240722656 4.291534423828125E-6 -5.7220458984375E-6 -1.4503889083862305)(-0.011603405699133873 -0.052461858838796616 0.520310640335083 0.8522850871086121)(0.9999997615814209 1.0000001192092896 0.9999995827674866 0.0)
+(0.0 4.3082176125608385E-4 -6.6150641441345215 4.485259996727109E-4)(-0.006031699478626251 0.98750901222229 -0.14615342020988464 0.058556102216243744)(0.9999999403953552 1.0 0.9999998211860657 0.0)
+(31.59511947631836 2.288818359375E-5 4.1961669921875E-5 15.369525909423828)(-6.99527736287564E-4 8.67247763380874E-6 -0.06679784506559372 0.9977662563323975)(0.9999999403953552 1.0 1.000000238418579 0.0)
+(31.94256019592285 3.0994415283203125E-6 0.0 14.343111991882324)(0.014536868780851364 0.056797102093696594 0.522560715675354 0.8505839109420776)(1.0000001192092896 0.9999998211860657 0.9999998211860657 0.0)
+(3.792022705078125 -0.002947945846244693 -8.734900802664924E-6 -0.002933633979409933)(-8.46160162382148E-7 -2.9802325229866256E-7 0.061384767293930054 0.9981141090393066)(0.9999999403953552 0.9999999403953552 1.0 0.0)
+(8.704658508300781 -9.5367431640625E-7 -3.3279939088970423E-6 -8.381303787231445)(8.270146167888015E-7 2.980232949312267E-8 -0.08765708655118942 0.9961506724357605)(0.9999997615814209 0.9999997615814209 0.9999998211860657 0.0)
+(9.956275939941406 2.86102294921875E-6 -4.25335019826889E-6 6.1475677490234375)(-1.4342373333420255E-7 2.0861632776814076E-7 0.009186445735394955 0.999957799911499)(1.0 0.9999999403953552 0.9999998807907104 0.0)
+(22.083961486816406 -3.7670722007751465 -1.8926337361335754E-5 0.06569075584411621)(-2.206303861385095E-6 -1.3142828720447142E-5 0.2089451551437378 0.9779273271560669)(1.0000005960464478 0.9999992847442627 1.0 0.0)
+(8.224395751953125 -2.288818359375E-5 3.978610038757324E-6 -48.675079345703125)(2.7194625999982236E-6 1.3083222256682348E-5 -0.1601310521364212 0.9870957136154175)(1.0000005960464478 0.9999994039535522 1.0 0.0)
+(19.153244018554688 -0.5103991031646729 1.6950663328170776 3.400768280029297)(-0.08139149844646454 0.8295407891273499 0.11962265521287918 -0.5393773913383484)(0.9999999403953552 0.9999998807907104 0.9999996423721313 0.0)
+(12.53657341003418 -1.1920928955078125E-5 -7.62939453125E-6 -2.451056957244873)(-7.693211664445698E-4 -0.15877334773540497 0.1292571872472763 0.9788171648979187)(0.9999993443489075 1.0000005960464478 1.000000238418579 0.0)
+(17.968280792236328 -5.435943603515625E-5 -1.52587890625E-5 -7.161469459533691)(-0.0070154438726603985 -0.030679505318403244 0.2673971652984619 0.9630722999572754)(0.9999967813491821 1.0000025033950806 0.9999998807907104 0.0)
+(6.151559829711914 4.1961669921875E-5 3.0517578125E-5 -7.429164409637451)(0.0026800045743584633 -2.980233304583635E-8 2.980233304583635E-8 0.9999964237213135)(0.9999979734420776 1.000002145767212 0.9999998807907104 0.0)
+(6.151529312133789 7.62939453125E-5 8.392333984375E-5 -3.975956916809082)(0.0026799896731972694 0.0 7.450583261459087E-9 0.9999963641166687)(0.9999974966049194 1.000002145767212 0.9999996423721313 0.0)
+(6.151523590087891 1.10626220703125E-4 1.068115234375E-4 -2.5465340614318848)(-0.7031702399253845 -0.06646104902029037 -0.0368504524230957 0.7069487571716309)(1.0000046491622925 0.9999864101409912 1.0000088214874268 0.0)
+(19.153228759765625 -0.5103960037231445 -1.6951320171356201 3.342609405517578)(-0.08141203969717026 0.829560399055481 -0.11964388936758041 0.5393393635749817)(1.000000238418579 0.9999998807907104 1.0 0.0)
+(12.534252166748047 -1.9550323486328125E-5 2.288818359375E-5 57.837745666503906)(8.077250677160919E-4 0.1585739552974701 0.12943871319293976 0.9788254499435425)(0.9999991655349731 1.0000003576278687 1.0 0.0)
+(17.97048568725586 -2.5081634521484375E-4 2.288818359375E-4 -39.447818756103516)(0.007118771318346262 0.031043659895658493 0.26716798543930054 0.9631235599517822)(0.9999834895133972 1.000014305114746 1.0000016689300537 0.0)
+(6.1524658203125 -9.918212890625E-5 2.3651123046875E-4 -112.83659362792969)(-0.002679467899724841 -2.980232949312267E-8 1.4901164746561335E-8 0.9999963641166687)(0.9999861717224121 1.0000114440917969 1.000001072883606 0.0)
+(6.1523590087890625 -1.18255615234375E-4 3.5858154296875E-4 -81.07357788085938)(-0.0026793787255883217 0.0 0.0 0.9999964237213135)(0.9999861717224121 1.000011682510376 1.0000011920928955 0.0)
+(4.516990661621094 -0.16074371337890625 0.07163238525390625 -2.1824593544006348)(-0.00826700683683157 -0.03266381844878197 0.9984994530677795 -0.04316893592476845)(0.9999980330467224 1.0000083446502686 0.9999916553497314 0.0)
+(6.152275085449219 -1.64031982421875E-4 4.57763671875E-4 -59.39448547363281)(0.7031693458557129 0.06646090000867844 -0.03685026243329048 0.7069495320320129)(0.9999643564224243 0.999987781047821 1.0000474452972412 0.0)
+(6.743677139282227 -3.48480224609375 -0.17607879638671875 -116.92652893066406)(-0.048757970333099365 -0.7027319669723511 -0.7091975212097168 -0.028798742219805717)(1.0000032186508179 1.0000184774398804 0.9999780654907227 0.0)
+(6.742515563964844 -3.48406982421875 0.17653274536132812 -110.21497344970703)(0.04875798895955086 0.7027318477630615 -0.7091975212097168 -0.028798680752515793)(0.9999668598175049 1.000036597251892 0.999995768070221 0.0)
+(-8.045808792114258 4.437889099121094 -3.8817138671875 -7.40035343170166)(-5.513432483894576E-7 -1.0 1.1175876579727628E-7 -3.5762803918260033E-7)(0.9999778270721436 1.0000120401382446 1.000009536743164 0.0)
+(-9.1552734375E-5 -1.1444091796875E-5 -3.814697265625E-5 -12.226264953613281)(-5.811455707771529E-7 -1.0 1.3411050758804777E-7 -2.384186927884002E-7)(0.9999778270721436 1.0000120401382446 1.000009536743164 0.0)
+(-9.72747802734375E-5 -3.814697265625E-6 -6.103515625E-5 -12.226263046264648)(-5.811455707771529E-7 -1.0 1.3411050758804777E-7 -2.384186927884002E-7)(0.9999778270721436 1.0000120401382446 1.000009536743164 0.0)
+(-9.1552734375E-5 -1.1444091796875E-5 -3.814697265625E-5 -12.226265907287598)(-5.811455707771529E-7 -1.0 1.3411050758804777E-7 -2.384186927884002E-7)(0.9999778270721436 1.0000120401382446 1.000009536743164 0.0)
+(-5.727451324462891 4.455852508544922 2.9977035522460938 -7.068000793457031)(1.1622911415543058E-6 -4.768373855768004E-7 -4.4703506318910513E-7 0.9999999403953552)(0.9999775886535645 1.000011920928955 1.000009298324585 0.0)
+(-1.71661376953125E-5 1.9073486328125E-5 0.0 -2.4627857208251953)(7.450585037815927E-9 -2.9802340151263707E-8 0.0 1.0)(0.9999777674674988 1.000011920928955 1.000009298324585 0.0)
+(-1.71661376953125E-5 1.9073486328125E-5 0.0 -2.4627857208251953)(7.450585037815927E-9 -2.9802340151263707E-8 0.0 1.0)(0.9999777674674988 1.000011920928955 1.000009298324585 0.0)
+(-1.71661376953125E-5 1.9073486328125E-5 0.0 -2.4627857208251953)(7.450585037815927E-9 -2.9802340151263707E-8 0.0 1.0)(0.9999777674674988 1.000011920928955 1.000009298324585 0.0)
+(-1.71661376953125E-5 1.9073486328125E-5 0.0 -2.4627857208251953)(7.450585037815927E-9 -2.9802340151263707E-8 0.0 1.0)(0.9999777674674988 1.000011920928955 1.000009298324585 0.0)
+(-1.71661376953125E-5 1.9073486328125E-5 0.0 -2.4627857208251953)(7.450585037815927E-9 -2.9802340151263707E-8 0.0 1.0)(0.9999777674674988 1.000011920928955 1.000009298324585 0.0)
+(-0.9106826782226562 7.997768402099609 1.52587890625E-5 -6.0053253173828125)(-8.791689083409437E-7 -0.7071070075035095 -0.7071065902709961 -6.258490543586959E-7)(0.999977707862854 0.9999944567680359 1.000026822090149 0.0)
+(-1.1444091796875E-4 -7.62939453125E-6 -7.62939453125E-6 -12.226256370544434)(-5.811455707771529E-7 -1.0 1.3411050758804777E-7 -2.384186927884002E-7)(0.9999778270721436 1.0000120401382446 1.000009536743164 0.0)
+(-2.873056411743164 0.9594535827636719 -2.6702880859375E-4 -10.790916442871094)(-2.533198824039573E-7 -0.707105815410614 0.7071077823638916 -8.94070240065048E-8)(0.9999776482582092 0.9999944567680359 1.0000265836715698 0.0)
+(-0.7594108581542969 -9.5367431640625E-6 -3.0517578125E-5 -7.212162017822266)(-0.014265602454543114 -2.980233304583635E-8 3.2410036965302425E-7 0.9998982548713684)(0.9999996423721313 1.0000004768371582 0.9999996423721313 0.0)
+(7.170009613037109 -3.24249267578125E-5 -7.62939453125E-6 -5.133359909057617)(0.007132996339350939 0.0 -3.725291630729544E-9 0.9999745488166809)(1.0000001192092896 0.9999995827674866 1.000000238418579 0.0)
+(-0.7571754455566406 4.482269287109375E-5 -6.866455078125E-5 -36.224609375)(0.014310901053249836 -8.940699558479537E-8 1.2805689841854928E-8 0.9998975992202759)(1.0000003576278687 1.0000004768371582 0.9999989867210388 0.0)
+(7.169933319091797 -9.5367431640625E-5 9.918212890625E-5 -16.24409294128418)(-0.007155659142881632 8.940699558479537E-8 2.207235354489967E-7 0.9999744296073914)(0.9999998807907104 0.9999992847442627 1.0000007152557373 0.0)
+(10.661928176879883 0.003550291061401367 -7.05718994140625E-4 4.495107650756836)(-5.15632564201951E-4 -0.0016684540314599872 0.2949427664279938 0.9555132985115051)(0.9999853372573853 1.0000144243240356 1.0000003576278687 0.0)
+(10.661543846130371 -3.9577484130859375E-5 -6.67572021484375E-6 -13.411316871643066)(0.002212316496297717 -0.007462772540748119 0.28419098258018494 0.9587361216545105)(0.9999999403953552 1.0000003576278687 0.9999999403953552 0.0)
+(1.5830402374267578 -1.2627334594726562 1.8533706665039062 -119.79940032958984)(0.5783063769340515 -0.43201324343681335 0.14682523906230927 0.6762903928756714)(1.0000550746917725 0.9999793767929077 0.9999650120735168 0.0)
+(3.569812774658203 -6.866455078125E-5 9.918212890625E-5 26.781139373779297)(0.022788023576140404 -0.03670821338891983 -0.37579724192619324 0.9256941080093384)(0.9999822974205017 1.0000275373458862 0.9999905228614807 0.0)
+(2.4019203186035156 1.48773193359375E-4 6.103515625E-5 18.69936180114746)(-0.006269383244216442 0.023615043610334396 -0.256654292345047 0.9661943912506104)(0.9999467134475708 1.0000572204589844 0.9999949932098389 0.0)
+(7.5013885498046875 0.43004608154296875 2.2779579162597656 -120.40111541748047)(-0.026883957907557487 -0.05530022457242012 -0.28699779510498047 0.9559557437896729)(1.000030517578125 0.9999777674674988 0.9999915957450867 0.0)
+(3.0182876586914062 -4.1961669921875E-5 1.48773193359375E-4 -161.88754272460938)(2.1308669602149166E-6 -1.400709834342706E-6 -0.3628958463668823 0.9318296313285828)(0.9999896883964539 1.0000102519989014 0.9999995231628418 0.0)
+(1.85028076171875 7.2479248046875E-5 1.02996826171875E-4 -179.4091033935547)(-2.801419668685412E-6 5.960467319710006E-8 -0.24283355474472046 0.9700679779052734)(0.9999628663063049 1.0000373125076294 0.9999992847442627 0.0)
+(7.595731735229492 0.6208038330078125 0.45764923095703125 -119.21166229248047)(-0.07826093584299088 0.006416502874344587 -0.3367316424846649 0.9383207559585571)(1.0000250339508057 0.9999788403511047 0.999995768070221 0.0)
+(3.0917282104492188 -4.1961669921875E-5 1.6021728515625E-4 -162.2281036376953)(5.812498857267201E-4 0.0013673908542841673 -0.3923247456550598 0.919825553894043)(0.9999859929084778 1.0000131130218506 1.0000007152557373 0.0)
+(2.18798828125 8.7738037109375E-5 1.25885009765625E-4 -173.4215545654297)(5.702677299268544E-4 -0.0014185465406626463 -0.2946113049983978 0.9556159973144531)(0.9999603629112244 1.0000392198562622 1.000000238418579 0.0)
+(7.463924407958984 0.35007476806640625 -1.4385795593261719 -117.77272033691406)(-0.11765698343515396 0.04472212493419647 -0.3549730181694031 0.9263643026351929)(1.0000219345092773 0.9999805092811584 0.9999971985816956 0.0)
+(2.6644821166992188 -3.0517578125E-5 1.33514404296875E-4 -158.09869384765625)(1.609326204743411E-6 2.443791572659393E-6 -0.43887367844581604 0.8985487818717957)(0.9999846816062927 1.000014305114746 1.0000005960464478 0.0)
+(1.8997650146484375 7.2479248046875E-5 9.918212890625E-5 -167.3640594482422)(-8.940700979565008E-8 -9.089712875720579E-7 -0.2859014570713043 0.9582589864730835)(0.9999635815620422 1.0000354051589966 1.0000004768371582 0.0)
+(6.637121200561523 -0.35741424560546875 -3.018280029296875 -116.40801239013672)(-0.13830026984214783 0.04950656741857529 -0.3870198130607605 0.9102954268455505)(1.0000230073928833 0.9999799132347107 0.9999966025352478 0.0)
+(2.2383270263671875 -9.5367431640625E-6 1.068115234375E-4 -159.4026641845703)(2.6196254111710005E-5 3.8853305159136653E-4 -0.36104369163513184 0.9325487613677979)(0.9999904036521912 1.0000088214874268 1.0000003576278687 0.0)
+(1.6659317016601562 5.53131103515625E-5 9.918212890625E-5 -168.3856201171875)(1.0442738857818767E-4 -2.231300895800814E-4 -0.42224982380867004 0.9064794182777405)(0.9999521374702454 1.000046968460083 1.0000005960464478 0.0)
+(1.5826549530029297 -1.26251220703125 -1.8533363342285156 -107.78878021240234)(-0.578306257724762 0.43201321363449097 0.1468251794576645 0.6762903332710266)(1.0000345706939697 0.9999480247497559 1.000016689300537 0.0)
+(3.5694122314453125 4.3487548828125E-4 -3.0517578125E-5 -171.1331329345703)(-0.02278825268149376 0.0367082841694355 -0.37579625844955444 0.925694465637207)(0.9998803734779358 1.0001076459884644 1.0000110864639282 0.0)
+(2.4013710021972656 -7.62939453125E-6 -3.0517578125E-5 -122.73741912841797)(0.006269451230764389 -0.023614808917045593 -0.2566540241241455 0.9661945104598999)(1.0000468492507935 0.9999390244483948 1.0000132322311401 0.0)
+(7.500537872314453 0.431121826171875 -2.2777137756347656 -112.7739486694336)(0.026883913204073906 0.055300187319517136 -0.2869977653026581 0.9559558033943176)(0.9999452829360962 1.0000391006469727 1.0000139474868774 0.0)
+(3.017711639404297 -8.392333984375E-5 -1.52587890625E-5 -62.65802764892578)(-2.0414599930518307E-6 1.4603144791180966E-6 -0.3628958463668823 0.9318296313285828)(1.0001165866851807 0.9998705983161926 1.0000115633010864 0.0)
+(1.8501968383789062 -2.6607513427734375E-4 -4.57763671875E-5 -2.935914993286133)(2.8237714104761835E-6 -1.043081780949251E-7 -0.2428334802389145 0.9700679779052734)(1.0001035928726196 0.9998840093612671 1.000011682510376 0.0)
+(7.594999313354492 0.621856689453125 -0.45731353759765625 -112.7791748046875)(0.07826080918312073 -0.00641672546043992 -0.33673205971717834 0.9383205771446228)(0.9999545812606812 1.0000346899032593 1.000009536743164 0.0)
+(3.091175079345703 -1.52587890625E-4 5.340576171875E-5 -49.938140869140625)(-5.812945892103016E-4 -0.001367316348478198 -0.3923247158527374 0.919825553894043)(1.0001475811004639 0.9998407959938049 1.0000112056732178 0.0)
+(2.1880264282226562 -2.841949462890625E-4 -1.1444091796875E-5 -0.9444618225097656)(-5.702676717191935E-4 0.0014185910113155842 -0.29461151361465454 0.9556158185005188)(1.0000790357589722 0.9999086856842041 1.0000107288360596 0.0)
+(7.463237762451172 0.35111236572265625 1.4390220642089844 -112.40410614013672)(0.11765693128108978 -0.044722169637680054 -0.3549729585647583 0.9263644218444824)(0.9999608397483826 1.000033974647522 1.0000040531158447 0.0)
+(2.6640472412109375 -1.41143798828125E-4 9.5367431640625E-5 -43.4589729309082)(-1.7508872360849637E-6 -2.4139892502716975E-6 -0.4388737082481384 0.8985487818717957)(1.0001689195632935 0.999819815158844 1.0000100135803223 0.0)
+(1.8998489379882812 -2.09808349609375E-4 0.0 -3.1195969581604004)(1.3085086436603888E-7 9.18284399631375E-7 -0.28590142726898193 0.9582589864730835)(1.0000464916229248 0.9999423027038574 1.0000098943710327 0.0)
+(6.636539459228516 -0.3565826416015625 3.018798828125 -111.36294555664062)(0.13830015063285828 -0.04950668662786484 -0.3870201110839844 0.910295307636261)(0.9999687671661377 1.0000275373458862 1.000002145767212 0.0)
+(2.2379684448242188 -1.621246337890625E-4 8.0108642578125E-5 -40.393394470214844)(-2.6233503376715817E-5 -3.8842871435917914E-4 -0.36104363203048706 0.9325487613677979)(1.0001425743103027 0.9998474717140198 1.0000100135803223 0.0)
+(1.6659698486328125 -1.964569091796875E-4 2.6702880859375E-5 -5.456733703613281)(-1.043146985466592E-4 2.2317106777336448E-4 -0.42224985361099243 0.9064794182777405)(1.0000391006469727 0.9999499320983887 1.0000096559524536 0.0)
+(-1.287459599552676E-5 0.03281949833035469 120.4828109741211 0.0)(0.7071067094802856 5.024295781800919E-15 1.5072886921886283E-14 0.7071067690849304)(1.0 0.9999998807907104 0.9999998807907104 0.0)
+(-7.894796470210574E-13 -1.43685375991781E-20 -2.2958874039497803E-41 0.0)(1.9636718917581675E-8 1.7869431895239327E-16 9.100006082007894E-9 1.0)(1.0 1.0 1.0 0.0)
+(-2.799588389501651E-27 8.526510118615771E-14 -5.684340192014907E-14 0.0)(-4.235165241142481E-22 1.1536832882416501E-30 0.0 1.0)(1.0 1.0 1.0 0.0)
+(-2.799588389501651E-27 8.526510118615771E-14 -5.684340192014907E-14 0.0)(-4.235165241142481E-22 1.1536832882416501E-30 0.0 1.0)(1.0 1.0 1.0 0.0)
+(5.7220458984375E-6 0.0 -7.62939453125E-6 -12.226278305053711)(2.980233659855003E-8 -2.980233659855003E-8 1.4901168299275014E-8 0.9999999403953552)(0.9999775886535645 1.000011920928955 1.0000091791152954 0.0)
+(5.7220458984375E-6 0.0 -7.62939453125E-6 -12.226278305053711)(2.980233659855003E-8 -2.980233659855003E-8 1.4901168299275014E-8 0.9999999403953552)(0.9999775886535645 1.000011920928955 1.0000091791152954 0.0)
+(5.7220458984375E-6 0.0 -7.62939453125E-6 -12.226278305053711)(2.980233659855003E-8 -2.980233659855003E-8 1.4901168299275014E-8 0.9999999403953552)(0.9999775886535645 1.000011920928955 1.0000091791152954 0.0)
+(5.7220458984375E-6 0.0 -7.62939453125E-6 -12.226278305053711)(2.980233659855003E-8 -2.980233659855003E-8 1.4901168299275014E-8 0.9999999403953552)(0.9999775886535645 1.000011920928955 1.0000091791152954 0.0)
+(1.9073486328125E-6 7.62939453125E-6 1.1444091796875E-5 -119.22311401367188)(-7.450584149637507E-8 -7.450584149637507E-8 2.980233659855003E-8 1.0)(0.9999997019767761 0.999998152256012 1.0000016689300537 0.0)
+(1.9073486328125E-6 7.62939453125E-6 1.1444091796875E-5 -119.22311401367188)(-7.450584149637507E-8 -7.450584149637507E-8 2.980233659855003E-8 1.0)(0.9999997019767761 0.999998152256012 1.0000016689300537 0.0)
+(1.9073486328125E-6 7.62939453125E-6 1.1444091796875E-5 -119.22311401367188)(-7.450584149637507E-8 -7.450584149637507E-8 2.980233659855003E-8 1.0)(0.9999997019767761 0.999998152256012 1.0000016689300537 0.0)
+(1.52587890625E-5 7.62939453125E-6 0.0 -107.11121368408203)(0.0 0.0 0.0 1.0)(0.9999808073043823 1.000006079673767 1.0000121593475342 0.0)
+(1.52587890625E-5 7.62939453125E-6 0.0 -107.11121368408203)(0.0 0.0 0.0 1.0)(0.9999808073043823 1.000006079673767 1.0000121593475342 0.0)
+(1.52587890625E-5 7.62939453125E-6 0.0 -107.11121368408203)(0.0 0.0 0.0 1.0)(0.9999808073043823 1.000006079673767 1.0000121593475342 0.0)
+(8.368759155273438 -0.6489558219909668 5.030590534210205 3.5044987201690674)(-0.004462131764739752 0.7158798575401306 0.02249501831829548 0.6978466510772705)(1.000000238418579 0.9999999403953552 1.000000238418579 0.0)
+(8.368751525878906 -0.648953914642334 -5.030642509460449 3.3318896293640137)(-0.001462357584387064 0.6982078552246094 0.02010379731655121 0.7156112790107727)(0.9999999403953552 0.9999998807907104 1.0000004768371582 0.0)</hkparam>
+            <hkparam name="referenceFloats" numelements="0"/>
+            <hkparam name="floatSlots" numelements="0"/>
+            <hkparam name="localFrames" numelements="0"/>
+            <hkparam name="partitions" numelements="0"/>
+        </hkobject>
+    </hksection>
+</hkpackfile>

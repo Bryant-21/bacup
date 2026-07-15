@@ -1,0 +1,1164 @@
+WEAP:
+  fields:
+    FULL: FULL
+    DESC: DESC
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    EquipmentType: EquipmentType
+    BlockBashImpactDataSet: BlockBashImpactDataSet
+    AlternateBlockMaterial: AlternateBlockMaterial
+    Keywords: Keywords
+    ObjectTemplates: ObjectTemplates
+    AttachParentSlots: AttachParentSlots
+    InstanceNaming: InstanceNaming
+    Data: Data
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Data:
+      type: scale_nested
+      subfields:
+        MinRange: 6.4
+        MaxRange: 3.94
+      remap_source_esm: Starfield.esm
+      remap_target_esm: Fallout4.esm
+    EquipmentType:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    BlockBashImpactDataSet:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    AlternateBlockMaterial:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    ObjectTemplates:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    AttachParentSlots:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    InstanceNaming:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Transforms
+  - PickupSound
+  - EmbeddedWeaponMod
+  - ColorRemappingIndex
+  - WTUR
+  - DamageTypes
+  defaults:
+    PreviewTransform: "Null"
+    Zoom: "Null"
+    Flags: []
+
+AMMO:
+  fields:
+    FULL: FULL
+    Name: Name
+    DESC: DESC
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    DATA: DATA
+    DNAM: DNAM
+    Keywords: Keywords
+    ShortName: ShortName
+    CasingModel: CasingModel
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    ShortName:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    DNAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Transforms
+  - PickupSound
+  - LightLayer
+  defaults:
+    PreviewTransform: "Null"
+    Flags: []
+
+PROJ:
+  fields:
+    FULL: FULL
+    Name: Name
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    DATA: DATA
+    Data: Data
+    NAM1: NAM1
+    NAM2: NAM2
+    Flags: Flags
+    SoundLevel: SoundLevel
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    DATA:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Data:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    NAM1:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    NAM2:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ActiveSound
+  - FLLD
+
+EXPL:
+  fields:
+    FULL: FULL
+    Name: Name
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    DATA: DATA
+    Data: Data
+    MNAM: MNAM
+    Flags: Flags
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    DATA:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Data:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    MNAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ImageSpaceModifier
+
+OMOD:
+  fields:
+    FULL: FULL
+    Name: Name
+    DESC: DESC
+    MODL: MODL
+    Data: Data
+    MNAM: MNAM
+    LNAM: LNAM
+    FNAM: FNAM
+    FLTR: FLTR
+    NAM1: NAM1
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Data:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    MNAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    LNAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    FNAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    FLTR:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    NAM1:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+  defaults:
+    LooseMod: "Null"
+
+NPC_:
+  fields:
+    FULL: FULL
+    SHRT: SHRT
+    ObjectBounds: ObjectBounds
+    Race: Race
+    Class: Class
+    Properties: Properties
+    Factions: Factions
+    DeathItem: DeathItem
+    DefaultOutfit: DefaultOutfit
+    DefaultPackageList: DefaultPackageList
+    VTCK: VTCK
+    Voice: Voice
+    NAM5: NAM5
+    HeightMin: HeightMin
+    HeightMax: HeightMax
+    Weight: Weight
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    SHRT:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Race:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Class:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Properties:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Factions:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    DeathItem:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    DefaultOutfit:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    DefaultPackageList:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    VTCK:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Voice:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Pronoun
+  - BodyMorphRegionValues
+  - SkinToneIndex
+  defaults:
+    Factions: []
+    Keywords: []
+    Voice: "Null"
+    HairColor: "Null"
+    DefaultOutfit: "Null"
+    CrimeFaction: "Null"
+    TextureLighting: "Null"
+    SoundLevel: Normal
+
+ARMO:
+  fields:
+    FULL: FULL
+    DESC: DESC
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    Race: Race
+    Keywords: Keywords
+    EquipmentType: EquipmentType
+    BlockBashImpactDataSet: BlockBashImpactDataSet
+    AlternateBlockMaterial: AlternateBlockMaterial
+    ObjectTemplates: ObjectTemplates
+    Resistances: Resistances
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Race:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    EquipmentType:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    BlockBashImpactDataSet:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    AlternateBlockMaterial:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    ObjectTemplates:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Transforms
+  defaults:
+    PreviewTransform: "Null"
+    BipedBodyTemplate: {}
+    Resistances: []
+
+ARMA:
+  fields:
+    MODL: MODL
+    Race: Race
+    BipedModels: BipedModels
+    Data: Data
+    SNDD: SNDD
+    ONAM: ONAM
+  transforms:
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Race:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    BipedModels:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    SNDD:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    ONAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+  drop:
+  - FootstepSound
+
+COBJ:
+  fields:
+    CNAM: CNAM
+    BNAM: BNAM
+    WorkbenchKeyword: WorkbenchKeyword
+    CreatedObject: CreatedObject
+    Components: Components
+    CTDA: CTDA
+    FNAM: FNAM
+    DESC: DESC
+  transforms:
+    CNAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    BNAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    WorkbenchKeyword:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    CreatedObject:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Components:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    CTDA:
+      type: translate_conditions
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    FNAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    DESC:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    NAM1:
+      type: wrap_in_list
+      target: NAM1
+      wrapper_key: Count
+  drop:
+  - LearnMethod
+  - RecipeFilters
+
+ALCH:
+  fields:
+    FULL: FULL
+    Name: Name
+    DESC: DESC
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    DATA: DATA
+    EffectData: EffectData
+    Keywords: Keywords
+    Weight: Weight
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    EffectData:
+      type: translate_effects
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+      default_data:
+        Magnitude: 0.0
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Transforms
+  - PickupSound
+  - CraftingSound
+  defaults:
+    PreviewTransform: "Null"
+
+TXST:
+  fields:
+    ObjectBounds: ObjectBounds
+    TX00: TX00
+    TX01: TX01
+    group_textures_rgb_a: group_textures_rgb_a
+  drop:
+  - ODTY
+  - TX08
+  - TX09
+  - TX19
+  - DODT
+  - Flags
+  defaults:
+    SmoothSpec: ""
+
+STAT:
+  fields:
+    FULL: FULL
+    Name: Name
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    Properties: Properties
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Properties:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+DMGT:
+  fields:
+    DNAM: DNAM
+  drop:
+  - Name
+
+MGEF:
+  fields:
+    FULL: FULL
+    Name: Name
+    MagicItemDescription: MagicItemDescription
+    Data: Data
+    Sounds: Sounds
+    Keywords: Keywords
+    CTDA: CTDA
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Data:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Sounds:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    CTDA:
+      type: translate_conditions
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Unknown
+
+FURN:
+  fields:
+    FULL: FULL
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    Keywords: Keywords
+    MarkerColorUnused: MarkerColorUnused
+    MarkerParameters: MarkerParameters
+    Flags: Flags
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Transforms
+  - ActivationAngleForPlayer
+  - ActivationAngleForSittingActor
+  - BenchType
+  - FurnitureTemplate
+  defaults:
+    PNAM: "0x00000000"
+    MarkerModel: ""
+    MarkerParameters: []
+
+ACTI:
+  fields:
+    FULL: FULL
+    Name: Name
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    Keywords: Keywords
+    MarkerColor: MarkerColor
+    Flags: Flags
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+  defaults:
+    VirtualMachineAdapter: "Null"
+    ActivateTextOverride: "Null"
+
+IPDS:
+  fields:
+    Data: Data
+
+HAZD:
+  fields:
+    FULL: FULL
+    Name: Name
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    Data: Data
+    MNAM: MNAM
+    DNAM: DNAM
+    ImageSpaceModifier: ImageSpaceModifier
+    Flags: Flags
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Data:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    MNAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    DNAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+SPEL:
+  fields:
+    FULL: FULL
+    Name: Name
+    DESC: DESC
+    Data: Data
+    EFID: EFID
+    CTDA: CTDA
+    Keywords: Keywords
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    EFID:
+      type: translate_effects
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+      default_data:
+        Magnitude: 0.0
+    CTDA:
+      type: translate_conditions
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+ENCH:
+  fields:
+    FULL: FULL
+    Name: Name
+    EffectData: EffectData
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    EffectData:
+      type: translate_effects
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+      default_data:
+        Magnitude: 0.0
+
+OTFT:
+  fields:
+    Items: Items
+    INAM: INAM
+  transforms:
+    Items:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    INAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+HDPT:
+  fields:
+    FULL: FULL
+    Name: Name
+    MODL: MODL
+    Flags: Flags
+    Type: Type
+    TextureSet: TextureSet
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    TextureSet:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+LVLN:
+  fields:
+    ChanceNone: ChanceNone
+    Flags: Flags
+    LLCT: LLCT
+    LVLO: LVLO
+    LeveledEntry: LeveledEntry
+  transforms:
+    LVLO:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    LeveledEntry:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+LVLI:
+  fields:
+    ChanceNone: ChanceNone
+    Flags: Flags
+    LLCT: LLCT
+    LVLO: LVLO
+    LeveledEntry: LeveledEntry
+  transforms:
+    LVLO:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    LeveledEntry:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+CLAS:
+  fields:
+    FULL: FULL
+    Name: Name
+    DESC: DESC
+    Properties: Properties
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Properties:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+CSTY:
+  fields:
+    General: General
+    DATA: DATA
+    Flags: Flags
+    CSRA: CSRA
+    CSCV: CSCV
+    Flight: Flight
+
+PERK:
+  fields:
+    FULL: FULL
+    Name: Name
+    DESC: DESC
+    Data: Data
+    DATA: DATA
+    CTDA: CTDA
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    CTDA:
+      type: translate_conditions
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+FACT:
+  fields:
+    FULL: FULL
+    Name: Name
+    Relations: Relations
+    CrimeValues: CrimeValues
+    VendorValues: VendorValues
+    Flags: Flags
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Relations:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+MISC:
+  fields:
+    FULL: FULL
+    Name: Name
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    DATA: DATA
+    Components: Components
+    Keywords: Keywords
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Components:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+KEYM:
+  fields:
+    FULL: FULL
+    Name: Name
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    DATA: DATA
+    Keywords: Keywords
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+BOOK:
+  fields:
+    FULL: FULL
+    Name: Name
+    DESC: DESC
+    Description: Description
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    DATA: DATA
+    Keywords: Keywords
+    Flags: Flags
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Description:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+CONT:
+  fields:
+    FULL: FULL
+    Name: Name
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    Keywords: Keywords
+    Properties: Properties
+    Flags: Flags
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Properties:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+DOOR:
+  fields:
+    FULL: FULL
+    Name: Name
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    Keywords: Keywords
+    Flags: Flags
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+MESG:
+  fields:
+    FULL: FULL
+    Name: Name
+    DESC: DESC
+    Flags: Flags
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    DESC:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+
+ARTO:
+  fields:
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+  transforms:
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+
+KSSM:
+  fields:
+    Keyword: Keyword
+
+MUST:
+  fields:
+    Duration: Duration
+    FadeOut: FadeOut
+    CTDA: CTDA
+  transforms:
+    CTDA:
+      type: translate_conditions
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+MUSC:
+  fields:
+    Flags: Flags
+    MusicTracks: MusicTracks
+  transforms:
+    MusicTracks:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+REVB:
+  fields:
+    Data: Data
+
+FSTS:
+  fields:
+    Footsteps: Footsteps
+  transforms:
+    Footsteps:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+ASPC:
+  fields:
+    EnvironmentType: EnvironmentType
+    IsInterior: IsInterior
+    LoopingSound: LoopingSound
+  transforms:
+    EnvironmentType:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    LoopingSound:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+GMST:
+  fields:
+    DATA: DATA
+    Value: Value
+
+GLOB:
+  fields:
+    Value: Value
+
+KYWD:
+  fields:
+    FULL: FULL
+    Name: Name
+    TNAM: TNAM
+    Type: Type
+    Notes: Notes
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+
+FLST:
+  fields:
+    FULL: FULL
+    Name: Name
+    LNAM: LNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    LNAM:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+EFSH:
+  fields:
+    MODL: MODL
+    DATA: DATA
+    DNAM: DNAM
+    NAM7: NAM7
+    NAM8: NAM8
+  transforms:
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+
+IMGS:
+  fields: {}
+
+LIGH:
+  fields:
+    FULL: FULL
+    Name: Name
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    DATA: DATA
+    NAM0: NAM0
+    Keywords: Keywords
+    Flags: Flags
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    Name:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    NAM0:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm

@@ -1,0 +1,19 @@
+{
+  "name": "Walkie-Talkie",
+  "description": "Realistic two-way radio — steep 300-3000 Hz bandpass, speaker resonance at 2 kHz, hard compression, light saturation, and radio static",
+  "chain": [
+    {"type": "HighpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 300, "rolloff_db_per_oct": 24}},
+    {"type": "LowpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 3000, "rolloff_db_per_oct": 24}},
+    {"type": "Compressor", "enabled": true, "params": {"threshold_db": -20.0, "ratio": 6.0}},
+    {"type": "Gain", "enabled": true, "params": {"gain_db": 8.0}},
+    {"type": "Distortion", "enabled": true, "params": {"drive_db": 4.0}},
+    {"type": "PeakFilter", "enabled": true, "params": {"cutoff_frequency_hz": 800, "gain_db": 3.0, "q": 2.0}},
+    {"type": "PeakFilter", "enabled": true, "params": {"cutoff_frequency_hz": 2000, "gain_db": 8.0, "q": 3.0}},
+    {"type": "PeakFilter", "enabled": true, "params": {"cutoff_frequency_hz": 2800, "gain_db": 4.0, "q": 2.5}},
+    {"type": "HighpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 350, "rolloff_db_per_oct": 12}},
+    {"type": "LowpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 2800, "rolloff_db_per_oct": 12}},
+    {"type": "WhiteNoiseMix", "enabled": true, "params": {"amplitude": 0.04}},
+    {"type": "Limiter", "enabled": true, "params": {"threshold_db": -3.0}},
+    {"type": "Gain", "enabled": true, "params": {"gain_db": 0.0}}
+  ]
+}

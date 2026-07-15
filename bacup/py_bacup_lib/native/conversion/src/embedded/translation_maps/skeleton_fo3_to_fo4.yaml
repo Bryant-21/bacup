@@ -1,0 +1,94 @@
+# FO3/FNV Humanoid -> FO4 Humanoid skeleton bone mapping.
+# Source: Gamebryo Bip01 naming convention (Fallout 3 / New Vegas).
+# Target: Creation Engine naming convention (Fallout 4).
+
+display_name: "FO3 Humanoid → FO4 Humanoid"
+
+bones:
+  # --- Root / Accumulation ---
+  "Bip01": "Root"
+  "Bip": "Root"
+  "Bip01 NonAccum": "COM"
+
+  # --- Spine chain ---
+  "Bip01 Pelvis": "Pelvis"
+  "Bip01 Spine": "Spine1"
+  "Bip01 Spine1": "Spine2"
+  "Bip01 Spine2": "Chest"
+
+  # --- Head / Neck ---
+  "Bip01 Neck": "Neck"
+  "Bip01 Neck1": "Head"
+  "Bip01 Head": "Head"
+
+  # --- Left Arm ---
+  "Bip01 L Clavicle": "LArm_Collarbone"
+  "Bip01 L UpperArm": "LArm_UpperArm"
+  "Bip01 L Forearm": "LArm_ForeArm1"
+  "Bip01 L Hand": "LArm_Hand"
+  "Bip01 L ForeTwist": "LArm_ForeArm2"
+  "Bip01 LUpArmTwistBone": "LArm_UpperArm2"
+
+  # --- Right Arm ---
+  "Bip01 R Clavicle": "RArm_Collarbone"
+  "Bip01 R UpperArm": "RArm_UpperArm"
+  "Bip01 R Forearm": "RArm_ForeArm1"
+  "Bip01 R Hand": "RArm_Hand"
+  "Bip01 R ForeTwist": "RArm_ForeArm2"
+  "Bip01 RUpArmTwistBone": "RArm_UpperArm2"
+
+  # --- Left Leg ---
+  "Bip01 L Thigh": "LLeg_Thigh"
+  "Bip01 L Calf": "LLeg_Calf"
+  "Bip01 L Foot": "LLeg_Foot"
+  "Bip01 L Toe0": "LLeg_Toe0"
+
+  # --- Right Leg ---
+  "Bip01 R Thigh": "RLeg_Thigh"
+  "Bip01 R Calf": "RLeg_Calf"
+  "Bip01 R Foot": "RLeg_Foot"
+  "Bip01 R Toe0": "RLeg_Toe0"
+
+  # --- Left Fingers (index: Finger1, middle: Finger2, ring: Finger3, pinky: Finger4, thumb: Thumb→Finger5) ---
+  # FO3: Finger1/11/12 (base/mid/tip)  →  FO4: Finger11/12/13 (base/mid/tip)
+  "Bip01 L Finger1": "LArm_Finger11"
+  "Bip01 L Finger11": "LArm_Finger12"
+  "Bip01 L Finger12": "LArm_Finger13"
+  "Bip01 L Finger2": "LArm_Finger21"
+  "Bip01 L Finger21": "LArm_Finger22"
+  "Bip01 L Finger22": "LArm_Finger23"
+  "Bip01 L Finger3": "LArm_Finger31"
+  "Bip01 L Finger31": "LArm_Finger32"
+  "Bip01 L Finger32": "LArm_Finger33"
+  "Bip01 L Finger4": "LArm_Finger41"
+  "Bip01 L Finger41": "LArm_Finger42"
+  "Bip01 L Finger42": "LArm_Finger43"
+  "Bip01 L Thumb1": "LArm_Finger51"
+  "Bip01 L Thumb11": "LArm_Finger52"
+  "Bip01 L Thumb12": "LArm_Finger53"
+
+  # --- Right Fingers ---
+  "Bip01 R Finger1": "RArm_Finger11"
+  "Bip01 R Finger11": "RArm_Finger12"
+  "Bip01 R Finger12": "RArm_Finger13"
+  "Bip01 R Finger2": "RArm_Finger21"
+  "Bip01 R Finger21": "RArm_Finger22"
+  "Bip01 R Finger22": "RArm_Finger23"
+  "Bip01 R Finger3": "RArm_Finger31"
+  "Bip01 R Finger31": "RArm_Finger32"
+  "Bip01 R Finger32": "RArm_Finger33"
+  "Bip01 R Finger4": "RArm_Finger41"
+  "Bip01 R Finger41": "RArm_Finger42"
+  "Bip01 R Finger42": "RArm_Finger43"
+  "Bip01 R Thumb1": "RArm_Finger51"
+  "Bip01 R Thumb11": "RArm_Finger52"
+  "Bip01 R Thumb12": "RArm_Finger53"
+
+  # --- Pauldrons (no direct FO4 equivalent — map to collarbone) ---
+  "Bip01 LPauldron": "LArm_Collarbone"
+  "Bip01 RPauldron": "RArm_Collarbone"
+
+  # --- Special ---
+  "Weapon": "Weapon"
+  "Camera3rd": "Camera"
+  "Camera1st": "Camera"

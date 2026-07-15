@@ -1,0 +1,27 @@
+archetype: quadruped_mammal
+behavior_name: QuadrupedMammalEverything
+root_behavior_name: QuadrupedMammalRootBehavior
+project_name: QuadrupedMammalProject
+character_name: QuadrupedMammal
+model_after: wolf
+states:
+  - name: Idle
+    role: idle
+    loop: true
+  - name: Locomotion
+    role: locomotion
+    loop: true
+  - name: Attack
+    role: attack
+  - name: Death
+    role: death
+transitions:
+  - event: move
+    from: Idle
+    to: Locomotion
+  - event: stop
+    from: Locomotion
+    to: Idle
+  - event: attack
+    from: Locomotion
+    to: Attack

@@ -1,0 +1,335 @@
+WEAP:
+  fields:
+    EDID: EDID
+    VMAD: VMAD
+    OBND: OBND
+    FULL: FULL
+    DESC: DESC
+    MODL: MODL
+  transforms:
+    EITM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    ETYP:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    BIDS:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    BAMT:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    INAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+  drop:
+  - PTRN
+  - STCP
+  - APPR
+  - INRD
+  - group_object_template
+  - NNAM
+  - FNAM
+  - LNAM
+  - WAMD
+  - WZMD
+  - DamageTypes
+  defaults:
+    DetectionSoundLevel: 1
+
+ARMO:
+  fields:
+    EDID: EDID
+    VMAD: VMAD
+    OBND: OBND
+    FULL: FULL
+    DESC: DESC
+    group_male: group_male
+    group_female: group_female
+    BOD2: BOD2
+  transforms:
+    EITM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    ETYP:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    BIDS:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    BAMT:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    RNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    TNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    DATA:
+      type: strip_subfields
+      keep: [value, Value, weight, Weight]
+  drop:
+  - PTRN
+  - INRD
+  - APPR
+  - group_object_template
+  - FNAM
+
+ARMA:
+  fields:
+    EDID: EDID
+    BOD2: BOD2
+    Data: Data
+  transforms:
+    RNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    group_biped_model:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    group_1st_person:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    NAM0:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    NAM1:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    NAM2:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    NAM3:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    SNDD:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    ONAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+  drop:
+  - BSMP
+  - BSMB
+  - BSMS
+
+NPC_:
+  fields:
+    EDID: EDID
+    VMAD: VMAD
+    OBND: OBND
+    FULL: FULL
+    ACBS: ACBS
+    AIData: AIData
+  transforms:
+    SNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    INAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    VTCK:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    RNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    WNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    ATKR:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    SPOR:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    CNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    DOFT:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    SOFT:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    DPLT:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    CRIF:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+  drop:
+  - PTRN
+  - STCP
+  - APPR
+  - group_object_template
+  - FTYP
+  - NTRM
+  - GNAM
+  - PFRN
+  - PowerArmorStand
+
+RACE:
+  fields:
+    EDID: EDID
+    FULL: FULL
+    DESC: DESC
+    BOD2: BOD2
+    DATA: DATA
+    AttackData: AttackData
+  transforms:
+    SPLO:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    WNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    VTCK:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    ATKR:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    group_body_data:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    GNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    NAM5:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    ONAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    LNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    MTYP:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    QNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    NAM8:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    RNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+  drop:
+  - APPR
+  - UNWP
+  - SAKD
+  - SGNM
+  - SAPT
+  - STKD
+  - SRAF
+  - PTOP
+
+AMMO:
+  fields:
+    EDID: EDID
+    OBND: OBND
+    FULL: FULL
+    DESC: DESC
+    MODL: MODL
+  transforms:
+    YNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Skyrim.esm
+  drop:
+  - PTRN
+  - DNAM
+  - Data

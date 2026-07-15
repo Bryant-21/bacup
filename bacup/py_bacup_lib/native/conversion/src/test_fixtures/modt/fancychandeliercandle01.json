@@ -1,0 +1,41 @@
+{
+  "name": "FancyChandelierCandle01",
+  "record": {
+    "type": "STAT",
+    "form_id": "0D83AB",
+    "editor_id": "FancyChandelierCandle01",
+    "source": "Fallout4.esm"
+  },
+  "modl": "SetDressing\\LightFixtures\\FancyChandelierCandle01.nif",
+  "material_swap": {},
+  "mode": "A (no swap)",
+  "modt_hex": "04000000040000000000000002000000010000009AC1080A646473006ECE459D43AD0E69646473006ECE459DF5DB8420646473006ECE459D0F2C2A00646473001CDB88C59A2E70506267736D987A79A6",
+  "srgb_count": 2,
+  "addon_nodes": [],
+  "textures": [
+    {
+      "path": "textures\\Interiors\\Industrial\\MetalIndBgPipesBronze01_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\interiors\\industrial\\metalindbgpipes01_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\interiors\\industrial\\metalindbgpipes01_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    },
+    {
+      "path": "textures\\Shared\\Cubemaps\\mipblur_DefaultOutside1.dds",
+      "role": "envmap",
+      "srgb": true
+    }
+  ],
+  "materials": [
+    "materials\\Interiors\\Industrial\\metalindbgpipesbronze01.bgsm"
+  ],
+  "note": "textures/materials are an unordered SET; vanilla MODT stores them in CK BSTScatterTable iteration order (see README)."
+}

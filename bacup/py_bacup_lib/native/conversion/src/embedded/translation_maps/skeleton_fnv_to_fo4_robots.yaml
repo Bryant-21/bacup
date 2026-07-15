@@ -1,0 +1,50 @@
+# FNV Robot -> FO4 Robot skeleton bone mappings.
+# These are conservative partial maps for shared robot rigs. Unlisted bones
+# remain unchanged if the caller keeps unmapped names.
+
+robots:
+
+  mr_handy:
+    display_name: "FNV Mr. Handy / Gutsy -> FO4 Mr. Handy"
+    bones:
+      "Bip01": "Root"
+      "Bip01 NonAccum": "COM"
+      "Bip01 Pelvis": "Pelvis"
+      "Bip01 Spine": "Body"
+      "Bip01 Neck": "Neck"
+      "Bip01 Head": "Head"
+      "Bip01 L Clavicle": "LArm_Collarbone"
+      "Bip01 L UpperArm": "LArm_UpperArm"
+      "Bip01 L Forearm": "LArm_ForeArm"
+      "Bip01 L Hand": "LArm_Hand"
+      "Bip01 R Clavicle": "RArm_Collarbone"
+      "Bip01 R UpperArm": "RArm_UpperArm"
+      "Bip01 R Forearm": "RArm_ForeArm"
+      "Bip01 R Hand": "RArm_Hand"
+      "Bip01 Tail": "Thruster"
+      "Bip01 Tail1": "Thruster_Nozzle"
+      "Bip01 Prop1": "Prop1"
+      "Bip01 Prop2": "Prop2"
+      "Bip01 Prop3": "Prop3"
+      "Weapon": "Weapon"
+
+  securitron:
+    display_name: "FNV Securitron -> FO4 Sentry-style partial"
+    bones:
+      "Bip01": "Root"
+      "Bip01 NonAccum": "COM"
+      "Bip01 Pelvis": "Pelvis"
+      "Bip01 Spine": "Body"
+      "Bip01 Neck": "Neck"
+      "Bip01 Head": "Head"
+      "Bip01 L Clavicle": "LArm_Collarbone"
+      "Bip01 L UpperArm": "LArm_UpperArm"
+      "Bip01 L Forearm": "LArm_ForeArm"
+      "Bip01 L Hand": "LArm_Hand"
+      "Bip01 R Clavicle": "RArm_Collarbone"
+      "Bip01 R UpperArm": "RArm_UpperArm"
+      "Bip01 R Forearm": "RArm_ForeArm"
+      "Bip01 R Hand": "RArm_Hand"
+      "Bip01 L Thigh": "LWheel"
+      "Bip01 R Thigh": "RWheel"
+      "Weapon": "Weapon"

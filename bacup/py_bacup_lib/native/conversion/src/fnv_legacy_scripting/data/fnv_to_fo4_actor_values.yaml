@@ -1,0 +1,19 @@
+# FNV ActorValue -> FO4 ActorValue.
+
+Strength: Strength
+Perception: Perception
+Endurance: Endurance
+Charisma: Charisma
+Intelligence: Intelligence
+Agility: Agility
+Luck: Luck
+Health: Health
+ActionPoints: ActionPoints
+DamageResist: DamageResist
+EnergyResist: EnergyResist
+
+Karma: null
+RadiationRads: null
+Hunger: null
+Thirst: null
+Sleep: null

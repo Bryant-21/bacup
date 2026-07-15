@@ -1,0 +1,49 @@
+{
+  "name": "LightOilLamp",
+  "record": {
+    "type": "STAT",
+    "form_id": "02D459",
+    "editor_id": "RRM01Lantern",
+    "source": "Fallout4.esm"
+  },
+  "modl": "SetDressing\\LightFixtures\\LightOilLamp.nif",
+  "material_swap": {},
+  "mode": "A (no swap)",
+  "modt_hex": "04000000060000000000000004000000000000003B649EB2646473001043F0E7E20898D1646473001043F0E70717F56F6464730038973CEAFCE14D31646473001043F0E7F908D512646473001CDB88C56BBB96D1646473001CDB88C5",
+  "srgb_count": 4,
+  "addon_nodes": [],
+  "textures": [
+    {
+      "path": "textures\\Effects\\MistTileLight_d.dds",
+      "role": "eff_source",
+      "srgb": true
+    },
+    {
+      "path": "textures\\SetDressing\\LightFixtures\\OilLamp_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\SetDressing\\LightFixtures\\OilLamp_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\Shared\\Cubemaps\\MetalShineTopCube01_e.dds",
+      "role": "envmap",
+      "srgb": true
+    },
+    {
+      "path": "textures\\SetDressing\\LightFixtures\\OilLamp_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    },
+    {
+      "path": "textures\\Shared\\Cubemaps\\ShinyBright_e.dds",
+      "role": "eff_envmap",
+      "srgb": true
+    }
+  ],
+  "materials": [],
+  "note": "textures/materials are an unordered SET; vanilla MODT stores them in CK BSTScatterTable iteration order (see README)."
+}

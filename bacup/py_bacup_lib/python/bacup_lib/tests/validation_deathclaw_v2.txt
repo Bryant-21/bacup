@@ -1,0 +1,201 @@
+================================================================================
+DEATHCLAW CONVERSION VALIDATION v2 — POST-FIX RE-VALIDATION
+================================================================================
+
+Date: 2026-04-05
+Files compared: 105
+PASS: 90
+FAIL: 15
+ERROR: 0
+Pass rate: 90/105 (85.7%)
+
+--------------------------------------------------------------------------------
+BEFORE/AFTER COMPARISON (v1 -> v2)
+--------------------------------------------------------------------------------
+
+v1 (original): 0/66 pass (0.0%) — 6 systemic issues
+v2 (post-fix): 90/105 pass (85.7%) — 3 issue categories remaining
+
+v1 Issues and Resolution Status:
+  1. Root container inflation     — FIXED (type 0 sentinel guard)
+     v2 remaining: 0 files still affected
+  2. Missing/wrong annotations    — FIXED (classxml ctype override)
+     v2 remaining: 0 files with annotation issues
+  3. Wrong forward axis           — FIXED (removed axis swap)
+     (no direct field check — validated via bone indices)
+  4. Identity mapping cleanup     — FIXED (removed cleanup)
+     (no direct field check — validated via bone indices)
+  5. HeapAllocator artifact        — FIXED (classxml ctype override)
+     v2 remaining: 14 files with extra classes
+  6. Resource Data field name     — FIXED (field name fix)
+
+--------------------------------------------------------------------------------
+REMAINING ISSUES BREAKDOWN
+--------------------------------------------------------------------------------
+
+  extra_classes: 14 files affected
+  object_count: 13 files affected
+  missing_classes: 3 files affected
+
+--------------------------------------------------------------------------------
+PER-FILE RESULTS
+--------------------------------------------------------------------------------
+
+PASSED (90 files):
+  [PASS] ambush.hkx
+  [PASS] ambush.hkx
+  [PASS] ambush.hkx
+  [PASS] deathclaw_attackleft.hkx
+  [PASS] deathclaw_attackpowerforward.hkx
+  [PASS] deathclaw_attackpowerhornram.hkx
+  [PASS] deathclaw_attackpowerjumpaoe.hkx
+  [PASS] deathclaw_attackpowerjumpslash.hkx
+  [PASS] deathclaw_attackpowerspinslashaoe.hkx
+  [PASS] deathclaw_attackright.hkx
+  [PASS] deathclaw_attackthrow.hkx
+  [PASS] deathclaw_crithitchest.hkx
+  [PASS] deathclaw_crithitface.hkx
+  [PASS] deathclaw_crithitleftarm.hkx
+  [PASS] deathclaw_crithitleftleg.hkx
+  [PASS] deathclaw_crithitrightarm.hkx
+  [PASS] deathclaw_crithitrightleg.hkx
+  [PASS] deathclaw_deathanimationa.hkx
+  [PASS] deathclaw_deathanimationb.hkx
+  [PASS] deathclaw_evadeforward.hkx
+  [PASS] deathclaw_evadeforwardleft.hkx
+  [PASS] deathclaw_evadeforwardright.hkx
+  [PASS] deathclaw_flipcar.hkx
+  [PASS] deathclaw_getupfromfacedown.hkx
+  [PASS] deathclaw_getupfromfaceup.hkx
+  [PASS] deathclaw_idlecombathiding.hkx
+  [PASS] deathclaw_idletaunt.hkx
+  [PASS] deathclaw_injuredbothlegsexit.hkx
+  [PASS] deathclaw_injuredbothlegsstart.hkx
+  [PASS] deathclaw_jumpfall.hkx
+  [PASS] deathclaw_jumpfallloop.hkx
+  [PASS] deathclaw_jumpland.hkx
+  [PASS] deathclaw_runback.hkx
+  [PASS] deathclaw_runforward.hkx
+  [PASS] deathclaw_runforward_start.hkx
+  [PASS] deathclaw_specialidlescratchground.hkx
+  [PASS] deathclaw_sprintforward.hkx
+  [PASS] deathclaw_staggerforwardsmall.hkx
+  [PASS] deathclaw_staggerlarge.hkx
+  [PASS] deathclaw_staggersmall.hkx
+  [PASS] deathclaw_turn180fromrun.hkx
+  [PASS] deathclaw_turn180fromstop.hkx
+  [PASS] deathclaw_turnleft90.hkx
+  [PASS] deathclaw_turnleft90fromstop.hkx
+  [PASS] deathclaw_turnright90.hkx
+  [PASS] deathclaw_turnright90fromstop.hkx
+  [PASS] deathclaw_walkback.hkx
+  [PASS] deathclaw_walkforward.hkx
+  [PASS] enterfromstand.hkx
+  [PASS] exittostand.hkx
+  [PASS] posea_idle1.hkx
+  [PASS] activate.hkx
+  [PASS] activate.hkx
+  [PASS] enterfromstand.hkx
+  [PASS] exittostand.hkx
+  [PASS] posea_idle1.hkx
+  [PASS] deathclaw_runforward.hkx
+  [PASS] deathclaw_sprintforward.hkx
+  [PASS] deathclaw_walkback.hkx
+  [PASS] deathclaw_walkforward.hkx
+  [PASS] deathclaw_attackleft.hkx
+  [PASS] deathclaw_attackleft_recoil.hkx
+  [PASS] deathclaw_attackpowerforward.hkx
+  [PASS] deathclaw_attackpowerhornram.hkx
+  [PASS] deathclaw_attackpowerjumpaoe.hkx
+  [PASS] deathclaw_attackpowerjumpslash.hkx
+  [PASS] deathclaw_attackpowerspinslashaoe.hkx
+  [PASS] deathclaw_attackright.hkx
+  [PASS] deathclaw_attackright_recoil.hkx
+  [PASS] deathclaw_attackthrow.hkx
+  [PASS] deathclaw_equip.hkx
+  [PASS] deathclaw_idle.hkx
+  [PASS] deathclaw_idlecombat.hkx
+  [PASS] deathclaw_jumpfall.hkx
+  [PASS] deathclaw_jumpfallloop.hkx
+  [PASS] deathclaw_jumpland.hkx
+  [PASS] deathclaw_runforward.hkx
+  [PASS] deathclaw_specialidlea.hkx
+  [PASS] deathclaw_specialidlescratchground.hkx
+  [PASS] deathclaw_specialidletonguedetect.hkx
+  [PASS] deathclaw_sprintforward.hkx
+  [PASS] deathclaw_turnleft90.hkx
+  [PASS] deathclaw_turnright90.hkx
+  [PASS] deathclaw_walkback.hkx
+  [PASS] deathclaw_walkforward.hkx
+  [PASS] deathclaw_runforward.hkx
+  [PASS] deathclaw_sprintforward.hkx
+  [PASS] deathclaw_walkback.hkx
+  [PASS] deathclaw_walkforward.hkx
+  [PASS] deathclawproject.hkx
+
+FAILED (15 files):
+  [FAIL] deathclaw_attackleft_recoil.hkx
+    - object_count: converted=6 fo4=5
+    - extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+  [FAIL] deathclaw_attackright_recoil.hkx
+    - object_count: converted=6 fo4=5
+    - extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+  [FAIL] deathclaw_equip.hkx
+    - object_count: converted=6 fo4=5
+    - extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+  [FAIL] deathclaw_idle.hkx
+    - object_count: converted=6 fo4=5
+    - extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+  [FAIL] deathclaw_idlecombat.hkx
+    - object_count: converted=6 fo4=5
+    - extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+  [FAIL] deathclaw_idletauntroar.hkx
+    - object_count: converted=6 fo4=5
+    - extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+  [FAIL] deathclaw_idletauntstomp.hkx
+    - object_count: converted=6 fo4=5
+    - extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+  [FAIL] deathclaw_idletauntstompshorter.hkx
+    - object_count: converted=6 fo4=5
+    - extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+  [FAIL] deathclaw_idletaunttwist.hkx
+    - object_count: converted=6 fo4=5
+    - extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+  [FAIL] deathclaw_specialidlea.hkx
+    - object_count: converted=6 fo4=5
+    - extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+  [FAIL] deathclaw_specialidletonguedetect.hkx
+    - object_count: converted=6 fo4=5
+    - extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+  [FAIL] deathclaweverything.hkx
+    - object_count: converted=447 fo4=669
+    - extra_classes: ['BSBehaviorGraphSwapGenerator', 'BSEventEveryNEventsModifier', 'hkbLayerGenerator', 'hkbModifier', 'hkbReferencePoseGenerator']
+    - missing_classes: ['BSCyclicBlendTransitionGenerator', 'BSModifyOnceModifier', 'BSiStateTaggingGenerator', 'DynamicAnimationTaggingGenerator', 'hkbBlenderGenerator', 'hkbBlenderGeneratorChild', 'hkbEvaluateExpressionModifier', 'hkbEventDrivenModifier', 'hkbExpressionCondition', 'hkbExpressionDataArray']
+  [FAIL] deathclawrootbehavior.hkx
+    - extra_classes: ['BSTimerModifier']
+    - missing_classes: ['BSLookAtModifier', 'BSRagdollContactListenerModifier', 'hkbTimerModifier']
+  [FAIL] skeleton.hkx
+    - missing_classes: ['hkpLimitedHingeConstraintData']
+  [FAIL] deathclaw.hkx
+    - object_count: converted=8 fo4=6
+    - extra_classes: ['hkbBoneWeightArray']
+
+--------------------------------------------------------------------------------
+UNIQUE DISCREPANCY PATTERNS
+--------------------------------------------------------------------------------
+
+  extra_classes (14 occurrences):
+    example: deathclaw_attackleft_recoil.hkx: extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+    example: deathclaw_attackright_recoil.hkx: extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+    example: deathclaw_equip.hkx: extra_classes: ['hkaDefaultAnimatedReferenceFrame']
+
+  missing_classes (3 occurrences):
+    example: deathclaweverything.hkx: missing_classes: ['BSCyclicBlendTransitionGenerator', 'BSModifyOnceModifier', 'BSiStateTaggingGenerator', 'DynamicAnimationTaggingGenerator', 'hkbBlenderGenerator', 'hkbBlenderGeneratorChild', 'hkbEvaluateExpressionModifier', 'hkbEventDrivenModifier', 'hkbExpressionCondition', 'hkbExpressionDataArray']
+    example: deathclawrootbehavior.hkx: missing_classes: ['BSLookAtModifier', 'BSRagdollContactListenerModifier', 'hkbTimerModifier']
+    example: skeleton.hkx: missing_classes: ['hkpLimitedHingeConstraintData']
+
+  object_count (13 occurrences):
+    example: deathclaw_attackleft_recoil.hkx: object_count: converted=6 fo4=5
+    example: deathclaw_attackright_recoil.hkx: object_count: converted=6 fo4=5
+    example: deathclaw_equip.hkx: object_count: converted=6 fo4=5
+

@@ -1,0 +1,27 @@
+archetype: robot_handy
+behavior_name: RobotHandyEverything
+root_behavior_name: RobotHandyRootBehavior
+project_name: RobotHandyProject
+character_name: RobotHandy
+model_after: mr_handy
+states:
+  - name: HoverIdle
+    role: idle
+    loop: true
+  - name: HoverMove
+    role: locomotion
+    loop: true
+  - name: ToolAttack
+    role: attack
+  - name: Shutdown
+    role: death
+transitions:
+  - event: move
+    from: HoverIdle
+    to: HoverMove
+  - event: stop
+    from: HoverMove
+    to: HoverIdle
+  - event: attack
+    from: HoverMove
+    to: ToolAttack

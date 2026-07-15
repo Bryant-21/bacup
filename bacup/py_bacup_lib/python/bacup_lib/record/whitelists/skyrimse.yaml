@@ -1,0 +1,5534 @@
+game: skyrimse
+record_types:
+  AACT:
+  - CNAM
+  ACTI:
+  - ActivateTextOverride
+  - Destructibles
+  - Flags
+  - InteractionKeyword
+  - KeywordCount
+  - Keywords
+  - MODL
+  - MODS
+  - MODT
+  - MarkerColor
+  - Name
+  - ObjectBounds
+  - SoundActivation
+  - SoundLooping
+  - VirtualMachineAdapter
+  - WaterType
+  ADDN:
+  - Data
+  - Index
+  - ModelFileName
+  - ModelInformation
+  - ObjectBounds
+  ALCH:
+  - BaseEffect
+  - EFIT
+  - EffectData
+  - KeywordCount
+  - Keywords
+  - MODL
+  - MODS
+  - MODT
+  - Name
+  - ObjectBounds
+  - SoundPickUp
+  - SoundPutDown
+  - Weight
+  AMMO:
+  - Data
+  - Description
+  - KeywordCount
+  - Keywords
+  - MODL
+  - MODT
+  - Name
+  - ObjectBounds
+  - SoundPickUp
+  - SoundPutDown
+  ANIO:
+  - ModelFileName
+  - ModelInformation
+  - UnloadEvent
+  APPA:
+  - Data
+  - Description
+  - Name
+  - ObjectBounds
+  - Quality
+  ARMA:
+  - 1stPersons
+  - ArtObject
+  - BipedBodyTemplate
+  - BipedModels
+  - BodyTemplate
+  - Data
+  - FemaleSkinTexture
+  - FemaleSkinTextureSwapList
+  - FootstepSound
+  - MODL
+  - MaleSkinTexture
+  - MaleSkinTextureSwapList
+  - RNAM
+  ARMO:
+  - AlternateBlockMaterial
+  - ArmorRating
+  - BashImpactDataSet
+  - BipedBodyTemplate
+  - BodyTemplate
+  - Data
+  - Description
+  - Enchantment
+  - EquipmentType
+  - Females
+  - KeywordCount
+  - Keywords
+  - Males
+  - ModelFilename
+  - Name
+  - ObjectBounds
+  - Race
+  - SoundPickUp
+  - SoundPutDown
+  - TemplateArmor
+  - VirtualMachineAdapter
+  ARTO:
+  - ArtType
+  - ModelFileName
+  - ModelInformation
+  - ObjectBounds
+  ASPC:
+  - AmbientSound
+  - EnvironmentTypeReverb
+  - ObjectBounds
+  - UseSoundFromRegionInteriorsOnly
+  ASTP:
+  - FemaleChildTitle
+  - FemaleParentTitle
+  - Flags
+  - MaleChildTitle
+  - MaleParentTitle
+  AVIF:
+  - AssociatedSkill
+  - Description
+  - HorizontalPosition
+  - Index
+  - LineToIndex
+  - Name
+  - ParentRequired
+  - Perk
+  - PerkGridX
+  - PerkGridY
+  - Skill
+  - SkillCategory
+  - VerticalPosition
+  BOOK:
+  - BookText
+  - Data
+  - Description
+  - InventoryArt
+  - KeywordCount
+  - Keywords
+  - MODL
+  - MODS
+  - MODT
+  - Name
+  - ObjectBounds
+  - SoundPickUp
+  - VirtualMachineAdapter
+  BPTD:
+  - GoreEffectsTargetBone
+  - IKDataStartNode
+  - LimbReplacementModel
+  - MODT
+  - ModelFileName
+  - NAM5
+  - NodeData
+  - PartName
+  - PartNode
+  - VATSTarget
+  CAMS:
+  - Data
+  - ImageSpaceModifier
+  - ModelFileName
+  - ModelInformation
+  CELL:
+  - AcousticSpace
+  - EncounterZone
+  - Flags
+  - ImageSpace
+  - Lighting
+  - LightingTemplate
+  - Location
+  - LockList
+  - MusicType
+  - Name
+  - Owner
+  - SkyWeatherFromRegion
+  - Unknown
+  - Water
+  - WaterEnvironmentMap
+  - WaterHeight
+  - WaterNoiseTexture
+  CLAS:
+  - DATA
+  - Description
+  - Name
+  CLFM:
+  - CNAM
+  - Name
+  - Playable
+  CLMT:
+  - ModelFileName
+  - ModelInformation
+  - SunGlareTexture
+  - SunTexture
+  - Timing
+  - WeatherTypes
+  COBJ:
+  - CNTO
+  - CTDA
+  - Count
+  - CreatedObject
+  - CreatedObjectCount
+  - Parameter2
+  - WorkbenchKeyword
+  COLL:
+  - CollidesWith
+  - DebugColor
+  - Description
+  - Flags
+  - Index
+  - InteractablesCount
+  - Name
+  CONT:
+  - CNTO
+  - COED
+  - Count
+  - DATA
+  - MODL
+  - MODS
+  - MODT
+  - Name
+  - ObjectBounds
+  - SoundClose
+  - SoundOpen
+  - VirtualMachineAdapter
+  CPTH:
+  - CTDA
+  - CameraPaths
+  - CameraShot
+  - CameraZoom
+  - Parameter1
+  CSTY:
+  - CloseRange
+  - Flags
+  - Flight
+  - General
+  - LongRange
+  - Melee
+  DEBR:
+  - Data
+  - MODT
+  DIAL:
+  - AudioOutputOverride
+  - Branch
+  - CTDA
+  - DATA
+  - DNAM
+  - Data
+  - ENAM
+  - Edits
+  - FavorLevel
+  - IdleAnimationsListener
+  - IdleAnimationsSpeaker
+  - InfoCount
+  - Name
+  - Parameter2
+  - PreviousINFO
+  - PreviousTopic
+  - Priority
+  - Prompt
+  - Quest
+  - ResponseText
+  - ScriptNotes
+  - Speaker
+  - SubtypeName
+  - TRDT
+  - Topic
+  - Unuseds
+  - VirtualMachineAdapter
+  - WalkAwayTopic
+  DLBR:
+  - Category
+  - Flags
+  - Quest
+  - StartingTopic
+  DLVW:
+  - Branch
+  - Quest
+  - ShowAllText
+  - Topic
+  - TopicType
+  DOBJ:
+  - Objects
+  DOOR:
+  - Flags
+  - MODL
+  - MODS
+  - MODT
+  - Name
+  - ObjectBounds
+  - SoundClose
+  - SoundOpen
+  - VirtualMachineAdapter
+  DUAL:
+  - Data
+  - ObjectBounds
+  ECZN:
+  - DATA
+  EFSH:
+  - DATA
+  - FillTexture
+  - HolesTexture
+  - MembranePaletteTexture
+  - ParticlePaletteTexture
+  - ParticleShaderTexture
+  ENCH:
+  - BaseEffect
+  - CTDA
+  - EFIT
+  - EffectData
+  - Name
+  - ObjectBounds
+  - Parameter2
+  EQUP:
+  - SlotParents
+  - UseAllParents
+  EXPL:
+  - Data
+  - Enchantment
+  - ImageSpaceModifier
+  - ModelFileName
+  - ModelInformation
+  - Name
+  - ObjectBounds
+  EYES:
+  - Flags
+  - Name
+  - Texture
+  FACT:
+  - CTDA
+  - ConditionCount
+  - CrimeValues
+  - ExteriorJailMarker
+  - FemaleTitle
+  - Flags
+  - FollowerWaitMarker
+  - JailOutfit
+  - Location
+  - MaleTitle
+  - MerchantContainer
+  - Name
+  - Parameter2
+  - PlayerInventoryContainer
+  - Rank
+  - Relations
+  - SharedCrimeFactionList
+  - StolenGoodsContainer
+  - VendorBuySellList
+  - VendorValues
+  FLOR:
+  - ActivateTextOverride
+  - Flags
+  - HarvestSound
+  - Ingredient
+  - MODL
+  - MODS
+  - MODT
+  - MarkerColorUnused
+  - Name
+  - ObjectBounds
+  - SeasonalIngredientProduction
+  - VirtualMachineAdapter
+  FLST:
+  - FormID
+  FSTP:
+  - ImpactDataSet
+  - Tag
+  FSTS:
+  - FootstepCounts
+  - Footsteps
+  FURN:
+  - ActiveMarkersFlags
+  - Destructibles
+  - DisabledEntryPoints
+  - Flags
+  - InteractionKeyword
+  - KeywordCount
+  - Keywords
+  - MODL
+  - MODS
+  - MODT
+  - Marker
+  - MarkerColorUnused
+  - MarkerIndex
+  - MarkerKeyword
+  - Name
+  - ObjectBounds
+  - VirtualMachineAdapter
+  - WorkbenchData
+  - XMRK
+  GLOB:
+  - Type
+  - Value
+  GMST:
+  - Value
+  GRAS:
+  - DATA
+  - ModelFileName
+  - ModelInformation
+  - ObjectBounds
+  HAZD:
+  - Data
+  - ModelFileName
+  - ModelInformation
+  - Name
+  - ObjectBounds
+  HDPT:
+  - Color
+  - FileName
+  - Flags
+  - ModelFileName
+  - ModelInformation
+  - Name
+  - Part
+  - PartType
+  - TextureSet
+  - Type
+  - ValidRaces
+  IDLE:
+  - AnimationEvent
+  - Animations
+  - CTDA
+  - DataUnused
+  - FileName
+  - Parameter1
+  - Parameter2
+  IDLM:
+  - AnimationCount
+  - Animations
+  - Flags
+  - IdleTimerSetting
+  - ObjectBounds
+  IMAD:
+  - BlurRadius
+  - Cinematics
+  - Data
+  - DephtOfFields
+  - DoubleVisionStrength
+  - FadeColor
+  - Hdrs
+  - MotionBlurStrength
+  - RadialBlurs
+  - TintColor
+  IMGS:
+  - Cinematic
+  - DepthOfField
+  - HDR
+  - Tint
+  INGR:
+  - BaseEffect
+  - DATA
+  - EFIT
+  - EffectData
+  - KeywordCount
+  - Keywords
+  - MODL
+  - MODS
+  - MODT
+  - Name
+  - ObjectBounds
+  - SoundPickUp
+  - SoundPutDown
+  - VirtualMachineAdapter
+  IPCT:
+  - DATA
+  - DecalData
+  - Hazard
+  - ModelFileName
+  - ModelInformation
+  - SecondaryTextureSet
+  - Sound1
+  - Sound2
+  - TextureSet
+  IPDS:
+  - Data
+  KEYM:
+  - DATA
+  - KeywordCount
+  - Keywords
+  - MODL
+  - MODT
+  - Name
+  - ObjectBounds
+  - SoundPickUp
+  - SoundPutDown
+  KYWD:
+  - CNAM
+  LCRT:
+  - CNAM
+  LCTN:
+  - AddedEnableParentReferences
+  - AddedInitiallyDisabledReferences
+  - AddedPersistLocationReferences
+  - AddedSpecialReferences
+  - AddedUniqueNPCs
+  - AddedWorldspaceCells
+  - CNAM
+  - HorseMarkerRef
+  - KeywordCount
+  - Keywords
+  - LocationPersistLocationReferences
+  - MasterEnablePointReferences
+  - MasterInitiallyDisabledReferences
+  - MasterSpecialReferences
+  - MasterUniqueNPCs
+  - MasterWorldspaceCells
+  - Music
+  - Name
+  - ParentLocation
+  - UnreportedCrimeFaction
+  - WorldLocationMarkerRef
+  - WorldLocationRadius
+  LGTM:
+  - DALC
+  - Lighting
+  LIGH:
+  - Data
+  - FadeValue
+  - MODL
+  - MODT
+  - Name
+  - ObjectBounds
+  - Sound
+  - VirtualMachineAdapter
+  LSCR:
+  - CTDA
+  - CameraPath
+  - Description
+  - InitialRotation
+  - InitialScale
+  - InitialTranslationOffset
+  - LoadingScreenNIF
+  - Parameter2
+  - RotationOffsetConstraints
+  LTEX:
+  - Grass
+  - HavokData
+  - IsSnow
+  - MaterialType
+  - TextureSet
+  - TextureSpecularExponent
+  LVLI:
+  - ChanceNone
+  - Count
+  - Flags
+  - Global
+  - LeveledEntry
+  - ObjectBounds
+  LVLN:
+  - ChanceNone
+  - Count
+  - Flags
+  - LeveledEntry
+  - ModelFileName
+  - ModelInformation
+  - ObjectBounds
+  LVSP:
+  - ChanceNone
+  - Count
+  - Flags
+  - LeveledEntry
+  - ObjectBounds
+  MATO:
+  - Data
+  - DirectionalMaterialData
+  - ModelFileName
+  - ModelInformation
+  MATT:
+  - Buoyancy
+  - Flags
+  - HavokDisplayColor
+  - HavokImpactDataSet
+  - MaterialName
+  - MaterialParent
+  MESG:
+  - ButtonText
+  - CTDA
+  - Description
+  - DisplayTime
+  - Flags
+  - IconUnused
+  - Name
+  - OwnerQuest
+  MGEF:
+  - CTDA
+  - Data
+  - KeywordCount
+  - Keywords
+  - MagicItemDescription
+  - MenuDisplayObject
+  - Name
+  - Sounds
+  - VirtualMachineAdapter
+  MISC:
+  - Data
+  - IconFileName
+  - KeywordCount
+  - Keywords
+  - MODL
+  - MODS
+  - MODT
+  - Name
+  - ObjectBounds
+  - SoundPickUp
+  - SoundPutDown
+  - VirtualMachineAdapter
+  MOVT:
+  - AnimChangeThresholds
+  - DefaultData
+  - Name
+  MSTT:
+  - Destructibles
+  - Flags
+  - LoopingSound
+  - MODL
+  - MODS
+  - MODT
+  - ObjectBounds
+  MUSC:
+  - Data
+  - FadeDuration
+  - Flags
+  - MusicTracks
+  MUST:
+  - CTDA
+  - ConditionCount
+  - CuePoints
+  - Duration
+  - FadeOut
+  - FinaleFileName
+  - LoopData
+  - TrackFileName
+  - TrackType
+  - Tracks
+  NAVI:
+  - DeletedNavmeshes
+  - NavmeshInfos
+  - PrecomputedPathing
+  - Version
+  NPC_:
+  - AIData
+  - ActorEffect
+  - AttackData
+  - AttackEvent
+  - AttackRace
+  - CNTO
+  - COCT
+  - Class
+  - CombatOverridePackageList
+  - CombatStyle
+  - Configuration
+  - CrimeFaction
+  - DeathItem
+  - DefaultOutfit
+  - DefaultPackageList
+  - Destructibles
+  - FaceMorph
+  - FaceParts
+  - Factions
+  - FarAwayModel
+  - GiftFilter
+  - HairColor
+  - HeadPart
+  - HeadTexture
+  - Height
+  - InheritsSoundsFrom
+  - InterpolationValue
+  - KeywordCount
+  - Keywords
+  - Marker
+  - NAM5
+  - Name
+  - ObjectBounds
+  - Package
+  - PerkCount
+  - Perks
+  - PlayerSkills
+  - Preset
+  - Race
+  - SPCT
+  - ShortName
+  - Skin
+  - SleepingOutfit
+  - Sound
+  - SoundChance
+  - SoundLevel
+  - SpectatorOverridePackageList
+  - Template
+  - TextureLighting
+  - TintColor
+  - TintIndex
+  - Type
+  - VirtualMachineAdapter
+  - Voice
+  - Weight
+  OTFT:
+  - Items
+  PACK:
+  - AnimationCount
+  - Animations
+  - CIS2
+  - CTDA
+  - CombatStyle
+  - Counter
+  - Flags
+  - IdleTimerSetting
+  - Marker
+  - Onbegins
+  - Onchanges
+  - Onends
+  - OwnerQuest
+  - PackData
+  - PackageDatas
+  - ProcedureTrees
+  - Schedule
+  - VirtualMachineAdapter
+  PERK:
+  - ButtonLabel
+  - CIS2
+  - CTDA
+  - DATA
+  - Description
+  - EPF3
+  - EPFD
+  - EffectData
+  - EndMarker
+  - Name
+  - NextPerk
+  - PRKE
+  - RunOnTabIndex
+  - Type
+  - VirtualMachineAdapter
+  PROJ:
+  - Data
+  - Destructibles
+  - MODL
+  - MODT
+  - NAM1
+  - NAM2
+  - Name
+  - ObjectBounds
+  - SoundLevel
+  QUST:
+  - ALCA
+  - ALDN
+  - ALEA
+  - ALED
+  - ALEQ
+  - ALFA
+  - ALFD
+  - ALFE
+  - ALFI
+  - ALID
+  - ALNA
+  - CIS2
+  - CNTO
+  - CTDA
+  - CombatOverridePackageList
+  - Count
+  - DisplayText
+  - Event
+  - FNAM
+  - Faction
+  - General
+  - Global
+  - GuardWarnOverridePackageList
+  - INDX
+  - KNAM
+  - KeywordCount
+  - Keywords
+  - Level
+  - LocationAliasID
+  - LogEntry
+  - Marker
+  - Name
+  - NextAliasID
+  - NextQuest
+  - ORedWithPrevious
+  - Object
+  - ObjectWindowFilter
+  - ObjectiveIndex
+  - ObserveDeadBodyOverridePackageList
+  - Package
+  - QNAM
+  - QSTA
+  - QuestDialogueConditions
+  - RefType
+  - ReferenceAliasID
+  - SCHR
+  - SCTX
+  - SpecificLocation
+  - SpecificReference
+  - SpectatorOverridePackageList
+  - Spell
+  - StageFlags
+  - Type
+  - UniqueActor
+  - VirtualMachineAdapter
+  - VoiceTypes
+  RACE:
+  - ActorEffect
+  - ArmorRace
+  - AttackData
+  - AttackEvent
+  - BaseMovementDefaultFly
+  - BaseMovementDefaultRun
+  - BaseMovementDefaultSneak
+  - BaseMovementDefaultSprint
+  - BaseMovementDefaultSwim
+  - BaseMovementDefaultWalk
+  - BipedBodyTemplate
+  - BodyDatas
+  - BodyPartData
+  - CloseLootSound
+  - Count
+  - DATA
+  - DecapitateArmors
+  - DecapitationFX
+  - DefaultHairColors
+  - Description
+  - EquipSlot
+  - EquipmentFlags
+  - FULL
+  - FaceGenFaceClamp
+  - FaceGenMainClamp
+  - FemaleMarker
+  - FemaleSkeletalModel
+  - Head
+  - HeadDatas
+  - ImpactDataSet
+  - KeywordCount
+  - Keywords
+  - MODT
+  - MTNM
+  - MaleMarker
+  - MaleSkeletalModel
+  - MarkerNAM33
+  - MaterialType
+  - MorphRace
+  - MovementType
+  - NAME
+  - OpenLootSound
+  - OverrideValues
+  - PHTN
+  - PHWT
+  - Skin
+  - TotalNumberOfTintsInList
+  - UnarmedEquipSlot
+  - Voices
+  REGN:
+  - EdgeFallOff
+  - MapColor
+  - Music
+  - Points
+  - RDAT
+  - RDSA
+  - WeatherTypes
+  - Worldspace
+  RELA:
+  - Data
+  REVB:
+  - Data
+  RFCT:
+  - EffectData
+  SCEN:
+  - ALID
+  - ActorBehaviorSettings
+  - BehaviourFlags
+  - CIS2
+  - CTDA
+  - DurationSeconds
+  - EditorWidth
+  - EmotionType
+  - EmotionValue
+  - EndPhase
+  - FNAM
+  - HeadtrackActorID
+  - Index
+  - LNAM
+  - LastActionIndex
+  - LoopingMax
+  - LoopingMin
+  - MarkerPhaseEnd
+  - MarkerPhaseStart
+  - NAM0
+  - NEXT
+  - Package
+  - ParentQuest
+  - QNAM
+  - SCDA
+  - SCHR
+  - SCRO
+  - SCTX
+  - StartPhase
+  - Topic
+  - Type
+  - VirtualMachineAdapter
+  SCRL:
+  - BaseEffect
+  - CTDA
+  - Data
+  - Description
+  - EFIT
+  - EquipmentType
+  - Item
+  - KeywordCount
+  - Keywords
+  - MODL
+  - MODT
+  - MenuDisplayObject
+  - Name
+  - ObjectBounds
+  - Parameter2
+  SHOU:
+  - Description
+  - MenuDisplayObject
+  - Name
+  - WordsOfPower
+  SLGM:
+  - ContainedSoul
+  - DATA
+  - KeywordCount
+  - Keywords
+  - LinkedTo
+  - MODL
+  - MODT
+  - MaximumCapacity
+  - Name
+  - ObjectBounds
+  SMBN:
+  - CTDA
+  - ConditionCount
+  - Flags
+  - MaxConcurrentQuests
+  - Parameter2
+  - ParentNode
+  - PreviousNode
+  SMEN:
+  - ConditionCount
+  - Flags
+  - MaxConcurrentQuests
+  - ParentNode
+  - PreviousNode
+  - Type
+  SMQN:
+  - 24HoursTillReset
+  - CTDA
+  - ConditionCount
+  - Flags
+  - HoursUntilReset
+  - MaxConcurrentQuests
+  - NumQuestsToRun
+  - Parameter2
+  - ParentNode
+  - PreviousNode
+  - Quest
+  - QuestCount
+  SNCT:
+  - DefaultMenuValue
+  - Flags
+  - Name
+  - Parent
+  - StaticVolumeMultiplier
+  SNDR:
+  - AlternateSoundFor
+  - CTDA
+  - Category
+  - DescriptorType
+  - FNAM
+  - LNAM
+  - OutputModel
+  - Sound
+  - Values
+  SOPM:
+  - AttenuationValues
+  - CNAM
+  - Data
+  - FNAM
+  - OutputValues
+  - SNAM
+  - Type
+  SOUN:
+  - FNAM
+  - ObjectBounds
+  - SNDD
+  - SoundDescriptor
+  SPEL:
+  - BaseEffect
+  - CTDA
+  - Data
+  - Description
+  - EFIT
+  - EquipmentType
+  - MenuDisplayObject
+  - Name
+  - ObjectBounds
+  - Parameter2
+  SPGD:
+  - Data
+  - ParticleTexture
+  STAT:
+  - AlternateTextures
+  - DirectionMaterial
+  - DistantLOD
+  - ModelFileName
+  - ModelInformation
+  - ObjectBounds
+  TACT:
+  - FNAM
+  - MODL
+  - MODT
+  - Name
+  - ObjectBounds
+  - PNAM
+  - VoiceType
+  TREE:
+  - HarvestSound
+  - Ingredient
+  - IngredientProduction
+  - ModelFileName
+  - ModelInformation
+  - Name
+  - ObjectBounds
+  - TreeData
+  TXST:
+  - DecalData
+  - Flags
+  - ObjectBounds
+  - TexturesRgbAs
+  VOLI:
+  - CustomColorContribution
+  - DensityContribution
+  - DensityFallingSpeed
+  - DensitySize
+  - DensityWindSpeed
+  - ENAM
+  - FNAM
+  - GNAM
+  - Intensity
+  - PhaseFunctionContribution
+  - PhaseFunctionScattering
+  - SamplingRepartitionRangeFactor
+  VTYP:
+  - Flags
+  WATR:
+  - AngularVelocity
+  - DamagePerSecond
+  - Data
+  - Flags
+  - FlowNormalsNoiseTexture
+  - ImageSpace
+  - LinearVelocity
+  - Material
+  - Name
+  - NoiseTextures
+  - Opacity
+  - OpenSound
+  - RelatedWatersUnused
+  WEAP:
+  - 1stPersonModelObject
+  - AlternateBlockMaterial
+  - AttackFailSound
+  - AttackSound
+  - BlockBashImpactDataSet
+  - Capacity
+  - CriticalData
+  - Data
+  - Description
+  - DetectionSoundLevel
+  - Effect
+  - EquipSound
+  - EquipmentType
+  - GameData
+  - IdleSound
+  - ImpactDataSet
+  - KeywordCount
+  - Keywords
+  - MODL
+  - MODS
+  - MODT
+  - Name
+  - ObjectBounds
+  - Template
+  - UnequipSound
+  - Unused
+  - VirtualMachineAdapter
+  WOOP:
+  - Name
+  - Translation
+  WRLD:
+  - AcousticSpace
+  - Cell
+  - Climate
+  - DATA
+  - DistantLODMultiplier
+  - EncounterZone
+  - FixedDimensionsCenterCell
+  - Flags
+  - Grid
+  - HDLODDiffuseTexture
+  - HDLODNormalTexture
+  - ImageSpace
+  - InteriorLighting
+  - LODWater
+  - LODWaterHeight
+  - LandData
+  - LightingTemplate
+  - Location
+  - Max
+  - MaxHeightData
+  - Min
+  - ModelFileName
+  - ModelInformation
+  - Music
+  - MusicType
+  - Name
+  - OcclusionData
+  - Offsets
+  - ParentWorldspaces
+  - Regions
+  - Unknown
+  - Water
+  - WaterCurrentVelocities
+  - WaterEnvironmentMap
+  - WaterHeight
+  - WaterNoiseTexture
+  - WorldMapData
+  - WorldMapOffsetData
+  WTHR:
+  - '"'
+  - '">0TX"'
+  - '"@0TX"'
+  - 00TX
+  - 10TX
+  - 20TX
+  - 30TX
+  - 40TX
+  - 50TX
+  - 60TX
+  - 70TX
+  - 80TX
+  - 90TX
+  - ;0TX
+  - <0TX
+  - =0TX
+  - ?0TX
+  - CloudAlphas
+  - CloudColors
+  - Data
+  - Day
+  - DisabledCloudLayers
+  - FogDistance
+  - ImageSpaces
+  - Layer17
+  - Layer18
+  - Layer19
+  - Layer20
+  - Layer21
+  - Layer22
+  - Layer23
+  - Layer24
+  - Layer25
+  - Layer26
+  - Layer27
+  - Layer28
+  - MaxCloudLayers
+  - ModelFileName
+  - ModelInformation
+  - Night
+  - PrecipitationType
+  - Sound
+  - Static
+  - Sunrise
+  - Sunset
+  - VisualEffect
+  - VolumetricLighting
+  - WeatherColors
+  - XSpeeds
+  - YSpeeds
+nested:
+  ACTI:
+    ActivateTextOverride:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Destructibles:
+    - DMDL
+    - DMDS
+    - DMDT
+    - DestructionStageData
+    - EndMarker
+    - Header
+    InteractionKeyword:
+    - reference
+    Keywords:
+    - reference
+    MODS:
+    - raw_hex
+    MarkerColor:
+    - MarkerColorBlue
+    - MarkerColorGreen
+    - MarkerColorRed
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    SoundActivation:
+    - reference
+    SoundLooping:
+    - reference
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+    WaterType:
+    - reference
+  ADDN:
+    Data:
+    - Flags
+  ALCH:
+    BaseEffect:
+    - reference
+    EFIT:
+    - Duration
+    - Magnitude
+    EffectData:
+    - Flags
+    - SoundConsume
+    - Value
+    Keywords:
+    - reference
+    MODS:
+    - raw_hex
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    SoundPickUp:
+    - reference
+    SoundPutDown:
+    - reference
+  AMMO:
+    Data:
+    - Damage
+    - Flags
+    - Projectile
+    - Value
+    - Weight
+    Description:
+    - TargetLanguage
+    Keywords:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    SoundPickUp:
+    - reference
+    SoundPutDown:
+    - reference
+  APPA:
+    Description:
+    - TargetLanguage
+    Name:
+    - raw_hex
+  ARMA:
+    1stPersons:
+    - MO4S
+    - MO4T
+    - MO5T
+    - MOD4
+    - MOD5
+    ArtObject:
+    - reference
+    BipedBodyTemplate:
+    - raw_hex
+    BipedModels:
+    - MO2S
+    - MO2T
+    - MO3S
+    - MO3T
+    - MOD2
+    - MOD3
+    BodyTemplate:
+    - ArmorType
+    - FirstPersonFlags
+    - GeneralFlags
+    - UnknownByte3
+    - UnknownByte4
+    - UnknownByte5
+    Data:
+    - DetectionSoundValue
+    - FemalePriority
+    - MalePriority
+    - UnknownByte5
+    - UnknownByte8
+    - WeaponAdjust
+    - WeightSliderFemale
+    - WeightSliderMale
+    FemaleSkinTexture:
+    - reference
+    FemaleSkinTextureSwapList:
+    - reference
+    FootstepSound:
+    - reference
+    MODL:
+    - reference
+    MaleSkinTexture:
+    - reference
+    MaleSkinTextureSwapList:
+    - reference
+    RNAM:
+    - reference
+  ARMO:
+    AlternateBlockMaterial:
+    - reference
+    BashImpactDataSet:
+    - reference
+    BipedBodyTemplate:
+    - raw_hex
+    BodyTemplate:
+    - ArmorType
+    - FirstPersonFlags
+    - GeneralFlags
+    Data:
+    - Value
+    - Weight
+    Description:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Enchantment:
+    - reference
+    EquipmentType:
+    - reference
+    Females:
+    - MO4S
+    - MO4T
+    - MOD4
+    Keywords:
+    - reference
+    Males:
+    - MO2S
+    - MO2T
+    - MOD2
+    ModelFilename:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    Race:
+    - reference
+    SoundPickUp:
+    - reference
+    SoundPutDown:
+    - reference
+    TemplateArmor:
+    - reference
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+  ARTO:
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+  ASPC:
+    AmbientSound:
+    - reference
+    EnvironmentTypeReverb:
+    - reference
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    UseSoundFromRegionInteriorsOnly:
+    - reference
+  AVIF:
+    AssociatedSkill:
+    - reference
+    Description:
+    - raw_hex
+    Name:
+    - raw_hex
+    ParentRequired:
+    - enum
+    - scope
+    - value
+    Perk:
+    - reference
+    Skill:
+    - SkillImproveMult
+    - SkillImproveOffset
+    - SkillUseMult
+  BOOK:
+    BookText:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Data:
+    - Flags
+    - Teaches
+    - Value
+    - Weight
+    Description:
+    - TargetLanguage
+    - raw_hex
+    InventoryArt:
+    - reference
+    Keywords:
+    - reference
+    MODS:
+    - raw_hex
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    SoundPickUp:
+    - reference
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+  BPTD:
+    NodeData:
+    - ActorValue
+    - DamageMult
+    - ExplodableDebrisScale
+    - Flags
+    - HealthPercent
+    - LimbReplacementScale
+    - PartType
+    - SeverableDebrisScale
+    - ToHitChance
+    PartName:
+    - raw_hex
+  CAMS:
+    Data:
+    - Action
+    - Flags
+    - Location
+    - MaxTime
+    - MinTime
+    - NearTargetDistance
+    - Target
+    - TimeMultipliersGlobal
+    - TimeMultipliersPlayer
+    - TimeMultipliersTarget
+    ImageSpaceModifier:
+    - reference
+  CELL:
+    AcousticSpace:
+    - reference
+    EncounterZone:
+    - reference
+    ImageSpace:
+    - reference
+    Lighting:
+    - DirectionalFade
+    - FogPower
+    - raw_hex
+    LightingTemplate:
+    - reference
+    Location:
+    - reference
+    LockList:
+    - reference
+    MusicType:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Owner:
+    - reference
+    SkyWeatherFromRegion:
+    - reference
+    Water:
+    - reference
+  CLAS:
+    DATA:
+    - raw_hex
+    Description:
+    - TargetLanguage
+    Name:
+    - raw_hex
+  CLFM:
+    CNAM:
+    - ColorBlue
+    - ColorGreen
+    - ColorRed
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+  CLMT:
+    Timing:
+    - raw_hex
+    WeatherTypes:
+    - WeatherTypesChance
+    - WeatherTypesWeather
+  COBJ:
+    CNTO:
+    - Count
+    - Item
+    CTDA:
+    - raw_hex
+    CreatedObject:
+    - reference
+    WorkbenchKeyword:
+    - reference
+  COLL:
+    CollidesWith:
+    - reference
+    DebugColor:
+    - DebugColorBlue
+    - DebugColorGreen
+    - DebugColorRed
+    Description:
+    - TargetLanguage
+    - raw_hex
+  CONT:
+    CNTO:
+    - Count
+    - Item
+    COED:
+    - GlobalVariableRequiredRank
+    - ItemCondition
+    - Owner
+    DATA:
+    - Flags
+    MODS:
+    - raw_hex
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    SoundClose:
+    - reference
+    SoundOpen:
+    - reference
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+  CPTH:
+    CTDA:
+    - raw_hex
+    CameraPaths:
+    - Parent
+    - Previous
+    CameraShot:
+    - reference
+  CSTY:
+    CloseRange:
+    - CircleMult
+    - FallbackMult
+    - FlankDistance
+    - StalkTime
+    Flight:
+    - DiveBombChance
+    - FlyingAttackChance
+    - GroundAttackChance
+    - GroundAttackTime
+    - HoverChance
+    - HoverTime
+    - PerchAttackChance
+    - PerchAttackTime
+    General:
+    - AvoidThreatChance
+    - DefensiveMult
+    - EquipmentScoreMultMagic
+    - EquipmentScoreMultMelee
+    - EquipmentScoreMultRanged
+    - EquipmentScoreMultShout
+    - EquipmentScoreMultStaff
+    - EquipmentScoreMultUnarmed
+    - GroupOffensiveMult
+    - OffensiveMult
+    Melee:
+    - AttackStaggeredMult
+    - BashAttackMult
+    - BashMult
+    - BashPowerAttackMult
+    - BashRecoilMult
+    - PowerAttackBlockingMult
+    - PowerAttackStaggeredMult
+    - SpecialAttackMult
+  DEBR:
+    Data:
+    - raw_hex
+    MODT:
+    - raw_hex
+  DIAL:
+    AudioOutputOverride:
+    - reference
+    Branch:
+    - reference
+    CTDA:
+    - raw_hex
+    DATA:
+    - QuestDialogueTab
+    - ResetDays
+    - ResponseFlags
+    DNAM:
+    - reference
+    Data:
+    - Category
+    - DoAllBeforeRepeating
+    - Subtype
+    ENAM:
+    - ResetHours
+    - ResponseFlags
+    IdleAnimationsListener:
+    - reference
+    IdleAnimationsSpeaker:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    PreviousINFO:
+    - reference
+    PreviousTopic:
+    - reference
+    Prompt:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Quest:
+    - reference
+    ResponseText:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Speaker:
+    - reference
+    TRDT:
+    - EmotionType
+    - EmotionValue
+    - ResponseNumber
+    - Sound
+    - UseEmotionAnimation
+    Topic:
+    - reference
+    Unuseds:
+    - Marker
+    - QNAM
+    - SCHR
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - raw_hex
+    - semantic_type
+    - size
+    - tail_hex
+    WalkAwayTopic:
+    - reference
+  DLBR:
+    Quest:
+    - reference
+    StartingTopic:
+    - reference
+  DLVW:
+    Branch:
+    - reference
+    Quest:
+    - reference
+    Topic:
+    - reference
+  DOBJ:
+    Objects:
+    - ObjectsObjectID
+    - ObjectsUse
+  DOOR:
+    MODS:
+    - raw_hex
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    SoundClose:
+    - reference
+    SoundOpen:
+    - reference
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+  DUAL:
+    Data:
+    - EffectShader
+    - Explosion
+    - HitEffectArt
+    - InheritScale
+    - Projectile
+  ECZN:
+    DATA:
+    - value
+    - variant
+  EFSH:
+    DATA:
+    - AddonModels
+    - AddonModelsFadeInTime
+    - AddonModelsFadeOutTime
+    - AddonModelsScaleEnd
+    - AddonModelsScaleInTime
+    - AddonModelsScaleOutTime
+    - AddonModelsScaleStart
+    - AmbientSound
+    - BirthPositionOffset
+    - BirthPositionOffsetRange
+    - ColorKey1ColorAlpha
+    - ColorKey1ColorBlue
+    - ColorKey1ColorGreen
+    - ColorKey1ColorKeyTime
+    - ColorKey1ColorRed
+    - ColorKey2ColorAlpha
+    - ColorKey2ColorBlue
+    - ColorKey2ColorGreen
+    - ColorKey2ColorKeyTime
+    - ColorKey2ColorRed
+    - ColorKey3ColorAlpha
+    - ColorKey3ColorBlue
+    - ColorKey3ColorGreen
+    - ColorKey3ColorKeyTime
+    - ColorKey3ColorRed
+    - ColorScale
+    - EdgeColorBlue
+    - EdgeColorGreen
+    - EdgeColorRed
+    - EdgeEffectAlphaFadeInTime
+    - EdgeEffectAlphaFadeOutTime
+    - EdgeEffectAlphaPulseAmplitude
+    - EdgeEffectAlphaPulseFrequency
+    - EdgeEffectColorBlue
+    - EdgeEffectColorGreen
+    - EdgeEffectColorRed
+    - EdgeEffectFallOff
+    - EdgeEffectFullAlphaRatio
+    - EdgeEffectFullAlphaTime
+    - EdgeEffectPersistentAlphaRatio
+    - FillTextureEffectAlphaFadeInTime
+    - FillTextureEffectAlphaFadeOutTime
+    - FillTextureEffectAlphaPulseAmplitude
+    - FillTextureEffectAlphaPulseFrequency
+    - FillTextureEffectColorKey1Blue
+    - FillTextureEffectColorKey1Green
+    - FillTextureEffectColorKey1Red
+    - FillTextureEffectColorKey2Blue
+    - FillTextureEffectColorKey2Green
+    - FillTextureEffectColorKey2Red
+    - FillTextureEffectColorKey3Blue
+    - FillTextureEffectColorKey3Green
+    - FillTextureEffectColorKey3Red
+    - FillTextureEffectColorKeyScaleTimeColorKey1Scale
+    - FillTextureEffectColorKeyScaleTimeColorKey1Time
+    - FillTextureEffectColorKeyScaleTimeColorKey2Scale
+    - FillTextureEffectColorKeyScaleTimeColorKey2Time
+    - FillTextureEffectColorKeyScaleTimeColorKey3Scale
+    - FillTextureEffectColorKeyScaleTimeColorKey3Time
+    - FillTextureEffectFullAlphaRatio
+    - FillTextureEffectFullAlphaTime
+    - FillTextureEffectPresistentAlphaRatio
+    - FillTextureEffectTextureAnimationSpeedU
+    - FillTextureEffectTextureAnimationSpeedV
+    - FillTextureEffectTextureScaleU
+    - FillTextureEffectTextureScaleV
+    - Flags
+    - FlagsUnused
+    - HolesEndTime
+    - HolesEndVal
+    - HolesStartTime
+    - HolesStartVal
+    - MembraneShaderBlendOperation
+    - MembraneShaderDestBlendMode
+    - MembraneShaderSourceBlendMode
+    - MembraneShaderZTestFunction
+    - ParticleShaderAcceleration1
+    - ParticleShaderAcceleration2
+    - ParticleShaderAcceleration3
+    - ParticleShaderAccelerationAlongNormal
+    - ParticleShaderAnimatedEndFrame
+    - ParticleShaderAnimatedFrameCount
+    - ParticleShaderAnimatedFrameCountVariation
+    - ParticleShaderAnimatedLoopStartFrame
+    - ParticleShaderAnimatedStartFrameVariation
+    - ParticleShaderBlendOperation
+    - ParticleShaderDestBlendMode
+    - ParticleShaderFullParticleBirthRatio
+    - ParticleShaderFullParticleBirthTime
+    - ParticleShaderInitialRotationDeg
+    - ParticleShaderInitialSpeedAlongNormal
+    - ParticleShaderInitialVelocity2
+    - ParticleShaderInitialVelocity3
+    - ParticleShaderParticleBirthRampDownTime
+    - ParticleShaderParticleBirthRampUpTime
+    - ParticleShaderParticleLifetime
+    - ParticleShaderPersistantParticleCount
+    - ParticleShaderRotationSpeedDegSec
+    - ParticleShaderScaleKey1
+    - ParticleShaderScaleKey1Time
+    - ParticleShaderScaleKey2
+    - ParticleShaderScaleKey2Time
+    - ParticleShaderSourceBlendMode
+    - ParticleShaderZTestFunction
+    - SceneGraphEmitDepthLimitUnused
+    - TextureCountU
+    - TextureCountV
+    - UnknownByte129
+    - UnknownByte2
+    - UnknownByte3
+    - UnknownByte4
+  ENCH:
+    BaseEffect:
+    - reference
+    CTDA:
+    - raw_hex
+    EFIT:
+    - Area
+    - Duration
+    - Magnitude
+    EffectData:
+    - BaseEnchantment
+    - CastType
+    - ChargeTime
+    - Delivery
+    - EnchantType
+    - EnchantmentAmount
+    - EnchantmentCost
+    - Flags
+    - WornRestrictions
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+  EQUP:
+    SlotParents:
+    - reference
+  EXPL:
+    Data:
+    - Damage
+    - Flags
+    - Force
+    - ISRadius
+    - ImpactDataSet
+    - Light
+    - PlacedObject
+    - Radius
+    - Sound1
+    - Sound2
+    - SoundLevel
+    - VerticalOffsetMult
+    Enchantment:
+    - reference
+    ImageSpaceModifier:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+  EYES:
+    Name:
+    - raw_hex
+  FACT:
+    CTDA:
+    - raw_hex
+    CrimeValues:
+    - Arrest
+    - Assault
+    - AttackOnSight
+    - Escape
+    - Murder
+    - Pickpocket
+    - StealMultiplier
+    - Trespass
+    - Unknown
+    - Werewolf
+    ExteriorJailMarker:
+    - reference
+    FemaleTitle:
+    - raw_hex
+    FollowerWaitMarker:
+    - reference
+    JailOutfit:
+    - reference
+    Location:
+    - LocationValue
+    - Type
+    MaleTitle:
+    - raw_hex
+    MerchantContainer:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    PlayerInventoryContainer:
+    - reference
+    Relations:
+    - Faction
+    - GroupCombatReaction
+    - Modifier
+    SharedCrimeFactionList:
+    - reference
+    StolenGoodsContainer:
+    - reference
+    VendorBuySellList:
+    - reference
+    VendorValues:
+    - EndHour
+    - NotSellBuy
+    - OnlyBuysStolenItems
+    - Radius
+    - StartHour
+  FLOR:
+    ActivateTextOverride:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    HarvestSound:
+    - reference
+    Ingredient:
+    - reference
+    MODS:
+    - raw_hex
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    SeasonalIngredientProduction:
+    - Fall
+    - Spring
+    - Summer
+    - Winter
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+  FLST:
+    FormID:
+    - reference
+  FSTP:
+    ImpactDataSet:
+    - reference
+  FSTS:
+    FootstepCounts:
+    - RunningCount
+    - SneakingCount
+    - SprintingCount
+    - SwimmingCount
+    - WalkingCount
+    Footsteps:
+    - SwimmingFootsteps
+    - reference
+  FURN:
+    Destructibles:
+    - DestructionStageData
+    - EndMarker
+    - Header
+    DisabledEntryPoints:
+    - DisabledPoints
+    - UnknownByte1
+    InteractionKeyword:
+    - reference
+    Keywords:
+    - reference
+    MODS:
+    - raw_hex
+    Marker:
+    - EntryPoints
+    - Type
+    MarkerColorUnused:
+    - MarkerColorUnusedBlue
+    - MarkerColorUnusedGreen
+    - MarkerColorUnusedRed
+    MarkerKeyword:
+    - reference
+    Name:
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+    WorkbenchData:
+    - BenchType
+    - UsesSkill
+  GMST:
+    Value:
+    - value
+    - variant
+  GRAS:
+    DATA:
+    - ColorRange
+    - Density
+    - Flags
+    - HeightRange
+    - MaxSlope
+    - PositionRange
+    - UnitsFromWater
+    - UnitsFromWaterType
+    - UnknownByte14
+    - UnknownByte15
+    - UnknownByte16
+    - UnknownByte4
+    - UnknownByte6
+    - UnknownByte7
+    - WavePeriod
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+  HAZD:
+    Data:
+    - Flags
+    - Lifetime
+    - Limit
+    - Radius
+    - Sound
+    - Spell
+    - TargetInterval
+    Name:
+    - raw_hex
+  HDPT:
+    Color:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Part:
+    - reference
+    TextureSet:
+    - reference
+    ValidRaces:
+    - reference
+  IDLE:
+    Animations:
+    - Parent
+    - Previous
+    CTDA:
+    - raw_hex
+    DataUnused:
+    - AnimationGroupSection
+    - Flags
+    - ReplayDelay
+  IDLM:
+    Animations:
+    - reference
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ2
+  IMAD:
+    BlurRadius:
+    - BlurRadiusTime
+    - BlurRadiusValue
+    Cinematics:
+    - '"\u0014IAD"'
+    - '- BrightnessAddTime'
+    - '- BrightnessAddValue'
+    - '- BrightnessMultTime'
+    - '- BrightnessMultValue'
+    - '- ContrastAddTime'
+    - '- ContrastAddValue'
+    - '- ContrastMultTime'
+    - '- ContrastMultValue'
+    - '- SaturationAddTime'
+    - '- SaturationMultTime'
+    - '- SaturationMultValue'
+    - '- UnusedTime'
+    - '- UnusedValue'
+    - BrightnessAdd
+    - BrightnessMult
+    - ContrastAdd
+    - ContrastMult
+    - SaturationAdd
+    - SaturationMult
+    - TIAD
+    Data:
+    - Animatable
+    - BlurRadius
+    - CinematicBrightnessAddCount
+    - CinematicBrightnessMultCount
+    - CinematicContrastAddCount
+    - CinematicContrastMultCount
+    - CinematicSaturationAddCount
+    - CinematicSaturationMultCount
+    - CinematicUnusedAddCount
+    - CinematicUnusedMultCount
+    - DoFDistance
+    - DoFFlags
+    - DoFRange
+    - DoFStrength
+    - DoFUseTarget
+    - DoubleVisionStrength
+    - Duration
+    - FadeColor
+    - HDRBloomBlurRadiusAddCount
+    - HDRBloomBlurRadiusMultCount
+    - HDRBloomThresholdAddCount
+    - HDRBloomThresholdMultCount
+    - HDREyeAdaptSpeedAddCount
+    - HDREyeAdaptSpeedMultCount
+    - HDRScaleAddCount
+    - HDRScaleMultCount
+    - HDRSkyScaleAddCount
+    - HDRSkyScaleMultCount
+    - HDRSunlightScaleAddCount
+    - HDRSunlightScaleMultCount
+    - HDRTargetLumMaxAddCount
+    - HDRTargetLumMaxMultCount
+    - HDRTargetLumMinAddCount
+    - HDRTargetLumMinMultCount
+    - HDRUnusedAddCount
+    - HDRUnusedMultCount
+    - MotionBlurStrength
+    - RadialBlurCenterX
+    - RadialBlurCenterY
+    - RadialBlurDownStart
+    - RadialBlurRampDown
+    - RadialBlurRampUp
+    - RadialBlurStart
+    - RadialBlurStrength
+    - RadialBlurUseTarget
+    - TintColor
+    DephtOfFields:
+    - '- DistanceTime'
+    - '- DistanceValue'
+    - '- RangeTime'
+    - '- RangeValue'
+    - '- StrengthTime'
+    - '- StrengthValue'
+    - Distance
+    - Range
+    - WNAM
+    DoubleVisionStrength:
+    - DoubleVisionStrengthTime
+    - DoubleVisionStrengthValue
+    FadeColor:
+    - FadeColorTime
+    - FadeColorValueAlpha
+    - FadeColorValueBlue
+    - FadeColorValueGreen
+    - FadeColorValueRed
+    Hdrs:
+    - '"\nIAD"'
+    - '"\rIAD"'
+    - '"\tIAD"'
+    - '"\u0008IAD"'
+    - '"\u000BIAD"'
+    - '"\u000CIAD"'
+    - '"\u000EIAD"'
+    - '"\u000FIAD"'
+    - '"\u0010IAD"'
+    - '- BloomBlurRadiusAddTime'
+    - '- BloomBlurRadiusAddValue'
+    - '- BloomBlurRadiusMultTime'
+    - '- BloomBlurRadiusMultValue'
+    - '- BloomScaleAddTime'
+    - '- BloomScaleAddValue'
+    - '- BloomScaleMultTime'
+    - '- BloomScaleMultValue'
+    - '- BloomThresholdAddTime'
+    - '- BloomThresholdAddValue'
+    - '- BloomThresholdMultTime'
+    - '- BloomThresholdMultValue'
+    - '- EyeAdaptSpeedAddTime'
+    - '- EyeAdaptSpeedAddValue'
+    - '- EyeAdaptSpeedMultTime'
+    - '- EyeAdaptSpeedMultValue'
+    - '- SkyScaleAddTime'
+    - '- SkyScaleAddValue'
+    - '- SkyScaleMultTime'
+    - '- SkyScaleMultValue'
+    - '- SunlightScaleAddTime'
+    - '- SunlightScaleAddValue'
+    - '- SunlightScaleMultTime'
+    - '- SunlightScaleMultValue'
+    - '- TargetLumMaxAddTime'
+    - '- TargetLumMaxAddValue'
+    - '- TargetLumMaxMultTime'
+    - '- TargetLumMaxMultValue'
+    - '- TargetLumMinAddTime'
+    - '- TargetLumMinAddValue'
+    - '- TargetLumMinMultTime'
+    - '- TargetLumMinMultValue'
+    - '- UnusedTime'
+    - '- UnusedValue'
+    - BloomBlurRadiusAdd
+    - BloomBlurRadiusMult
+    - BloomScaleAdd
+    - BloomScaleMult
+    - BloomThresholdAdd
+    - BloomThresholdMult
+    - EyeAdaptSpeedAdd
+    - EyeAdaptSpeedMult
+    - HIAD
+    - IIAD
+    - JIAD
+    - KIAD
+    - LIAD
+    - MIAD
+    - NIAD
+    - OIAD
+    - PIAD
+    - SkyScaleAdd
+    - SkyScaleMult
+    - SunlightScaleAdd
+    - SunlightScaleMult
+    - TargetLumMaxAdd
+    - TargetLumMaxMult
+    - TargetLumMinAdd
+    - TargetLumMinMult
+    MotionBlurStrength:
+    - MotionBlurStrengthTime
+    - MotionBlurStrengthValue
+    RadialBlurs:
+    - '- DownStartTime'
+    - '- DownStartValue'
+    - '- RampDownTime'
+    - '- RampDownValue'
+    - '- RampUpTime'
+    - '- RampUpValue'
+    - '- StartTime'
+    - '- StartValue'
+    - '- StrengthTime'
+    - '- StrengthValue'
+    - DownStart
+    - RNAM
+    - RampDown
+    - RampUp
+    - Start
+    TintColor:
+    - TintColorTime
+    - TintColorValueAlpha
+    - TintColorValueBlue
+    - TintColorValueGreen
+    - TintColorValueRed
+  IMGS:
+    Cinematic:
+    - Brightness
+    - Contrast
+    - Saturation
+    DepthOfField:
+    - Distance
+    - Range
+    - SkyBlurRadius
+    - Strength
+    HDR:
+    - BloomBlurRadius
+    - BloomScale
+    - BloomThreshold
+    - EyeAdaptSpeed
+    - EyeAdaptStrength
+    - ReceiveBloomThreshold
+    - SkyScale
+    - SunlightScale
+    - White
+    Tint:
+    - Amount
+    - ColorBlue
+    - ColorGreen
+    - ColorRed
+  INGR:
+    BaseEffect:
+    - reference
+    DATA:
+    - Value
+    - Weight
+    EFIT:
+    - Duration
+    - Magnitude
+    EffectData:
+    - IngredientValue
+    Keywords:
+    - reference
+    MODS:
+    - raw_hex
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    SoundPickUp:
+    - reference
+    SoundPutDown:
+    - reference
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+  IPCT:
+    DATA:
+    - AngleThreshold
+    - EffectDuration
+    - EffectOrientation
+    - Flags
+    - ImpactResult
+    - PlacementRadius
+    - SoundLevel
+    DecalData:
+    - ColorBlue
+    - ColorGreen
+    - ColorRed
+    - Depth
+    - Flags
+    - MaxHeight
+    - MaxWidth
+    - MinHeight
+    - MinWidth
+    - ParallaxPasses
+    - ParallaxScale
+    - Shininess
+    - UnknownByte10
+    - UnknownByte11
+    Hazard:
+    - reference
+    SecondaryTextureSet:
+    - reference
+    Sound1:
+    - reference
+    Sound2:
+    - reference
+    TextureSet:
+    - reference
+  IPDS:
+    Data:
+    - Impact
+    - Material
+  KEYM:
+    Keywords:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    SoundPickUp:
+    - reference
+    SoundPutDown:
+    - reference
+  KYWD:
+    CNAM:
+    - ColorBlue
+    - ColorGreen
+    - ColorRed
+  LCRT:
+    CNAM:
+    - ColorAlpha
+    - ColorBlue
+    - ColorGreen
+    - ColorRed
+  LCTN:
+    AddedEnableParentReferences:
+    - AddedEnableParentReferencesEnableParent
+    - AddedEnableParentReferencesFlags
+    - AddedEnableParentReferencesRef
+    AddedInitiallyDisabledReferences:
+    - reference
+    AddedPersistLocationReferences:
+    - AddedPersistLocationReferencesGridX
+    - AddedPersistLocationReferencesGridY
+    - AddedPersistLocationReferencesRef
+    - AddedPersistLocationReferencesWorldCell
+    AddedSpecialReferences:
+    - AddedSpecialReferencesGridX
+    - AddedSpecialReferencesGridY
+    - AddedSpecialReferencesLocRefType
+    - AddedSpecialReferencesRef
+    - AddedSpecialReferencesWorldCell
+    AddedUniqueNPCs:
+    - AddedUniqueNPCsActorRef
+    - AddedUniqueNPCsLocation
+    - AddedUniqueNPCsNPC
+    AddedWorldspaceCells:
+    - Cells
+    - GridY
+    - World
+    CNAM:
+    - ColorBlue
+    - ColorGreen
+    - ColorRed
+    HorseMarkerRef:
+    - reference
+    Keywords:
+    - reference
+    LocationPersistLocationReferences:
+    - LocationPersistLocationReferencesGridX
+    - LocationPersistLocationReferencesGridY
+    - LocationPersistLocationReferencesRef
+    - LocationPersistLocationReferencesWorldCell
+    MasterEnablePointReferences:
+    - MasterEnablePointReferencesEnableParent
+    - MasterEnablePointReferencesFlags
+    - MasterEnablePointReferencesRef
+    - MasterEnablePointReferencesUnknownByte4
+    - MasterEnablePointReferencesUnknownByte5
+    - MasterEnablePointReferencesUnknownByte6
+    MasterInitiallyDisabledReferences:
+    - reference
+    MasterSpecialReferences:
+    - MasterSpecialReferencesGridX
+    - MasterSpecialReferencesGridY
+    - MasterSpecialReferencesLocRefType
+    - MasterSpecialReferencesRef
+    - MasterSpecialReferencesWorldCell
+    MasterUniqueNPCs:
+    - MasterUniqueNPCsActorRef
+    - MasterUniqueNPCsLocation
+    - MasterUniqueNPCsNPC
+    MasterWorldspaceCells:
+    - Cells
+    - GridX
+    - GridY
+    - World
+    Music:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ParentLocation:
+    - reference
+    UnreportedCrimeFaction:
+    - reference
+    WorldLocationMarkerRef:
+    - reference
+  LGTM:
+    DALC:
+    - AmbientColorsDirectionalXBlue
+    - AmbientColorsDirectionalXGreen
+    - AmbientColorsDirectionalXRed
+    - AmbientColorsDirectionalYBlue
+    - AmbientColorsDirectionalYGreen
+    - AmbientColorsDirectionalYRed
+    - AmbientColorsDirectionalZBlue
+    - AmbientColorsDirectionalZGreen
+    - AmbientColorsDirectionalZRed
+    - raw_hex
+    Lighting:
+    - AmbientColorBlue
+    - AmbientColorGreen
+    - AmbientColorRed
+    - DirectionalColorBlue
+    - DirectionalColorGreen
+    - DirectionalColorRed
+    - DirectionalFade
+    - DirectionalRotationXY
+    - DirectionalRotationZ
+    - FogClipDist
+    - FogColorFarBlue
+    - FogColorFarGreen
+    - FogColorFarRed
+    - FogColorNearBlue
+    - FogColorNearGreen
+    - FogColorNearRed
+    - FogFar
+    - FogMax
+    - FogNear
+    - FogPower
+    - LightFadeDistancesEnd
+    - LightFadeDistancesStart
+    - UnknownByte20
+    - UnknownByte21
+    - UnknownByte22
+    - UnknownByte24
+    - UnknownByte25
+    - UnknownByte26
+    - UnknownByte28
+    - UnknownByte29
+    - UnknownByte30
+    - UnknownByte32
+    - UnknownByte33
+    - UnknownByte34
+    - UnknownByte36
+    - UnknownByte37
+    - UnknownByte38
+    - UnknownByte40
+    - UnknownByte41
+    - UnknownByte42
+    - UnknownByte44
+    - UnknownByte45
+    - UnknownByte46
+    - UnknownByte48
+    - UnknownByte49
+    - UnknownByte50
+    - UnknownByte51
+  LIGH:
+    Data:
+    - raw_hex
+    Name:
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    Sound:
+    - reference
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+  LSCR:
+    CTDA:
+    - raw_hex
+    Description:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    InitialRotation:
+    - '"Y"'
+    - X
+    - Z
+    InitialTranslationOffset:
+    - InitialTranslationOffsetX
+    - InitialTranslationOffsetY
+    - InitialTranslationOffsetZ
+    LoadingScreenNIF:
+    - reference
+    RotationOffsetConstraints:
+    - Max
+    - Min
+  LTEX:
+    Grass:
+    - reference
+    HavokData:
+    - Friction
+    - Restitution
+    MaterialType:
+    - reference
+    TextureSet:
+    - reference
+  LVLI:
+    Global:
+    - reference
+    LeveledEntry:
+    - Count
+    - Level
+    - Reference
+  LVLN:
+    LeveledEntry:
+    - Count
+    - Level
+    - Reference
+  LVSP:
+    LeveledEntry:
+    - Count
+    - Level
+    - Reference
+  MATO:
+    DirectionalMaterialData:
+    - FalloffBias
+    - FalloffScale
+    - IsSnow
+    - MaterialUVScale
+    - NoiseUVScale
+    - NormalDampener
+    - ProjectionVectorX
+    - ProjectionVectorY
+    - ProjectionVectorZ
+    - SinglePass
+    - SinglePassColorBlue
+    - SinglePassColorGreen
+    - SinglePassColorRed
+  MATT:
+    HavokDisplayColor:
+    - HavokDisplayColorBlue
+    - HavokDisplayColorGreen
+    - HavokDisplayColorRed
+    HavokImpactDataSet:
+    - reference
+    MaterialParent:
+    - reference
+  MESG:
+    ButtonText:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    CTDA:
+    - raw_hex
+    Description:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    OwnerQuest:
+    - reference
+  MGEF:
+    CTDA:
+    - raw_hex
+    Data:
+    - ActorValue
+    - Archtype
+    - AssocItem
+    - BaseCost
+    - CastingArt
+    - CastingLight
+    - CastingSoundLevel
+    - CastingType
+    - Delivery
+    - DualCastingArt
+    - DualCastingScale
+    - EnchantArt
+    - EnchantShader
+    - EquipAbility
+    - Explosion
+    - Flags
+    - HitEffectArt
+    - HitShader
+    - ImageSpaceModifier
+    - ImpactData
+    - MagicSkill
+    - MinimumSkillLevel
+    - PerkToApply
+    - Projectile
+    - ResistValue
+    - ScriptEffectAIDelayTime
+    - ScriptEffectAIScore
+    - SecondAVWeight
+    - SecondActorValue
+    - SkillUsageMultiplier
+    - SpellmakingArea
+    - SpellmakingCastingTime
+    - TaperCurve
+    - TaperDuration
+    - TaperWeight
+    Keywords:
+    - reference
+    MagicItemDescription:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    MenuDisplayObject:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Sounds:
+    - SoundsSound
+    - SoundsType
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+  MISC:
+    Data:
+    - Value
+    - Weight
+    Keywords:
+    - reference
+    MODS:
+    - raw_hex
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    SoundPickUp:
+    - reference
+    SoundPutDown:
+    - reference
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+  MOVT:
+    AnimChangeThresholds:
+    - Directional
+    - MovementSpeed
+    - RotationSpeed
+    DefaultData:
+    - BackRun
+    - BackWalk
+    - ForwardRun
+    - ForwardWalk
+    - LeftRun
+    - LeftWalk
+    - RightRun
+    - RightWalk
+    - RotateInPlaceRun
+    - RotateInPlaceWalk
+    - RotateWhileMovingRun
+  MSTT:
+    Destructibles:
+    - DMDL
+    - DMDT
+    - DestructionStageData
+    - EndMarker
+    - Header
+    LoopingSound:
+    - reference
+    MODS:
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+  MUSC:
+    Data:
+    - DuckingDB
+    - Priority
+    MusicTracks:
+    - reference
+  MUST:
+    CTDA:
+    - raw_hex
+    CuePoints:
+    - CuePointsPoint
+    LoopData:
+    - LoopCount
+    - LoopEnds
+    Tracks:
+    - reference
+  NAVI:
+    DeletedNavmeshes:
+    - reference
+    NavmeshInfos:
+    - ApproxLocationX
+    - ApproxLocationY
+    - ApproxLocationZ
+    - CRCHash
+    - DoorLinks
+    - EdgeLinks
+    - Flags
+    - Navmesh
+    - OptionalIslandDataHasIslandData
+    - OptionalIslandDataIslandData
+    - PathingCell
+    - PathingCellCRCHash
+    - PathingCellParentWorld
+    - Preferred
+    - PreferredEdgeLinks
+    - reference
+    PrecomputedPathing:
+    - raw_hex
+  NPC_:
+    AIData:
+    - Aggression
+    - AggroAggroRadiusBehavior
+    - AggroAttack
+    - AggroUnused
+    - AggroWarn
+    - AggroWarnAttack
+    - Assistance
+    - Confidence
+    - EnergyLevel
+    - Mood
+    - Morality
+    ActorEffect:
+    - reference
+    AttackData:
+    - AttackChance
+    - AttackFlags
+    - AttackSpell
+    - DamageMult
+    - Stagger
+    - StaminaMult
+    - StrikeAngle
+    AttackRace:
+    - reference
+    CNTO:
+    - Count
+    - Item
+    Class:
+    - reference
+    CombatOverridePackageList:
+    - reference
+    CombatStyle:
+    - reference
+    Configuration:
+    - BleedoutOverride
+    - CalcMaxLevel
+    - CalcMinLevel
+    - DispositionBaseUnused
+    - Flags
+    - HealthOffset
+    - Level
+    - MagickaOffset
+    - SpeedMultiplier
+    - StaminaOffset
+    - TemplateFlags
+    CrimeFaction:
+    - reference
+    DeathItem:
+    - reference
+    DefaultOutfit:
+    - reference
+    DefaultPackageList:
+    - reference
+    Destructibles:
+    - DestructionStageData
+    - EndMarker
+    - Header
+    FaceMorph:
+    - BrowsFarwardBack
+    - BrowsInOut
+    - BrowsUpDown
+    - CheeksFarwardBack
+    - CheeksUpDown
+    - ChinNarrowWide
+    - ChinUnderbiteOverbite
+    - ChinUpDown
+    - EyesFarwardBack
+    - EyesInOut
+    - EyesUpDown
+    - JawFarwardBack
+    - JawNarrowWide
+    - JawUpDown
+    - LipsInOut
+    - LipsUpDown
+    - NoseLongShort
+    - NoseUpDown
+    - VampireMorph
+    FaceParts:
+    - Eyes
+    - Mouth
+    - Nose
+    - Unknown
+    Factions:
+    - raw_hex
+    FarAwayModel:
+    - reference
+    GiftFilter:
+    - reference
+    HairColor:
+    - reference
+    HeadPart:
+    - reference
+    HeadTexture:
+    - reference
+    InheritsSoundsFrom:
+    - reference
+    Keywords:
+    - reference
+    NAM5:
+    - raw_hex
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    Package:
+    - reference
+    Perks:
+    - Perk
+    - Rank
+    - UnknownByte3
+    - UnknownByte4
+    - UnknownByte5
+    PlayerSkills:
+    - raw_hex
+    Race:
+    - reference
+    ShortName:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Skin:
+    - reference
+    SleepingOutfit:
+    - reference
+    Sound:
+    - reference
+    SpectatorOverridePackageList:
+    - reference
+    Template:
+    - reference
+    TextureLighting:
+    - TextureLightingBlue
+    - TextureLightingGreen
+    - TextureLightingRed
+    TintColor:
+    - TintColorAlpha
+    - TintColorBlue
+    - TintColorGreen
+    - TintColorRed
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+    Voice:
+    - reference
+  OTFT:
+    Items:
+    - reference
+  PACK:
+    Animations:
+    - reference
+    CTDA:
+    - raw_hex
+    CombatStyle:
+    - reference
+    Counter:
+    - DataInputCount
+    - PackageTemplate
+    - VersionCounterAutoincremented
+    Onbegins:
+    - INAM
+    - OnBeginMarker
+    - PDTO
+    Onchanges:
+    - INAM
+    - OnChangeMarker
+    - PDTO
+    Onends:
+    - INAM
+    - OnEndMarker
+    - PDTO
+    OwnerQuest:
+    - reference
+    PackData:
+    - GeneralFlags
+    - InterruptFlags
+    - InterruptOverride
+    - PreferredSpeed
+    - Type
+    - UnknownByte5
+    - UnknownByte7
+    - UnknownByte8
+    PackageDatas:
+    - BNAM
+    - Location
+    - PDTO
+    - Target
+    - Type
+    - UNAM
+    - Value
+    ProcedureTrees:
+    - BranchType
+    - CIS1
+    - CTDA
+    - ConditionCount
+    - Data
+    - PKC2
+    - ProcedureType
+    - Root
+    - SuccessCompletesPackage
+    Schedule:
+    - DayOfWeek
+    - Duration
+    - Hour
+    - Minute
+    - Month
+    - UnknownByte6
+    - UnknownByte7
+    - UnknownByte8
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - raw_hex
+    - semantic_type
+    - size
+    - tail_hex
+  PERK:
+    ButtonLabel:
+    - raw_hex
+    CTDA:
+    - raw_hex
+    DATA:
+    - Hidden
+    - NumRanks
+    - Playable
+    Description:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    EPFD:
+    - value
+    - variant
+    EffectData:
+    - value
+    - variant
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    NextPerk:
+    - reference
+    PRKE:
+    - Priority
+    - Type
+    VirtualMachineAdapter:
+    - Object Format
+    - Script Fragments
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - raw_hex
+    - semantic_type
+    - size
+    - tail_hex
+  PROJ:
+    Data:
+    - CollisionLayer
+    - CollisionRadius
+    - ConeSpread
+    - DecalData
+    - DefaultWeaponSource
+    - Explosion
+    - ExplosionAltTriggerProximity
+    - ExplosionAltTriggerTimer
+    - FadeDuration
+    - Flags
+    - Gravity
+    - ImpactForce
+    - Lifetime
+    - Light
+    - MuzzleFlashDuration
+    - MuzzleFlashLight
+    - Range
+    - RelaunchInterval
+    - Sound
+    - Speed
+    - Type
+    Destructibles:
+    - DestructionStageData
+    - EndMarker
+    - Header
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+  QUST:
+    ALCA:
+    - Alias
+    - Create
+    ALDN:
+    - reference
+    ALEQ:
+    - reference
+    CNTO:
+    - Count
+    - Item
+    CTDA:
+    - raw_hex
+    CombatOverridePackageList:
+    - reference
+    DisplayText:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Faction:
+    - reference
+    General:
+    - Flags
+    - FormVersion
+    - Priority
+    - Type
+    Global:
+    - reference
+    GuardWarnOverridePackageList:
+    - reference
+    INDX:
+    - Flags
+    - StageIndex
+    - UnknownByte3
+    KNAM:
+    - reference
+    Keywords:
+    - reference
+    LogEntry:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    NextQuest:
+    - reference
+    Object:
+    - reference
+    ObserveDeadBodyOverridePackageList:
+    - reference
+    Package:
+    - reference
+    QNAM:
+    - raw_hex
+    QSTA:
+    - Alias
+    - CompassMarkerIgnoresLocks
+    QuestDialogueConditions:
+    - CIS2
+    - CTDA
+    RefType:
+    - reference
+    SCHR:
+    - raw_hex
+    SCTX:
+    - raw_hex
+    SpecificLocation:
+    - reference
+    SpecificReference:
+    - reference
+    SpectatorOverridePackageList:
+    - reference
+    Spell:
+    - reference
+    UniqueActor:
+    - reference
+    VirtualMachineAdapter:
+    - Object Format
+    - Script Fragments
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - raw_hex
+    - semantic_type
+    - size
+    - tail_hex
+    VoiceTypes:
+    - reference
+  RACE:
+    ActorEffect:
+    - reference
+    ArmorRace:
+    - reference
+    AttackData:
+    - AttackAngle
+    - AttackChance
+    - AttackFlags
+    - AttackSpell
+    - AttackType
+    - DamageMult
+    - Knockdown
+    - RecoveryTime
+    - Stagger
+    - StaminaMult
+    - StrikeAngle
+    BaseMovementDefaultFly:
+    - reference
+    BaseMovementDefaultRun:
+    - reference
+    BaseMovementDefaultSneak:
+    - reference
+    BaseMovementDefaultSprint:
+    - reference
+    BaseMovementDefaultSwim:
+    - reference
+    BaseMovementDefaultWalk:
+    - reference
+    BipedBodyTemplate:
+    - raw_hex
+    BodyDatas:
+    - BodyDataMarker
+    - FNAM
+    - INDX
+    - MNAM
+    - MODL
+    - MODT
+    BodyPartData:
+    - reference
+    CloseLootSound:
+    - reference
+    DATA:
+    - raw_hex
+    DecapitateArmors:
+    - reference
+    DecapitationFX:
+    - reference
+    DefaultHairColors:
+    - reference
+    Description:
+    - TargetLanguage
+    - raw_hex
+    EquipSlot:
+    - reference
+    FULL:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Head:
+    - reference
+    HeadDatas:
+    - AHCF
+    - AHCM
+    - DefaultFaceTextureFemale
+    - DefaultFaceTextureMale
+    - FNAM
+    - FTSF
+    - FTSM
+    - MNAM
+    - MPAI
+    - MPAV
+    - NAM0
+    - RPRF
+    - RPRM
+    - TINC
+    - TIND
+    - TINI
+    - TINP
+    - TINT
+    - TINV
+    - TIRS
+    ImpactDataSet:
+    - reference
+    Keywords:
+    - reference
+    MaterialType:
+    - reference
+    MorphRace:
+    - reference
+    MovementType:
+    - reference
+    OpenLootSound:
+    - reference
+    OverrideValues:
+    - BackRun
+    - BackWalk
+    - ForwardRun
+    - ForwardWalk
+    - LeftRun
+    - LeftWalk
+    - RightRun
+    - RightWalk
+    - RotateWalk
+    - Unknown
+    PHWT:
+    - '"N"'
+    - AahLipBigAah
+    - BMPLipEee
+    - BigAahLipDST
+    - ChJshLipFV
+    - DSTLipK
+    - EeeLipL
+    - EhLipR
+    - FVLipTh
+    - I
+    - K
+    - Oh
+    - OohQ
+    - R
+    - TH
+    - W
+    Skin:
+    - reference
+    UnarmedEquipSlot:
+    - reference
+    Voices:
+    - reference
+  REGN:
+    MapColor:
+    - MapColorBlue
+    - MapColorGreen
+    - MapColorRed
+    Music:
+    - reference
+    Points:
+    - PointsX
+    - PointsY
+    RDAT:
+    - Priority
+    - Type
+    - Unknown
+    RDSA:
+    - raw_hex
+    WeatherTypes:
+    - WeatherTypesChance
+    - WeatherTypesWeather
+    Worldspace:
+    - reference
+  RELA:
+    Data:
+    - AssociationType
+    - Child
+    - Flags
+    - Parent
+    - Rank
+  REVB:
+    Data:
+    - DecayHFRatio
+    - DecayTimeMs
+    - Density
+    - Diffusion
+    - HFReferenceHz
+    - ReflectDelayMsScaled
+    - Reflections
+    - ReverbAmp
+    - ReverbDelayMs
+    - RoomFilter
+    - RoomHFFilter
+  RFCT:
+    EffectData:
+    - EffectArt
+    - Flags
+    - Shader
+  SCEN:
+    ActorBehaviorSettings:
+    - Combat
+    - Death
+    - Dialogue
+    - ObserveCombat
+    CTDA:
+    - raw_hex
+    Package:
+    - reference
+    ParentQuest:
+    - reference
+    QNAM:
+    - raw_hex
+    SCDA:
+    - raw_hex
+    SCHR:
+    - raw_hex
+    SCRO:
+    - raw_hex
+    SCTX:
+    - raw_hex
+    Topic:
+    - reference
+    Type:
+    - raw_hex
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - raw_hex
+    - semantic_type
+    - size
+    - tail_hex
+  SCRL:
+    BaseEffect:
+    - reference
+    CTDA:
+    - raw_hex
+    Data:
+    - BaseCost
+    - CastType
+    - ChargeTime
+    - Delivery
+    Description:
+    - TargetLanguage
+    - raw_hex
+    EFIT:
+    - Area
+    - Duration
+    - Magnitude
+    EquipmentType:
+    - reference
+    Item:
+    - Value
+    - Weight
+    Keywords:
+    - reference
+    MenuDisplayObject:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+  SHOU:
+    Description:
+    - TargetLanguage
+    - raw_hex
+    MenuDisplayObject:
+    - reference
+    Name:
+    - raw_hex
+    WordsOfPower:
+    - RecoveryTime
+    - Spell
+    - Word
+  SLGM:
+    DATA:
+    - Value
+    - Weight
+    Keywords:
+    - reference
+    LinkedTo:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    ObjectBounds:
+    - raw_hex
+  SMBN:
+    CTDA:
+    - raw_hex
+    ParentNode:
+    - reference
+    PreviousNode:
+    - reference
+  SMEN:
+    ParentNode:
+    - reference
+    PreviousNode:
+    - reference
+  SMQN:
+    24HoursTillReset:
+    - enum
+    - scope
+    - value
+    CTDA:
+    - raw_hex
+    ParentNode:
+    - reference
+    PreviousNode:
+    - reference
+    Quest:
+    - reference
+  SNCT:
+    Name:
+    - raw_hex
+    Parent:
+    - reference
+  SNDR:
+    AlternateSoundFor:
+    - reference
+    CTDA:
+    - raw_hex
+    Category:
+    - reference
+    FNAM:
+    - raw_hex
+    LNAM:
+    - raw_hex
+    OutputModel:
+    - reference
+    Values:
+    - DbVariance
+    - FrequencyShift
+    - FrequencyVariance
+    - Priority
+    - StaticAttenuationDb
+  SOPM:
+    AttenuationValues:
+    - raw_hex
+    CNAM:
+    - raw_hex
+    Data:
+    - Flags
+    - ReverbSend
+    FNAM:
+    - raw_hex
+    OutputValues:
+    - ChannelsBL
+    - ChannelsBR
+    - ChannelsC
+    - ChannelsL
+    - ChannelsR
+    - ChannelsRL
+    - ChannelsRR
+    SNAM:
+    - raw_hex
+  SOUN:
+    FNAM:
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    SNDD:
+    - raw_hex
+    SoundDescriptor:
+    - reference
+  SPEL:
+    BaseEffect:
+    - reference
+    CTDA:
+    - raw_hex
+    Data:
+    - BaseCost
+    - CastDuration
+    - CastType
+    - ChargeTime
+    - Delivery
+    - Flags
+    - HalfCostPerk
+    - Range
+    - Type
+    Description:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    EFIT:
+    - Area
+    - Duration
+    - Magnitude
+    EquipmentType:
+    - reference
+    MenuDisplayObject:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+  SPGD:
+    Data:
+    - BoxSize
+    - CenterOffsetMax
+    - CenterOffsetMin
+    - GravityVelocity
+    - InitialRotationRange
+    - OfSubtexturesX
+    - OfSubtexturesY
+    - ParticleDensity
+    - ParticleSizeX
+    - ParticleSizeY
+    - RotationVelocity
+    - Type
+  STAT:
+    AlternateTextures:
+    - raw_hex
+    DirectionMaterial:
+    - ConsideredSnow
+    - Material
+    - MaxAngle30120
+    DistantLOD:
+    - Level0
+    - Level1
+    - Level2
+    - Level3
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+  TACT:
+    FNAM:
+    - raw_hex
+    Name:
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    PNAM:
+    - raw_hex
+    VoiceType:
+    - reference
+  TREE:
+    HarvestSound:
+    - reference
+    Ingredient:
+    - reference
+    IngredientProduction:
+    - Fall
+    - Spring
+    - Summer
+    - Winter
+    Name:
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    TreeData:
+    - BackAmplitude
+    - BackFrequency
+    - BranchFlexibility
+    - FrontAmplitude
+    - FrontFrequency
+    - LeafAmplitude
+    - LeafFlexibility
+    - LeafFrequency
+    - SideAmplitude
+    - SideFrequency
+    - TrunkAmplitude
+    - TrunkFlexibility
+  TXST:
+    DecalData:
+    - ColorBlue
+    - ColorGreen
+    - ColorRed
+    - Depth
+    - Flags
+    - MaxHeight
+    - MaxWidth
+    - MinHeight
+    - MinWidth
+    - ParallaxPasses
+    - ParallaxScale
+    - Shininess
+    - UnknownByte10
+    - UnknownByte11
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    TexturesRgbAs:
+    - BacklightMaskSpecular
+    - Diffuse
+    - Environment
+    - EnvironmentMaskSubsurfaceTint
+    - GlowDetailMap
+    - Height
+    - NormalGloss
+  VOLI:
+    ENAM:
+    - raw_hex
+    FNAM:
+    - raw_hex
+    GNAM:
+    - raw_hex
+  WATR:
+    Data:
+    - ColorPropertiesDeepColorBlue
+    - ColorPropertiesDeepColorGreen
+    - ColorPropertiesDeepColorRed
+    - ColorPropertiesReflectionColorBlue
+    - ColorPropertiesReflectionColorGreen
+    - ColorPropertiesReflectionColorRed
+    - ColorPropertiesShallowColorBlue
+    - ColorPropertiesShallowColorGreen
+    - ColorPropertiesShallowColorRed
+    - DepthPropertiesNormals
+    - DepthPropertiesReflections
+    - DepthPropertiesRefraction
+    - DepthPropertiesSpecularLighting
+    - DisplacementSimulatorDampner
+    - DisplacementSimulatorFalloff
+    - DisplacementSimulatorForce
+    - DisplacementSimulatorStartingSize
+    - DisplacementSimulatorVelocity
+    - Float3235
+    - Float3243
+    - Float3244
+    - Float3246
+    - Float3252
+    - FogPropertiesAboveWaterFogAmount
+    - FogPropertiesAboveWaterFogDistanceFarPlane
+    - FogPropertiesAboveWaterFogDistanceNearPlane
+    - FogPropertiesUnderWaterFogAmount
+    - FogPropertiesUnderWaterFogDistanceFarPlane
+    - FogPropertiesUnderWaterFogDistanceNearPlane
+    - NoisePropertiesAmplitudeScaleLayerOne
+    - NoisePropertiesAmplitudeScaleLayerThree
+    - NoisePropertiesAmplitudeScaleLayerTwo
+    - NoisePropertiesFlowmapScale
+    - NoisePropertiesNoiseFalloff
+    - NoisePropertiesUVScaleLayerOne
+    - NoisePropertiesUVScaleLayerThree
+    - NoisePropertiesUVScaleLayerTwo
+    - NoisePropertiesWindDirectionLayerOne
+    - NoisePropertiesWindDirectionLayerThree
+    - NoisePropertiesWindDirectionLayerTwo
+    - NoisePropertiesWindSpeedLayerOne
+    - NoisePropertiesWindSpeedLayerThree
+    - NoisePropertiesWindSpeedLayerTwo
+    - RainSimulatorUnused
+    - SpecularPropertiesSpecularBrightness
+    - SpecularPropertiesSpecularPower
+    - SpecularPropertiesSpecularRadius
+    - SpecularPropertiesSunSparkleMagnitude
+    - SpecularPropertiesSunSparklePower
+    - SpecularPropertiesSunSpecularMagnitude
+    - SpecularPropertiesSunSpecularPower
+    - TextureBlend
+    - UnknownByte24
+    - UnknownByte25
+    - UnknownByte26
+    - WaterPropertiesFresnelAmount
+    - WaterPropertiesReflectionMagnitude
+    - WaterPropertiesReflectivityAmount
+    - WaterPropertiesRefractionMagnitude
+    - WaveAmplitudeUnused
+    - WaveFrequencyUnused
+    - WindDirectionUnused
+    - WindVelocityUnused
+    ImageSpace:
+    - reference
+    LinearVelocity:
+    - LinearVelocityX
+    - LinearVelocityY
+    - LinearVelocityZ
+    Material:
+    - reference
+    Name:
+    - raw_hex
+    NoiseTextures:
+    - NAM2
+    - NAM3
+    - NAM4
+    OpenSound:
+    - reference
+  WEAP:
+    1stPersonModelObject:
+    - reference
+    AlternateBlockMaterial:
+    - reference
+    AttackFailSound:
+    - reference
+    AttackSound:
+    - reference
+    BlockBashImpactDataSet:
+    - reference
+    CriticalData:
+    - Damage
+    - Mult
+    - OnDeath
+    - UnknownByte2
+    - UnknownByte3
+    Data:
+    - AnimationAttackMult
+    - AnimationType
+    - AttackAnimation
+    - BaseVATSToHitChance
+    - FireRate
+    - Flags
+    - Flags2
+    - Projectiles
+    - RangeMax
+    - RangeMin
+    - Reach
+    - Resist
+    - RumbleDuration
+    - RumbleLeftMotorStrength
+    - RumbleRightMotorStrength
+    - SightFOV
+    - Skill
+    - Speed
+    - Stagger
+    Description:
+    - TargetLanguage
+    - raw_hex
+    Effect:
+    - reference
+    EquipSound:
+    - reference
+    EquipmentType:
+    - reference
+    GameData:
+    - Damage
+    - Value
+    - Weight
+    IdleSound:
+    - reference
+    ImpactDataSet:
+    - reference
+    Keywords:
+    - reference
+    MODS:
+    - raw_hex
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    ObjectBounds:
+    - ObjectBoundsX1
+    - ObjectBoundsX2
+    - ObjectBoundsY1
+    - ObjectBoundsY2
+    - ObjectBoundsZ1
+    - ObjectBoundsZ2
+    Template:
+    - reference
+    UnequipSound:
+    - reference
+    VirtualMachineAdapter:
+    - Object Format
+    - ScriptName
+    - Scripts
+    - Version
+    - kind
+    - semantic_type
+    - size
+  WOOP:
+    Name:
+    - raw_hex
+    Translation:
+    - TargetLanguage
+    - raw_hex
+  WRLD:
+    AcousticSpace:
+    - reference
+    Cell:
+    - '"Y"'
+    - Ref
+    - References
+    - X
+    Climate:
+    - reference
+    EncounterZone:
+    - reference
+    FixedDimensionsCenterCell:
+    - '"Y"'
+    - X
+    Flags:
+    - raw_hex
+    Grid:
+    - '"Y"'
+    - LandFlags
+    - UnknownByte4
+    - UnknownByte5
+    - UnknownByte6
+    - X
+    ImageSpace:
+    - reference
+    InteriorLighting:
+    - reference
+    LODWater:
+    - reference
+    LandData:
+    - DefaultLandHeight
+    - DefaultWaterHeight
+    Location:
+    - reference
+    Max:
+    - '"Y"'
+    - X
+    MaxHeightData:
+    - raw_hex
+    Min:
+    - '"Y"'
+    - X
+    Music:
+    - reference
+    MusicType:
+    - reference
+    Name:
+    - Language
+    - TargetLanguage
+    - Values
+    - raw_hex
+    Offsets:
+    - raw_hex
+    ParentWorldspaces:
+    - PNAM
+    - World
+    Regions:
+    - reference
+    Water:
+    - reference
+    WaterCurrentVelocities:
+    - '- VelocitiesVelocityX'
+    - '- VelocitiesVelocityY'
+    - Velocities
+    - XWCN
+    - XWCS
+    WorldMapData:
+    - CameraDataInitialPitch
+    - CameraDataMaxHeight
+    - CameraDataMinHeight
+    - CellCoordinatesNWCellX
+    - CellCoordinatesNWCellY
+    - CellCoordinatesSECellX
+    - CellCoordinatesSECellY
+    WorldMapOffsetData:
+    - CellXOffset
+    - CellYOffset
+    - CellZOffset
+    - WorldMapScale
+  WTHR:
+    CloudAlphas:
+    - CloudAlphasDay
+    - CloudAlphasNight
+    - CloudAlphasSunrise
+    - CloudAlphasSunset
+    CloudColors:
+    - CloudColorsDayBlue
+    - CloudColorsDayGreen
+    - CloudColorsDayRed
+    - CloudColorsNightBlue
+    - CloudColorsNightGreen
+    - CloudColorsNightRed
+    - CloudColorsSunriseBlue
+    - CloudColorsSunriseGreen
+    - CloudColorsSunriseRed
+    - CloudColorsSunsetBlue
+    - CloudColorsSunsetGreen
+    - CloudColorsSunsetRed
+    Data:
+    - Flags
+    - LightningColorBlue
+    - LightningColorGreen
+    - LightningColorRed
+    - PrecipitationBeginFadeIn
+    - PrecipitationEndFadeOut
+    - SunDamage
+    - SunGlare
+    - ThunderLightningBeginFadeIn
+    - ThunderLightningEndFadeOut
+    - ThunderLightningFrequency
+    - TransDelta
+    - WindDirection
+    - WindDirectionRange
+    - WindSpeed
+    Day:
+    - raw_hex
+    FogDistance:
+    - DayFar
+    - DayMax
+    - DayNear
+    - DayPower
+    - NightFar
+    - NightMax
+    - NightNear
+    - NightPower
+    ImageSpaces:
+    - Day
+    - Night
+    - Sunrise
+    - Sunset
+    Night:
+    - raw_hex
+    PrecipitationType:
+    - reference
+    Sound:
+    - Sound
+    - Type
+    Static:
+    - reference
+    Sunrise:
+    - raw_hex
+    Sunset:
+    - raw_hex
+    VisualEffect:
+    - reference
+    VolumetricLighting:
+    - Day
+    - Night
+    - Sunrise
+    - Sunset
+    WeatherColors:
+    - AmbientDayBlue
+    - AmbientDayGreen
+    - AmbientDayRed
+    - AmbientNightBlue
+    - AmbientNightGreen
+    - AmbientNightRed
+    - AmbientSunriseBlue
+    - AmbientSunriseGreen
+    - AmbientSunriseRed
+    - AmbientSunsetBlue
+    - AmbientSunsetGreen
+    - AmbientSunsetRed
+    - CloudLODDiffuseDayBlue
+    - CloudLODDiffuseDayGreen
+    - CloudLODDiffuseDayRed
+    - EffectLightingDayBlue
+    - EffectLightingDayGreen
+    - EffectLightingDayRed
+    - EffectLightingNightBlue
+    - EffectLightingNightGreen
+    - EffectLightingNightRed
+    - EffectLightingSunriseBlue
+    - EffectLightingSunriseGreen
+    - EffectLightingSunriseRed
+    - EffectLightingSunsetBlue
+    - EffectLightingSunsetGreen
+    - EffectLightingSunsetRed
+    - FogFarDayBlue
+    - FogFarDayGreen
+    - FogFarDayRed
+    - FogFarNightBlue
+    - FogFarNightGreen
+    - FogFarNightRed
+    - FogFarSunriseBlue
+    - FogFarSunriseGreen
+    - FogFarSunriseRed
+    - FogFarSunsetBlue
+    - FogFarSunsetGreen
+    - FogFarSunsetRed
+    - FogNearDayBlue
+    - FogNearDayGreen
+    - FogNearDayRed
+    - FogNearNightBlue
+    - FogNearNightGreen
+    - FogNearNightRed
+    - FogNearSunriseBlue
+    - FogNearSunriseGreen
+    - FogNearSunriseRed
+    - FogNearSunsetBlue
+    - FogNearSunsetGreen
+    - FogNearSunsetRed
+    - HorizonDayBlue
+    - HorizonDayGreen
+    - HorizonDayRed
+    - HorizonNightBlue
+    - HorizonNightGreen
+    - HorizonNightRed
+    - HorizonSunriseBlue
+    - HorizonSunriseGreen
+    - HorizonSunriseRed
+    - HorizonSunsetBlue
+    - HorizonSunsetGreen
+    - HorizonSunsetRed
+    - MoonGlareDayBlue
+    - MoonGlareDayGreen
+    - MoonGlareDayRed
+    - MoonGlareDayUnknownByte264
+    - MoonGlareNightBlue
+    - MoonGlareNightGreen
+    - MoonGlareNightRed
+    - MoonGlareNightUnknownByte272
+    - MoonGlareSunriseBlue
+    - MoonGlareSunriseGreen
+    - MoonGlareSunriseRed
+    - MoonGlareSunriseUnknownByte260
+    - MoonGlareSunsetBlue
+    - MoonGlareSunsetGreen
+    - MoonGlareSunsetRed
+    - MoonGlareSunsetUnknownByte268
+    - SkyLowerDayBlue
+    - SkyLowerDayGreen
+    - SkyLowerDayRed
+    - SkyLowerNightBlue
+    - SkyLowerNightGreen
+    - SkyLowerNightRed
+    - SkyLowerSunriseBlue
+    - SkyLowerSunriseGreen
+    - SkyLowerSunriseRed
+    - SkyLowerSunsetBlue
+    - SkyLowerSunsetGreen
+    - SkyLowerSunsetRed
+    - SkyStaticsDayBlue
+    - SkyStaticsDayGreen
+    - SkyStaticsDayRed
+    - SkyStaticsNightBlue
+    - SkyStaticsNightGreen
+    - SkyStaticsNightRed
+    - SkyStaticsSunriseBlue
+    - SkyStaticsSunriseGreen
+    - SkyStaticsSunriseRed
+    - SkyStaticsSunsetBlue
+    - SkyStaticsSunsetGreen
+    - SkyStaticsSunsetRed
+    - SkyUpperDayBlue
+    - SkyUpperDayGreen
+    - SkyUpperDayRed
+    - SkyUpperNightBlue
+    - SkyUpperNightGreen
+    - SkyUpperNightRed
+    - SkyUpperSunriseBlue
+    - SkyUpperSunriseGreen
+    - SkyUpperSunriseRed
+    - SkyUpperSunsetBlue
+    - SkyUpperSunsetGreen
+    - SkyUpperSunsetRed
+    - StarsDayBlue
+    - StarsDayGreen
+    - StarsDayRed
+    - StarsNightBlue
+    - StarsNightGreen
+    - StarsNightRed
+    - StarsSunriseBlue
+    - StarsSunriseGreen
+    - StarsSunriseRed
+    - StarsSunsetBlue
+    - StarsSunsetGreen
+    - StarsSunsetRed
+    - SunDayBlue
+    - SunDayGreen
+    - SunDayRed
+    - SunGlareDayBlue
+    - SunGlareDayGreen
+    - SunGlareDayRed
+    - SunGlareDayUnknownByte248
+    - SunGlareNightBlue
+    - SunGlareNightGreen
+    - SunGlareNightRed
+    - SunGlareNightUnknownByte256
+    - SunGlareSunriseBlue
+    - SunGlareSunriseGreen
+    - SunGlareSunriseRed
+    - SunGlareSunriseUnknownByte244
+    - SunGlareSunsetBlue
+    - SunGlareSunsetGreen
+    - SunGlareSunsetRed
+    - SunGlareSunsetUnknownByte252
+    - SunNightBlue
+    - SunNightGreen
+    - SunNightRed
+    - SunSunriseBlue
+    - SunSunriseGreen
+    - SunSunriseRed
+    - SunSunsetBlue
+    - SunSunsetGreen
+    - SunSunsetRed
+    - SunlightDayBlue
+    - SunlightDayGreen
+    - SunlightDayRed
+    - SunlightNightBlue
+    - SunlightNightGreen
+    - SunlightNightRed
+    - SunlightSunriseBlue
+    - SunlightSunriseGreen
+    - SunlightSunriseRed
+    - SunlightSunsetBlue
+    - SunlightSunsetGreen
+    - SunlightSunsetRed
+    - UnusedDayBlue
+    - UnusedDayGreen
+    - UnusedDayRed
+    - UnusedNightBlue
+    - UnusedNightGreen
+    - UnusedNightRed
+    - UnusedSunriseBlue
+    - UnusedSunriseGreen
+    - UnusedSunriseRed
+    - UnusedSunsetBlue
+    - UnusedSunsetGreen
+    - UnusedSunsetRed
+    - WaterMultiplierDayBlue
+    - WaterMultiplierDayGreen
+    - WaterMultiplierDayRed
+    - WaterMultiplierNightBlue
+    - WaterMultiplierNightGreen
+    - WaterMultiplierNightRed
+    - WaterMultiplierSunriseBlue
+    - WaterMultiplierSunriseGreen
+    - WaterMultiplierSunriseRed
+    - WaterMultiplierSunsetBlue
+    - WaterMultiplierSunsetGreen
+    - WaterMultiplierSunsetRed
+    XSpeeds:
+    - XSpeedsLayer
+    YSpeeds:
+    - YSpeedsLayer
+canonical_order:
+  AACT:
+  - CNAM
+  ACTI:
+  - VirtualMachineAdapter
+  - ObjectBounds
+  - MODL
+  - MODT
+  - MarkerColor
+  - Flags
+  - Destructibles
+  - WaterType
+  - Name
+  - SoundLooping
+  - KeywordCount
+  - Keywords
+  - SoundActivation
+  - ActivateTextOverride
+  - InteractionKeyword
+  - MODS
+  ADDN:
+  - ObjectBounds
+  - ModelFileName
+  - ModelInformation
+  - Index
+  - Data
+  ALCH:
+  - ObjectBounds
+  - Name
+  - KeywordCount
+  - Keywords
+  - MODL
+  - MODT
+  - SoundPickUp
+  - SoundPutDown
+  - Weight
+  - EffectData
+  - BaseEffect
+  - EFIT
+  - MODS
+  AMMO:
+  - ObjectBounds
+  - MODL
+  - MODT
+  - SoundPickUp
+  - SoundPutDown
+  - Description
+  - Data
+  - Name
+  - KeywordCount
+  - Keywords
+  ANIO:
+  - ModelFileName
+  - ModelInformation
+  - UnloadEvent
+  APPA:
+  - ObjectBounds
+  - Name
+  - Quality
+  - Description
+  - Data
+  ARMA:
+  - BipedBodyTemplate
+  - RNAM
+  - Data
+  - BipedModels
+  - FootstepSound
+  - ArtObject
+  - MODL
+  - 1stPersons
+  - MaleSkinTexture
+  - FemaleSkinTexture
+  - BodyTemplate
+  - MaleSkinTextureSwapList
+  - FemaleSkinTextureSwapList
+  ARMO:
+  - ObjectBounds
+  - BipedBodyTemplate
+  - Race
+  - Description
+  - ModelFilename
+  - Data
+  - ArmorRating
+  - VirtualMachineAdapter
+  - Name
+  - Enchantment
+  - Males
+  - Females
+  - KeywordCount
+  - Keywords
+  - EquipmentType
+  - BashImpactDataSet
+  - AlternateBlockMaterial
+  - SoundPickUp
+  - SoundPutDown
+  - TemplateArmor
+  - BodyTemplate
+  ARTO:
+  - ObjectBounds
+  - ModelFileName
+  - ModelInformation
+  - ArtType
+  ASPC:
+  - ObjectBounds
+  - AmbientSound
+  - UseSoundFromRegionInteriorsOnly
+  - EnvironmentTypeReverb
+  ASTP:
+  - MaleParentTitle
+  - FemaleParentTitle
+  - MaleChildTitle
+  - FemaleChildTitle
+  - Flags
+  AVIF:
+  - Name
+  - Description
+  - SkillCategory
+  - Skill
+  - Perk
+  - ParentRequired
+  - PerkGridX
+  - PerkGridY
+  - HorizontalPosition
+  - VerticalPosition
+  - AssociatedSkill
+  - LineToIndex
+  - Index
+  BOOK:
+  - VirtualMachineAdapter
+  - ObjectBounds
+  - Name
+  - MODL
+  - MODT
+  - BookText
+  - KeywordCount
+  - Keywords
+  - Data
+  - InventoryArt
+  - Description
+  - SoundPickUp
+  - MODS
+  BPTD:
+  - ModelFileName
+  - MODT
+  - PartName
+  - PartNode
+  - VATSTarget
+  - IKDataStartNode
+  - NodeData
+  - LimbReplacementModel
+  - GoreEffectsTargetBone
+  - NAM5
+  CAMS:
+  - ModelFileName
+  - ModelInformation
+  - Data
+  - ImageSpaceModifier
+  CELL:
+  - Name
+  - Flags
+  - Lighting
+  - LightingTemplate
+  - WaterHeight
+  - ImageSpace
+  - Location
+  - SkyWeatherFromRegion
+  - MusicType
+  - AcousticSpace
+  - EncounterZone
+  - Water
+  - WaterEnvironmentMap
+  - Owner
+  - LockList
+  - Unknown
+  - WaterNoiseTexture
+  CLAS:
+  - Name
+  - Description
+  - DATA
+  CLFM:
+  - Name
+  - CNAM
+  - Playable
+  CLMT:
+  - WeatherTypes
+  - SunTexture
+  - SunGlareTexture
+  - ModelFileName
+  - ModelInformation
+  - Timing
+  COBJ:
+  - Count
+  - CNTO
+  - CTDA
+  - CreatedObject
+  - WorkbenchKeyword
+  - CreatedObjectCount
+  - Parameter2
+  COLL:
+  - Description
+  - Index
+  - DebugColor
+  - Flags
+  - Name
+  - InteractablesCount
+  - CollidesWith
+  CONT:
+  - ObjectBounds
+  - Name
+  - MODL
+  - MODT
+  - Count
+  - CNTO
+  - DATA
+  - SoundOpen
+  - SoundClose
+  - MODS
+  - VirtualMachineAdapter
+  - COED
+  CPTH:
+  - CTDA
+  - Parameter1
+  - CameraPaths
+  - CameraZoom
+  - CameraShot
+  CSTY:
+  - General
+  - Melee
+  - CloseRange
+  - LongRange
+  - Flight
+  - Flags
+  DEBR:
+  - Data
+  - MODT
+  DIAL:
+  - Priority
+  - Quest
+  - Data
+  - SubtypeName
+  - InfoCount
+  - ENAM
+  - PreviousINFO
+  - FavorLevel
+  - TRDT
+  - ResponseText
+  - ScriptNotes
+  - Edits
+  - IdleAnimationsSpeaker
+  - CTDA
+  - Parameter2
+  - AudioOutputOverride
+  - VirtualMachineAdapter
+  - DNAM
+  - Branch
+  - Name
+  - Topic
+  - Prompt
+  - WalkAwayTopic
+  - Speaker
+  - DATA
+  - Unuseds
+  - IdleAnimationsListener
+  - PreviousTopic
+  DLBR:
+  - Quest
+  - Category
+  - Flags
+  - StartingTopic
+  DLVW:
+  - Quest
+  - Branch
+  - TopicType
+  - ShowAllText
+  - Topic
+  DOBJ:
+  - Objects
+  DOOR:
+  - ObjectBounds
+  - Flags
+  - Name
+  - MODL
+  - MODT
+  - SoundOpen
+  - MODS
+  - SoundClose
+  - VirtualMachineAdapter
+  DUAL:
+  - ObjectBounds
+  - Data
+  ECZN:
+  - DATA
+  EFSH:
+  - FillTexture
+  - ParticleShaderTexture
+  - HolesTexture
+  - MembranePaletteTexture
+  - ParticlePaletteTexture
+  - DATA
+  ENCH:
+  - ObjectBounds
+  - Name
+  - EffectData
+  - BaseEffect
+  - EFIT
+  - CTDA
+  - Parameter2
+  EQUP:
+  - SlotParents
+  - UseAllParents
+  EXPL:
+  - ObjectBounds
+  - ModelFileName
+  - ModelInformation
+  - Data
+  - Enchantment
+  - Name
+  - ImageSpaceModifier
+  EYES:
+  - Name
+  - Texture
+  - Flags
+  FACT:
+  - Name
+  - Flags
+  - CrimeValues
+  - VendorValues
+  - Relations
+  - Rank
+  - VendorBuySellList
+  - MerchantContainer
+  - Location
+  - ConditionCount
+  - CTDA
+  - ExteriorJailMarker
+  - FollowerWaitMarker
+  - StolenGoodsContainer
+  - PlayerInventoryContainer
+  - SharedCrimeFactionList
+  - JailOutfit
+  - MaleTitle
+  - FemaleTitle
+  - Parameter2
+  FLOR:
+  - ObjectBounds
+  - Name
+  - MODL
+  - MODT
+  - MarkerColorUnused
+  - ActivateTextOverride
+  - Flags
+  - Ingredient
+  - HarvestSound
+  - SeasonalIngredientProduction
+  - MODS
+  - VirtualMachineAdapter
+  FLST:
+  - FormID
+  FSTP:
+  - ImpactDataSet
+  - Tag
+  FSTS:
+  - FootstepCounts
+  - Footsteps
+  FURN:
+  - ObjectBounds
+  - Name
+  - MODL
+  - MODT
+  - MODS
+  - KeywordCount
+  - Keywords
+  - MarkerColorUnused
+  - Flags
+  - InteractionKeyword
+  - ActiveMarkersFlags
+  - WorkbenchData
+  - MarkerIndex
+  - DisabledEntryPoints
+  - Marker
+  - XMRK
+  - VirtualMachineAdapter
+  - Destructibles
+  - MarkerKeyword
+  GLOB:
+  - Type
+  - Value
+  GMST:
+  - Value
+  GRAS:
+  - ObjectBounds
+  - ModelFileName
+  - ModelInformation
+  - DATA
+  HAZD:
+  - ObjectBounds
+  - Name
+  - ModelFileName
+  - ModelInformation
+  - Data
+  HDPT:
+  - Name
+  - ModelFileName
+  - ModelInformation
+  - Flags
+  - Type
+  - PartType
+  - FileName
+  - TextureSet
+  - ValidRaces
+  - Part
+  - Color
+  IDLE:
+  - CTDA
+  - FileName
+  - Animations
+  - DataUnused
+  - AnimationEvent
+  - Parameter1
+  - Parameter2
+  IDLM:
+  - ObjectBounds
+  - Flags
+  - AnimationCount
+  - IdleTimerSetting
+  - Animations
+  IMAD:
+  - Data
+  - BlurRadius
+  - DoubleVisionStrength
+  - TintColor
+  - FadeColor
+  - RadialBlurs
+  - DephtOfFields
+  - MotionBlurStrength
+  - Hdrs
+  - Cinematics
+  IMGS:
+  - HDR
+  - Cinematic
+  - Tint
+  - DepthOfField
+  INGR:
+  - ObjectBounds
+  - Name
+  - KeywordCount
+  - Keywords
+  - MODL
+  - MODT
+  - MODS
+  - SoundPickUp
+  - DATA
+  - EffectData
+  - BaseEffect
+  - EFIT
+  - SoundPutDown
+  - VirtualMachineAdapter
+  IPCT:
+  - ModelFileName
+  - ModelInformation
+  - DATA
+  - DecalData
+  - TextureSet
+  - Sound1
+  - Hazard
+  - Sound2
+  - SecondaryTextureSet
+  IPDS:
+  - Data
+  KEYM:
+  - ObjectBounds
+  - Name
+  - MODL
+  - MODT
+  - SoundPickUp
+  - SoundPutDown
+  - KeywordCount
+  - Keywords
+  - DATA
+  KYWD:
+  - CNAM
+  LCRT:
+  - CNAM
+  LCTN:
+  - Name
+  - KeywordCount
+  - Keywords
+  - ParentLocation
+  - WorldLocationMarkerRef
+  - WorldLocationRadius
+  - AddedSpecialReferences
+  - MasterSpecialReferences
+  - MasterWorldspaceCells
+  - LocationPersistLocationReferences
+  - MasterUniqueNPCs
+  - MasterEnablePointReferences
+  - MasterInitiallyDisabledReferences
+  - HorseMarkerRef
+  - AddedWorldspaceCells
+  - AddedEnableParentReferences
+  - UnreportedCrimeFaction
+  - AddedUniqueNPCs
+  - AddedInitiallyDisabledReferences
+  - CNAM
+  - AddedPersistLocationReferences
+  - Music
+  LGTM:
+  - Lighting
+  - DALC
+  LIGH:
+  - VirtualMachineAdapter
+  - ObjectBounds
+  - MODL
+  - MODT
+  - Data
+  - FadeValue
+  - Name
+  - Sound
+  LSCR:
+  - Description
+  - CTDA
+  - Parameter2
+  - LoadingScreenNIF
+  - InitialScale
+  - InitialRotation
+  - RotationOffsetConstraints
+  - InitialTranslationOffset
+  - CameraPath
+  LTEX:
+  - TextureSet
+  - MaterialType
+  - HavokData
+  - TextureSpecularExponent
+  - Grass
+  - IsSnow
+  LVLI:
+  - ObjectBounds
+  - ChanceNone
+  - Flags
+  - Count
+  - LeveledEntry
+  - Global
+  LVLN:
+  - ObjectBounds
+  - ChanceNone
+  - Flags
+  - Count
+  - LeveledEntry
+  - ModelFileName
+  - ModelInformation
+  LVSP:
+  - ObjectBounds
+  - ChanceNone
+  - Flags
+  - Count
+  - LeveledEntry
+  MATO:
+  - DirectionalMaterialData
+  - ModelFileName
+  - ModelInformation
+  - Data
+  MATT:
+  - MaterialParent
+  - MaterialName
+  - HavokDisplayColor
+  - Buoyancy
+  - Flags
+  - HavokImpactDataSet
+  MESG:
+  - Description
+  - IconUnused
+  - Flags
+  - DisplayTime
+  - Name
+  - ButtonText
+  - CTDA
+  - OwnerQuest
+  MGEF:
+  - Name
+  - MenuDisplayObject
+  - KeywordCount
+  - Keywords
+  - Data
+  - Sounds
+  - MagicItemDescription
+  - VirtualMachineAdapter
+  - CTDA
+  MISC:
+  - ObjectBounds
+  - MODL
+  - MODT
+  - Data
+  - Name
+  - KeywordCount
+  - Keywords
+  - VirtualMachineAdapter
+  - SoundPickUp
+  - SoundPutDown
+  - MODS
+  - IconFileName
+  MOVT:
+  - Name
+  - DefaultData
+  - AnimChangeThresholds
+  MSTT:
+  - ObjectBounds
+  - MODL
+  - MODT
+  - Flags
+  - LoopingSound
+  - MODS
+  - Destructibles
+  MUSC:
+  - Flags
+  - Data
+  - FadeDuration
+  - MusicTracks
+  MUST:
+  - TrackType
+  - TrackFileName
+  - FinaleFileName
+  - CuePoints
+  - ConditionCount
+  - CTDA
+  - Duration
+  - FadeOut
+  - Tracks
+  - LoopData
+  NAVI:
+  - Version
+  - NavmeshInfos
+  - PrecomputedPathing
+  - DeletedNavmeshes
+  NPC_:
+  - ObjectBounds
+  - Configuration
+  - Factions
+  - Voice
+  - Template
+  - Race
+  - COCT
+  - CNTO
+  - AIData
+  - Package
+  - Class
+  - Name
+  - Marker
+  - PlayerSkills
+  - HeadPart
+  - HairColor
+  - NAM5
+  - Height
+  - Weight
+  - SoundLevel
+  - DefaultOutfit
+  - DefaultPackageList
+  - CrimeFaction
+  - HeadTexture
+  - TextureLighting
+  - FaceMorph
+  - FaceParts
+  - TintIndex
+  - TintColor
+  - InterpolationValue
+  - Preset
+  - DeathItem
+  - Skin
+  - AttackRace
+  - KeywordCount
+  - Keywords
+  - CombatStyle
+  - InheritsSoundsFrom
+  - VirtualMachineAdapter
+  - PerkCount
+  - Perks
+  - ShortName
+  - SPCT
+  - ActorEffect
+  - Type
+  - Sound
+  - SoundChance
+  - AttackData
+  - AttackEvent
+  - FarAwayModel
+  - SleepingOutfit
+  - CombatOverridePackageList
+  - GiftFilter
+  - Destructibles
+  - SpectatorOverridePackageList
+  OTFT:
+  - Items
+  PACK:
+  - PackData
+  - Schedule
+  - CTDA
+  - Counter
+  - PackageDatas
+  - Marker
+  - Onbegins
+  - Onends
+  - Onchanges
+  - ProcedureTrees
+  - VirtualMachineAdapter
+  - Flags
+  - AnimationCount
+  - IdleTimerSetting
+  - Animations
+  - CIS2
+  - OwnerQuest
+  - CombatStyle
+  PERK:
+  - Name
+  - Description
+  - CTDA
+  - DATA
+  - NextPerk
+  - PRKE
+  - EffectData
+  - RunOnTabIndex
+  - Type
+  - EPFD
+  - EndMarker
+  - VirtualMachineAdapter
+  - ButtonLabel
+  - EPF3
+  - CIS2
+  PROJ:
+  - ObjectBounds
+  - Name
+  - MODL
+  - MODT
+  - Data
+  - NAM1
+  - SoundLevel
+  - NAM2
+  - Destructibles
+  QUST:
+  - Name
+  - General
+  - QuestDialogueConditions
+  - Marker
+  - NextAliasID
+  - VirtualMachineAdapter
+  - ObjectWindowFilter
+  - INDX
+  - StageFlags
+  - LogEntry
+  - ObjectiveIndex
+  - ORedWithPrevious
+  - DisplayText
+  - QSTA
+  - CTDA
+  - CIS2
+  - ReferenceAliasID
+  - ALID
+  - FNAM
+  - ALFI
+  - UniqueActor
+  - VoiceTypes
+  - ALED
+  - SpecificReference
+  - ALDN
+  - Object
+  - ALCA
+  - Level
+  - Event
+  - LocationAliasID
+  - ALFE
+  - ALFD
+  - ALFA
+  - RefType
+  - CombatOverridePackageList
+  - Package
+  - Faction
+  - Global
+  - Count
+  - CNTO
+  - SpecificLocation
+  - Spell
+  - KeywordCount
+  - Keywords
+  - ALNA
+  - Type
+  - ALEQ
+  - ALEA
+  - KNAM
+  - SCHR
+  - QNAM
+  - SCTX
+  - NextQuest
+  - SpectatorOverridePackageList
+  - ObserveDeadBodyOverridePackageList
+  - GuardWarnOverridePackageList
+  RACE:
+  - FULL
+  - Description
+  - Count
+  - ActorEffect
+  - Skin
+  - BipedBodyTemplate
+  - KeywordCount
+  - Keywords
+  - DATA
+  - MaleMarker
+  - MaleSkeletalModel
+  - MODT
+  - FemaleMarker
+  - FemaleSkeletalModel
+  - MTNM
+  - Voices
+  - FaceGenMainClamp
+  - FaceGenFaceClamp
+  - AttackData
+  - AttackEvent
+  - BodyDatas
+  - BodyPartData
+  - MarkerNAM33
+  - MaterialType
+  - ImpactDataSet
+  - OpenLootSound
+  - CloseLootSound
+  - NAME
+  - EquipmentFlags
+  - EquipSlot
+  - UnarmedEquipSlot
+  - PHTN
+  - PHWT
+  - DecapitateArmors
+  - TotalNumberOfTintsInList
+  - DecapitationFX
+  - HeadDatas
+  - Head
+  - MorphRace
+  - BaseMovementDefaultWalk
+  - BaseMovementDefaultRun
+  - BaseMovementDefaultSwim
+  - BaseMovementDefaultFly
+  - BaseMovementDefaultSneak
+  - ArmorRace
+  - DefaultHairColors
+  - BaseMovementDefaultSprint
+  - MovementType
+  - OverrideValues
+  REGN:
+  - MapColor
+  - RDAT
+  - RDSA
+  - Worldspace
+  - EdgeFallOff
+  - Points
+  - WeatherTypes
+  - Music
+  RELA:
+  - Data
+  REVB:
+  - Data
+  RFCT:
+  - EffectData
+  SCEN:
+  - VirtualMachineAdapter
+  - FNAM
+  - MarkerPhaseStart
+  - NAM0
+  - NEXT
+  - EditorWidth
+  - MarkerPhaseEnd
+  - ALID
+  - LNAM
+  - BehaviourFlags
+  - Type
+  - Index
+  - StartPhase
+  - EndPhase
+  - Topic
+  - HeadtrackActorID
+  - LoopingMax
+  - LoopingMin
+  - EmotionType
+  - EmotionValue
+  - DurationSeconds
+  - Package
+  - ActorBehaviorSettings
+  - CTDA
+  - CIS2
+  - ParentQuest
+  - LastActionIndex
+  - SCHR
+  - QNAM
+  - SCTX
+  - SCDA
+  - SCRO
+  SCRL:
+  - ObjectBounds
+  - Name
+  - KeywordCount
+  - Keywords
+  - MenuDisplayObject
+  - EquipmentType
+  - Description
+  - MODL
+  - MODT
+  - Item
+  - Data
+  - BaseEffect
+  - EFIT
+  - CTDA
+  - Parameter2
+  SHOU:
+  - Name
+  - MenuDisplayObject
+  - Description
+  - WordsOfPower
+  SLGM:
+  - ObjectBounds
+  - Name
+  - MODL
+  - MODT
+  - KeywordCount
+  - Keywords
+  - DATA
+  - ContainedSoul
+  - MaximumCapacity
+  - LinkedTo
+  SMBN:
+  - ParentNode
+  - PreviousNode
+  - ConditionCount
+  - CTDA
+  - Flags
+  - MaxConcurrentQuests
+  - Parameter2
+  SMEN:
+  - ParentNode
+  - PreviousNode
+  - ConditionCount
+  - Flags
+  - MaxConcurrentQuests
+  - Type
+  SMQN:
+  - ParentNode
+  - PreviousNode
+  - ConditionCount
+  - CTDA
+  - Flags
+  - MaxConcurrentQuests
+  - QuestCount
+  - Quest
+  - HoursUntilReset
+  - Parameter2
+  - NumQuestsToRun
+  - 24HoursTillReset
+  SNCT:
+  - Name
+  - Flags
+  - Parent
+  - StaticVolumeMultiplier
+  - DefaultMenuValue
+  SNDR:
+  - DescriptorType
+  - Category
+  - Sound
+  - OutputModel
+  - LNAM
+  - Values
+  - CTDA
+  - AlternateSoundFor
+  - FNAM
+  SOPM:
+  - Data
+  - Type
+  - AttenuationValues
+  - OutputValues
+  - FNAM
+  - CNAM
+  - SNAM
+  SOUN:
+  - ObjectBounds
+  - SoundDescriptor
+  - FNAM
+  - SNDD
+  SPEL:
+  - ObjectBounds
+  - Name
+  - MenuDisplayObject
+  - EquipmentType
+  - Description
+  - Data
+  - BaseEffect
+  - EFIT
+  - CTDA
+  - Parameter2
+  SPGD:
+  - Data
+  - ParticleTexture
+  STAT:
+  - ObjectBounds
+  - ModelFileName
+  - ModelInformation
+  - DirectionMaterial
+  - AlternateTextures
+  - DistantLOD
+  TACT:
+  - ObjectBounds
+  - Name
+  - MODL
+  - MODT
+  - PNAM
+  - FNAM
+  - VoiceType
+  TREE:
+  - ObjectBounds
+  - ModelFileName
+  - ModelInformation
+  - IngredientProduction
+  - TreeData
+  - Ingredient
+  - HarvestSound
+  - Name
+  TXST:
+  - ObjectBounds
+  - TexturesRgbAs
+  - Flags
+  - DecalData
+  VOLI:
+  - Intensity
+  - CustomColorContribution
+  - ENAM
+  - FNAM
+  - GNAM
+  - DensityContribution
+  - DensitySize
+  - DensityWindSpeed
+  - DensityFallingSpeed
+  - PhaseFunctionContribution
+  - PhaseFunctionScattering
+  - SamplingRepartitionRangeFactor
+  VTYP:
+  - Flags
+  WATR:
+  - Opacity
+  - Flags
+  - OpenSound
+  - ImageSpace
+  - DamagePerSecond
+  - Data
+  - RelatedWatersUnused
+  - LinearVelocity
+  - AngularVelocity
+  - NoiseTextures
+  - Material
+  - FlowNormalsNoiseTexture
+  - Name
+  WEAP:
+  - ObjectBounds
+  - Name
+  - MODL
+  - MODT
+  - EquipmentType
+  - BlockBashImpactDataSet
+  - AlternateBlockMaterial
+  - KeywordCount
+  - Keywords
+  - Description
+  - ImpactDataSet
+  - 1stPersonModelObject
+  - AttackFailSound
+  - EquipSound
+  - UnequipSound
+  - GameData
+  - Data
+  - CriticalData
+  - DetectionSoundLevel
+  - Effect
+  - Capacity
+  - Unused
+  - AttackSound
+  - IdleSound
+  - Template
+  - VirtualMachineAdapter
+  - MODS
+  WOOP:
+  - Name
+  - Translation
+  WRLD:
+  - Flags
+  - Grid
+  - LightingTemplate
+  - WaterHeight
+  - Regions
+  - Cell
+  - Name
+  - EncounterZone
+  - Location
+  - ParentWorldspaces
+  - Climate
+  - Water
+  - LODWater
+  - LODWaterHeight
+  - LandData
+  - WorldMapOffsetData
+  - DistantLODMultiplier
+  - DATA
+  - Min
+  - Max
+  - Music
+  - HDLODDiffuseTexture
+  - HDLODNormalTexture
+  - Offsets
+  - MaxHeightData
+  - FixedDimensionsCenterCell
+  - WaterEnvironmentMap
+  - InteriorLighting
+  - MusicType
+  - AcousticSpace
+  - OcclusionData
+  - WorldMapData
+  - ImageSpace
+  - ModelFileName
+  - ModelInformation
+  - Unknown
+  - WaterNoiseTexture
+  - WaterCurrentVelocities
+  WTHR:
+  - 00TX
+  - 10TX
+  - 30TX
+  - 80TX
+  - 90TX
+  - '"'
+  - ;0TX
+  - Layer27
+  - Layer28
+  - MaxCloudLayers
+  - PrecipitationType
+  - VisualEffect
+  - YSpeeds
+  - XSpeeds
+  - CloudColors
+  - CloudAlphas
+  - WeatherColors
+  - FogDistance
+  - Data
+  - DisabledCloudLayers
+  - Sound
+  - Static
+  - ImageSpaces
+  - VolumetricLighting
+  - Sunrise
+  - Day
+  - Sunset
+  - Night
+  - ModelFileName
+  - ModelInformation
+  - 20TX
+  - 40TX
+  - 50TX
+  - 60TX
+  - 70TX
+  - Layer20
+  - Layer18
+  - Layer25
+  - Layer26
+  - '"@0TX"'
+  - Layer21
+  - Layer22
+  - Layer17
+  - Layer23
+  - Layer24
+  - ?0TX
+  - Layer19
+  - <0TX
+  - =0TX
+  - '">0TX"'
+overrides:
+  add: {}
+  drop: {}
+notes:
+- Target for FO76->SkyrimSE (unlikely) and Starfield->SkyrimSE. Primarily here for completeness of the
+  conversion pipeline.
+- Skyrim SE uses very different record types from FO4/FO76 — do NOT mix whitelists across games. Weapons,
+  Ammunitions, Armors all have different field schemas.
+- Form version for Skyrim SE is 44 (vs FO4's 131). Version2/VersionControl framing is shared but counts
+  differ.

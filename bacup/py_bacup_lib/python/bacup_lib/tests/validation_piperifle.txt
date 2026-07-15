@@ -1,0 +1,145 @@
+================================================================================
+PIPE RIFLE ANIMATION CONVERSION VALIDATION REPORT
+================================================================================
+
+Total file pairs: 45
+  PASS:  45
+  FAIL:  0
+  ERROR: 0
+
+COMMON FAILURE PATTERNS:
+
+--------------------------------------------------------------------------------
+FO4 BASE GAME GROUND TRUTH SUMMARY
+--------------------------------------------------------------------------------
+
+Animation classes used in FO4 base game:
+  hkaAnimationContainer: 45 files
+  hkaAnimationBinding: 45 files
+  hkaLosslessCompressedAnimation: 23 files
+  hkaSplineCompressedAnimation: 22 files
+
+BlendHint values in FO4:
+  NORMAL: 29 files
+  ADDITIVE: 16 files
+
+Transform track counts: min=94, max=94, unique=[94]
+Float track counts: min=0, max=0, unique=[0]
+
+--------------------------------------------------------------------------------
+PER-FILE RESULTS
+--------------------------------------------------------------------------------
+
+[PASS] wpnafterjiggleadd.hkx
+
+[PASS] wpnafterjigglesightedadd.hkx
+
+[PASS] wpnboltchargeready.hkx
+
+[PASS] wpnboltchargesighted.hkx
+
+[PASS] wpnequip.hkx
+
+[PASS] wpnequipfast.hkx
+
+[PASS] wpnfireautoreadyback.hkx
+
+[PASS] wpnfireautoreadyforward.hkx
+
+[PASS] wpnfireautosighted.hkx
+
+[PASS] wpnfiresingleready.hkx
+
+[PASS] wpnfiresinglereadya.hkx
+
+[PASS] wpnfiresinglereadyb.hkx
+
+[PASS] wpnfiresinglesighted.hkx
+
+[PASS] wpngrenadethrow.hkx
+
+[PASS] wpnidlegundown.hkx
+
+[PASS] wpnidleready.hkx
+
+[PASS] wpnidlereadya.hkx
+
+[PASS] wpnidlereadyb.hkx
+
+[PASS] wpnidlereadyc.hkx
+
+[PASS] wpnidlereadyd.hkx
+
+[PASS] wpnidlesighted.hkx
+
+[PASS] wpnidlesightedwobble.hkx
+
+[PASS] wpnjumpfalladd.hkx
+
+[PASS] wpnjumpimpactland.hkx
+
+[PASS] wpnjumplandadd.hkx
+
+[PASS] wpnjumpstartadd.hkx
+
+[PASS] wpnmelee.hkx
+
+[PASS] wpnmeleebayonet.hkx
+
+[PASS] wpnminethrow.hkx
+
+[PASS] wpnpitchdownreadyadd.hkx
+
+[PASS] wpnpitchdownsightedadd.hkx
+
+[PASS] wpnpitchupreadyadd.hkx
+
+[PASS] wpnpitchupsightedadd.hkx
+
+[PASS] wpnreload.hkx
+
+[PASS] wpnrunforwardready.hkx
+
+[PASS] wpnrungundown.hkx
+
+[PASS] wpnsprint.hkx
+
+[PASS] wpnturnleftjiggleadd.hkx
+
+[PASS] wpnturnleftreadyadd.hkx
+
+[PASS] wpnturnleftsightedadd.hkx
+
+[PASS] wpnturnrightjiggleadd.hkx
+
+[PASS] wpnturnrightreadyadd.hkx
+
+[PASS] wpnturnrightsightedadd.hkx
+
+[PASS] wpnunequip.hkx
+
+[PASS] wpnwalkforwardsighted.hkx
+
+--------------------------------------------------------------------------------
+UNMATCHED FILES
+--------------------------------------------------------------------------------
+
+FO4-only (3):
+  wpnrunleftready.hkx
+  wpnrunrightready.hkx
+  wpnwalkforwardready.hkx
+
+--------------------------------------------------------------------------------
+COMPARISON WITH 44 PISTOL RESULTS
+--------------------------------------------------------------------------------
+
+44 Pistol: 27/56 PASS (48.2%), 29 FAIL — all 1P files matched, 3P had BONE_INDICES_DIFF
+Pipe Rifle: 45/45 PASS (100.0%), 0 FAIL, 0 ERROR
+
+Pattern analysis:
+  Files passing: 45 — these are likely additive/idle animations
+  ANIM_CLASS failures: 0 — FO76 interleaved vs FO4 spline
+  BONE_INDICES failures: 0
+
+  Idle/additive animations: 23/23 pass
+  Action animations (fire/reload/equip/run/etc): remaining pass/fail

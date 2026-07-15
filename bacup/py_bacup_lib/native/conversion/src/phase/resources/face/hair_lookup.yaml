@@ -1,0 +1,31 @@
+# FNV HAIR formkey -> FO4 hair HDPT lookup.
+#
+# This is intentionally small for the current slice:
+# - Race defaults are real FO4 vanilla head parts.
+# - Explicit mappings are limited to source defaults that can be mapped
+#   mechanically without pretending there has been a full visual calibration
+#   pass.
+
+mappings:
+  - fnv:
+      plugin: FalloutNV.esm
+      object_id: 014B90
+    fo4:
+      plugin: Fallout4.esm
+      object_id: 179620
+    notes: FNV HairDefault ("Clean Cut") -> FO4 BoyHair01 default fallback.
+  - fnv:
+      plugin: FalloutNV.esm
+      object_id: 05DC75
+    fo4:
+      plugin: Fallout4.esm
+      object_id: 179D22
+    notes: FNV HairDefaultF ("Clean Cut") -> FO4 GirlHair01 default fallback.
+
+race_defaults:
+  human_male:
+    plugin: Fallout4.esm
+    object_id: 179620
+  human_female:
+    plugin: Fallout4.esm
+    object_id: 179D22

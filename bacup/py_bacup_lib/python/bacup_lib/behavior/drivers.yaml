@@ -1,0 +1,118 @@
+# Behavior driver patterns: sink-member-path -> HKX-modifier-injection config.
+#
+# Used by py_creation_lib/python/creation_lib/conversion/behavior_driver_synth.py. When a behavior HKX
+# declares a float variable bound to one of these telemetry sinks but no
+# internal modifier writes to that variable, the converter injects a
+# minimal Havok modifier chain modeled on FO4 vanilla weapon behaviors
+# (Cryolator, Flamer, Minigun) so the variable is driven internally
+# rather than waiting for an external Papyrus script that never arrives.
+#
+# Per-variable keys:
+#   ramp_events      list of animation event names that should pulse
+#                    the raw helper variable to ramp_target (currently
+#                    informational — event-driven pulsing is TODO)
+#   decay_events     same, pulsing to decay_target
+#   initial_value    initial value of the telemetry variable
+#   ramp_target      value the raw helper is set to when ramping (1.0)
+#   decay_target     value it settles to when idle (0.0)
+#   damping_kp       hkbDampingModifier kP (damping rate). 0.15 is a
+#                    safe middle between Cryolator (0.2) and the fast
+#                    end of the spectrum. Higher = faster convergence.
+#
+# Top-level keys:
+#   telemetry_sinks           variable sink-path simple-names that
+#                             trigger the driver synthesis
+#   internal_writer_classes   modifier classes whose presence in the
+#                             same behavior means the variable is
+#                             already driven internally (skip synthesis)
+
+variable_patterns:
+  fOverheatAmount:
+    description: "Weapon barrel overheat / glow ramp (Meltdown laser carbine)."
+    ramp_events: [WeaponFire]
+    decay_events: [WeaponSheathe, ReloadComplete, ReloadStart]
+    initial_value: 0.0
+    ramp_target: 1.0
+    decay_target: 0.0
+    damping_kp: 0.15
+
+  fSpinRate:
+    description: "Gatling-style spin-up / spin-down driver."
+    ramp_events: [WeaponDraw, WeaponFire]
+    decay_events: [WeaponSheathe, Unequip]
+    initial_value: 0.0
+    ramp_target: 1.0
+    decay_target: 0.0
+    damping_kp: 0.20
+
+  fCharge:
+    description: "Charge-up driver (gauss / institute laser)."
+    ramp_events: [WeaponDraw, WeaponFire]
+    decay_events: [WeaponSheathe, ReloadComplete]
+    initial_value: 0.0
+    ramp_target: 1.0
+    decay_target: 0.0
+    damping_kp: 0.25
+
+  fPercent:
+    description: "Generic 0..1 driver bound to BGSGamebryoSequenceGenerator.fPercent."
+    ramp_events: [WeaponFire]
+    decay_events: [WeaponSheathe]
+    initial_value: 0.0
+    ramp_target: 1.0
+    decay_target: 0.0
+    damping_kp: 0.15
+
+  fToggleBlend:
+    description: "Toggle/blend variable — typically alpha for an overlay layer."
+    ramp_events: [WeaponFire]
+    decay_events: [WeaponSheathe]
+    initial_value: 0.0
+    ramp_target: 1.0
+    decay_target: 0.0
+    damping_kp: 0.20
+
+  fDampRate:
+    description: "Damping rate driver (rare — usually internal-only)."
+    ramp_events: [WeaponFire]
+    decay_events: [WeaponSheathe]
+    initial_value: 0.03
+    ramp_target: 0.03
+    decay_target: 0.03
+    damping_kp: 0.10
+
+  fTimePercent:
+    description: "Sequence time-percent driver (Meltdown overheat sequence)."
+    ramp_events: [WeaponFire]
+    decay_events: [WeaponSheathe, ReloadComplete, ReloadStart]
+    initial_value: 0.0
+    ramp_target: 1.0
+    decay_target: 0.0
+    damping_kp: 0.15
+
+# Sink member paths the detector treats as telemetry sinks. A binding
+# whose memberPath ends with one of these names (case-insensitive) is a
+# candidate for driver synthesis.
+telemetry_sinks:
+  - fTimePercent
+  - fToggleBlend
+  - fDampRate
+  - fPercent
+  - fCharge
+  - fOverheatAmount
+  - fSpinRate
+
+# Modifier classes whose presence in the same behavior means the
+# variable is already internally driven and should NOT get a
+# synthesized driver. Any class containing "Modifier" is already
+# caught by the detector heuristic; these are explicit anchors.
+internal_writer_classes:
+  - BSTimerModifier
+  - hkbDampingModifier
+  - hkbScriptedModifier
+  - hkbExpressionModifier
+  - hkbModifierGenerator
+  - hkbBlenderGenerator
+  - hkbScriptGenerator
+  - hkbFloatVariableSequencedDataModifier
+  - hkbProxyModifier

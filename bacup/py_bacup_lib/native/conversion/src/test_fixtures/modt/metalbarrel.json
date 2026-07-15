@@ -1,0 +1,116 @@
+{
+  "name": "MetalBarrel",
+  "record": {
+    "type": "STAT",
+    "form_id": "048280",
+    "editor_id": "MetalBarrel01Fire01_Static",
+    "source": "Fallout4.esm"
+  },
+  "modl": "SetDressing\\MetalBarrel\\MetalBarrel01Fire.nif",
+  "material_swap": {},
+  "mode": "A (no swap)",
+  "modt_hex": "0400000013000000000000000F0000000100000075DB5AEF6464730038973CEAB3AEEF3B646473007A7C3A5ADAE0E40B646473000BD80002038CE268646473000BD800020717F56F6464730038973CEA2D0D94F664647300582C55331D653788646473000BD80002B92277AE646473001CDB88C54D1A1046646473001CDB88C5528FF9866464730038973CEA29F70F0064647300582C5533AD473ADB646473007A7C3A5A791608CF646473000786F88DF6E39FC764647300582C5533F4441C8564647300582C553332A999016464730038973CEA7F44DDF864647300582C553362F091FC6464730038973CEAE8C1B2DE6464730038973CEA7FFC0CAC6267736DC23D6406",
+  "srgb_count": 15,
+  "addon_nodes": [],
+  "textures": [
+    {
+      "path": "textures\\Effects\\MistTileLight_d.dds",
+      "role": "eff_source",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Effects\\Gradients\\DustAlphaBasicGrad.dds",
+      "role": "eff_greyscale",
+      "srgb": true
+    },
+    {
+      "path": "textures\\SetDressing\\metalbarrel01_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\setdressing\\metalbarrel01_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\setdressing\\metalbarrel01_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    },
+    {
+      "path": "textures\\Shared\\Cubemaps\\MetalChrome01Cube_e.dds",
+      "role": "envmap",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Shared\\Cubemaps\\MetalBrushed01Cube_e.dds",
+      "role": "envmap",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Effects\\Embers_d.dds",
+      "role": "eff_source",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Effects\\Gradients\\FireFlame.dds",
+      "role": "eff_greyscale",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Interiors\\Building\\BldWoodBurnt01_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Interiors\\Building\\BldWoodBurnt01_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\SetDressing\\Construction\\SandBag01_d.dds",
+      "role": "eff_source",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Effects\\Gradients\\SmokeMuzFlash01Grad.dds",
+      "role": "eff_greyscale",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Effects\\Gradients\\FireSparksGrad.dds",
+      "role": "eff_greyscale",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Effects\\SmokeFillVapor01Atlas.dds",
+      "role": "eff_source",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Effects\\Gradients\\NukeGroundDustGrad.dds",
+      "role": "eff_greyscale",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Effects\\GlowSoft01.dds",
+      "role": "eff_source",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Effects\\SmokeVapor02Tile_n.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Effects\\SmokeVapor01Tile_n.dds",
+      "role": "normal",
+      "srgb": false
+    }
+  ],
+  "materials": [
+    "Materials\\SetDressing\\MetalBarrel01Alpha.BGSM"
+  ],
+  "note": "textures/materials are an unordered SET; vanilla MODT stores them in CK BSTScatterTable iteration order (see README)."
+}

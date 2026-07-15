@@ -1,0 +1,16 @@
+# FO76 numeric Condition.Data.Function code → FO4 named enum
+#
+# The FO76 yaml extractor emits raw numeric function codes for conditions it
+# cannot resolve to a known function name. Entries in this file are used by
+# `RecordTranslator._translate_conditions()` to rewrite those codes into the
+# corresponding FO4-named function. Any numeric code NOT listed here will
+# cause the condition to be dropped (with a warning), because we have no way
+# to verify the parameter layout will still be correct in FO4's schema.
+#
+# Add entries ONLY after confirming both (a) the FO76 code number and
+# (b) that the function exists in FO4 with the same parameter layout.
+#
+# Known-observed unresolved codes (B21_Snally):
+#   875 — unknown; appears in SURV_DiseasedCreatureChance spell/effect
+#         conditions. Not added: safer to drop the condition than to guess.
+functions: {}

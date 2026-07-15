@@ -1,0 +1,2873 @@
+skip_records:
+  - GMST
+  # These require non-flat group placement. This only disables the generic
+  # top-level writer; structured phases must still emit these under their
+  # legal parent groups (for example CELL/LAND/NAVM under WRLD,
+  # DIAL under QUST, and INFO under DIAL).
+  # SCEN and DLBR are flat top-level records in FO4, so the generic writer
+  # emits them directly (payload normalized by the target_normalize SCEN
+  # scope emitters + apply_fo4_ck_payload_limits). They were skipped
+  # historically for CK-crash safety; set MODBOX_DISABLE_SCEN=1 to re-skip
+  # them for an in-game crash bisect (see maps.rs::load).
+  - ACHR
+  - CELL
+  - DIAL
+  - INFO
+  - LAND
+  # FO4 has one top-level NAVI record, but it must describe the emitted NAVM
+  # graph. Keep generic copy disabled; structured phases emit NAVM and rebuild NAVI.
+  - NAVI
+  - NAVM
+  - PGRE
+  - PHZD
+  - PLYR
+  - PMIS
+  - REFR
+  # FO76 Story Manager event nodes use FO76-only runtime event types
+  # (for example ILOC/CBGN/LCPG). FO4 CK tries to instantiate those event
+  # dispatchers while loading and crashes before validation can report them.
+  - SMBN
+  - SMEN
+  - SMQN
+  # FO76 adds default-object assignments for executable-only systems that FO4
+  # does not know how to initialize. Emitting them makes CK report
+  # [MASTERFILE] invalid default object form errors.
+  - DFOB
+  # FO76-only collision layers carry one-way collides-with links against FO4
+  # base layers and can reuse FO4 layer indices. References are remapped to
+  # compatible FO4 layers during native preflight seeding.
+  - COLL
+
+WEAP:
+  source_extra:
+  - Capacity
+  - Flags
+  - Unknown
+  fields:
+    FULL: FULL
+    Description: Description
+    MODL: MODL
+    group_1st_person_model: group_1st_person_model
+    ObjectBounds: ObjectBounds
+    PreviewTransform: PreviewTransform
+    Keywords: Keywords
+    group_object_template: group_object_template
+    AttachParentSlots: AttachParentSlots
+    InstanceNaming: InstanceNaming
+    SoundPickUp: SoundPickUp
+    SoundPutDown: SoundPutDown
+    AimModel: AimModel
+    Zoom: Zoom
+    ImpactDataSet: ImpactDataSet
+    EquipmentType: EquipmentType
+    BlockBashImpactDataSet: BlockBashImpactDataSet
+    AlternateBlockMaterial: AlternateBlockMaterial
+    Effect: Effect
+    Data: Data
+    DamageTypes: DamageTypes
+    NPCAddAmmoList: NPCAddAmmoList
+    FNAM: FNAM
+    AnimationSound: AnimationSound
+    CriticalData: CriticalData
+  transforms:
+    FULL:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    MODL:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    group_1st_person_model:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    Data:
+      type: scale_nested
+      subfields:
+        MinRange: 0.12226
+        MaxRange: 0.08498
+        MinPowerPerShot: 0.1
+      remap_source_esm: SeventySix.esm
+      remap_target_esm: Fallout4.esm
+    CriticalData:
+      type: scale_nested
+      clamp_max_subfields:
+        CritDamageMult: 2.0
+      remap_source_esm: SeventySix.esm
+      remap_target_esm: Fallout4.esm
+    FNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    ImpactDataSet:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    EquipmentType:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    BlockBashImpactDataSet:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    AlternateBlockMaterial:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    group_object_template:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    SoundPutDown:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    NPCAddAmmoList:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    AimModel:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Zoom:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Effect:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    AttachParentSlots:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    InstanceNaming:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    DamageTypes:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ObjectPlacementDefault
+  - group_telegraph_data
+  - Unknown
+  - MODT
+  - group_destructible
+  - KeywordCount
+  - AimAssistModel
+  - DamageCurve
+  - MinDurabilityCurve
+  - MaxDurabilityCurve
+  - ConditionLossScale
+  - BashConditionLossScale
+  - EligibleLevels
+  - BreakSound
+  - SneakAttackMultiplier
+  - MeleeSpeed
+  - Data
+  - 1stPersonModels
+  - DamageTypeConditionScalings
+  - Destructibles
+  - RGW3
+  - MODD
+  - MinimumChargeTime
+  - ObjectTemplates
+  - SnapTemplate
+  - TelegraphDatas
+  - XALG
+  - XFLG
+  - OPDS
+  - UnknownCurve
+  - VirtualMachineAdapter
+  - Capacity
+AMMO:
+  source_extra:
+  - Flags
+  fields:
+    Name: Name
+    Description: Description
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    Data: Data
+    DNAM: DNAM
+    ShortName: ShortName
+    Keywords: Keywords
+    SoundPickUp: SoundPickUp
+    SoundPutDown: SoundPutDown
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    ShortName:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    MODL:
+      type: strip_subfields
+      remove:
+      - ENLT
+      - ENLS
+      - AUUV
+    DNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    SoundPutDown:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ObjectPlacementDefault
+  - MODT
+  - group_destructible
+  - KeywordCount
+  - ValueCurrency
+  - PreviewTransform
+  - Flags
+  - CasingModel
+  - Destructibles
+  - NAM2
+  - PhysicsSyncType
+  - SnapTemplate
+  defaults: {}
+NPC_:
+  source_extra:
+  - Flags
+  fields:
+    FULL: FULL
+    ShortName: ShortName
+    ObjectBounds: ObjectBounds
+    Race: Race
+    Configuration: Configuration
+    COCT: COCT
+    CNTO: CNTO
+    DNAM: DNAM
+    Keywords: Keywords
+    PerkCount: PerkCount
+    Perks: Perks
+    Factions: Factions
+    DeathItem: DeathItem
+    Voice: Voice
+    CombatOverridePackageList: CombatOverridePackageList
+    CombatStyle: CombatStyle
+    Weight: Weight
+    AttackRace: AttackRace
+    DefaultOutfit: DefaultOutfit
+    Properties: Properties
+    Skin: Skin
+    Class: Class
+    AIData: AIData
+    HairColor: HairColor
+    Unused: NAM5
+    HeightMin: HeightMin
+    HeightMax: HeightMax
+    SoundLevel: SoundLevel
+    InheritsSoundsFrom: InheritsSoundsFrom
+    Package: Package
+    ActorEffect: ActorEffect
+    DefaultTemplate: DefaultTemplate
+    TemplateActors: TemplateActors
+    PNAM: PNAM
+    DATA: DATA
+  transforms:
+    FULL:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    ShortName:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    Race:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    CNTO:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Factions:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    DeathItem:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Voice:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    CombatOverridePackageList:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    CombatStyle:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    AttackRace:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    DefaultOutfit:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Skin:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Class:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    HairColor:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    InheritsSoundsFrom:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Package:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    ActorEffect:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    DefaultTemplate:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ObjectPlacementDefault
+  - PhysicsSyncType
+  - group_actor_scaling_info
+  - group_object_template
+  - ObjectTemplates
+  - AttachParentSlots
+  - InstanceNaming
+  - XPCurveTable
+  - ActivateTextOverride
+  - ActorScalingInfos
+  - AnimationSound
+  - BodyMorphRegionValues
+  - DefaultPackageList
+  - Destructibles
+  - HairColorOldFormVersionOnly
+  - KeywordCount
+  - NativeTerminal
+  - PreviewTransform
+  - VirtualMachineAdapter
+  - WeightOldFormVersionOnly
+  - ActorSounds
+  - AttackData
+  - AttackEvent
+  - CTDA
+  - CrimeFaction
+  - Data
+  - DefaultLayer
+  - Description
+  - EWSActorCostCurveTable
+  - FacialHairColor
+  - FacialMorphIntensity
+  - FarAwayModel
+  - ForcedLocRefTypes
+  - FormTag
+  - HeadTexture
+  - HealthCurveTable
+  - Index
+  - Inventories
+  - LegendaryChance
+  - LegendaryTemplate
+  - MorphKeys
+  - MorphValues
+  - PowerArmorStand
+  - RequiredSlot
+  - SleepingOutfit
+  - SnapTemplate
+  - TierCurveTable
+  - UnarmedWeapon
+  - Values
+  - WeaponSlot
+  - Flags
+  defaults: {}
+RACE:
+  source_extra:
+  - BehaviorGraphDatas
+  - BodyDatas
+  - EquipSlot
+  - MaleMarker
+  - Unknown
+  fields:
+    FULL: FULL
+    DESC: DESC
+    SPCT: SPCT
+    Data: Data
+    KeywordCount: KeywordCount
+    Voices: Voices
+    FaceGenMainClamp: FaceGenMainClamp
+    FaceGenFaceClamp: FaceGenFaceClamp
+    BipedBodyTemplate: BipedBodyTemplate
+    BodyDatas: BodyDatas
+    NAME: NAME
+    Flags: Flags
+    AttackData: AttackData
+    AttackEvent: AttackEvent
+    ATKT: ATKT
+    ActorEffect: ActorEffect
+    Properties: Properties
+    BehaviourGraph: BehaviourGraph
+    Path: Path
+    SRAF: SRAF
+    SAKD: SAKD
+    STKD: STKD
+    MTNM: MTNM
+    BipedObjectConditionAVs: BipedObjectConditions
+    EquipmentFlags: EquipmentFlags
+    EquipSlot: EquipSlot
+    Node: Node
+    MorphLastIndex: MorphLastIndex
+    PHTN: PHTN
+    PhonemeTargetWeight: PhonemeTargetWeight
+    MaleMarker: MaleMarker
+    IdleChatterTimeMin: IdleChatterTimeMin
+    IdleChatterTimeMax: IdleChatterTimeMax
+    ImpactMaterialType: ImpactMaterialType
+    Skin: Skin
+    BodyPartData: BodyPartData
+    UnarmedWeapon: UnarmedWeapon
+    SoundCloseCorpse: SoundCloseCorpse
+    SoundOpenCorpse: SoundOpenCorpse
+    SubgraphAdditiveRace: SubgraphAdditiveRace
+    DefaultHairColors: DefaultHairColors
+    AnimationSound: AnimationSound
+    Keywords: Keywords
+    MeatCapTextureSet: MeatCapTextureSet
+    CollarTextureSet: CollarTextureSet
+    BaseMovementDefaultsDefault: BaseMovementDefaultsDefault
+    DialogueQuest: DialogueQuest
+  transforms:
+    FULL:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    DESC:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    Data:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Voices:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    ActorEffect:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Skin:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    BodyPartData:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    UnarmedWeapon:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    SoundCloseCorpse:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    SoundOpenCorpse:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    SubgraphAdditiveRace:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    DefaultHairColors:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    EquipSlot:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    AnimationSound:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    MeatCapTextureSet:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    CollarTextureSet:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    BaseMovementDefaultsDefault:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    DialogueQuest:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    ImpactMaterialType:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    SAKD:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    STKD:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - DURL
+  - AttachParentSlots
+  - AimAssistPoseData
+  - ArmorRace
+  - BaseMovementDefaultsFly
+  - CTDA
+  - Comments
+  - EWSActorCostCurve
+  - LootBag
+  - MorphRace
+  - RequiredSlot
+  - SkeletalDatas
+  - SubgraphTemplateRace
+  - TSLT
+  - TINL
+  - TTEB
+  - TTED
+  - TTGE
+  - CIS1
+  - CIS2
+  - WeaponSlot
+  - BaseMovementDefaultsSwim
+  - BlendOperation
+  - CategoryIndex
+  - Default
+  - FormTag
+  - HairColorLookupTexture
+  - Head
+  - HeadDatas
+  - MPGN
+  - MPGS
+  - MPPC
+  - MPPI
+  - MPPN
+  - MPPM
+  - MPPT
+  - MPPF
+  - MPPK
+  - MaxName
+  - MinName
+  - MorphType
+  - Parameter1
+  - Playable
+  - Range
+  - RangeModifierTargetGender
+  - ScaleSet
+  - TETI
+  - TTEC
+  - TTEF
+  - TTET
+  - TTGP
+  - TintLayerFaceRegionIndex
+  - WeightScaleTargetGender
+  - BehaviorGraphDatas
+  defaults: {}
+ARMO:
+  source_extra:
+  - AUUV
+  - ENLS
+  - ENLT
+  fields:
+    FULL: FULL
+    Description: Description
+    ArmorAddon: ArmorAddon
+    ObjectBounds: ObjectBounds
+    PreviewTransform: PreviewTransform
+    Keywords: Keywords
+    ArmorData: DATA
+    EquipmentType: EquipmentType
+    group_object_template: group_object_template
+    AttachParentSlots: AttachParentSlots
+    InstanceNaming: InstanceNaming
+    RatingAddonData: FNAM
+    BipedBodyTemplate: BipedBodyTemplate
+    Race: Race
+    Resistances: Resistances
+  transforms:
+    FULL:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    Description:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    ArmorAddon:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    Keywords:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    EquipmentType:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    group_object_template:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    AttachParentSlots:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    InstanceNaming:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Race:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ObjectPlacementDefault
+  - group_male
+  - group_female
+  - ENLT
+  - ENLS
+  - AUUV
+  - EligibleLevels
+  - BreakSound
+  - AddonIndex
+  - ConditionDamageScaleFactor
+  - DurabilityMax
+  - DurabilityMin
+  - Enchantment
+  - Females
+  - KeywordCount
+  - Males
+  - ObjectTemplates
+  - ValueCurrency
+  - AlternateBlockMaterial
+  - ArmorBackpackPositionOffset
+  - BlockBashImpactDataSet
+  - Flags
+  - FormTag
+  - PhysicsSyncType
+  - Quest
+  - SnapTemplate
+  - SoundPickUp
+  - SoundPutDown
+  - VirtualMachineAdapter
+  defaults: {}
+PROJ:
+  source_extra:
+  - Flags
+  fields:
+    Name: Name
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    Data: Data
+    NAM1: NAM1
+    NAM2: NAM2
+    Unused: Unused
+    SoundLevel: SoundLevel
+  transforms:
+    MODL:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    NAM1:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    NAM2:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Data:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Unused:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ObjectPlacementDefault
+  - XAxisDrag
+  - MODT
+  - PhysicsSyncType
+  - XALG
+  - ZAxisDrag
+  - Destructibles
+  - KeywordCount
+  - Keywords
+  - SeekStrengthCurveTable
+  - SpeedCurveTable
+  defaults: {}
+EXPL:
+  source_extra:
+  - Flags
+  fields:
+    Name: Name
+    ModelFileName: ModelFileName
+    ObjectBounds: ObjectBounds
+    Data: Data
+    ImageSpaceModifier: ImageSpaceModifier
+  transforms:
+    ModelFileName:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    Data:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    ImageSpaceModifier:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ObjectPlacementDefault
+  - Description
+  - ModelInformation
+  - DamageTypes
+  - Enchantment
+  - PhysicsSyncType
+  defaults: {}
+OMOD:
+  fields:
+    Name: Name
+    Description: Description
+    TargetOMODKeywords: TargetOMODKeywords
+    LooseMod: LooseMod
+    FilterKeywords: FilterKeywords
+    Filter: Filter
+    Unused: LooseMod
+    Priority: Priority
+    ModelFileName: ModelFileName
+    Data: Data
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    Description:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    TargetOMODKeywords:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    LooseMod:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    FilterKeywords:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Filter:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Priority:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    ModelFileName:
+      type: strip_subfields
+      remove:
+      - ENLT
+      - ENLS
+      - AUUV
+    Data:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+      list_filters:
+      - path: Properties
+        key: Property
+        drop_if_int: true
+        int_to_name_map:
+          97: AimModelRecoilMaxDegPerShot
+          102: AimModelConeIronSightsMultiplier
+    DATA:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+      list_filters:
+      - path: Properties
+        key: Property
+        drop_if_int: true
+        int_to_name_map:
+          97: AimModelRecoilMaxDegPerShot
+          102: AimModelConeIronSightsMultiplier
+  drop:
+  - ModelAttachIndex
+  - Unnamed
+  - ModelInformation
+  - ENLT
+  - EnlightenSimplifiedShapeScale
+  - EnlightenAutoUVEditorOnly
+  - XALG
+  - ArtObject
+  - ConditionForm
+  - DependantMod
+  - FormTag
+  - MaterialSwap
+  - Obstacle
+  - PossibleModList
+  defaults: {}
+STAT:
+  source_extra:
+  - Flags
+  fields:
+    Name: Name
+    MODL: ModelFileName
+    ObjectBounds: ObjectBounds
+    DirectionMaterial: DirectionMaterial
+    Flags: Flags
+  transforms:
+    MODL:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+      - ENLM
+    DirectionMaterial:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - PRPS
+  - ObjectPlacementDefault
+  - group_lod_level_override
+  - MODT
+  - group_destructible
+  - DirectionMaterial
+  - Destructibles
+  - LodLevelOverrides
+  - PreviewTransform
+  - Properties
+  - SnapTemplate
+  - XALG
+  - DefaultLayer
+  - DestructibleObjectFaction
+  - DistantLOD
+  - ForcedLocRefTypes
+  - FormTag
+  - PhysicsSyncType
+  - StaticObjectFlags
+  - VirtualMachineAdapter
+  - XFLG
+  defaults: {}
+SCOL:
+  transforms:
+    ONAM:
+      type: fo76_scol_static
+      source_esm: SeventySix.esm
+  drop:
+  - OPDS
+  - ObjectPlacementDefault
+  - SNTP
+  - SnapTemplate
+  - PHST
+  - PhysicsSyncType
+  - DEFL
+  - DefaultLayer
+  - XALG
+  - XFLG
+  - MODD
+  - MNAM
+  - NAM1
+  - LODP
+  - group_lod_level_override
+  - PRPS
+  - Properties
+  - ENLM
+  - ENLT
+  - ENLS
+  - EnlightenSimplifiedShapeScale
+  - AUUV
+  - EnlightenAutoUVEditorOnly
+  defaults: {}
+COBJ:
+  fields:
+    CreatedObject: CreatedObject
+    WorkbenchKeyword: WorkbenchKeyword
+    Components: Components
+    CTDA: CTDA
+    Category: Category
+    Description: Description
+    DNAM: INTV
+  transforms:
+    INTV:
+      type: dnam_to_intv
+    CreatedObject:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    WorkbenchKeyword:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Components:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Category:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Description:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    NAM1:
+      type: wrap_in_list
+      target: NAM1
+      wrapper_key: Count
+  drop:
+  - Repair
+  - LearnMethod
+  - LearnRecipeFrom
+  - ScrapBonus
+  - CampMaximum
+  - Flags
+  - RECF
+  - RepairMethod
+  - SoundPickUp
+  - SoundPutDown
+  - WorkshopMaximum
+  - BuildGroupName
+  - ConstructibleInstantiationFilterKeyword
+  - FormTag
+  - INTV
+  - LearnChance
+  - MenuArtObject
+  - RepairCondition
+  - ScrapRecieved
+  defaults: {}
+KYWD:
+  fields:
+    Type: Type
+    CNAM: CNAM
+    Name: Name
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    Type:
+      type: remap_enum
+      enum_ref: keyword_type_enum
+      max_value: 18
+      default: 0
+      mapping:
+        19: 5
+        20: 9
+        21: 0
+        22: 9
+        23: 0
+        24: 0
+        25: 0
+        26: 0
+        27: 13
+        28: 0
+        29: 0
+        30: 0
+        31: 0
+        32: 0
+  drop:
+  - Notes
+  - FNAM
+  - CNAM
+  - IconName
+  - NetworkMarker
+  - DisplayName
+  - Flags
+  - FormTag
+  defaults: {}
+AVIF:
+  fields:
+    Name: Name
+    DESC: Description
+    Abbreviation: Abbreviation
+    DefaultValue: DefaultValue
+    Flags: Flags
+    Type: Type
+  transforms:
+    Flags:
+      type: enum_map
+      map:
+        UserDefinedDefault: unknown_13
+        DamageIsPositive: damage_is_positive
+      fallback: __passthrough__
+  drop:
+  - NetworkingFlags
+  - ActorValueKeyword
+  - MaximumValue
+  - MinimumValue
+  - Unnamed
+  - AssociatedList
+  - CNAM
+  defaults: {}
+CNCY:
+  target_record_type: MISC
+  fields:
+    OBND: OBND
+    PTRN: PTRN
+    FULL: FULL
+    MODL: MODL
+    MODT: MODT
+    YNAM: YNAM
+    ZNAM: ZNAM
+    KSIZ: KSIZ
+    KWDA: KWDA
+    DATA: DATA
+  transforms:
+    FULL:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    PTRN:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - DURL
+  - VCRY
+  - DESC
+  - AQIC
+  - MXCT
+  - SNAM
+  - CRTY
+  - FNAM
+  - MODB
+  - MODD
+  - XFLG
+  - ENLS
+  - AUUV
+  - ENLT
+  defaults: {}
+MISC:
+  fields:
+    FULL: FULL
+    MODL: MODL
+    MCQP: CVPA
+    ObjectBounds: ObjectBounds
+    PreviewTransform: PreviewTransform
+    Keywords: Keywords
+    Data: Data
+    Components: Components
+  transforms:
+    FULL:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    MODL:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    PreviewTransform:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Components:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    CVPA:
+      type: fo76_misc_components
+      source_esm: SeventySix.esm
+  drop:
+  - ObjectPlacementDefault
+  - ValueCurrency
+  - AQIC
+  - group_destructible
+  - KeywordCount
+  - SoundPickUp
+  - Description
+  - Data
+  - Destructibles
+  - MODT
+  - Quest
+  - SnapTemplate
+  - XALG
+  - FeaturedItemMessage
+  - IconFileName
+  - MessageIcon
+  - OPDS
+  - PhysicsSyncType
+  - SoundCrafting
+  - SoundPutDown
+  - VirtualMachineAdapter
+  defaults: {}
+KEYM:
+  fields:
+    FULL: FULL
+    PTRN: PTRN
+    YNAM: YNAM
+    ZNAM: ZNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    PTRN:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - OPDS
+  - ObjectPlacementDefault
+  - XALG
+  - XFLG
+  - MODD
+  - DEST
+  - group_destructible
+  - CTDA
+  - VCRY
+  - ValueCurrency
+  - DESC
+  - Description
+  - AQIC
+  - DIQO
+  - Quest
+  - ENLT
+  - ENLS
+  - EnlightenSimplifiedShapeScale
+  - AUUV
+  - EnlightenAutoUVEditorOnly
+  defaults: {}
+LVLI:
+  source_extra:
+  - LVLF
+  fields:
+    Count: Count
+    MaxCount: MaxCount
+    LVLF: LVLF
+    LVLO: LVLO
+    COED: COED
+    EpicLootChance: EpicLootChance
+    FilterKeywordChances: FilterKeywordChances
+  transforms:
+    EpicLootChance:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    FilterKeywordChances:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ObjectPlacementDefault
+  - ObjectBounds
+  - LVLD
+  - LVCV
+  - LVOV
+  - Count
+  - Quantity
+  - MinimumLevel
+  - MaxValue
+  - OverrideName
+  - ENLT
+  - EnlightenSimplifiedShapeScale
+  - EnlightenAutoUVEditorOnly
+  - CTDA
+  - DefaultLayer
+  - ENLM
+  - FormTag
+  - LVCT
+  - LVLG
+  - LVOC
+  - LVOT
+  - LeveledItemData
+  - MarkerColor
+  - MaterialSwap
+  - MaxCurveTable
+  - MaxGlobal
+  - MinimimLevelCurveTable
+  - MinimumLevelGlobal
+  - ModelFileName
+  - ModelInformation
+  - PreviewTransform
+  - QuantityCurveTable
+  - QuantityGlobal
+  - Quest
+  - XALG
+  defaults: {}
+ARMA:
+  fields:
+    BipedBodyTemplate: BipedBodyTemplate
+    RNAM: RNAM
+    Data: Data
+    MODL: MODL
+    BipedModels: BipedModels
+    FootstepSound: FootstepSound
+    ArtObject: ArtObject
+  transforms:
+    RNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    MODL:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    BipedModels:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    FootstepSound:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    ArtObject:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - 1stPersons
+  - BoneName
+  - BoneScaleDelta
+  - MaleSkinTexture
+  - TargetGender
+  - UnknownBool
+  - FemaleSkinTexture
+  - FormTag
+  - XALG
+  defaults: {}
+LVLN:
+  source_extra:
+  - Flags
+  fields:
+    LVLF: LVLF
+    Count: Count
+    LVLO: LVLO
+  transforms: {}
+  drop:
+  - ObjectPlacementDefault
+  - ModelFileName
+  - DisplayName
+  - MaxValue
+  - LVCV
+  - LVLD
+  - CTDA
+  - LVOV
+  - Quantity
+  - MinimumLevel
+  - ENLT
+  - EnlightenAutoUVEditorOnly
+  - EnlightenSimplifiedShapeScale
+  - ObjectBounds
+  - FilterKeywordChances
+  - MaxCount
+  - MinimimLevelCurveTable
+  - MinimumLevelGlobal
+  - ModelInformation
+  - UseGlobal
+  defaults:
+    ChanceNone: 0
+    MaxCount: 0
+SNDR:
+  fields:
+    Data: Data
+    Category: Category
+    MarkerStart: MarkerStart
+    OutputModel: OutputModel
+    Sound: Sound
+    CTDA: CTDA
+    Descriptor: Descriptor
+    AlternateSoundFor: AlternateSoundFor
+    Values: Values
+    HNAM: HNAM
+    INAM: INAM
+    PNAM: PNAM
+    QNAM: QNAM
+  transforms:
+    Category:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    OutputModel:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Sound:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    CTDA:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Data:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Notes
+  - DescriptorType
+  - Count
+  - File
+  - Flags
+  - MarkerEnd
+  - RoFRPM
+  defaults: {}
+MSWP:
+  fields:
+    OriginalMaterial: OriginalMaterial
+    ReplacementMaterial: ReplacementMaterial
+  transforms: {}
+  drop:
+  - TreeFolderObsolete
+  - TreeFolder
+  - ColorRemappingIndex
+  - Flags
+  - FormTag
+  defaults: {}
+ENCH:
+  fields:
+    Name: Name
+    EffectData: EffectData
+    BaseEffect: BaseEffect
+    EFIT: EFIT
+    CTDA: CTDA
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    EffectData:
+      type: translate_effects
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+      default_data:
+        Magnitude: 0.0
+    BaseEffect:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ActorValue
+  - CooldownDuration
+  - CurveTable
+  - EffectFlags
+  - Magnitude
+  - MaxItemID
+  - ObjectBounds
+  - Duration
+  - NextStage
+  defaults: {}
+INNR:
+  source_extra:
+  - Target
+  fields: {}
+  transforms: {}
+  drop:
+  - Count
+  - InstanceNamingFilter
+  - KeywordCount
+  - Keywords
+  - Priority
+  - RulesetName
+  - Text
+  defaults: {}
+IDLE:
+  source_extra:
+  - Flags
+  fields:
+    BehaviorGraph: BehaviorGraph
+    AnimationEvent: AnimationEvent
+    DATA: DATA
+    CTDA: CTDA
+    AnimationFile: AnimationFile
+    Animations: Animations
+    Flags: DATA
+  transforms:
+    CTDA:
+      type: translate_conditions
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Animations:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+  drop:
+  - Name
+  - Parameter1
+  - PhotomodeCategoryKeyword
+KSSM:
+  fields:
+    PrimaryDescriptor: PrimaryDescriptor
+    VATSDescriptor: VATSDescriptor
+    Sounds: Sounds
+    ExteriorTail: ExteriorTail
+  transforms:
+    PrimaryDescriptor:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    VATSDescriptor:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    ExteriorTail:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Sounds:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Keyword
+  - VATSThreshold
+  - TriggerSound
+  defaults: {}
+SOPM:
+  fields:
+    Data: Data
+    Type: Type
+    StaticAttenuation: StaticAttenuation
+  transforms: {}
+  drop:
+  - DynamicAttenuationValues
+  - Effect
+  - OutputValues
+  - WNAM
+  defaults: {}
+ADDN:
+  source_extra:
+  - Flags
+  - NodeIndex
+  fields:
+    ObjectBounds: ObjectBounds
+    IKEK: DATA
+    ModelFileName: ModelFileName
+    Light: Light
+  transforms:
+    ModelFileName:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    Light:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Data
+  - ENLT
+  - EnlightenAutoUVEditorOnly
+  - EnlightenSimplifiedShapeScale
+  - XALG
+  - ENLM
+  - FormTag
+  - ModelInformation
+  - Sound
+  defaults: {}
+MGEF:
+  fields:
+    Name: Name
+    Data: Data
+    Sounds: Sounds
+    Effect: Effect
+    Keywords: Keywords
+    VirtualMachineAdapter: VirtualMachineAdapter
+    CTDA: CTDA
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    Data:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Sounds:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Effect:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    CTDA:
+      type: translate_conditions
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - KeywordCount
+  - MagicItemDescription
+  defaults: {}
+IPCT:
+  fields:
+    DATA: DATA
+    ModelFileName: ModelFileName
+    Sound1: Sound1
+    TextureSet: TextureSet
+    Hazard: Hazard
+    Sound2: Sound2
+  transforms:
+    ModelFileName:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    TextureSet:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Sound1:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Sound2:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Hazard:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - DecalData
+  - ModelInformation
+  - SecondaryTextureSet
+  - FootstepParticleMaxDist
+  - Sound3
+  defaults: {}
+IPDS:
+  fields:
+    Data: Data
+  transforms:
+    Data:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+LIGH:
+  source_extra:
+  - Flags
+  fields:
+    ObjectBounds: ObjectBounds
+    DATA: DATA
+    Gobo: Gobo
+  transforms:
+    Gobo:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Destructibles
+  - LILS
+  - MODT
+  - ValueCurrency
+  - KeywordCount
+  - Keywords
+  - Lens
+  - Name
+  - ObjectPlacementDefault
+  - PreviewTransform
+  - Properties
+  - SnapTemplate
+  - Sound
+  defaults: {}
+TRNS:
+  fields:
+    Data: Data
+  transforms: {}
+  drop:
+  - Flags
+  defaults: {}
+OTFT:
+  fields:
+    Items: Items
+  transforms:
+    Items:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+  drop:
+  - Keyword
+FACT:
+  fields:
+    Name: Name
+    Relations: Relations
+    CrimeValues: CrimeValues
+    VendorValues: VendorValues
+    Flags: Flags
+    VENP: VENV
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    Relations:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    VENV:
+      type: venp_to_venv
+  drop:
+  - Location
+  - MerchantContainer
+  - Quest
+  - VENV
+  - VendorBuyCurrency
+  - BlockedMessage
+  - CITC
+  - CTDA
+  - FCAF
+  - FCOR
+  - FemaleTitle
+  - MaleTitle
+  - Rank
+  - ReferencedFaction
+  - SharedCrimeFactionList
+  - StartMarker
+  - Unknown
+  - VendorBuySellList
+  - VendorCapsBalance
+  - VendorReset
+  defaults: {}
+ARTO:
+  fields:
+    ModelFileName: ModelFileName
+    ObjectBounds: ObjectBounds
+  transforms:
+    ModelFileName:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+  drop:
+  - ArtType
+  - ENLT
+  - EnlightenAutoUVEditorOnly
+  - EnlightenSimplifiedShapeScale
+  - ModelInformation
+  - ColorRemappingIndex
+  - FormTag
+  - KeywordCount
+  - Keywords
+  - MaterialSwap
+  - PreviewTransform
+  - XALG
+  defaults: {}
+FSTP:
+  fields:
+    ImpactDataSet: ImpactDataSet
+    Tag: Tag
+  transforms:
+    ImpactDataSet:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+BPTD:
+  fields:
+    ModelFileName: ModelFileName
+    Data: NodeData
+  transforms:
+    ModelFileName:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+  drop:
+  - BoneName
+  - GoreEffectsBloodImpactMaterialType
+  - GoreEffectsTargetBone
+  - HitReactionEnd
+  - HitReactionStart
+  - LimbReplacementModel
+  - MODT
+  - MeatCapTextureSet
+  - OnCrippleBloodImpactMaterialType
+  - PartName
+  - PartNode
+  - TwistVariablePrefix
+  - VATSTarget
+  - BPAB
+  - CollarTextureSet
+  - GoreEffectsDismemberBloodArt
+  defaults: {}
+STAG:
+  fields:
+    Sound: Sound
+  transforms:
+    Sound:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+  drop:
+  - Flags
+AORU:
+  fields: {}
+  transforms: {}
+  drop:
+  - Data
+  defaults: {}
+TXST:
+  fields:
+    ObjectBounds: ObjectBounds
+    group_textures_rgb_a: group_textures_rgb_a
+  transforms: {}
+  drop:
+  - Flags
+  - DecalData
+  - Filter
+  - Material
+  - ObjectPlacementDefault
+  - DefaultLayer
+  - Name
+  - TexturesRgbAs
+  defaults: {}
+ZOOM:
+  fields:
+    Data: Data
+  transforms:
+    Data:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+EFSH:
+  source_extra:
+  - Flags
+  fields:
+    FillTexture: FillTexture
+    HolesTexture: HolesTexture
+    MembranePaletteTexture: MembranePaletteTexture
+    DATA: DATA
+    Flags: Flags
+    ModelFileName: ModelFileName
+  transforms:
+    ModelFileName:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+  drop:
+  - Data
+  - ModelInformation
+  - ParticlePaletteTexture
+  - ParticleShaderTexture
+  defaults: {}
+FURN:
+  source_extra:
+  - Flags
+  fields:
+    ObjectBounds: ObjectBounds
+    MODL: MODL
+    Keywords: Keywords
+    MarkerColor: MarkerColorUnused
+    MarkerParameters: MarkerParameters
+    FULL: FULL
+  transforms:
+    FULL:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    MODL:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    Keywords:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    WorkbenchData:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ActivateTextOverride
+  - ActivatorCanBeInstanced
+  - ActiveMarkersFlags
+  - CITC
+  - CTDA
+  - CTRN
+  - ConditionPosition
+  - Description
+  - Destructibles
+  - FFEF
+  - FNAM
+  - FNPR
+  - KeywordCount
+  - MODT
+  - MarkerModel
+  - ObjectTemplates
+  - PAHD
+  - PreviewTransform
+  - Properties
+  - VirtualMachineAdapter
+  - AnimationSound
+  - AssociatedForm
+  - AssociatedQuest
+  - AttachParentSlots
+  - DefaultLayer
+  - DestructibleObjectFaction
+  - DisabledEntryPoints
+  - ForcedLocRefTypes
+  - FormTag
+  - KeypadDatas
+  - MarkerIndex
+  - MusicInstrument
+  - RadioReceiver
+  - SnapTemplate
+  - XALG
+  - XFLG
+  defaults: {}
+CSTY:
+  fields:
+    General: General
+    RangedAccuracyMult: RangedAccuracyMult
+    CoverSearchDistanceMult: CoverSearchDistanceMult
+    Flight: Flight
+    Flags: Flags
+  transforms: {}
+  drop:
+  - CSTD
+  - CSTG
+  - CloseRange
+  - LongRange
+  - Melee
+  defaults: {}
+CONT:
+  source_extra:
+  - Flags
+  fields:
+    ObjectBounds: ObjectBounds
+    Name: Name
+    MODL: MODL
+    PreviewTransform: PreviewTransform
+    Keywords: Keywords
+    Properties: Properties
+    SoundOpen: SoundOpen
+    SoundClose: SoundClose
+    VirtualMachineAdapter: VirtualMachineAdapter
+    FilterList: FilterList
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    MODL:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    PreviewTransform:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Properties:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    SoundOpen:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    SoundClose:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    FilterList:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - CMIC
+  - Count
+  - Destructibles
+  - ForcedLocRefTypes
+  - KeywordCount
+  - MODT
+  - SnapTemplate
+  - SoundTakeAll
+  - XALG
+  - AnimationSound
+  - DestructibleObjectFaction
+  - NativeTerminal
+  - ObjectPlacementDefault
+  - PhysicsSyncType
+  - XFLG
+  defaults: {}
+FLST:
+  fields:
+    FormID: FormID
+  transforms:
+    FormID:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Name
+  - Flags
+  defaults: {}
+HAZD:
+  source_extra:
+  - Flags
+  fields:
+    ObjectBounds: ObjectBounds
+    Name: Name
+    ModelFileName: ModelFileName
+    Data: Data
+    ImageSpaceModifier: ImageSpaceModifier
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    ModelFileName:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    Data:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    ImageSpaceModifier:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ModelInformation
+  - DefaultLayer
+  defaults: {}
+SPEL:
+  fields:
+    Name: Name
+    Description: Description
+    EquipmentType: EquipmentType
+    Data: Data
+    BaseEffect: BaseEffect
+    EFIT: EFIT
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    Description:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    EquipmentType:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    BaseEffect:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ActorValue
+  - CTDA
+  - CooldownDuration
+  - CurveTable
+  - EffectFlags
+  - KeywordCount
+  - Keywords
+  - MaxItemID
+  - ObjectBounds
+  - CooldownGlobal
+  - DefaultLayer
+  - Duration
+  - Magnitude
+  - MenuDisplayObject
+  - NextStage
+  - Parameter2
+  - PhysicsSyncType
+  defaults: {}
+GLOB:
+  fields:
+    Type: Type
+  transforms: {}
+  drop:
+  - Value
+  - Flags
+  - FormTag
+  - NetworkMarker
+  defaults: {}
+PERK:
+  fields:
+    Name: Name
+    Description: Description
+    Data: Data
+    EffectData: EffectData
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    Description:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    EffectData:
+      type: translate_effects
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+      default_data:
+        Magnitude: 0.0
+  drop:
+  - CTDA
+  - EPF3
+  - EPFD
+  - EndMarker
+  - PRKE
+  - PerkEntryIDUnique
+  - RunOnTabIndex
+  - SWFSpriteName
+  - Sound
+  - Type
+  - UnknownSpellValue
+  - VirtualMachineAdapter
+  - ActorValue2
+  - CIS1
+  - CIS2
+  - PerkActivationIcon
+  - PerkActivationSound
+  - PerkAddedFaction
+  defaults: {}
+CLAS:
+  fields:
+    Name: Name
+    Description: Description
+    Properties: Properties
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    Description:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    Properties:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Data
+  defaults: {}
+MOVT:
+  fields:
+    Name: Name
+    MovementData: MovementData
+    FloatHeight: FloatHeight
+    FlightAngleGain: FlightAngleGain
+  transforms: {}
+  drop:
+  - AnimChangeThresholdsUnused
+  defaults: {}
+VTYP:
+  fields: {}
+  transforms: {}
+  drop:
+  - Flags
+  - Name
+  - TTSVoiceName
+  defaults: {}
+IMAD:
+  fields:
+    Data: Data
+    BlurRadius: BlurRadius
+    DoubleVisionStrength: DoubleVisionStrength
+    TintColor: TintColor
+    FadeColor: FadeColor
+    MotionBlurStrength: MotionBlurStrength
+  transforms: {}
+  drop:
+  - Cinematics
+  - DepthOfFields
+  - Hdrs
+  - RadialBlurs
+  - Name
+  - Texture
+  defaults: {}
+MESG:
+  fields:
+    Description: Description
+    DisplayTime: DisplayTime
+  transforms:
+    Description:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+  drop:
+  - ButtonText
+  - Name
+  - SWF
+  - CTDA
+  - NoResponse
+  - OwnerQuest
+  - ShortTitle
+  defaults: {}
+BOOK:
+  fields:
+    ObjectBounds: ObjectBounds
+    PreviewTransform: PreviewTransform
+    Name: Name
+    MODL: MODL
+    CNAM: CNAM
+    SoundPickUp: SoundPickUp
+    DNAM: DNAM
+    DESC: DESC
+    InventoryArt: InventoryArt
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    DESC:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    CNAM:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    MODL:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    PreviewTransform:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    DNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    InventoryArt:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - BookTakeFlags
+  - Data
+  - Destructibles
+  - KeywordCount
+  - Keywords
+  - MODT
+  - ValueCurrency
+  - XALG
+  - DefaultLayer
+  - FeaturedItemMessage
+  - GoldBullionValue
+  - IconFileName
+  - Quest
+  - SnapTemplate
+  - SoundPutDown
+  - VirtualMachineAdapter
+  defaults: {}
+RFCT:
+  fields:
+    EffectData: EffectData
+  transforms:
+    EffectData:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+ALCH:
+  source_extra:
+  - Flags
+  fields:
+    ObjectBounds: ObjectBounds
+    PreviewTransform: PreviewTransform
+    Name: Name
+    Keywords: Keywords
+    MODL: MODL
+    Description: Description
+    Weight: Weight
+    EffectData: EffectData
+    BaseEffect: BaseEffect
+    EFIT: EFIT
+    SoundPickUp: SoundPickUp
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    Description:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    MODL:
+      type: strip_subfields
+      remove:
+      - XFLG
+      - ENLT
+      - ENLS
+      - AUUV
+      - MODD
+    PreviewTransform:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Keywords:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    BaseEffect:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Effects:
+      type: translate_effects
+      target: EFID
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+      default_data:
+        Magnitude: 0.0
+  drop:
+  - AddictionName
+  - CTDA
+  - CooldownDuration
+  - Destructibles
+  - Duration
+  - EffectFlags
+  - KeywordCount
+  - MODT
+  - Magnitude
+  - MaxItemID
+  - SnapTemplate
+  - SoundCrafting
+  - SoundPutDown
+  - CurveTable
+  - PhysicsSyncType
+  - XALG
+  defaults: {}
+FSTS:
+  fields:
+    FootstepCounts: FootstepCounts
+    Footsteps: Footsteps
+  transforms:
+    Footsteps:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+IDLM:
+  source_extra:
+  - Flags
+  fields:
+    ObjectBounds: ObjectBounds
+    Animations: Animations
+  transforms:
+    Animations:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - AnimationCount
+  - AnimationFlavorKeyword
+  - DefaultLayer
+  - IdleTimerSetting
+  - ModelFileName
+  - ModelInformation
+  - KeywordCount
+  - Keywords
+  defaults: {}
+PKIN:
+  source_extra:
+  - Version
+  fields:
+    Cell: Cell
+    Version: Version
+    Filter: Filter
+  transforms:
+    Cell:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+    Filter:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ChildPackIns
+  - FNAM
+  - Name
+  - Flags
+  - KeywordCount
+  - Keywords
+  - OPDS
+  - PreviewTransform
+  - Properties
+  - SnapTemplate
+  - VirtualMachineAdapter
+  defaults: {}
+QUST:
+  fields: {}
+  transforms:
+    Name:
+      type: trim_languages
+      keep:
+      - English
+      - Chinese
+      - German
+      - French
+      - Spanish
+      - Italian
+      - Japanese
+      - Polish
+      - Portuguese_Brazil
+      - Russian
+    VirtualMachineAdapter:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ActorReserveFlags
+  - ActorReserveType
+  - AliasLocationRefType
+  - CollectionAliasID
+  - CombatOverridePackageList
+  - DATA
+  - DESC
+  - DisplayName
+  - DisplayText
+  - ESAV
+  - ESDA
+  - ESRP
+  - ESRV
+  - Event
+  - Filter
+  - ForcedReference
+  - ForcedVoice
+  - KeywordCount
+  - Keywords
+  - Level
+  - LinkedAliases
+  - LocationAliasID
+  - LogEntry
+  - MaxInitialFillCount
+  - MoreConditions
+  - NextAliasID
+  - Note
+  - Object
+  - ObjectiveIndex
+  - Package
+  - Properties
+  - PublicEventDatas
+  - QQSDUnknown4Bytes
+  - QTFSUnknown2Bytes
+  - QuestEventType
+  - QuestExpireTimerLength
+  - QuestModules
+  - QuestObjectiveTimer
+  - QuestReward
+  - QuestStartData
+  - QuestStartLocation
+  - QuestTimerLengthMax
+  - QuestVariable
+  - RefType
+  - ReferenceAliasID
+  - SCCM
+  - SCFC
+  - SWFFile
+  - SpecificLocation
+  - Spell
+  - StageFlags
+  - StageToSet
+  - StartKeyword
+  - Target
+  - Type
+  - UniqueActor
+  - VoiceTypes
+  - COED
+  - Count
+  - DeathItem
+  - EnableKeyword
+  - Global
+  - Key
+  - Location
+  - MaxQuestInstances
+  - Message
+  - ProgressBarLeftText
+  - ProgressBarRightText
+  - QUCF
+  - QuestCompletionXP
+  - QuestDialogueConditions
+  - QuestGroup
+  - QuestNotes
+  - RewardText
+  - Terminal
+  - Unnamed
+  - Value
+  defaults: {}
+AMDL:
+  fields:
+    Data: Data
+  transforms: {}
+  drop:
+  - Unknown
+  - AMMR
+  defaults: {}

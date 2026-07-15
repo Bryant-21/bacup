@@ -1,0 +1,77 @@
+{
+  "name": "BPLChandelier01",
+  "record": {
+    "type": "STAT",
+    "form_id": "101064",
+    "editor_id": "BPLChandelier01",
+    "source": "Fallout4.esm"
+  },
+  "modl": "SetDressing\\LightFixtures\\BPLChandelier01.nif",
+  "material_swap": {},
+  "mode": "A (no swap)",
+  "modt_hex": "040000000B0000000000000006000000020000007EAEA94164647300BE643C4C049D26EB646473000BD80002DDF12088646473000BD80002C0113195646473000042A6BE197D37F6646473000042A6BE0794E216646473000042A6BEC318F568646473000BD800020F2C2A00646473001CDB88C560477CA164647300BE643C4C6A1350BD64647300BE643C4C9ADEFF7E646473001CDB88C5672883A96267736DECCC57A3605E9FFF6267656D46EEAF28",
+  "srgb_count": 6,
+  "addon_nodes": [],
+  "textures": [
+    {
+      "path": "Textures\\SetDressing\\Park\\ParkSwings01_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "Textures\\SetDressing\\Park\\ParkSwings01_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "Textures\\SetDressing\\Park\\ParkSwings01_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    },
+    {
+      "path": "textures\\SetDressing\\MetalGlobeLightTall01_d.dds",
+      "role": "diffuse",
+      "srgb": true
+    },
+    {
+      "path": "textures\\SetDressing\\MetalGlobeLightTall01_n.dds",
+      "role": "normal",
+      "srgb": false
+    },
+    {
+      "path": "textures\\SetDressing\\MetalGlobeLightTall01_s.dds",
+      "role": "smoothspec",
+      "srgb": false
+    },
+    {
+      "path": "textures\\Shared\\Cubemaps\\mipblur_DefaultOutside1.dds",
+      "role": "envmap",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Shared\\GlassTile01_d.dds",
+      "role": "base",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Shared\\Glass01Grad_d.dds",
+      "role": "greyscale",
+      "srgb": true
+    },
+    {
+      "path": "textures\\shared\\cubemaps\\outsideoldtownreflectcube_e.dds",
+      "role": "envmap",
+      "srgb": true
+    },
+    {
+      "path": "textures\\Shared\\GlassTile01_n.dds",
+      "role": "normal",
+      "srgb": false
+    }
+  ],
+  "materials": [
+    "materials\\SetDressing\\LightFixtures\\MetalGlobeLightTall01.BGSM",
+    "materials\\Shared\\GlassTile01Off.BGEM"
+  ],
+  "note": "textures/materials are an unordered SET; vanilla MODT stores them in CK BSTScatterTable iteration order (see README)."
+}

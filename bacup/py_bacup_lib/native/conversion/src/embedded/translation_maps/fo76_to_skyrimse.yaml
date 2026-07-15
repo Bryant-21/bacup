@@ -1,0 +1,526 @@
+# Fallout 76 -> Skyrim SE record field translation map.
+# Conservative canonical map: only fields accepted by both schema surfaces are
+# copied directly; FO76-only gameplay/template data is dropped.
+
+WEAP:
+  fields:
+    FULL: FULL
+    DESC: DESC
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    Data: Data
+    CriticalData: CriticalData
+    KWDA: KWDA
+    ETYP: ETYP
+    EquipmentType: EquipmentType
+    ImpactDataSet: ImpactDataSet
+    BIDS: BIDS
+    BAMT: BAMT
+    EITM: EITM
+    SoundPickUp: SoundPickUp
+    SoundPutDown: SoundPutDown
+    YNAM: YNAM
+    ZNAM: ZNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English]
+    DESC:
+      type: trim_languages
+      keep: [English]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD]
+    Data:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    CriticalData:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    ETYP:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    EquipmentType:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    ImpactDataSet:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    BIDS:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    BAMT:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    EITM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+  drop:
+  - AimAssistModel
+  - AimModel
+  - AttachParentSlots
+  - DamageCurve
+  - DamageTypeConditionScalings
+  - DamageTypes
+  - InstanceNaming
+  - NPCAddAmmoList
+  - ObjectPlacementDefault
+  - ObjectTemplates
+  - PreviewTransform
+  - RGW2
+  - RGW3
+  - Zoom
+  defaults:
+    DetectionSoundLevel: 1
+
+ARMO:
+  fields:
+    FULL: FULL
+    DESC: DESC
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    ArmorData: DATA
+    BOD2: BOD2
+    BipedBodyTemplate: BipedBodyTemplate
+    KWDA: KWDA
+    ETYP: ETYP
+    EquipmentType: EquipmentType
+    EITM: EITM
+    Enchantment: Enchantment
+    RNAM: RNAM
+    Race: Race
+    SoundPickUp: SoundPickUp
+    SoundPutDown: SoundPutDown
+    YNAM: YNAM
+    ZNAM: ZNAM
+    group_male: group_male
+    group_female: group_female
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English]
+    DESC:
+      type: trim_languages
+      keep: [English]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD]
+    KWDA:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    ETYP:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    EquipmentType:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    EITM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    Enchantment:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    RNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    Race:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+  drop:
+  - APPR
+  - AttachParentSlots
+  - InstanceNaming
+  - INRD
+  - ObjectPlacementDefault
+  - ObjectTemplates
+  - PreviewTransform
+  - RatingAddonData
+  - Resistances
+  - group_object_template
+  defaults: {}
+
+ARMA:
+  fields:
+    BOD2: BOD2
+    BipedBodyTemplate: BipedBodyTemplate
+    BipedModels: BipedModels
+    Data: Data
+    DNAM: DNAM
+    MODL: MODL
+    MOD2: MOD2
+    MOD3: MOD3
+    MOD4: MOD4
+    MOD5: MOD5
+    RNAM: RNAM
+    Race: Race
+    SNDD: SNDD
+    ONAM: ONAM
+    FemaleSkinTexture: FemaleSkinTexture
+    FemaleSkinTextureSwapList: FemaleSkinTextureSwapList
+    MaleSkinTexture: MaleSkinTexture
+    MaleSkinTextureSwapList: MaleSkinTextureSwapList
+    group_1st_person: group_1st_person
+    group_biped_model: group_biped_model
+  transforms:
+    BipedModels:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    DNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    RNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    Race:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    SNDD:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    ONAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    FemaleSkinTexture:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    FemaleSkinTextureSwapList:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    MaleSkinTexture:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    MaleSkinTextureSwapList:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+  drop:
+  - AUUV
+  - ENLS
+  - ENLT
+  - MaterialSwap
+  - TargetGender
+  - UnknownBool
+  defaults: {}
+
+NPC_:
+  fields:
+    FULL: FULL
+    SHRT: SHRT
+    ObjectBounds: ObjectBounds
+    ACBS: ACBS
+    AIDT: AIDT
+    AIData: AIData
+    Configuration: Configuration
+    RNAM: RNAM
+    Race: Race
+    Class: Class
+    CombatStyle: CombatStyle
+    DefaultOutfit: DefaultOutfit
+    SleepingOutfit: SleepingOutfit
+    KWDA: KWDA
+    Factions: Faction
+    DeathItem: DeathItem
+    Voice: Voice
+    WNAM: WNAM
+    ATKR: ATKR
+    AttackRace: AttackRace
+    Perks: Perks
+    SPLO: SPLO
+    VTCK: VTCK
+    DOFT: DOFT
+    INAM: INAM
+    HCLF: HCLF
+    PKID: PKID
+    TPLT: TPLT
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English]
+    SHRT:
+      type: trim_languages
+      keep: [English]
+    RNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    Race:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    Class:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    CombatStyle:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    DefaultOutfit:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    SleepingOutfit:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    Factions:
+      type: remap_formkey
+      target: Faction
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    DeathItem:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    Voice:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    WNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    ATKR:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    AttackRace:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    Perks:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    SPLO:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    VTCK:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    DOFT:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    INAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    HCLF:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    PKID:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    TPLT:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+  drop:
+  - APPR
+  - AttachParentSlots
+  - InstanceNaming
+  - LegendaryChance
+  - ObjectPlacementDefault
+  - ObjectTemplates
+  - PreviewTransform
+  - group_actor_scaling_info
+  - group_actor_sounds
+  - group_inventory
+  - group_object_template
+  defaults: {}
+
+RACE:
+  fields:
+    FULL: FULL
+    DESC: DESC
+    MODL: MODL
+    BOD2: BOD2
+    BipedBodyTemplate: BipedBodyTemplate
+    BodyDatas: BodyDatas
+    BodyPartData: BodyPartData
+    FemaleSkeletalModel: FemaleSkeletalModel
+    MaleSkeletalModel: MaleSkeletalModel
+    KWDA: KWDA
+    GNAM: GNAM
+    HCLF: HCLF
+    VTCK: VTCK
+    Voices: Voices
+    DNAM: DNAM
+    AttackData: AttackData
+    AttackEvent: AttackEvent
+    AttackRace: AttackRace
+    SPLO: SPLO
+    WNAM: WNAM
+    UNAM: UNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English]
+    DESC:
+      type: trim_languages
+      keep: [English]
+    KWDA:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    GNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    HCLF:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    VTCK:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    Voices:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    DNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    AttackData:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    AttackEvent:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    AttackRace:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    SPLO:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    WNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    UNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+  drop:
+  - APPR
+  - AttachParentSlots
+  - BehaviourGraph
+  - EquipSlot
+  - LootBag
+  - MeatCapTextureSet
+  - Properties
+  - SubgraphAdditiveRace
+  - SubgraphTemplateRace
+  - UNWP
+  - group_behavior_graph_data
+  - group_skeletal_data
+  defaults: {}
+
+AMMO:
+  fields:
+    FULL: FULL
+    DESC: DESC
+    MODL: MODL
+    ObjectBounds: ObjectBounds
+    Data: Data
+    KWDA: KWDA
+    ONAM: ONAM
+    SoundPickUp: SoundPickUp
+    SoundPutDown: SoundPutDown
+    YNAM: YNAM
+    ZNAM: ZNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English]
+    DESC:
+      type: trim_languages
+      keep: [English]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD]
+    Data:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    ONAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: SeventySix.esm
+      target_esm: Skyrim.esm
+  drop:
+  - CasingModel
+  - ObjectPlacementDefault
+  - PTRN
+  - ValueCurrency
+  defaults: {}

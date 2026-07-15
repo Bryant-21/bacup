@@ -1,0 +1,11 @@
+record_type: WEAP
+eid: WeapNVBaseballBat
+form_id: 0CAFE2
+fields:
+- FULL:
+    TargetLanguage: English
+    Values:
+    - Value: Baseball Bat
+- AnimationType: Melee
+- MODL:
+    Filename: Meshes/Weapons/baseballbat.nif

@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+dist/
+build/
+release/
+logs/
+target/
+bacup/py_bacup_lib/python/bacup_lib/_native*.pyd
+bacup/py_bacup_lib/native/.build_hash
+.build.lock
+ui/toolkit/toolkit_settings.json
+ui/toolkit/settings_data/
+.pytest_cache/

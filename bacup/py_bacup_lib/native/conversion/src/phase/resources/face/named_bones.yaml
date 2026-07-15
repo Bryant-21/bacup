@@ -1,0 +1,76 @@
+# Curated FO4 face bones for the face-conversion solver.
+#
+# Source asset:
+#   extracted/fo4/Meshes/Actors/Character/CharacterAssets/BaseMaleHead_faceBones.nif
+#
+# This file is machine-derived from the verified node names in that asset:
+# - `small_index` is the zero-based ordinal of each `skin_bone_*` NiNode within
+#   the root face-bone child list for this NIF.
+# - `crc32_hash` is `zlib.crc32(name.lower().encode("utf-8")) & 0xFFFFFFFF`
+#   using the full node name exactly as written below.
+#
+# These indices are loadable and reproducible from the source asset, but they
+# should still be treated as a calibration baseline rather than a final manual
+# solve table.
+
+bones:
+  - name: skin_bone_C_Chin
+    small_index: 1
+    crc32_hash: 2861345472
+    weight_threshold: 0.5
+  - name: skin_bone_C_EyebrowMid
+    small_index: 2
+    crc32_hash: 3673704948
+    weight_threshold: 0.45
+  - name: skin_bone_C_ForeheadMid
+    small_index: 3
+    crc32_hash: 299576912
+    weight_threshold: 0.45
+  - name: skin_bone_C_MouthBot
+    small_index: 7
+    crc32_hash: 2893420429
+    weight_threshold: 0.5
+  - name: skin_bone_C_MouthTop
+    small_index: 8
+    crc32_hash: 3014659158
+    weight_threshold: 0.5
+  - name: skin_bone_C_Nose
+    small_index: 9
+    crc32_hash: 2052474827
+    weight_threshold: 0.5
+  - name: skin_bone_C_Nose_Bridge
+    small_index: 10
+    crc32_hash: 4292698922
+    weight_threshold: 0.45
+  - name: skin_bone_L_Cheekbone
+    small_index: 12
+    crc32_hash: 1968773222
+    weight_threshold: 0.4
+  - name: skin_bone_L_EyebrowIn
+    small_index: 20
+    crc32_hash: 4268486728
+    weight_threshold: 0.4
+  - name: skin_bone_L_JawMid
+    small_index: 25
+    crc32_hash: 58716036
+    weight_threshold: 0.4
+  - name: skin_bone_L_MouthCorner
+    small_index: 28
+    crc32_hash: 2277912934
+    weight_threshold: 0.4
+  - name: skin_bone_R_Cheekbone
+    small_index: 36
+    crc32_hash: 2312763307
+    weight_threshold: 0.4
+  - name: skin_bone_R_EyebrowIn
+    small_index: 44
+    crc32_hash: 48963461
+    weight_threshold: 0.4
+  - name: skin_bone_R_JawMid
+    small_index: 49
+    crc32_hash: 1783549085
+    weight_threshold: 0.4
+  - name: skin_bone_R_MouthCorner
+    small_index: 52
+    crc32_hash: 3374816012
+    weight_threshold: 0.4

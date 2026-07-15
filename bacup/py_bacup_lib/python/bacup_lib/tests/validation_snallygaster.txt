@@ -1,0 +1,1004 @@
+================================================================================
+SNALLYGASTER HKX VALIDATION REPORT
+Pipeline Output vs Confirmed-Working Fan Mod
+================================================================================
+
+FO76 source: X:\extracted\fo76\meshes\actors\snallygaster
+Fan mod (working): X:\refs\fanmods\Snallygaster\Meshes\Actors\Snallygaster
+
+Files matched: 59
+Only in FO76: 1 ['ambushbehavior.hkx']
+Only in fan:  0 
+Conversion errors: 0
+Compared successfully: 59
+PASS: 1
+FAIL: 58
+Pass rate: 1/59 (1.7%)
+
+================================================================================
+CRITICAL FINDINGS — WHAT THE WORKING FAN MOD USES
+================================================================================
+
+--- Forward Axis (hkaDefaultAnimatedReferenceFrame.forward) ---
+  Our pipeline output:   {'(0.000000 1.000000 0.000000 0.000000)': 54}
+  WORKING fan mod uses:  {'(0.000000 1.000000 0.000000 0.000000)': 54}
+
+--- Up Axis ---
+  Our pipeline output:   {'(0.000000 0.000000 1.000000 0.000000)'}
+  WORKING fan mod uses:  {'(0.000000 0.000000 1.000000 0.000000)'}
+
+--- Bone Indices (transformTrackToBoneIndices) ---
+  Our pipeline (element counts): {105: 54, 0: 5}
+  WORKING fan mod (element counts): {0: 55, 105: 4}
+  Example (attack1.hkx):
+    Ours: count=105, content=0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 10
+    Fan:  count=0, content=empty
+
+--- BlendHint ---
+  Our pipeline:          {'NORMAL': 50, 'ADDITIVE_DEPRECATED': 4}
+  WORKING fan mod:       {'NORMAL': 50, 'ADDITIVE_DEPRECATED': 4}
+
+--- Animation Class ---
+  Our pipeline:          {'hkaSplineCompressedAnimation': 54}
+  WORKING fan mod:       {'hkaSplineCompressedAnimation': 54}
+
+--- Transform Track Count ---
+  Our pipeline:          {'105': 54}
+  WORKING fan mod:       {'105': 54}
+
+--- Variant Name ---
+  Our pipeline:          {'hkbCharacterData', 'hkbProjectData', 'Resource Data', 'hkbBehaviorGraph', 'SkeletonMapper'}
+  WORKING fan mod:       {'hkbCharacterData', 'Animation Container', 'hkbProjectData', 'hkbBehaviorGraph', 'SkeletonMapper'}
+
+--- Version String ---
+  Our pipeline:          {'hk_2014.1.0-r1'}
+  WORKING fan mod:       {'hk_2014.1.0-r1'}
+
+================================================================================
+DISCREPANCY FREQUENCY
+================================================================================
+
+  Object Count: 57 files
+  Class List: 57 files
+  Variant Name: 54 files
+  Bone Indices Count: 50 files
+  Bone Indices Content: 50 files
+  Null Pointer Diffs: 4 files
+
+================================================================================
+PER-FILE RESULTS
+================================================================================
+
+[FAIL] attack1.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] attack2.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] attack3.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] attack4.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] attack5.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] attack6.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] attack7.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] attackbackward.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] attackbackward2.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] attackleft.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] attackright.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] criticalhit_head.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] criticalhit_lleg.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] criticalhit_rleg.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] criticalhit_tail.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] criticalhit_torso.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] death1.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] death2.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] death3.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] deathrunning.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] evadeleft.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] evaderight.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] firesingle.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] hitreact_chest.hkx
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] hitreact_head.hkx
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] hitreact_leftlegs.hkx
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] hitreact_rightlegs.hkx
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] idle.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] idle_flavor1.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] idle_flavor2.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] idle_flavor3.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] jogforward.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] recoil1.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] runforward.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] skeleton.hkx
+      Object Count:
+        Ours: 113
+        Fan:  60
+      Class List:
+        Ours: extra: {'hkRefCountedProperties', 'hknpCompressedMeshShapeData', 'hknpCompressedMeshShape', 'hknpShapeMassProperties'}
+        Fan:  extra: {'hknpSphereShape'}
+      Null Pointer Diffs:
+        Ours: null only in ours: {'connectivity', 'indices', 'materialTable'}
+        Fan:  null only in fan: {'properties', 'worldCinfo'}
+
+[FAIL] snallygastercharacter.hkx
+      Null Pointer Diffs:
+        Ours: matches
+        Fan:  null only in fan: {'aiControlDriverInfo', 'handIkDriverInfo', 'footIkDriverInfo'}
+
+[FAIL] snallygastercorebehavior.hkx
+      Object Count:
+        Ours: 282
+        Fan:  287
+      Class List:
+        Ours: extra: {'hkbBoneWeightArray', 'BSBehaviorGraphSwapGenerator'}
+        Fan:  extra: {'hkbModifierList', 'DynamicAnimationTaggingGenerator', 'hkbLayer'}
+      Null Pointer Diffs:
+        Ours: null only in ours: {'patchedBindingInfo', 'animationIdMap', 'animationControl', 'eventIdMap', 'attributeIdMap', 'characterPropertyIdMap', 'globalTransitionData', 'variableIdMap', 'originalTriggers'}
+        Fan:  null only in fan: {'exitNotifyEvents', 'enterNotifyEvents'}
+
+[PASS] snallygasterproject.hkx
+
+[FAIL] snallygasterrootbehavior.hkx
+      Object Count:
+        Ours: 87
+        Fan:  89
+      Class List:
+        Ours: extra: {'BSTimerModifier', 'hkbModifier', 'BSGetTimeStepModifier'}
+        Fan:  extra: {'hkbTimerModifier', 'BSRagdollContactListenerModifier', 'BSLookAtModifier'}
+      Null Pointer Diffs:
+        Ours: null only in ours: {'patchedBindingInfo', 'animationIdMap', 'animationControl', 'eventIdMap', 'attributeIdMap', 'characterPropertyIdMap', 'globalTransitionData', 'variableIdMap', 'originalTriggers'}
+        Fan:  null only in fan: {'exitNotifyEvents', 'enterNotifyEvents'}
+
+[FAIL] sprintforward.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] staggerforwardlarge.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] staggerforwardmedium.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] staggerforwardsmall.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] staggerlarge.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] staggerleft.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] staggermedium.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] staggerright.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] staggersmall.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] turnleft.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] turnleft180.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] turnleft30.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] turnleft90.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] turnright.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] turnright180.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] turnright30.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] turnright90.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] walkbackward.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] walkforward.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches
+
+[FAIL] warn1.hkx
+      Bone Indices Count:
+        Ours: 105
+        Fan:  0
+      Variant Name:
+        Ours: Resource Data
+        Fan:  Animation Container
+      Object Count:
+        Ours: 6
+        Fan:  5
+      Bone Indices Content:
+        Ours: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 
+        Fan:  None
+      Class List:
+        Ours: extra: {'hkMemoryResourceContainer'}
+        Fan:  matches

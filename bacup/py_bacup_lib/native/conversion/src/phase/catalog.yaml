@@ -1,0 +1,126 @@
+archetypes:
+  deathclaw:
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#deathclaw
+    behavior_template: Deathclaw
+    model_after: Deathclaw
+  quadruped_mammal:
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#dog
+    behavior_template: Dog
+    model_after: Dog
+  mirelurk:
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#mirelurk
+    behavior_template: Mirelurk
+    model_after: Mirelurk
+  scorpion_8leg:
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#radscorpion
+    behavior_template: RadScorpion
+    model_after: RadScorpion
+  ghoul_humanoid:
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#feral_ghoul
+    behavior_template: FeralGhoul
+    model_after: FeralGhoul
+  robot_handy:
+    bone_map_key: skeleton_fnv_to_fo4_robots.yaml#mr_handy
+    behavior_template: MisterHandy
+    model_after: MisterHandy
+  robot_securitron:
+    bone_map_key: skeleton_fnv_to_fo4_robots.yaml#securitron
+    behavior_template: Securitron
+    model_after: Securitron
+  insect_winged:
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#bloatfly
+    behavior_template: Cazador
+    model_after: Cazador
+  generic:
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#feral_ghoul
+    behavior_template: Generic
+    model_after: Generic
+creatures:
+  - source_dir: Creatures/Deathclaw
+    archetype_key: deathclaw
+    target_name: Deathclaw
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#deathclaw
+  - source_dir: Creatures/Dog
+    archetype_key: quadruped_mammal
+    target_name: Dog
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#dog
+  - source_dir: Creatures/Mirelurk
+    archetype_key: mirelurk
+    target_name: Mirelurk
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#mirelurk
+  - source_dir: Creatures/RadScorpion
+    archetype_key: scorpion_8leg
+    target_name: RadScorpion
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#radscorpion
+  - source_dir: Creatures/Cazador
+    archetype_key: insect_winged
+    target_name: Cazador
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#bloatfly
+  - source_dir: Creatures/Bloatfly
+    archetype_key: insect_winged
+    target_name: Bloatfly
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#bloatfly
+  - source_dir: Creatures/FeralGhoul
+    archetype_key: ghoul_humanoid
+    target_name: FeralGhoul
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#feral_ghoul
+  - source_dir: Creatures/Nightkin
+    archetype_key: generic
+    target_name: Nightkin
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#feral_ghoul
+  - source_dir: Creatures/Molerat
+    archetype_key: quadruped_mammal
+    target_name: Molerat
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#molerat
+  - source_dir: Creatures/Yaoguai
+    archetype_key: quadruped_mammal
+    target_name: YaoGuai
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#yaoguai
+  - source_dir: Creatures/YaoGuai
+    archetype_key: quadruped_mammal
+    target_name: YaoGuai
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#yaoguai
+  - source_dir: Creatures/Gecko
+    archetype_key: quadruped_mammal
+    target_name: Gecko
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#molerat
+  - source_dir: Creatures/YoungGecko
+    archetype_key: quadruped_mammal
+    target_name: YoungGecko
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#molerat
+  - source_dir: Creatures/GoldenGecko
+    archetype_key: quadruped_mammal
+    target_name: GoldenGecko
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#molerat
+  - source_dir: Creatures/FireGecko
+    archetype_key: quadruped_mammal
+    target_name: FireGecko
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#molerat
+  - source_dir: Creatures/NightStalker
+    archetype_key: quadruped_mammal
+    target_name: NightStalker
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#dog
+  - source_dir: Creatures/BigHorner
+    archetype_key: quadruped_mammal
+    target_name: BigHorner
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#yaoguai
+  - source_dir: Creatures/Brahmin
+    archetype_key: quadruped_mammal
+    target_name: Brahmin
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#yaoguai
+  - source_dir: Creatures/GiantRat
+    archetype_key: quadruped_mammal
+    target_name: GiantRat
+    bone_map_key: skeleton_fnv_to_fo4_creatures.yaml#molerat
+  - source_dir: Creatures/MisterHandy
+    archetype_key: robot_handy
+    target_name: MisterHandy
+    bone_map_key: skeleton_fnv_to_fo4_robots.yaml#mr_handy
+  - source_dir: Creatures/MisterGutsy
+    archetype_key: robot_handy
+    target_name: MisterGutsy
+    bone_map_key: skeleton_fnv_to_fo4_robots.yaml#mr_handy
+  - source_dir: Creatures/Securitron
+    archetype_key: robot_securitron
+    target_name: Securitron
+    bone_map_key: skeleton_fnv_to_fo4_robots.yaml#securitron

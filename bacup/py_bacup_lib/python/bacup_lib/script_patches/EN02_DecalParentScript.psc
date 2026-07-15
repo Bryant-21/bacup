@@ -1,0 +1,3 @@
+Event OnUnload()
+    Delete()
+EndEvent

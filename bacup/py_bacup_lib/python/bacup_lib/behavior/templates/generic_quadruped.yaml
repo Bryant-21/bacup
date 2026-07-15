@@ -1,0 +1,27 @@
+archetype: generic_quadruped
+behavior_name: GenericQuadrupedEverything
+root_behavior_name: GenericQuadrupedRootBehavior
+project_name: GenericQuadrupedProject
+character_name: GenericQuadruped
+model_after: generic_quadruped
+states:
+  - name: Idle
+    role: idle
+    loop: true
+  - name: Locomotion
+    role: locomotion
+    loop: true
+  - name: Attack
+    role: attack
+  - name: Death
+    role: death
+transitions:
+  - event: move
+    from: Idle
+    to: Locomotion
+  - event: stop
+    from: Locomotion
+    to: Idle
+  - event: attack
+    from: Locomotion
+    to: Attack

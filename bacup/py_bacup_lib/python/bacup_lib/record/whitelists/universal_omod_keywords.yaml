@@ -1,0 +1,40 @@
+# Universal OMOD keywords — too generic to use as seeds for sibling-OMOD
+# reverse-lookup. Walker._inject_sibling_omods queries the source DB for
+# every ObjectModifications record that shares a TargetOmodKeyword with an
+# OMOD already in the graph. Keywords listed here are present on hundreds
+# of OMODs across the entire weapon/outfit catalog (e.g. FO76's
+# `ma_Gun_Appearance` is on 592+ records covering every paint/skin OMOD
+# in the game), so seeding the lookup with them pulls in the entire paint
+# catalog regardless of which weapon is being converted.
+#
+# When the only overlapping keyword between a graph-OMOD and a candidate
+# OMOD is in this list, the engine-semantics gate (AttachPoint match +
+# full TargetOmodKeywords subset of weapon's Keywords) is the real filter
+# and the seed lookup adds noise without signal — skip the lookup for
+# those keywords entirely.
+#
+# Heuristic for adding to this list: any keyword referenced by >50 OMODs
+# in a single source game is almost certainly a "universal" capability
+# tag (Appearance, Material, etc.) rather than a weapon-family identifier.
+# Verify via `modkit data --game <game> count-refs <FormKey>`.
+
+universal_target_omod_keywords:
+  fo76:
+    # All *_Appearance keywords are universal capability tags — they mark
+    # which records can be skinned/painted, not which weapon family they
+    # belong to. Verified counts (2026-04-17) via modkit count-refs:
+    #   ma_Gun_Appearance      → 592 references
+    #   ap_gun_Appearance      → 615 references
+    #   ma_Melee_Appearance    → 236 references
+    #   ap_melee_Appearance    → 277 references
+    - ma_Gun_Appearance        # 37D0B2:SeventySix.esm
+    - ma_Melee_Appearance      # 5117B1:SeventySix.esm
+    - ma_Outfit_Appearance     # placeholder — confirm if/when present
+  fo4:
+    # FO4 doesn't ship paint OMODs in the same fashion; placeholder for
+    # future expansion if base game patches add Appearance-style tags.
+    []
+  fo3: []
+  fnv: []
+  skyrimse: []
+  starfield: []

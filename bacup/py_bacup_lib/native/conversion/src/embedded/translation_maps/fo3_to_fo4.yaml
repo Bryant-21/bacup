@@ -1,0 +1,914 @@
+skip_records:
+  # FO4 NAVI is rebuilt from the emitted NAVM graph with NVER=15. Copying the
+  # Gamebryo NVER=11/NVMI byte layout into FO4 is structurally invalid.
+  - NAVI
+  - NAVM
+
+_localized_languages: &localized_languages
+- English
+- Chinese
+- German
+- French
+- Spanish
+- Italian
+- Japanese
+- Polish
+- Portuguese_Brazil
+- Russian
+
+WEAP:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    MODL: MODL
+    ETYP: ETYP
+    EITM: EITM
+    INAM: INAM
+    YNAM: YNAM
+    ZNAM: ZNAM
+    ImpactDataSet: ImpactDataSet
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    ETYP:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    EITM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    INAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    ImpactDataSet:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Ammo
+  - RepairList
+  - Script
+  - SoundGunShoot2D
+  - SoundGunShoot3D
+  - SoundGunShoot3DLooping
+  - SoundMeleeSwingGunNoAmmo
+  - SoundEquip
+  - SoundUnequip
+  defaults: {}
+
+AMMO:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    MODL: MODL
+    DATA: DATA
+    YNAM: YNAM
+    ZNAM: ZNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - ICON
+  - MICO
+  defaults: {}
+
+PROJ:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    MODL: MODL
+    Data: Data
+    NAM1: NAM1
+    NAM2: NAM2
+    SoundLevel: SoundLevel
+  transforms:
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    Data:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    NAM1:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    NAM2:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+EXPL:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    MODL: MODL
+    Data: Data
+    EITM: EITM
+    MNAM: MNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    Data:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    EITM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    MNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - INAM
+  defaults: {}
+
+MGEF:
+  fields:
+    FULL: FULL
+    DATA: DATA
+    ESCE: ESCE
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    DATA:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    ESCE:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - DESC
+  - ICON
+  - MICO
+  - MODL
+  defaults: {}
+
+NPC_:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    RNAM: RNAM
+    VTCK: VTCK
+    CNAM: CNAM
+    INAM: INAM
+    DeathItem: DeathItem
+    Configuration: Configuration
+    AIData: AIData
+    Race: Race
+    Class: Class
+    Voice: Voice
+    CombatStyle: CombatStyle
+    Package: Package
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    RNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    VTCK:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    CNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    INAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    DeathItem:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    Race:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    Class:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    Voice:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    CombatStyle:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    Package:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    Faction:
+      type: remap_formkey
+      target: Factions
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    Script:
+      type: remap_formkey
+      target: VirtualMachineAdapter
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Hair
+  - HairLength
+  - Eyes
+  - FacegenAsymmetricGeometry
+  - FacegenSymmetricGeometry
+  - FacegenSymmetricTexture
+  - ImpactMaterialType
+  - UnarmedAttackAnimation
+  defaults: {}
+
+RACE:
+  fields:
+    FULL: FULL
+    DESC: DESC
+    DATA: DATA
+    VTCK: VTCK
+    Voices: Voices
+    PNAM: PNAM
+    UNAM: UNAM
+    CNAM: CNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    DESC:
+      type: trim_languages
+      keep: *localized_languages
+    VTCK:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    Voices:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    PNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    UNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    CNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - DefaultHairStyles
+  - Hairs
+  - Eyes
+  - Relations
+  defaults: {}
+
+ARMA:
+  fields:
+    MODL: MODL
+    MOD2: MOD2
+    MOD3: MOD3
+    MOD4: MOD4
+    DNAM: DNAM
+    Data: Data
+  transforms:
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    MOD2:
+      type: strip_subfields
+      remove: [MODD]
+    MOD3:
+      type: strip_subfields
+      remove: [MODD]
+    MOD4:
+      type: strip_subfields
+      remove: [MODD]
+    DNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - BipedData
+  - EquipmentType
+  defaults: {}
+
+ARMO:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    MODL: MODL
+    MOD2: MOD2
+    MOD4: MOD4
+    ETYP: ETYP
+    EITM: EITM
+    YNAM: YNAM
+    ZNAM: ZNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    MOD2:
+      type: strip_subfields
+      remove: [MODD]
+    MOD4:
+      type: strip_subfields
+      remove: [MODD]
+    ETYP:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    EITM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - BipedData
+  - RepairList
+  - Script
+  defaults: {}
+
+CLAS:
+  fields:
+    FULL: FULL
+    DESC: DESC
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    DESC:
+      type: trim_languages
+      keep: *localized_languages
+  drop:
+  - Attributes
+  defaults: {}
+
+CSTY:
+  fields: {}
+  transforms: {}
+  drop:
+  - Simple
+  - AdvancedStandard
+  - AdvancedAdvanced
+  defaults: {}
+
+LVLN:
+  fields:
+    OBND: OBND
+    Flags: Flags
+    ChanceNone: ChanceNone
+    LVLO: LVLO
+    LeveledEntry: LeveledEntry
+  transforms:
+    LVLO:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    LeveledEntry:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+LVLI:
+  fields:
+    OBND: OBND
+    Flags: Flags
+    ChanceNone: ChanceNone
+    LVLO: LVLO
+    LeveledEntry: LeveledEntry
+  transforms:
+    LVLO:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    LeveledEntry:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+TXST:
+  fields:
+    OBND: OBND
+    TX00: TX00
+    TX01: TX01
+    TX02: TX02
+    TX03: TX03
+    TX04: TX04
+    TX05: TX05
+    DNAM: DNAM
+    DODT: DODT
+  transforms: {}
+  defaults: {}
+
+STAT:
+  fields:
+    OBND: OBND
+    MODL: MODL
+  transforms:
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+  defaults: {}
+
+MSTT:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    MODL: MODL
+    DATA: DATA
+    SNAM: SNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    SNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+FURN:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    MODL: MODL
+    MNAM: MNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    MNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    Script:
+      type: remap_formkey
+      target: VirtualMachineAdapter
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - MarkerFlags
+  defaults: {}
+
+ACTI:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    MODL: MODL
+    SNAM: SNAM
+    VNAM: VNAM
+    WNAM: WNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    SNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    VNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    WNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    Script:
+      type: remap_formkey
+      target: VirtualMachineAdapter
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+IDLE:
+  fields:
+    ANAM: ANAM
+    DATA: DATA
+    CTDA: CTDA
+    Animations: Animations
+  transforms:
+    CTDA:
+      type: translate_conditions
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    Animations:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - MODL
+  - Conditions
+  defaults: {}
+
+EFSH:
+  fields:
+    ICON: ICON
+    ICO2: ICO2
+    DATA: DATA
+    NAM7: NAM7
+  transforms: {}
+  defaults: {}
+
+IPCT:
+  fields:
+    DATA: DATA
+    MODL: MODL
+    DODT: DODT
+    DNAM: DNAM
+    SNAM: SNAM
+    NAM1: NAM1
+    Sound1: Sound1
+    Sound2: Sound2
+  transforms:
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    DNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    NAM1:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    Sound1:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    Sound2:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  defaults: {}
+
+IPDS:
+  fields: {}
+  transforms: {}
+  drop:
+  - DATA
+  - Impacts
+  defaults: {}
+
+MUSC:
+  fields:
+    FNAM: FNAM
+  transforms: {}
+  drop:
+  - FileName
+  defaults: {}
+
+ALCH:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    MODL: MODL
+    DATA: DATA
+    ENIT: ENIT
+    EFID: EFID
+    EFIT: EFIT
+    CTDA: CTDA
+    YNAM: YNAM
+    ZNAM: ZNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    EFID:
+      type: translate_effects
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+      default_data:
+        Magnitude: 0.0
+    CTDA:
+      type: translate_conditions
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Script
+  - ICON
+  - MICO
+  defaults: {}
+
+BOOK:
+  fields:
+    FULL: FULL
+    DESC: DESC
+    OBND: OBND
+    MODL: MODL
+    DATA: DATA
+    YNAM: YNAM
+    ZNAM: ZNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    DESC:
+      type: trim_languages
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    YNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Script
+  - ICON
+  - MICO
+  defaults: {}
+
+MISC:
+  fields:
+    FULL: Name
+    OBND: OBND
+    MODL: MODL
+    DATA: DATA
+    YNAM: YNAM
+    ZNAM: ZNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      target: Name
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    YNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Script
+  - ICON
+  - MICO
+  defaults: {}
+
+KEYM:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    MODL: MODL
+    DATA: DATA
+    YNAM: YNAM
+    ZNAM: ZNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    YNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Script
+  - ICON
+  - MICO
+  defaults: {}
+
+INGR:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    MODL: MODL
+    DATA: DATA
+    ENIT: ENIT
+    EFID: EFID
+    EFIT: EFIT
+    CTDA: CTDA
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    EFID:
+      type: translate_effects
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+      default_data:
+        Magnitude: 0.0
+    CTDA:
+      type: translate_conditions
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Script
+  - ICON
+  - MICO
+  - Weight
+  defaults: {}
+
+NOTE:
+  fields:
+    FULL: FULL
+    OBND: OBND
+    MODL: MODL
+    DATA: DATA
+    SNAM: SNAM
+    YNAM: YNAM
+    ZNAM: ZNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+    MODL:
+      type: strip_subfields
+      remove: [MODD]
+    SNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    YNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundPickUp:
+      type: remap_formkey
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+    SoundDrop:
+      type: remap_formkey
+      target: SoundPutDown
+      source_esm: Fallout3.esm
+      target_esm: Fallout4.esm
+  drop:
+  - Quest
+  - TextTopic
+  defaults: {}
+
+EYES:
+  fields:
+    FULL: FULL
+    DATA: DATA
+    ICON: ICON
+    Flags: Flags
+    Texture: Texture
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: *localized_languages
+  defaults: {}

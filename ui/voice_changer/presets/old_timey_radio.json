@@ -1,0 +1,12 @@
+{
+  "name": "Old Timey Radio",
+  "description": "Warm vintage AM broadcast sound — cuts lows/highs, adds tube warmth and broadcast compression",
+  "chain": [
+    {"type": "HighpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 400}},
+    {"type": "LowpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 4000}},
+    {"type": "PeakFilter", "enabled": true, "params": {"cutoff_frequency_hz": 1000, "gain_db": 12.0, "q": 1.0}},
+    {"type": "Distortion", "enabled": true, "params": {"drive_db": 5.0}},
+    {"type": "Compressor", "enabled": true, "params": {"threshold_db": -15.0, "ratio": 4.0}},
+    {"type": "Gain", "enabled": true, "params": {"gain_db": 0.0}}
+  ]
+}

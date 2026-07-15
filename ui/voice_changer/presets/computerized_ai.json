@@ -1,0 +1,11 @@
+{
+  "name": "Computerized AI",
+  "description": "Spaceship computer / hologram — fast tremolo buzz with metallic presence",
+  "chain": [
+    {"type": "Tremolo", "enabled": true, "params": {"frequency_hz": 50.0, "wet_level": 0.45}},
+    {"type": "HighpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 150}},
+    {"type": "PeakFilter", "enabled": true, "params": {"cutoff_frequency_hz": 3000, "gain_db": 6.0, "q": 1.0}},
+    {"type": "Compressor", "enabled": true, "params": {"threshold_db": -25.0, "ratio": 6.0}},
+    {"type": "Gain", "enabled": true, "params": {"gain_db": 0.0}}
+  ]
+}

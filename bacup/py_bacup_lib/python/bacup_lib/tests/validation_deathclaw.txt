@@ -1,0 +1,770 @@
+================================================================================
+DEATHCLAW HKX CONVERSION VALIDATION REPORT
+FO76 (TAG0 tagfile) -> FO4 (packfile) comparison
+================================================================================
+
+Total files compared: 66
+  PASS:  0
+  FAIL:  66
+  ERROR: 0
+  Pass rate: 0/66 (0.0%)
+
+--------------------------------------------------------------------------------
+COMMON ISSUE PATTERNS:
+--------------------------------------------------------------------------------
+  [ 92x] CLASS COUNT mismatch
+  [ 66x] MISSING classes (in FO4 but not converted)
+  [ 66x] EXTRA classes (in converted but not FO4)
+  [ 61x] BINDING[0] transformTrackToBoneIndices count
+  [ 61x] SPLINE ANIM COUNT
+  [ 61x] INTERLEAVED ANIM COUNT
+  [ 61x] ANNOTATION TRACK COUNT
+  [ 56x] FORWARD AXIS[0]
+  [  7x] NULL PTR
+  [  1x] ... and 47 more null pointer issues
+  [  1x] STATE MACHINE COUNT
+  [  1x] VARIABLE BINDING SET COUNT
+  [  1x] CLIP GENERATOR COUNT
+  [  1x] BLENDER GENERATOR COUNT
+
+--------------------------------------------------------------------------------
+PER-FILE RESULTS:
+--------------------------------------------------------------------------------
+
+FILE: activate.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=85, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: ambush.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=86, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkRootLevelContainerNamedVariant', 'hkbAssetBundleStringData', 'hkbCharacterControllerSetup', 'hkbCharacterStringDataFileNameMeshNamePair', 'hkbFootIkDriverInfoLeg', 'hkbRigidBodySetup', 'hkbShapeSetup']
+  - EXTRA classes (in converted but not FO4): ['?', 'hkContainerHeapAllocator', 'hkVector4', 'hkbBindable']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=22, fo4=1
+
+FILE: deathclaw_attackleft.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=91, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_attackleft_recoil.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_attackpowerforward.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=91, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_attackpowerhornram.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=91, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_attackpowerjumpaoe.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=91, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_attackpowerjumpslash.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=91, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_attackpowerspinslashaoe.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=91, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_attackright.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=91, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_attackright_recoil.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_attackthrow.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=91, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_crithitchest.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=86, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_crithitface.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=86, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_crithitleftarm.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=86, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_crithitleftleg.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=86, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_crithitrightarm.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=86, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_crithitrightleg.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=86, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_deathanimationa.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=90, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_deathanimationb.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=90, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_equip.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_evadeforward.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=91, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_evadeforwardleft.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_evadeforwardright.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_flipcar.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=85, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_getupfromfacedown.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=85, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_getupfromfaceup.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=85, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_idle.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_idlecombat.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_idlecombathiding.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=85, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_idletaunt.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=87, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_idletauntroar.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaDefaultAnimatedReferenceFrame', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=86, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+
+FILE: deathclaw_idletauntstomp.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaDefaultAnimatedReferenceFrame', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=88, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+
+FILE: deathclaw_idletauntstompshorter.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaDefaultAnimatedReferenceFrame', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=87, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+
+FILE: deathclaw_idletaunttwist.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaDefaultAnimatedReferenceFrame', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=85, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+
+FILE: deathclaw_injuredbothlegsexit.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=87, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_injuredbothlegsstart.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_jumpfall.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_jumpfallloop.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_jumpland.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_runback.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_runforward.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=88, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_runforward_start.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=85, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_specialidlea.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_specialidlescratchground.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_specialidletonguedetect.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_sprintforward.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=88, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_staggerforwardsmall.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_staggerlarge.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=87, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_staggersmall.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=87, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_turn180fromrun.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=106, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_turn180fromstop.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=90, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_turnleft90.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_turnleft90fromstop.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=91, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_turnright90.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_turnright90fromstop.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=90, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_walkback.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaw_walkforward.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaAnnotationTrackAnnotation', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=89, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: deathclaweverything.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['BSCyclicBlendTransitionGenerator', 'BSModifyOnceModifier', 'BSiStateTaggingGenerator', 'DynamicAnimationTaggingGenerator', 'hkRootLevelContainerNamedVariant', 'hkbBlenderGenerator', 'hkbBlenderGeneratorChild', 'hkbClipTrigger', 'hkbEvaluateExpressionModifier', 'hkbEvent', 'hkbEventDrivenModifier', 'hkbEventInfo', 'hkbEventProperty', 'hkbExpressionCondition', 'hkbExpressionData', 'hkbExpressionDataArray', 'hkbRoleAttribute', 'hkbStateMachineTimeInterval', 'hkbStateMachineTransitionInfo', 'hkbVariableBindingSetBinding', 'hkbVariableInfo', 'hkbVariableValue']
+  - EXTRA classes (in converted but not FO4): ['BSBehaviorGraphSwapGenerator', 'BSEventEveryNEventsModifier', 'hkContainerHeapAllocator', 'hkbLayerGenerator', 'hkbModifier', 'hkbReferencePoseGenerator']
+  - CLASS COUNT mismatch: ? — converted=149, fo4=198
+  - CLASS COUNT mismatch: BSIsActiveModifier — converted=16, fo4=17
+  - CLASS COUNT mismatch: BSTimerModifier — converted=2, fo4=1
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=602, fo4=1
+  - CLASS COUNT mismatch: hkbBlendingTransitionEffect — converted=18, fo4=24
+  - CLASS COUNT mismatch: hkbBoneWeightArray — converted=14, fo4=12
+  - CLASS COUNT mismatch: hkbClipGenerator — converted=63, fo4=94
+  - CLASS COUNT mismatch: hkbClipTriggerArray — converted=52, fo4=70
+  - CLASS COUNT mismatch: hkbManualSelectorGenerator — converted=7, fo4=2
+  - CLASS COUNT mismatch: hkbModifierGenerator — converted=40, fo4=33
+  - CLASS COUNT mismatch: hkbModifierList — converted=16, fo4=8
+  - CLASS COUNT mismatch: hkbStateMachine — converted=19, fo4=21
+  - CLASS COUNT mismatch: hkbStateMachineEventPropertyArray — converted=25, fo4=52
+  - CLASS COUNT mismatch: hkbStateMachineStateInfo — converted=76, fo4=95
+  - CLASS COUNT mismatch: hkbStateMachineTransitionInfoArray — converted=26, fo4=63
+  - CLASS COUNT mismatch: hkbStringEventPayload — converted=14, fo4=20
+  - CLASS COUNT mismatch: hkbVariableBindingSet — converted=42, fo4=46
+  - NULL PTR: hkbBlendingTransitionEffect[9].variableBindingSet — converted=null, fo4=#0369
+  - NULL PTR: hkbBlendingTransitionEffect[10].variableBindingSet — converted=null, fo4=#0372
+  - NULL PTR: hkbClipGenerator[7].variableBindingSet — converted=null, fo4=#0079
+  - NULL PTR: hkbClipGenerator[35].triggers — converted=null, fo4=#0192
+  - NULL PTR: hkbClipGenerator[36].variableBindingSet — converted=null, fo4=#0201
+  - ... and 47 more null pointer issues
+  - STATE MACHINE COUNT: converted=19, fo4=21
+  - VARIABLE BINDING SET COUNT: converted=42, fo4=46
+  - CLIP GENERATOR COUNT: converted=63, fo4=94
+  - BLENDER GENERATOR COUNT: converted=0, fo4=19
+
+FILE: deathclawproject.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkRootLevelContainerNamedVariant']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator']
+
+FILE: deathclawrootbehavior.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['BSLookAtModifier', 'BSLookAtModifierBoneData', 'BSRagdollContactListenerModifier', 'hkRootLevelContainerNamedVariant', 'hkbClipTrigger', 'hkbEvent', 'hkbEventInfo', 'hkbEventProperty', 'hkbEventRangeData', 'hkbExpressionData', 'hkbFootIkControlData', 'hkbFootIkGains', 'hkbPoweredRagdollControlData', 'hkbRigidBodyRagdollControlData', 'hkbRoleAttribute', 'hkbStateMachineTimeInterval', 'hkbStateMachineTransitionInfo', 'hkbTimerModifier', 'hkbVariableBindingSetBinding', 'hkbVariableBounds', 'hkbVariableInfo', 'hkbVariableValue']
+  - EXTRA classes (in converted but not FO4): ['BSTimerModifier', 'hkContainerHeapAllocator']
+  - CLASS COUNT mismatch: BSInterpValueModifier — converted=2, fo4=1
+  - CLASS COUNT mismatch: BSIsActiveModifier — converted=4, fo4=3
+  - CLASS COUNT mismatch: BSModifyOnceModifier — converted=2, fo4=1
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=947, fo4=1
+  - NULL PTR: BSIsActiveModifier[0].variableBindingSet — converted=null, fo4=#0016
+  - NULL PTR: hkbStateMachineStateInfo[2].transitions — converted=null, fo4=#0045
+
+FILE: enterfromstand.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=85, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: exittostand.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=85, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+  - FORWARD AXIS[0]: converted=(1.000000 0.000000 0.000000 0.000000), fo4=(0.000000 1.000000 0.000000 0.000000)
+
+FILE: posea_idle1.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkMemoryResourceContainer', 'hkRootLevelContainerNamedVariant', 'hkaAnnotationTrack', 'hkaSplineCompressedAnimation']
+  - EXTRA classes (in converted but not FO4): ['hkContainerHeapAllocator', 'hkaInterleavedUncompressedAnimation']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=85, fo4=1
+  - BINDING[0] transformTrackToBoneIndices count: converted=0, fo4=84
+  - SPLINE ANIM COUNT: converted=0, fo4=1
+  - INTERLEAVED ANIM COUNT: converted=1, fo4=0
+  - ANNOTATION TRACK COUNT: converted=0, fo4=84
+
+FILE: skeleton.hkx
+  Status: FAIL
+  - MISSING classes (in FO4 but not converted): ['hkAabb', 'hkBitField', 'hkBitFieldStoragehkArrayunsignedinthkContainerHeapAllocator', 'hkCompressedMassProperties', 'hkRefCountedPropertiesEntry', 'hkRootLevelContainerNamedVariant', 'hkUFloat8', 'hkaBone', 'hkaSkeletonMapperData', 'hkaSkeletonMapperDataChainMapping', 'hkaSkeletonMapperDataSimpleMapping', 'hkcdSimdTree', 'hkcdSimdTreeNode', 'hkcdStaticMeshTreeBasePrimitive', 'hkcdStaticMeshTreeBaseSection', 'hkcdStaticMeshTreeBaseSectionDataRuns', 'hkcdStaticMeshTreeBaseSectionPrimitives', 'hkcdStaticMeshTreeBaseSectionSharedVertices', 'hkcdStaticTreeCodec3Axis4', 'hkcdStaticTreeCodec3Axis5', 'hknpBodyCinfo', 'hknpCapsuleShape', 'hknpCompressedMeshShapeData', 'hknpCompressedMeshShapeTreeDataRun', 'hknpCompressedMeshShapeTreeDataRunData', 'hknpConstraintCinfo', 'hknpConvexPolytopeShapeFace', 'hknpMaterial', 'hknpMotionCinfo', 'hknpMotionProperties', 'hknpSparseCompactMapunsignedshort', 'hkpLimitedHingeConstraintData', 'hkpLimitedHingeConstraintDataAtoms', 'hkpRagdollConstraintData', 'hkpRagdollConstraintDataAtoms']
+  - EXTRA classes (in converted but not FO4): ['hkBitFieldBase', 'hkContainerHeapAllocator', 'hkHalf16', 'hkPackedVector3', 'hkUint16', 'hkcdStaticMeshTree', 'hkcdStaticMeshTreeBase::Connectivity', 'hknpConvexPolytopeShape::Connectivity', 'hkpBallAndSocketConstraintData', 'hkpConstraintAtom']
+  - CLASS COUNT mismatch: hkRootLevelContainer — converted=447, fo4=1
+  - CLASS COUNT mismatch: hknpCompressedMeshShape — converted=3, fo4=1
+  - CLASS COUNT mismatch: hknpConvexPolytopeShape — converted=35, fo4=8
+  - CLASS COUNT mismatch: hkpAngFrictionConstraintAtom — converted=25, fo4=27
+  - CLASS COUNT mismatch: hkpBallSocketConstraintAtom — converted=50, fo4=27
+  - CLASS COUNT mismatch: hkpConeLimitConstraintAtom — converted=25, fo4=50
+  - CLASS COUNT mismatch: hkpRagdollMotorConstraintAtom — converted=27, fo4=25
+  - CLASS COUNT mismatch: hkpSetLocalTransformsConstraintAtom — converted=25, fo4=27
+  - CLASS COUNT mismatch: hkpTwistLimitConstraintAtom — converted=27, fo4=25
+
+================================================================================
+END OF REPORT
+================================================================================

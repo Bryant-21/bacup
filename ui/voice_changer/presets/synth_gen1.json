@@ -1,0 +1,16 @@
+{
+  "name": "Synth Gen 1",
+  "description": "Fallout Gen 1 Synth — jittery digital voice with constant pitch warping, phaser sweep, chorus detuning, and synthetic buzz. Modern and unsettling.",
+  "chain": [
+    {"type": "HighpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 250, "rolloff_db_per_oct": 12}},
+    {"type": "LowpassFilter", "enabled": true, "params": {"cutoff_frequency_hz": 5000, "rolloff_db_per_oct": 12}},
+    {"type": "PeakFilter", "enabled": true, "params": {"cutoff_frequency_hz": 400, "gain_db": 6.0, "q": 1.0}},
+    {"type": "PeakFilter", "enabled": true, "params": {"cutoff_frequency_hz": 1200, "gain_db": 4.0, "q": 0.8}},
+    {"type": "Phaser", "enabled": true, "params": {"rate_hz": 8.0, "depth": 0.7, "feedback": 0.5, "mix": 0.5}},
+    {"type": "Chorus", "enabled": true, "params": {"rate_hz": 5.0, "depth": 0.4, "mix": 0.35, "feedback": 0.2}},
+    {"type": "Tremolo", "enabled": true, "params": {"frequency_hz": 86.0, "wet_level": 0.15}},
+    {"type": "Reverb", "enabled": true, "params": {"room_size": 0.3, "wet_level": 0.2, "damping": 0.6}},
+    {"type": "Compressor", "enabled": true, "params": {"threshold_db": -16.0, "ratio": 4.0}},
+    {"type": "Gain", "enabled": true, "params": {"gain_db": 0.0}}
+  ]
+}

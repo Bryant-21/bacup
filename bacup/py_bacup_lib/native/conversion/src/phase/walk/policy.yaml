@@ -1,0 +1,44 @@
+# Walker edge policy — controls which record→record edges are walked.
+#
+# Each entry specifies what to do when the walker is about to recurse from
+# a record of `parent_type` into a child record of `child_type`.
+#
+# Actions:
+#   WALK               — default; recurse into children normally.
+#   SKIP               — include parent node, do NOT recurse into this child type.
+#   LOOKUP_VANILLA_ONLY — include child only if vanilla equivalent exists;
+#                         never recurse into its children.
+#
+# Add or tune entries here to fix over-inclusion without touching Python code.
+# See docs/meltdown-conversion-plan.md §W-3 for background.
+
+reverse_passes:
+  - race
+  - skm
+behavior_bundle: true
+character_assets: true
+animation_lookup: true
+creature_dir_scan: true
+
+edges:
+  # ImpactDataSets: when vanilla-remapped (e.g. BulletImpactSet → FO4),
+  # the FO76 child IMPS entries must not be walked — they include
+  # creature-specific impacts (ScorchBeast, GuardianBot, AssaultronEncrypt)
+  # that drag in ~45 MB of unrelated creature assets per weapon conversion.
+  # (X-2 fix; enforced by the native walker policy)
+  - parent_type: ImpactDataSets
+    child_type: Impacts
+    action: SKIP
+
+  # ArmorAddons list AdditionalRaces that may include creature races whose
+  # subgraph data pulls in hundreds of unrelated animation files.
+  - parent_type: ArmorAddons
+    child_type: Races
+    action: SKIP
+
+  # Race.BodyData entries reference body-part NIFs. For weapon conversions
+  # these are human/PA races being vanilla-remapped — don't re-extract their
+  # body meshes. If no vanilla match, the SKIP cascades safely.
+  - parent_type: Races
+    child_type: BodyParts
+    action: SKIP

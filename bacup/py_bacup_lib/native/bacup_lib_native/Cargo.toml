@@ -1,0 +1,17 @@
+[package]
+name = "bacup_lib_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[features]
+default = []
+dhat-heap = ["esp_authoring_core/dhat-heap"]
+
+[dependencies]
+conversion_native  = { path = "../conversion" }
+esp_authoring_core = { path = "../../../../py_creation_lib/native/esp" }
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }

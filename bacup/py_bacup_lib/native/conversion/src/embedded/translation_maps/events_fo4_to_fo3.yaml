@@ -1,0 +1,21 @@
+# FO4 hkaAnnotationTrack -> FO3/FNV NiTextKeyExtraData event name mapping.
+# Reverse direction of events_fo3_to_fo4.yaml.
+
+# Events that are dropped (FO4 events with no FO3 equivalent)
+drop: []
+
+# Direct 1:1 mappings
+events:
+  "HitFrame": "hit"
+  "preHitFrame": "hit"
+  "weaponDraw": "Equip"
+  "weaponSheathe": "Unequip"
+  "weaponFire": "Sound: WeaponFire"
+  "weaponSwing": "Attack: Swing"
+
+# Regex pattern-based mappings
+patterns:
+  - match: "^SoundPlay\\.(.+)"
+    target: "Sound: {1}"
+  - match: "^Foot(Left|Right|Front|Back)"
+    target: null  # FO3 doesn't use footstep annotations

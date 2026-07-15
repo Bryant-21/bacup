@@ -1,0 +1,589 @@
+# FO3 Creature -> FO4 Creature skeleton bone mappings.
+# Each creature type has its own mapping table.
+# Source: Gamebryo Bip01 naming convention (Fallout 3).
+# Target: Creation Engine naming convention (Fallout 4).
+#
+# Creatures with fundamentally different skeleton architectures between
+# games (e.g. radscorpion with 8 legs vs 4 pairs) have best-effort
+# mappings for the shared body plan.
+
+creatures:
+
+  # ================================================================
+  # DEATHCLAW
+  # FO3: Bip01-prefixed biped with Toe0/Toe1/Toe2, Finger0-4, Tail-Tail5
+  # FO4: Unprefixed with CAPS legs, numbered toes, 7-segment tail
+  # ================================================================
+  deathclaw:
+    display_name: "FO3 Deathclaw → FO4 Deathclaw"
+    # Bone names that identify this skeleton type (for auto-detection)
+    signature_bones: ["Bip01 Tail", "Bip01 L Toe0", "Bip01 L Toe1", "Bip01 L Toe2"]
+    fo4_signature_bones: ["LTHIGH", "Tail1", "SpineRoot"]
+    bones:
+      # --- Root ---
+      "Bip01": "Root"
+      "Bip01 NonAccum": "COM"
+
+      # --- Spine ---
+      "Bip01 Pelvis": "Pelvis"
+      "Bip01 Spine": "SpineRoot"
+      "Bip01 Spine1": "Spine01"
+      "Bip01 Spine2": "Spine02"
+
+      # --- Neck / Head ---
+      "Bip01 Neck": "SpineControl"
+      "Bip01 Neck1": "NeckRoot"
+      "Bip01 Head": "HEAD"
+
+      # --- Left Arm ---
+      "Bip01 L Clavicle": "LArmClavicle"
+      "Bip01 L UpperArm": "LArmUpperArm"
+      "Bip01 L Forearm": "LArmForeArm"
+      "Bip01 L Hand": "LArmHand"
+      "Bip01 L Finger0": "LArmThumb1"
+      "Bip01 L Finger01": "LArmThumb2"
+      "Bip01 L Finger1": "LArmIndex1"
+      "Bip01 L Finger11": "LArmIndex2"
+      "Bip01 L Finger2": "LArmMiddle1"
+      "Bip01 L Finger21": "LArmMiddle2"
+      "Bip01 L Finger3": "LArmRing1"
+      "Bip01 L Finger31": "LArmRing2"
+      "Bip01 L Finger4": "LArmPinky1"
+      "Bip01 L Finger41": "LArmPinky2"
+
+      # --- Right Arm ---
+      "Bip01 R Clavicle": "RArmClavicle"
+      "Bip01 R UpperArm": "RArmUpperArm"
+      "Bip01 R Forearm": "RArmForeArm"
+      "Bip01 R Hand": "RArmHand"
+      "Bip01 R Finger0": "RArmThumb1"
+      "Bip01 R Finger01": "RArmThumb2"
+      "Bip01 R Finger1": "RArmIndex1"
+      "Bip01 R Finger11": "RArmIndex2"
+      "Bip01 R Finger2": "RArmMiddle1"
+      "Bip01 R Finger21": "RArmMiddle2"
+      "Bip01 R Finger3": "RArmRing1"
+      "Bip01 R Finger31": "RArmRing2"
+      "Bip01 R Finger4": "RArmPinky1"
+      "Bip01 R Finger41": "RArmPinky2"
+
+      # --- Left Leg ---
+      "Bip01 L Thigh": "LTHIGH"
+      "Bip01 L Calf": "LCALF"
+      "Bip01 L Foot": "LFOOT"
+      "Bip01 L Toe0": "LToe1"
+      "Bip01 L Toe01": "LToe2"
+      "Bip01 L Toe1": "LToe3"
+      "Bip01 L Toe2": "LToe4"
+
+      # --- Right Leg ---
+      "Bip01 R Thigh": "RTHIGH"
+      "Bip01 R Calf": "RCALF"
+      "Bip01 R Foot": "RFOOT"
+      "Bip01 R Toe0": "RToe1"
+      "Bip01 R Toe01": "RToe2"
+      "Bip01 R Toe1": "RToe3"
+      "Bip01 R Toe2": "RToe4"
+
+      # --- Tail (FO3 has 6 segments, FO4 has 7 — last segment unmapped) ---
+      "Bip01 Tail": "Tail1"
+      "Bip01 Tail1": "Tail2"
+      "Bip01 Tail2": "Tail3"
+      "Bip01 Tail3": "Tail4"
+      "Bip01 Tail4": "Tail5"
+      "Bip01 Tail5": "Tail6"
+
+      # --- Special ---
+      "Bip01 Ponytail1": "Jaw"
+      "Bip01 Brain": "Nose"
+      "Weapon": "WEAPON"
+
+  # ================================================================
+  # DOG (FO3 dog → FO4 Dogmeat)
+  # FO3: Bip01-prefixed biped with front/rear legs using standard L/R naming
+  # FO4: Dogmeat_ prefixed quadruped with explicit Front/Rear leg naming
+  # ================================================================
+  dog:
+    display_name: "FO3 Dog → FO4 Dogmeat"
+    signature_bones: ["Bip01 Ponytail1", "Bip01 L Finger0", "Bip01 Tail"]
+    fo4_signature_bones: ["Dogmeat_Root", "Dogmeat_Front_LLeg1", "Dogmeat_Tail1"]
+    bones:
+      # --- Root ---
+      "Bip01": "Dogmeat_Root"
+      "Bip01 NonAccum": "Dogmeat_COM"
+
+      # --- Spine ---
+      "Bip01 Pelvis": "Dogmeat_Pelvis"
+      "Bip01 Spine": "Dogmeat_Spine1"
+      "Bip01 Spine1": "Dogmeat_Spine2"
+      "Bip01 Neck": "Dogmeat_Spine3"
+
+      # --- Chest / Ribcage ---
+      # FO3 dog uses Spine2→Neck hierarchy similar to FO4 Ribcage
+      # Bip01 Spine1 (above) maps to Spine2; the actual ribcage area:
+      "Bip01 Head": "Dogmeat_Head"
+
+      # --- Head / Neck ---
+      # FO3 has Bip01 Neck → Bip01 Head
+      # FO4 has Dogmeat_Ribcage → Dogmeat_Neck1 → Dogmeat_Neck2 → Dogmeat_Head
+      "Bip01 Head Jaw": "Dogmeat_Jaw"
+      "Bip01 Head Muzzle": "Dogmeat_Nose"
+
+      # --- Front Left Leg (FO3 uses L arm bones) ---
+      "Bip01 L Clavicle": "Dogmeat_Front_LLegCollarbone"
+      "Bip01 L UpperArm": "Dogmeat_Front_LLeg1"
+      "Bip01 L Forearm": "Dogmeat_Front_LLeg2"
+      "Bip01 L Hand": "Dogmeat_Front_LLegAnkle"
+      "Bip01 L Finger0": "Dogmeat_Front_LLegToe1"
+
+      # --- Front Right Leg ---
+      "Bip01 R Clavicle": "Dogmeat_Front_RLegCollarbone"
+      "Bip01 R UpperArm": "Dogmeat_Front_RLeg1"
+      "Bip01 R Forearm": "Dogmeat_Front_RLeg2"
+      "Bip01 R Hand": "Dogmeat_Front_RLegAnkle"
+      "Bip01 R Finger0": "Dogmeat_Front_RLegToe1"
+
+      # --- Rear Left Leg ---
+      "Bip01 L Thigh": "Dogmeat_Rear_LLeg1"
+      "Bip01 L Calf": "Dogmeat_Rear_LLeg2"
+      "Bip01 L Foot": "Dogmeat_Rear_LLegAnkle"
+      "Bip01 L Toe0": "Dogmeat_Rear_LLegToe1"
+
+      # --- Rear Right Leg ---
+      "Bip01 R Thigh": "Dogmeat_Rear_RLeg1"
+      "Bip01 R Calf": "Dogmeat_Rear_RLeg2"
+      "Bip01 R Foot": "Dogmeat_Rear_RLegAnkle"
+      "Bip01 R Toe0": "Dogmeat_Rear_RLegToe1"
+
+      # --- Tail ---
+      "Bip01 Tail": "Dogmeat_Tail1"
+      "Bip01 Tail1": "Dogmeat_Tail2"
+
+      # --- Ears / Ponytails (FO3 uses Ponytail bones for ear flaps) ---
+      "Bip01 Ponytail1": "Dogmeat_Ear_L1"
+      "Bip01 Ponytail11": "Dogmeat_Ear_L2"
+      "Bip01 Ponytail2": "Dogmeat_Ear_R1"
+      "Bip01 Ponytail21": "Dogmeat_Ear_R2"
+
+  # ================================================================
+  # MIRELURK
+  # FO3: Bip01-prefixed with Ponytail bones (tentacles/antennae)
+  # FO4: Unprefixed quadruped-like with Front/Back leg pairs, mouth parts
+  # ================================================================
+  mirelurk:
+    display_name: "FO3 Mirelurk → FO4 Mirelurk"
+    signature_bones: ["Bip01 Ponytail9", "Bip01 L Finger0", "RightClawLower"]
+    fo4_signature_bones: ["LFrontLegThigh", "RBackLegThigh", "LMiddleArm1Clavicle"]
+    bones:
+      # --- Root ---
+      "Bip01": "Root"
+      "Bip01 NonAccum": "Pelvis"
+
+      # --- Spine ---
+      "Bip01 Spine0": "SPINE1"
+      "Bip01 Spine": "SPINE2"
+      "Bip01 Spine1": "Rib"
+
+      # --- Head ---
+      "Bip01 Head": "HEAD"
+      "Bip01 Neck": "Neck"
+
+      # --- Left Arm (FO3 main claws → FO4 main arms) ---
+      "Bip01 L Clavicle": "LArmClavicle"
+      "Bip01 L UpperArm": "LArmUpper"
+      "Bip01 L Forearm": "LArmFore"
+      "Bip01 L Hand": "LArmPalm"
+      "Bip01 L Finger0": "LPalmTum"
+
+      # --- Right Arm ---
+      "Bip01 R Clavicle": "RArmClavicle"
+      "Bip01 R UpperArm": "RArmUpper"
+      "Bip01 R Forearm": "RArmFore"
+      "Bip01 R Hand": "RArmPalm"
+      "Bip01 R Finger0": "RPalmTum"
+
+      # --- Legs (FO3 biped legs → FO4 front legs) ---
+      "Bip01 L Thigh": "LFrontLegThigh"
+      "Bip01 L Calf": "LFrontLegCalf"
+      "Bip01 L Foot": "LFrontLegFoot"
+      "Bip01 L Toe0": "LFrontLegTip"
+
+      "Bip01 R Thigh": "RFrontLegThigh"
+      "Bip01 R Calf": "RFrontLegCalf"
+      "Bip01 R Foot": "RFrontLegFoot"
+      "Bip01 R Toe0": "RFrontLegTip"
+
+  # ================================================================
+  # MOLE RAT
+  # FO3: Bip01-prefixed standard biped with Spine0-3, Tail chain
+  # FO4: Unprefixed with Front/Back leg naming, Hips, Tail chain
+  # ================================================================
+  molerat:
+    display_name: "FO3 Mole Rat → FO4 Mole Rat"
+    signature_bones: ["Bip01 Spine0", "Bip01 Spine3", "Bip01_Jaw"]
+    fo4_signature_bones: ["Front_LLegCollarbone", "Back_LLeg1", "Hips"]
+    bones:
+      # --- Root ---
+      "Bip01": "Root"
+      "Bip01 NonAccum": "Pelvis"
+
+      # --- Spine ---
+      "Bip01 Spine0": "SPINE1"
+      "Bip01 Pelvis": "SPINE1"
+      "Bip01 Spine": "SPINE2"
+      "Bip01 Spine1": "Spine3"
+      "Bip01 Spine2": "Spine4"
+      "Bip01 Spine3": "Chest"
+
+      # --- Head / Neck ---
+      "Bip01 Neck": "Neck"
+      "Bip01 Head": "HEAD"
+      "Bip01_Jaw": "Jaw"
+
+      # --- Front Left Leg (FO3 arm chain → FO4 front leg) ---
+      "Bip01 L Clavicle": "Front_LLegCollarbone"
+      "Bip01 L UpperArm": "Front_LLeg1"
+      "Bip01 L Forearm": "Front_LLeg2"
+      "Bip01 L Hand": "Front_LLegAnkle"
+      "Bip01 L Finger0": "Front_LLegToe1"
+      "Bip01 L Finger01": "Front_LLegToe2"
+
+      # --- Front Right Leg ---
+      "Bip01 R Clavicle": "Front_RLegCollarbone"
+      "Bip01 R UpperArm": "Front_RLeg1"
+      "Bip01 R Forearm": "Front_RLeg2"
+      "Bip01 R Hand": "Front_RLegAnkle"
+      "Bip01 R Finger0": "Front_RLegToe1"
+      "Bip01 R Finger01": "Front_RLegToe2"
+
+      # --- Rear Left Leg ---
+      "Bip01 L Thigh": "Back_LLeg1"
+      "Bip01 L Calf": "Back_LLeg2"
+      "Bip01 L Foot": "Back_LLegAnkle"
+      "Bip01 L Toe0": "Back_LLegToe1"
+      "Bip01 L Toe01": "Back_LLegToe2"
+
+      # --- Rear Right Leg ---
+      "Bip01 R Thigh": "Back_RLeg1"
+      "Bip01 R Calf": "Back_RLeg2"
+      "Bip01 R Foot": "Back_RLegAnkle"
+      "Bip01 R Toe0": "Back_RLegToe1"
+      "Bip01 R Toe01": "Back_RLegToe2"
+
+      # --- Tail ---
+      "Bip01 Tail": "Tail1"
+      "Bip01 Tail1": "Tail2"
+      "Bip01 Tail2": "Tail3"
+
+  # ================================================================
+  # RADSCORPION
+  # FO3: Bip01-prefixed with 8 legs as numbered Thigh/Calf/Foot pairs,
+  #       pincer arms, segmented tail with stinger nubs
+  # FO4: Unprefixed with 8 legs (LLeg11-44, RLeg11-44), arms, tail
+  # ================================================================
+  radscorpion:
+    display_name: "FO3 Radscorpion → FO4 Radscorpion"
+    signature_bones: ["Bip01 L Thigh_1", "Bip01 R Thigh_4", "Bip01 Tail6"]
+    fo4_signature_bones: ["Hub", "LLeg11", "TailStinger"]
+    bones:
+      # --- Root ---
+      "Bip01": "Root"
+      "Bip01 NonAccum": "Hub"
+
+      # --- Spine ---
+      "Bip01 Spine": "Hub"
+      "Bip01 Pelvis": "Hub"
+
+      # --- Head ---
+      "Bip01 Head": "HEAD"
+
+      # --- Arms / Pincers ---
+      "Bip01 L Clavicle": "LArmCollarbone"
+      "Bip01 L UpperArm": "LArm1"
+      "Bip01 L Forearm": "LArm2"
+      "Bip01 L Hand": "LPalm"
+      "Bip01 L Finger0": "LThum"
+
+      "Bip01 R Clavicle": "RArmCollarbone"
+      "Bip01 R UpperArm": "RArm1"
+      "Bip01 R Forearm": "RArm2"
+      "Bip01 R Hand": "RPalm"
+      "Bip01 R Finger0": "RThum"
+
+      # --- Leg pair 1 (front) ---
+      "Bip01 L Thigh_1": "LLeg11"
+      "Bip01 L Calf_1": "LLeg12"
+      "Bip01 L Foot_1": "LLeg13"
+      "Bip01 L FootNub_1": "LLeg14"
+
+      "Bip01 R Thigh_1": "RLeg11"
+      "Bip01 R Calf_1": "RLeg12"
+      "Bip01 R Foot_1": "RLeg13"
+      "Bip01 R FootNub_1": "RLeg14"
+
+      # --- Leg pair 2 ---
+      "Bip01 L Thigh_2": "LLeg21"
+      "Bip01 L Calf_2": "LLeg22"
+      "Bip01 L Foot_2": "LLeg23"
+      "Bip01 L FootNub_2": "LLeg24"
+
+      "Bip01 R Thigh_2": "RLeg21"
+      "Bip01 R Calf_2": "RLeg22"
+      "Bip01 R Foot_2": "RLeg23"
+      "Bip01 R FootNub_2": "RLeg24"
+
+      # --- Leg pair 3 ---
+      "Bip01 L Thigh_3": "LLeg31"
+      "Bip01 L Calf_3": "LLeg32"
+      "Bip01 L Foot_3": "LLeg33"
+      "Bip01 L FootNub_3": "LLeg34"
+
+      "Bip01 R Thigh_3": "RLeg31"
+      "Bip01 R Calf_3": "RLeg32"
+      "Bip01 R Foot_3": "RLeg33"
+      "Bip01 R FootNub_3": "RLeg34"
+
+      # --- Leg pair 4 (rear) ---
+      "Bip01 L Thigh_4": "LLeg41"
+      "Bip01 L Calf": "LLeg42"
+      "Bip01 L Foot_4": "LLeg43"
+      "Bip01 L FootNub_4": "LLeg44"
+
+      "Bip01 R Thigh_4": "RLeg41"
+      "Bip01 R Calf_4": "RLeg42"
+      "Bip01 R Foot_4": "RLeg43"
+      "Bip01 R FootNub_4": "RLeg44"
+
+      # --- Tail ---
+      "Bip01 Tail": "Tail1"
+      "Bip01 Tail1": "Tail2"
+      "Bip01 Tail2": "Tail3"
+      "Bip01 Tail3": "Tail4"
+      "Bip01 Tail4": "Tail5"
+      "Bip01 Tail5": "Tail6"
+      "Bip01 Tail6": "Tail7"
+      "Bip01 TailNub": "TailStinger"
+
+      # --- Mouth / Small arms ---
+      "Bip01 SpineL": "LSmalArim1"
+      "Bip01 SpineR": "RSmalArim1"
+
+  # ================================================================
+  # YAO GUAI
+  # FO3: Bip01-prefixed biped (similar to dog but with extra Spine/Neck bones)
+  # FO4: Unprefixed quadruped with Front/Rear leg naming, Ribcage
+  # ================================================================
+  yaoguai:
+    display_name: "FO3 Yao Guai → FO4 Yao Guai"
+    signature_bones: ["Bip01 Spine0", "Bip01 Neck2", "Bip01 Head Jaw"]
+    fo4_signature_bones: ["Ribcage", "LLeg_Front_Clavicle", "LLeg_Rear_Thigh"]
+    bones:
+      # --- Root ---
+      "Bip01": "Root"
+      "Bip01 NonAccum": "COM"
+
+      # --- Spine ---
+      "Bip01 Spine0": "SPINE1"
+      "Bip01 Pelvis": "Pelvis"
+      "Bip01 Spine": "SPINE2"
+      "Bip01 Spine1": "Spine3"
+      "Bip01 Spine2": "Ribcage"
+      "Bip01 Spine3": "Ribcage"
+
+      # --- Head / Neck ---
+      "Bip01 Neck": "Neck1"
+      "Bip01 Neck1": "Neck2"
+      "Bip01 Neck2": "HEAD"
+      "Bip01 Head": "HEAD"
+      "Bip01 Head Jaw": "Jaw"
+      "Bip01 Head Muzzle": "Nose"
+
+      # --- Front Left Leg (arm chain) ---
+      "Bip01 L Clavicle": "LLeg_Front_Clavicle"
+      "Bip01 L UpperArm": "LLeg_Front_Thigh"
+      "Bip01 L Forearm": "LLeg_Front_Knee"
+      "Bip01 L Hand": "LLeg_Front_Ankle"
+      "Bip01 L Finger0": "LLeg_Front_Thumb1"
+      "Bip01 L Finger01": "LLeg_Front_Thumb2"
+
+      # --- Front Right Leg ---
+      "Bip01 R Clavicle": "RLeg_Front_Clavicle"
+      "Bip01 R UpperArm": "RLeg_Front_Thigh"
+      "Bip01 R Forearm": "RLeg_Front_Knee"
+      "Bip01 R Hand": "RLeg_Front_Ankle"
+      "Bip01 R Finger0": "RLeg_Front_Thumb1"
+      "Bip01 R Finger01": "RLeg_Front_Thumb2"
+
+      # --- Rear Left Leg ---
+      "Bip01 L Thigh": "LLeg_Rear_Thigh"
+      "Bip01 L Calf": "LLeg_Rear_Knee"
+      "Bip01 L Foot": "LLeg_Rear_Ankle"
+      "Bip01 L Toe0": "LLeg_Rear_Thumb1"
+      "Bip01 L Toe01": "LLeg_Rear_Index1"
+
+      # --- Rear Right Leg ---
+      "Bip01 R Thigh": "RLeg_Rear_Thigh"
+      "Bip01 R Calf": "RLeg_Rear_Knee"
+      "Bip01 R Foot": "RLeg_Rear_Ankle"
+      "Bip01 R Toe0": "RLeg_Rear_Thumb1"
+      "Bip01 R Toe01": "RLeg_Rear_Index1"
+
+      # --- Tail ---
+      "Bip01 Tail": "Tail1"
+
+      # --- Ears (Ponytail → Ears) ---
+      "Bip01 Ponytail1": "LEar"
+      "Bip01 Ponytail2": "REar"
+
+  # ================================================================
+  # FERAL GHOUL
+  # FO3: Bip01-prefixed humanoid (very similar to human skeleton)
+  # FO4: Unprefixed humanoid with FO4 naming conventions
+  # Note: The ghoul uses the standard humanoid skeleton in both games,
+  #   but this maps the FO3 ghoul-specific bones (which are identical
+  #   to the humanoid) to the FO4 feral ghoul skeleton.
+  # ================================================================
+  feral_ghoul:
+    display_name: "FO3 Feral Ghoul → FO4 Feral Ghoul"
+    signature_bones: ["Bip01 Head2", "Bip01 L Finger0", "Bip01 L ForeTwist"]
+    fo4_signature_bones: ["SpineRoot", "LUPPERARM", "LCollarbone"]
+    bones:
+      # --- Root ---
+      "Bip01": "Root"
+      "Bip01 NonAccum": "buffer"
+
+      # --- Spine ---
+      "Bip01 Pelvis": "Pelvis"
+      "Bip01 Spine": "SpineRoot"
+      "Bip01 Spine1": "SPINE1"
+      "Bip01 Spine2": "SPINE2"
+
+      # --- Chest / Neck / Head ---
+      "Bip01 Neck": "Neck"
+      "Bip01 Head": "HEAD"
+      "Bip01 Head2": "Jaw"
+
+      # --- Left Arm ---
+      "Bip01 L Clavicle": "LCollarbone"
+      "Bip01 L UpperArm": "LUPPERARM"
+      "Bip01 L Forearm": "LForeArm1"
+      "Bip01 L ForeTwist": "LForeArm2"
+      "Bip01 L Hand": "LHAND"
+      "Bip01 L Finger0": "LThumb"
+      "Bip01 L Finger01": "LThumb1"
+      "Bip01 L Finger02": "LThumb2"
+      "Bip01 L Finger1": "LIndex"
+      "Bip01 L Finger11": "LIndex1"
+      "Bip01 L Finger12": "LIndex2"
+      "Bip01 L Finger2": "LMiddle"
+      "Bip01 L Finger21": "LMiddle1"
+      "Bip01 L Finger22": "LMiddle2"
+      "Bip01 L Finger3": "LRing"
+      "Bip01 L Finger31": "LRing1"
+      "Bip01 L Finger32": "LRing2"
+      "Bip01 L Finger4": "LPinky"
+      "Bip01 L Finger41": "LPinky1"
+      "Bip01 L Finger42": "LPinky2"
+
+      # --- Right Arm ---
+      "Bip01 R Clavicle": "RCollarbone"
+      "Bip01 R UpperArm": "RUPPERARM"
+      "Bip01 R Forearm": "RForeArm1"
+      "Bip01 R ForeTwist": "RForeArm2"
+      "Bip01 R Hand": "RHAND"
+      "Bip01 R Finger0": "RThumb"
+      "Bip01 R Finger01": "RThumb1"
+      "Bip01 R Finger02": "RThumb2"
+      "Bip01 R Finger1": "RIndex"
+      "Bip01 R Finger11": "RIndex1"
+      "Bip01 R Finger12": "RIndex2"
+      "Bip01 R Finger2": "RMiddle"
+      "Bip01 R Finger21": "RMiddle1"
+      "Bip01 R Finger22": "RMiddle2"
+      "Bip01 R Finger3": "RRing"
+      "Bip01 R Finger31": "RRing1"
+      "Bip01 R Finger32": "RRing2"
+      "Bip01 R Finger4": "RPinky"
+      "Bip01 R Finger41": "RPinky1"
+      "Bip01 R Finger42": "RPinky2"
+
+      # --- Left Leg ---
+      "Bip01 L Thigh": "LTHIGH"
+      "Bip01 L Calf": "LCALF"
+      "Bip01 L Foot": "LFOOT"
+      "Bip01 L Toe0": "LToe1"
+
+      # --- Right Leg ---
+      "Bip01 R Thigh": "RTHIGH"
+      "Bip01 R Calf": "RCALF"
+      "Bip01 R Foot": "RFOOT"
+      "Bip01 R Toe0": "RToe1"
+
+      # --- Special ---
+      "Weapon": "WEAPON"
+      "Bip01 LUpArmTwist": "LArmUpperTwist1"
+      "Bip01 RUpArmTwist": "RArmUpperTwist1"
+
+  # ================================================================
+  # BLOATFLY (FO3 blowfly → FO4 bloatfly)
+  # FO3: Bip01-prefixed insect with 6 legs (3 pairs as Thigh01-03),
+  #       2 arm-wings, segmented tail with stinger
+  # FO4: Unprefixed with named leg types (FrontL/R, BackL/R, Mid L/R),
+  #       wings, front arms
+  # ================================================================
+  bloatfly:
+    display_name: "FO3 Blowfly → FO4 Bloatfly"
+    signature_bones: ["Bip01 L Thigh 01", "Bip01 tail", "Bip01 neck01"]
+    fo4_signature_bones: ["BFly", "FrontLArmCollar", "BackLLeg1"]
+    bones:
+      # --- Root ---
+      "Bip01": "BFly"
+      "Bip01 NonAccum": "Root"
+
+      # --- Spine ---
+      "Bip01 Spine": "Pelvis"
+      "Bip01 Head": "Spine"
+      "Bip01 neck01": "Neck"
+
+      # --- Head ---
+      "Bip01 Head Jaw": "HEAD"
+
+      # --- Arms / Front limbs ---
+      # Bip01 L/R UpperArm are remapped below as LWing/RWing (butterfly uses them as wings).
+      "Bip01 L Forearm": "FrontLArm1"
+      "Bip01 R Forearm": "FrontRArm1"
+
+      # --- Leg pair 1 (front) ---
+      "Bip01 L Thigh 01": "LLeg1"
+      "Bip01 L Calf 01": "LLeg2"
+      "Bip01 L Foot 01": "LLeg3"
+      "Bip01 L Toe 01": "LLeg4"
+
+      "Bip01 R Thigh 01": "RLeg1"
+      "Bip01 R Calf 01": "RLeg2"
+      "Bip01 R Foot 01": "RLeg3"
+      "Bip01 R Toe 01": "RLeg4"
+
+      # --- Leg pair 2 (mid) ---
+      "Bip01 L Thigh 02": "BackLLeg1"
+      "Bip01 L Calf 02": "BackLLeg2"
+      "Bip01 L Foot 02": "BackLLeg3"
+      "Bip01 L Toe 02": "BackLLeg4"
+
+      "Bip01 R Thigh 02": "BackRLeg1"
+      "Bip01 R Calf 02": "BackRLeg2"
+      "Bip01 R Foot 02": "BackRLeg3"
+      "Bip01 R Toe 02": "BackRLeg4"
+
+      # --- Leg pair 3 (rear — FO3 has 3rd pair, FO4 doesn't; skip) ---
+
+      # --- Wings ---
+      "Bip01 L UpperArm": "LWing"
+      "Bip01 R UpperArm": "RWing"
+
+      # --- Tail ---
+      "Bip01 tail": "Tail1"
+      "Bip01 tail01": "Tail2"
+      "Bip01 tail02": "Tail3"
+      "Bip01 tail03": "WEAPON"
+      "Bip01 tail04": "WEAPON"

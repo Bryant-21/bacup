@@ -1,0 +1,18 @@
+skip_records:
+  - NAVM
+  - SCPT
+  - DIAL
+  - INFO
+  - QUST
+  - PACK
+  - ACHR
+  - NPC_
+  - LVLN
+  - HDPT
+  - OUTF
+  - RGDL
+  - SCEN
+
+material_overrides:
+  bgsm_default:
+    bCastShadows: true

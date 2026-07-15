@@ -1,0 +1,12 @@
+record_type: WEAP
+eid: WeapNV357Revolver
+form_id: 0CAFE1
+fields:
+- FULL:
+    TargetLanguage: English
+    Values:
+    - Value: .357 Revolver
+- AnimationType: Pistol
+- MODL:
+    Filename: Meshes/Weapons/357revolver.nif
+- Ammo: 000123:FalloutNV.esm

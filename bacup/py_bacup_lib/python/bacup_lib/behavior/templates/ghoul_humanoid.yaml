@@ -1,0 +1,29 @@
+archetype: ghoul_humanoid
+behavior_name: GhoulHumanoidEverything
+root_behavior_name: GhoulHumanoidRootBehavior
+project_name: GhoulHumanoidProject
+character_name: GhoulHumanoid
+model_after: feral_ghoul
+states:
+  - name: Idle
+    role: idle
+    loop: true
+  - name: Locomotion
+    role: locomotion
+    loop: true
+  - name: Attack
+    role: attack
+  - name: HitReact
+    role: hit_react
+  - name: Death
+    role: death
+transitions:
+  - event: move
+    from: Idle
+    to: Locomotion
+  - event: stop
+    from: Locomotion
+    to: Idle
+  - event: attack
+    from: Locomotion
+    to: Attack

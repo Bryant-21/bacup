@@ -1,0 +1,50 @@
+[package]
+name = "conversion_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "conversion_native"
+crate-type = ["rlib"]
+
+[dependencies]
+ck_native            = { path = "../../../../py_creation_lib/native/ck" }
+esp_authoring_core   = { path = "../../../../py_creation_lib/native/esp" }
+havok_native         = { path = "../../../../py_creation_lib/native/havok" }
+bsarchive_native     = { path = "../../../../py_creation_lib/native/bsarchive" }
+fnv_script_native    = { path = "../../../../py_creation_lib/native/fnv_script" }
+nif_core_native      = { path = "../../../../py_creation_lib/native/nif_core" }
+materials_native     = { path = "../../../../py_creation_lib/native/materials" }
+terrain_native       = { path = "../../../../py_creation_lib/native/terrain" }
+directxtex_native    = { path = "../../../../py_creation_lib/native/directxtex" }
+db_native            = { path = "../../../../py_creation_lib/native/db" }
+bitflags             = "2"
+blake3               = "1"
+bytes                = "1.7"
+crossbeam-channel    = "0.5"
+encoding_rs          = "0.8"
+flate2               = "1.1.9"
+hex                  = "0.4"
+indexmap             = "2"
+lasso                = { version = "0.7", features = ["multi-threaded"] }
+memmap2              = "0.9"
+memory-stats         = "1"
+meshopt              = "0.6.2"
+pyo3                 = { workspace = true, features = ["extension-module", "abi3-py310", "py-clone"] }
+rayon                = "1"
+regex                = "1"
+rusqlite             = { version = "0.32", features = ["bundled"] }
+rustc-hash           = "2"
+serde                = { workspace = true, features = ["derive"] }
+serde_json           = { workspace = true, features = ["preserve_order"] }
+roxmltree            = { workspace = true }
+serde-saphyr         = { workspace = true }
+sha2                 = "0.10"
+slotmap              = "1"
+smallvec             = { version = "1", features = ["const_generics"] }
+smol_str             = "0.3"
+tempfile             = { workspace = true }
+thiserror            = { workspace = true }
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }

@@ -1,0 +1,143 @@
+================================================================================
+UNIQUE BEHAVIORS VALIDATION REPORT
+FO76 -> FO4 Conversion Pipeline Comparison
+FO76 dir: X:\extracted\fo76\meshes\uniquebehaviors
+FO4 dir: X:\extracted\fo4\meshes\uniquebehaviors
+================================================================================
+
+Total matching files: 44
+  PASS:  43
+  FAIL:  1
+  ERROR: 0
+  Pass rate: 43/44 (97.7%)
+
+------------------------------------------------------------
+COMMON ISSUE PATTERNS
+------------------------------------------------------------
+  [  3x] State machine mismatch
+  [  2x] String data mismatch: events
+  [  1x] Class count mismatch: BSAssignVariablesModifier
+  [  1x] Class count mismatch: hkbBlenderGenerator
+  [  1x] Class count mismatch: hkbBlenderGeneratorChild
+  [  1x] Class count mismatch: hkbDampingModifier
+  [  1x] Class count mismatch: hkbModifierGenerator
+  [  1x] Class count mismatch: hkbReferencePoseGenerator
+  [  1x] Class count mismatch: hkbStateMachine
+  [  1x] Class count mismatch: hkbStateMachineStateInfo
+  [  1x] Class count mismatch: hkbStateMachineTransitionInfoArray
+  [  1x] Class count mismatch: hkbVariableBindingSet
+  [  1x] Classes unique to one side
+  [  1x] String data mismatch: variables
+
+------------------------------------------------------------
+PER-FILE RESULTS
+------------------------------------------------------------
+
+  behavior.hkx — FAIL
+    - Class count mismatch: BSAssignVariablesModifier (FO76=0, FO4=2)
+    - Class count mismatch: hkbBlenderGenerator (FO76=0, FO4=2)
+    - Class count mismatch: hkbBlenderGeneratorChild (FO76=0, FO4=5)
+    - Class count mismatch: hkbDampingModifier (FO76=0, FO4=1)
+    - Class count mismatch: hkbModifierGenerator (FO76=0, FO4=3)
+    - Class count mismatch: hkbReferencePoseGenerator (FO76=0, FO4=2)
+    - Class count mismatch: hkbStateMachine (FO76=1, FO4=3)
+    - Class count mismatch: hkbStateMachineStateInfo (FO76=4, FO4=5)
+    - Class count mismatch: hkbStateMachineTransitionInfoArray (FO76=1, FO4=4)
+    - Class count mismatch: hkbVariableBindingSet (FO76=0, FO4=5)
+    - Classes only in FO4: ['BSAssignVariablesModifier', 'hkbBlenderGenerator', 'hkbBlenderGeneratorChild', 'hkbDampingModifier', 'hkbModifierGenerator', 'hkbReferencePoseGenerator', 'hkbVariableBindingSet']
+    - String events in FO76 but not FO4: ['CharFXBurstA', 'CharFXBurstB', 'CharFXBurstC', 'CharFXWaitWild', 'RangeHeadA', 'RangeHeadB', 'RangeHeadC', 'end', 'muzzleFlashHeadA', 'muzzleFlashHeadB', 'muzzleFlashHeadC']
+    - String events in FO4 but not FO76: ['DrinkEnd', 'DrinkStart']
+    - String variables in FO4 but not FO76: ['fDampRate', 'fHeatRate', 'fToggleBlend', 'fToggleBlendDampened']
+    - State machine 'AdditionalAnims' only in FO4
+    - State machine 'Behavior00' state count: FO76=4, FO4=1
+    - State machine 'VariableBlendControl' only in FO4
+
+  behemothcartfx.hkx — PASS
+
+  broadsiderfx.hkx — PASS
+
+  character.hkx — PASS
+
+  cigbreath.hkx — PASS
+
+  ciggraph.hkx — PASS
+
+  cigmatch.hkx — PASS
+
+  coremeltdownfx.hkx — PASS
+
+  createabotfx.hkx — PASS
+
+  cryolatorfx.hkx — PASS
+
+  deathclawchameleon.hkx — PASS
+
+  deathclawfx.hkx — PASS
+
+  fakeactorroach.hkx — PASS
+
+  flamerfx.hkx — PASS
+
+  footstepfx.hkx — PASS
+
+  gammagunfx.hkx — PASS
+
+  hijacker.hkx — PASS
+
+  jetpack.hkx — PASS
+
+  junkjetfx.hkx — PASS
+
+  kellogcryogun.hkx — PASS
+
+  libertyprimeactorlights.hkx — PASS
+
+  libertyprimeshoot.hkx — PASS
+
+  minigunfx.hkx — PASS
+
+  mosquitofx.hkx — PASS
+
+  powerarmorworkshopwelding.hkx — PASS
+
+  powerfist.hkx — PASS
+
+  pydwendestruction.hkx — PASS
+
+  railwayriflefx.hkx — PASS
+
+  revolverfx.hkx — PASS
+
+  ripperfx.hkx — PASS
+
+  robottalking.hkx — PASS
+
+  sentrybotfx.hkx — PASS
+
+  sentrybotoverheatfx.hkx — PASS
+
+  shishkebabfx.hkx — PASS
+
+  spitskin.hkx — PASS
+
+  teleportinfx.hkx — PASS
+
+  televisionfx.hkx — PASS
+
+  turreteye.hkx — PASS
+
+  turreteyestartsoff.hkx — PASS
+
+  turretfreestanding.hkx — PASS
+
+  turretskin.hkx — PASS
+
+  vertibirdactorfx.hkx — PASS
+
+  vulture01.hkx — PASS
+
+  waterfurniturefx.hkx — PASS
+
+================================================================================
+END OF REPORT
+================================================================================

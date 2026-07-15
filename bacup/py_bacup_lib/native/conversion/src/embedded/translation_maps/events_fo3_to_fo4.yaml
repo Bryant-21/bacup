@@ -1,0 +1,24 @@
+# FO3/FNV NiTextKeyExtraData -> FO4 hkaAnnotationTrack event name mapping.
+# FO3 .kf files use text key events; FO4 .hkx uses Havok annotation tracks.
+
+# Events that are dropped (FO3 structural markers with no FO4 equivalent)
+drop:
+  - "start"
+  - "end"
+
+# Direct 1:1 mappings
+events:
+  "hit": "HitFrame"
+  "Equip": "weaponDraw"
+  "Unequip": "weaponSheathe"
+
+# Regex pattern-based mappings
+# {1} in target is replaced by capture group 1 from the match
+# target: null means the event is dropped (no equivalent in target format)
+patterns:
+  - match: "^Sound:\\s*(.+)"
+    target: "SoundPlay.{1}"
+  - match: "^Attack:\\s*(.*)"
+    target: "weaponSwing"
+  - match: "^prn:\\s*(.*)"
+    target: null  # FO3 parent-node commands have no FO4 equivalent

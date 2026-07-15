@@ -1,0 +1,1987 @@
+{
+  "classified_missing_records": [],
+  "records": {
+    "ADDN": {
+      "defaults": [],
+      "drops": [
+        "Data",
+        "ENLM",
+        "ENLT",
+        "EnlightenAutoUVEditorOnly",
+        "EnlightenSimplifiedShapeScale",
+        "FormTag",
+        "ModelInformation",
+        "Sound",
+        "XALG"
+      ],
+      "field_mappings": [
+        "IKEK->DATA",
+        "Light->Light",
+        "ModelFileName->ModelFileName",
+        "ObjectBounds->ObjectBounds"
+      ],
+      "transforms": [
+        "Light:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "ModelFileName:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}"
+      ],
+      "value_maps": []
+    },
+    "ALCH": {
+      "defaults": [],
+      "drops": [
+        "AddictionName",
+        "CTDA",
+        "CooldownDuration",
+        "CurveTable",
+        "Destructibles",
+        "Duration",
+        "EffectFlags",
+        "KeywordCount",
+        "MODT",
+        "Magnitude",
+        "MaxItemID",
+        "PhysicsSyncType",
+        "SnapTemplate",
+        "SoundCrafting",
+        "SoundPutDown",
+        "XALG"
+      ],
+      "field_mappings": [
+        "BaseEffect->BaseEffect",
+        "Description->Description",
+        "EFIT->EFIT",
+        "EffectData->EffectData",
+        "Keywords->Keywords",
+        "MODL->MODL",
+        "Name->Name",
+        "ObjectBounds->ObjectBounds",
+        "PreviewTransform->PreviewTransform",
+        "SoundPickUp->SoundPickUp",
+        "Weight->Weight"
+      ],
+      "transforms": [
+        "BaseEffect:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Description:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Effects:{\"default_data\":{\"Magnitude\":0.0},\"source_esm\":\"SeventySix.esm\",\"target\":\"EFID\",\"target_esm\":\"Fallout4.esm\",\"type\":\"translate_effects\"}",
+        "Keywords:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "MODL:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}",
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "PreviewTransform:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "SoundPickUp:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "AMDL": {
+      "defaults": [],
+      "drops": [
+        "AMMR",
+        "Unknown"
+      ],
+      "field_mappings": [
+        "Data->Data"
+      ],
+      "transforms": [],
+      "value_maps": []
+    },
+    "AMMO": {
+      "defaults": [],
+      "drops": [
+        "CasingModel",
+        "Destructibles",
+        "Flags",
+        "KeywordCount",
+        "MODT",
+        "NAM2",
+        "ObjectPlacementDefault",
+        "PhysicsSyncType",
+        "PreviewTransform",
+        "SnapTemplate",
+        "ValueCurrency",
+        "group_destructible"
+      ],
+      "field_mappings": [
+        "DNAM->DNAM",
+        "Data->Data",
+        "Description->Description",
+        "Keywords->Keywords",
+        "MODL->MODL",
+        "Name->Name",
+        "ObjectBounds->ObjectBounds",
+        "ShortName->ShortName",
+        "SoundPickUp->SoundPickUp",
+        "SoundPutDown->SoundPutDown"
+      ],
+      "transforms": [
+        "DNAM:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Keywords:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "MODL:{\"remove\":[\"ENLT\",\"ENLS\",\"AUUV\"],\"type\":\"strip_subfields\"}",
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "ShortName:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "SoundPickUp:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "SoundPutDown:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "AORU": {
+      "defaults": [],
+      "drops": [
+        "Data"
+      ],
+      "field_mappings": [],
+      "transforms": [],
+      "value_maps": []
+    },
+    "ARMA": {
+      "defaults": [],
+      "drops": [
+        "1stPersons",
+        "BoneName",
+        "BoneScaleDelta",
+        "FemaleSkinTexture",
+        "FormTag",
+        "MaleSkinTexture",
+        "TargetGender",
+        "UnknownBool",
+        "XALG"
+      ],
+      "field_mappings": [
+        "ArtObject->ArtObject",
+        "BipedBodyTemplate->BipedBodyTemplate",
+        "BipedModels->BipedModels",
+        "Data->Data",
+        "FootstepSound->FootstepSound",
+        "MODL->MODL",
+        "RNAM->RNAM"
+      ],
+      "transforms": [
+        "ArtObject:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "BipedModels:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "FootstepSound:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "MODL:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "RNAM:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "ARMO": {
+      "defaults": [],
+      "drops": [
+        "AUUV",
+        "AddonIndex",
+        "AlternateBlockMaterial",
+        "ArmorBackpackPositionOffset",
+        "BlockBashImpactDataSet",
+        "BreakSound",
+        "ConditionDamageScaleFactor",
+        "DurabilityMax",
+        "DurabilityMin",
+        "ENLS",
+        "ENLT",
+        "EligibleLevels",
+        "Enchantment",
+        "Females",
+        "Flags",
+        "FormTag",
+        "KeywordCount",
+        "Males",
+        "ObjectPlacementDefault",
+        "ObjectTemplates",
+        "PhysicsSyncType",
+        "Quest",
+        "SnapTemplate",
+        "SoundPickUp",
+        "SoundPutDown",
+        "ValueCurrency",
+        "VirtualMachineAdapter",
+        "group_female",
+        "group_male"
+      ],
+      "field_mappings": [
+        "ArmorAddon->ArmorAddon",
+        "ArmorData->DATA",
+        "AttachParentSlots->AttachParentSlots",
+        "BipedBodyTemplate->BipedBodyTemplate",
+        "Description->Description",
+        "EquipmentType->EquipmentType",
+        "FULL->FULL",
+        "InstanceNaming->InstanceNaming",
+        "Keywords->Keywords",
+        "ObjectBounds->ObjectBounds",
+        "PreviewTransform->PreviewTransform",
+        "Race->Race",
+        "RatingAddonData->FNAM",
+        "Resistances->Resistances",
+        "group_object_template->group_object_template"
+      ],
+      "transforms": [
+        "ArmorAddon:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}",
+        "AttachParentSlots:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Description:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "EquipmentType:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "FULL:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "InstanceNaming:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Keywords:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Race:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "group_object_template:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "ARTO": {
+      "defaults": [],
+      "drops": [
+        "ArtType",
+        "ColorRemappingIndex",
+        "ENLT",
+        "EnlightenAutoUVEditorOnly",
+        "EnlightenSimplifiedShapeScale",
+        "FormTag",
+        "KeywordCount",
+        "Keywords",
+        "MaterialSwap",
+        "ModelInformation",
+        "PreviewTransform",
+        "XALG"
+      ],
+      "field_mappings": [
+        "ModelFileName->ModelFileName",
+        "ObjectBounds->ObjectBounds"
+      ],
+      "transforms": [
+        "ModelFileName:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}"
+      ],
+      "value_maps": []
+    },
+    "AVIF": {
+      "defaults": [],
+      "drops": [
+        "ActorValueKeyword",
+        "AssociatedList",
+        "CNAM",
+        "MaximumValue",
+        "MinimumValue",
+        "NetworkingFlags",
+        "Unnamed"
+      ],
+      "field_mappings": [
+        "Abbreviation->Abbreviation",
+        "DESC->Description",
+        "DefaultValue->DefaultValue",
+        "Flags->Flags",
+        "Name->Name",
+        "Type->Type"
+      ],
+      "transforms": [
+        "Flags:{\"fallback\":\"__passthrough__\",\"map\":{\"DamageIsPositive\":\"damage_is_positive\",\"UserDefinedDefault\":\"unknown_13\"},\"type\":\"enum_map\"}"
+      ],
+      "value_maps": []
+    },
+    "BOOK": {
+      "defaults": [],
+      "drops": [
+        "BookTakeFlags",
+        "Data",
+        "DefaultLayer",
+        "Destructibles",
+        "FeaturedItemMessage",
+        "GoldBullionValue",
+        "IconFileName",
+        "KeywordCount",
+        "Keywords",
+        "MODT",
+        "Quest",
+        "SnapTemplate",
+        "SoundPutDown",
+        "ValueCurrency",
+        "VirtualMachineAdapter",
+        "XALG"
+      ],
+      "field_mappings": [
+        "CNAM->CNAM",
+        "DESC->DESC",
+        "DNAM->DNAM",
+        "InventoryArt->InventoryArt",
+        "MODL->MODL",
+        "Name->Name",
+        "ObjectBounds->ObjectBounds",
+        "PreviewTransform->PreviewTransform",
+        "SoundPickUp->SoundPickUp"
+      ],
+      "transforms": [
+        "CNAM:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "DESC:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "DNAM:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "InventoryArt:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "MODL:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}",
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "PreviewTransform:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "SoundPickUp:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "BPTD": {
+      "defaults": [],
+      "drops": [
+        "BPAB",
+        "BoneName",
+        "CollarTextureSet",
+        "GoreEffectsBloodImpactMaterialType",
+        "GoreEffectsDismemberBloodArt",
+        "GoreEffectsTargetBone",
+        "HitReactionEnd",
+        "HitReactionStart",
+        "LimbReplacementModel",
+        "MODT",
+        "MeatCapTextureSet",
+        "OnCrippleBloodImpactMaterialType",
+        "PartName",
+        "PartNode",
+        "TwistVariablePrefix",
+        "VATSTarget"
+      ],
+      "field_mappings": [
+        "Data->NodeData",
+        "ModelFileName->ModelFileName"
+      ],
+      "transforms": [
+        "ModelFileName:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}"
+      ],
+      "value_maps": []
+    },
+    "CLAS": {
+      "defaults": [],
+      "drops": [
+        "Data"
+      ],
+      "field_mappings": [
+        "Description->Description",
+        "Name->Name",
+        "Properties->Properties"
+      ],
+      "transforms": [
+        "Description:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Properties:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "CNCY": {
+      "defaults": [],
+      "drops": [
+        "AQIC",
+        "AUUV",
+        "CRTY",
+        "DESC",
+        "DURL",
+        "ENLS",
+        "ENLT",
+        "FNAM",
+        "MODB",
+        "MODD",
+        "MXCT",
+        "SNAM",
+        "VCRY",
+        "XFLG"
+      ],
+      "field_mappings": [
+        "DATA->DATA",
+        "FULL->FULL",
+        "KSIZ->KSIZ",
+        "KWDA->KWDA",
+        "MODL->MODL",
+        "MODT->MODT",
+        "OBND->OBND",
+        "PTRN->PTRN",
+        "YNAM->YNAM",
+        "ZNAM->ZNAM"
+      ],
+      "transforms": [
+        "FULL:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "KWDA:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "PTRN:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "YNAM:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "ZNAM:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "COBJ": {
+      "defaults": [],
+      "drops": [
+        "BuildGroupName",
+        "CampMaximum",
+        "ConstructibleInstantiationFilterKeyword",
+        "Flags",
+        "FormTag",
+        "INTV",
+        "LearnChance",
+        "LearnMethod",
+        "LearnRecipeFrom",
+        "MenuArtObject",
+        "RECF",
+        "Repair",
+        "RepairCondition",
+        "RepairMethod",
+        "ScrapBonus",
+        "ScrapRecieved",
+        "SoundPickUp",
+        "SoundPutDown",
+        "WorkshopMaximum"
+      ],
+      "field_mappings": [
+        "CTDA->CTDA",
+        "Category->Category",
+        "Components->Components",
+        "CreatedObject->CreatedObject",
+        "Description->Description",
+        "WorkbenchKeyword->WorkbenchKeyword"
+      ],
+      "transforms": [
+        "Category:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Components:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "CreatedObject:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Description:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "NAM1:{\"target\":\"NAM1\",\"type\":\"wrap_in_list\",\"wrapper_key\":\"Count\"}",
+        "WorkbenchKeyword:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "CONT": {
+      "defaults": [],
+      "drops": [
+        "AnimationSound",
+        "CMIC",
+        "Count",
+        "DestructibleObjectFaction",
+        "Destructibles",
+        "ForcedLocRefTypes",
+        "KeywordCount",
+        "MODT",
+        "NativeTerminal",
+        "ObjectPlacementDefault",
+        "PhysicsSyncType",
+        "SnapTemplate",
+        "SoundTakeAll",
+        "XALG",
+        "XFLG"
+      ],
+      "field_mappings": [
+        "FilterList->FilterList",
+        "Keywords->Keywords",
+        "MODL->MODL",
+        "Name->Name",
+        "ObjectBounds->ObjectBounds",
+        "PreviewTransform->PreviewTransform",
+        "Properties->Properties",
+        "SoundClose->SoundClose",
+        "SoundOpen->SoundOpen",
+        "VirtualMachineAdapter->VirtualMachineAdapter"
+      ],
+      "transforms": [
+        "FilterList:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Keywords:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "MODL:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}",
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "PreviewTransform:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Properties:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "SoundClose:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "SoundOpen:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "CSTY": {
+      "defaults": [],
+      "drops": [
+        "CSTD",
+        "CSTG",
+        "CloseRange",
+        "LongRange",
+        "Melee"
+      ],
+      "field_mappings": [
+        "CoverSearchDistanceMult->CoverSearchDistanceMult",
+        "Flags->Flags",
+        "Flight->Flight",
+        "General->General",
+        "RangedAccuracyMult->RangedAccuracyMult"
+      ],
+      "transforms": [],
+      "value_maps": []
+    },
+    "EFSH": {
+      "defaults": [],
+      "drops": [
+        "Data",
+        "ModelInformation",
+        "ParticlePaletteTexture",
+        "ParticleShaderTexture"
+      ],
+      "field_mappings": [
+        "DATA->DATA",
+        "FillTexture->FillTexture",
+        "Flags->Flags",
+        "HolesTexture->HolesTexture",
+        "MembranePaletteTexture->MembranePaletteTexture",
+        "ModelFileName->ModelFileName"
+      ],
+      "transforms": [
+        "ModelFileName:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}"
+      ],
+      "value_maps": []
+    },
+    "ENCH": {
+      "defaults": [],
+      "drops": [
+        "ActorValue",
+        "CTDA",
+        "CooldownDuration",
+        "CurveTable",
+        "Duration",
+        "EffectFlags",
+        "Magnitude",
+        "MaxItemID",
+        "NextStage",
+        "ObjectBounds"
+      ],
+      "field_mappings": [
+        "BaseEffect->BaseEffect",
+        "EFIT->EFIT",
+        "EffectData->EffectData",
+        "Name->Name"
+      ],
+      "transforms": [
+        "BaseEffect:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "EffectData:{\"default_data\":{\"Magnitude\":0.0},\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"translate_effects\"}",
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}"
+      ],
+      "value_maps": []
+    },
+    "EXPL": {
+      "defaults": [],
+      "drops": [
+        "DamageTypes",
+        "Description",
+        "Enchantment",
+        "ModelInformation",
+        "ObjectPlacementDefault",
+        "PhysicsSyncType"
+      ],
+      "field_mappings": [
+        "Data->Data",
+        "ImageSpaceModifier->ImageSpaceModifier",
+        "ModelFileName->ModelFileName",
+        "Name->Name",
+        "ObjectBounds->ObjectBounds"
+      ],
+      "transforms": [
+        "Data:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "ImageSpaceModifier:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "ModelFileName:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}"
+      ],
+      "value_maps": []
+    },
+    "FACT": {
+      "defaults": [],
+      "drops": [
+        "BlockedMessage",
+        "CITC",
+        "CTDA",
+        "FCAF",
+        "FCOR",
+        "FemaleTitle",
+        "Location",
+        "MaleTitle",
+        "MerchantContainer",
+        "Quest",
+        "Rank",
+        "ReferencedFaction",
+        "SharedCrimeFactionList",
+        "StartMarker",
+        "Unknown",
+        "VENV",
+        "VendorBuyCurrency",
+        "VendorBuySellList",
+        "VendorCapsBalance",
+        "VendorReset"
+      ],
+      "field_mappings": [
+        "CrimeValues->CrimeValues",
+        "Flags->Flags",
+        "Name->Name",
+        "Relations->Relations",
+        "VENP->VENV",
+        "VendorValues->VendorValues"
+      ],
+      "transforms": [
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Relations:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "VENV:{\"type\":\"venp_to_venv\"}"
+      ],
+      "value_maps": []
+    },
+    "FLST": {
+      "defaults": [],
+      "drops": [
+        "Flags",
+        "Name"
+      ],
+      "field_mappings": [
+        "FormID->FormID"
+      ],
+      "transforms": [
+        "FormID:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "FSTP": {
+      "defaults": [],
+      "drops": [],
+      "field_mappings": [
+        "ImpactDataSet->ImpactDataSet",
+        "Tag->Tag"
+      ],
+      "transforms": [
+        "ImpactDataSet:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "FSTS": {
+      "defaults": [],
+      "drops": [],
+      "field_mappings": [
+        "FootstepCounts->FootstepCounts",
+        "Footsteps->Footsteps"
+      ],
+      "transforms": [
+        "Footsteps:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "FURN": {
+      "defaults": [],
+      "drops": [
+        "ActivateTextOverride",
+        "ActivatorCanBeInstanced",
+        "ActiveMarkersFlags",
+        "AnimationSound",
+        "AssociatedForm",
+        "AssociatedQuest",
+        "AttachParentSlots",
+        "CITC",
+        "CTDA",
+        "CTRN",
+        "ConditionPosition",
+        "DefaultLayer",
+        "Description",
+        "DestructibleObjectFaction",
+        "Destructibles",
+        "DisabledEntryPoints",
+        "FFEF",
+        "FNAM",
+        "FNPR",
+        "ForcedLocRefTypes",
+        "FormTag",
+        "KeypadDatas",
+        "KeywordCount",
+        "MODT",
+        "MarkerIndex",
+        "MarkerModel",
+        "MusicInstrument",
+        "ObjectTemplates",
+        "PAHD",
+        "PreviewTransform",
+        "Properties",
+        "RadioReceiver",
+        "SnapTemplate",
+        "VirtualMachineAdapter",
+        "XALG",
+        "XFLG"
+      ],
+      "field_mappings": [
+        "FULL->FULL",
+        "Keywords->Keywords",
+        "MODL->MODL",
+        "MarkerColor->MarkerColorUnused",
+        "MarkerParameters->MarkerParameters",
+        "ObjectBounds->ObjectBounds"
+      ],
+      "transforms": [
+        "FULL:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Keywords:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "MODL:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}",
+        "WorkbenchData:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "GLOB": {
+      "defaults": [],
+      "drops": [
+        "Flags",
+        "FormTag",
+        "NetworkMarker",
+        "Value"
+      ],
+      "field_mappings": [
+        "Type->Type"
+      ],
+      "transforms": [],
+      "value_maps": []
+    },
+    "HAZD": {
+      "defaults": [],
+      "drops": [
+        "DefaultLayer",
+        "ModelInformation"
+      ],
+      "field_mappings": [
+        "Data->Data",
+        "ImageSpaceModifier->ImageSpaceModifier",
+        "ModelFileName->ModelFileName",
+        "Name->Name",
+        "ObjectBounds->ObjectBounds"
+      ],
+      "transforms": [
+        "Data:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "ImageSpaceModifier:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "ModelFileName:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}",
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}"
+      ],
+      "value_maps": []
+    },
+    "IDLE": {
+      "defaults": [],
+      "drops": [
+        "Name",
+        "Parameter1",
+        "PhotomodeCategoryKeyword"
+      ],
+      "field_mappings": [
+        "AnimationEvent->AnimationEvent",
+        "AnimationFile->AnimationFile",
+        "Animations->Animations",
+        "BehaviorGraph->BehaviorGraph",
+        "CTDA->CTDA",
+        "DATA->DATA",
+        "Flags->DATA"
+      ],
+      "transforms": [
+        "Animations:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "CTDA:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"translate_conditions\"}"
+      ],
+      "value_maps": []
+    },
+    "IDLM": {
+      "defaults": [],
+      "drops": [
+        "AnimationCount",
+        "AnimationFlavorKeyword",
+        "DefaultLayer",
+        "IdleTimerSetting",
+        "KeywordCount",
+        "Keywords",
+        "ModelFileName",
+        "ModelInformation"
+      ],
+      "field_mappings": [
+        "Animations->Animations",
+        "ObjectBounds->ObjectBounds"
+      ],
+      "transforms": [
+        "Animations:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "IMAD": {
+      "defaults": [],
+      "drops": [
+        "Cinematics",
+        "DepthOfFields",
+        "Hdrs",
+        "Name",
+        "RadialBlurs",
+        "Texture"
+      ],
+      "field_mappings": [
+        "BlurRadius->BlurRadius",
+        "Data->Data",
+        "DoubleVisionStrength->DoubleVisionStrength",
+        "FadeColor->FadeColor",
+        "MotionBlurStrength->MotionBlurStrength",
+        "TintColor->TintColor"
+      ],
+      "transforms": [],
+      "value_maps": []
+    },
+    "INNR": {
+      "defaults": [],
+      "drops": [
+        "Count",
+        "InstanceNamingFilter",
+        "KeywordCount",
+        "Keywords",
+        "Priority",
+        "RulesetName",
+        "Text"
+      ],
+      "field_mappings": [],
+      "transforms": [],
+      "value_maps": []
+    },
+    "IPCT": {
+      "defaults": [],
+      "drops": [
+        "DecalData",
+        "FootstepParticleMaxDist",
+        "ModelInformation",
+        "SecondaryTextureSet",
+        "Sound3"
+      ],
+      "field_mappings": [
+        "DATA->DATA",
+        "Hazard->Hazard",
+        "ModelFileName->ModelFileName",
+        "Sound1->Sound1",
+        "Sound2->Sound2",
+        "TextureSet->TextureSet"
+      ],
+      "transforms": [
+        "Hazard:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "ModelFileName:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}",
+        "Sound1:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Sound2:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "TextureSet:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "IPDS": {
+      "defaults": [],
+      "drops": [],
+      "field_mappings": [
+        "Data->Data"
+      ],
+      "transforms": [
+        "Data:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "KEYM": {
+      "defaults": [],
+      "drops": [
+        "AQIC",
+        "AUUV",
+        "CTDA",
+        "DESC",
+        "DEST",
+        "DIQO",
+        "Description",
+        "ENLS",
+        "ENLT",
+        "EnlightenAutoUVEditorOnly",
+        "EnlightenSimplifiedShapeScale",
+        "MODD",
+        "OPDS",
+        "ObjectPlacementDefault",
+        "Quest",
+        "VCRY",
+        "ValueCurrency",
+        "XALG",
+        "XFLG",
+        "group_destructible"
+      ],
+      "field_mappings": [
+        "FULL->FULL",
+        "PTRN->PTRN",
+        "YNAM->YNAM",
+        "ZNAM->ZNAM"
+      ],
+      "transforms": [
+        "FULL:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "PTRN:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "YNAM:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "ZNAM:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "KSSM": {
+      "defaults": [],
+      "drops": [
+        "Keyword",
+        "TriggerSound",
+        "VATSThreshold"
+      ],
+      "field_mappings": [
+        "ExteriorTail->ExteriorTail",
+        "PrimaryDescriptor->PrimaryDescriptor",
+        "Sounds->Sounds",
+        "VATSDescriptor->VATSDescriptor"
+      ],
+      "transforms": [
+        "ExteriorTail:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "PrimaryDescriptor:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Sounds:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "VATSDescriptor:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "KYWD": {
+      "defaults": [],
+      "drops": [
+        "CNAM",
+        "DisplayName",
+        "FNAM",
+        "Flags",
+        "FormTag",
+        "IconName",
+        "NetworkMarker",
+        "Notes"
+      ],
+      "field_mappings": [
+        "CNAM->CNAM",
+        "Name->Name",
+        "Type->Type"
+      ],
+      "transforms": [
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Type:{\"default\":0,\"enum_ref\":\"keyword_type_enum\",\"mapping\":{\"19\":5,\"20\":9,\"21\":0,\"22\":9,\"23\":0,\"24\":0,\"25\":0,\"26\":0,\"27\":13,\"28\":0,\"29\":0,\"30\":0,\"31\":0,\"32\":0},\"max_value\":18,\"type\":\"remap_enum\"}"
+      ],
+      "value_maps": []
+    },
+    "LIGH": {
+      "defaults": [],
+      "drops": [
+        "Destructibles",
+        "KeywordCount",
+        "Keywords",
+        "LILS",
+        "Lens",
+        "MODT",
+        "Name",
+        "ObjectPlacementDefault",
+        "PreviewTransform",
+        "Properties",
+        "SnapTemplate",
+        "Sound",
+        "ValueCurrency"
+      ],
+      "field_mappings": [
+        "DATA->DATA",
+        "Gobo->Gobo",
+        "ObjectBounds->ObjectBounds"
+      ],
+      "transforms": [
+        "Gobo:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "LVLI": {
+      "defaults": [],
+      "drops": [
+        "CTDA",
+        "Count",
+        "DefaultLayer",
+        "ENLM",
+        "ENLT",
+        "EnlightenAutoUVEditorOnly",
+        "EnlightenSimplifiedShapeScale",
+        "FormTag",
+        "LVCT",
+        "LVCV",
+        "LVLD",
+        "LVLG",
+        "LVOC",
+        "LVOT",
+        "LVOV",
+        "LeveledItemData",
+        "MarkerColor",
+        "MaterialSwap",
+        "MaxCurveTable",
+        "MaxGlobal",
+        "MaxValue",
+        "MinimimLevelCurveTable",
+        "MinimumLevel",
+        "MinimumLevelGlobal",
+        "ModelFileName",
+        "ModelInformation",
+        "ObjectBounds",
+        "ObjectPlacementDefault",
+        "OverrideName",
+        "PreviewTransform",
+        "Quantity",
+        "QuantityCurveTable",
+        "QuantityGlobal",
+        "Quest",
+        "XALG"
+      ],
+      "field_mappings": [
+        "COED->COED",
+        "Count->Count",
+        "EpicLootChance->EpicLootChance",
+        "FilterKeywordChances->FilterKeywordChances",
+        "LVLF->LVLF",
+        "LVLO->LVLO",
+        "MaxCount->MaxCount"
+      ],
+      "transforms": [
+        "EpicLootChance:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "FilterKeywordChances:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "LVLN": {
+      "defaults": [
+        "ChanceNone:0",
+        "MaxCount:0"
+      ],
+      "drops": [
+        "CTDA",
+        "DisplayName",
+        "ENLT",
+        "EnlightenAutoUVEditorOnly",
+        "EnlightenSimplifiedShapeScale",
+        "FilterKeywordChances",
+        "LVCV",
+        "LVLD",
+        "LVOV",
+        "MaxCount",
+        "MaxValue",
+        "MinimimLevelCurveTable",
+        "MinimumLevel",
+        "MinimumLevelGlobal",
+        "ModelFileName",
+        "ModelInformation",
+        "ObjectBounds",
+        "ObjectPlacementDefault",
+        "Quantity",
+        "UseGlobal"
+      ],
+      "field_mappings": [
+        "Count->Count",
+        "LVLF->LVLF",
+        "LVLO->LVLO"
+      ],
+      "transforms": [],
+      "value_maps": []
+    },
+    "MESG": {
+      "defaults": [],
+      "drops": [
+        "ButtonText",
+        "CTDA",
+        "Name",
+        "NoResponse",
+        "OwnerQuest",
+        "SWF",
+        "ShortTitle"
+      ],
+      "field_mappings": [
+        "Description->Description",
+        "DisplayTime->DisplayTime"
+      ],
+      "transforms": [
+        "Description:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}"
+      ],
+      "value_maps": []
+    },
+    "MGEF": {
+      "defaults": [],
+      "drops": [
+        "KeywordCount",
+        "MagicItemDescription"
+      ],
+      "field_mappings": [
+        "CTDA->CTDA",
+        "Data->Data",
+        "Effect->Effect",
+        "Keywords->Keywords",
+        "Name->Name",
+        "Sounds->Sounds",
+        "VirtualMachineAdapter->VirtualMachineAdapter"
+      ],
+      "transforms": [
+        "CTDA:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"translate_conditions\"}",
+        "Data:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Effect:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Keywords:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Sounds:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "MISC": {
+      "defaults": [],
+      "drops": [
+        "AQIC",
+        "Data",
+        "Description",
+        "Destructibles",
+        "FeaturedItemMessage",
+        "IconFileName",
+        "KeywordCount",
+        "MODT",
+        "MessageIcon",
+        "OPDS",
+        "ObjectPlacementDefault",
+        "PhysicsSyncType",
+        "Quest",
+        "SnapTemplate",
+        "SoundCrafting",
+        "SoundPickUp",
+        "SoundPutDown",
+        "ValueCurrency",
+        "VirtualMachineAdapter",
+        "XALG",
+        "group_destructible"
+      ],
+      "field_mappings": [
+        "Components->Components",
+        "Data->Data",
+        "FULL->FULL",
+        "Keywords->Keywords",
+        "MCQP->CVPA",
+        "MODL->MODL",
+        "ObjectBounds->ObjectBounds",
+        "PreviewTransform->PreviewTransform"
+      ],
+      "transforms": [
+        "CVPA:{\"source_esm\":\"SeventySix.esm\",\"type\":\"fo76_misc_components\"}",
+        "Components:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "FULL:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Keywords:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "MODL:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}",
+        "PreviewTransform:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "MOVT": {
+      "defaults": [],
+      "drops": [
+        "AnimChangeThresholdsUnused"
+      ],
+      "field_mappings": [
+        "FlightAngleGain->FlightAngleGain",
+        "FloatHeight->FloatHeight",
+        "MovementData->MovementData",
+        "Name->Name"
+      ],
+      "transforms": [],
+      "value_maps": []
+    },
+    "MSWP": {
+      "defaults": [],
+      "drops": [
+        "ColorRemappingIndex",
+        "Flags",
+        "FormTag",
+        "TreeFolder",
+        "TreeFolderObsolete"
+      ],
+      "field_mappings": [
+        "OriginalMaterial->OriginalMaterial",
+        "ReplacementMaterial->ReplacementMaterial"
+      ],
+      "transforms": [],
+      "value_maps": []
+    },
+    "NPC_": {
+      "defaults": [],
+      "drops": [
+        "ActivateTextOverride",
+        "ActorScalingInfos",
+        "ActorSounds",
+        "AnimationSound",
+        "AttachParentSlots",
+        "AttackData",
+        "AttackEvent",
+        "BodyMorphRegionValues",
+        "CTDA",
+        "CrimeFaction",
+        "Data",
+        "DefaultLayer",
+        "DefaultPackageList",
+        "Description",
+        "Destructibles",
+        "EWSActorCostCurveTable",
+        "FacialHairColor",
+        "FacialMorphIntensity",
+        "FarAwayModel",
+        "Flags",
+        "ForcedLocRefTypes",
+        "FormTag",
+        "HairColorOldFormVersionOnly",
+        "HeadTexture",
+        "HealthCurveTable",
+        "Index",
+        "InstanceNaming",
+        "Inventories",
+        "KeywordCount",
+        "LegendaryChance",
+        "LegendaryTemplate",
+        "MorphKeys",
+        "MorphValues",
+        "NativeTerminal",
+        "ObjectPlacementDefault",
+        "ObjectTemplates",
+        "PhysicsSyncType",
+        "PowerArmorStand",
+        "PreviewTransform",
+        "RequiredSlot",
+        "SleepingOutfit",
+        "SnapTemplate",
+        "TierCurveTable",
+        "UnarmedWeapon",
+        "Values",
+        "VirtualMachineAdapter",
+        "WeaponSlot",
+        "WeightOldFormVersionOnly",
+        "XPCurveTable",
+        "group_actor_scaling_info",
+        "group_object_template"
+      ],
+      "field_mappings": [
+        "AIData->AIData",
+        "ActorEffect->ActorEffect",
+        "AttackRace->AttackRace",
+        "CNTO->CNTO",
+        "COCT->COCT",
+        "Class->Class",
+        "CombatOverridePackageList->CombatOverridePackageList",
+        "CombatStyle->CombatStyle",
+        "Configuration->Configuration",
+        "DATA->DATA",
+        "DNAM->DNAM",
+        "DeathItem->DeathItem",
+        "DefaultOutfit->DefaultOutfit",
+        "DefaultTemplate->DefaultTemplate",
+        "FULL->FULL",
+        "Factions->Factions",
+        "HairColor->HairColor",
+        "HeightMax->HeightMax",
+        "HeightMin->HeightMin",
+        "InheritsSoundsFrom->InheritsSoundsFrom",
+        "Keywords->Keywords",
+        "ObjectBounds->ObjectBounds",
+        "PNAM->PNAM",
+        "Package->Package",
+        "PerkCount->PerkCount",
+        "Perks->Perks",
+        "Properties->Properties",
+        "Race->Race",
+        "ShortName->ShortName",
+        "Skin->Skin",
+        "SoundLevel->SoundLevel",
+        "TemplateActors->TemplateActors",
+        "Unused->NAM5",
+        "Voice->Voice",
+        "Weight->Weight"
+      ],
+      "transforms": [
+        "ActorEffect:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "AttackRace:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "CNTO:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Class:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "CombatOverridePackageList:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "CombatStyle:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "DeathItem:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "DefaultOutfit:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "DefaultTemplate:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "FULL:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Factions:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "HairColor:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "InheritsSoundsFrom:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Keywords:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Package:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Race:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "ShortName:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Skin:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Voice:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "OMOD": {
+      "defaults": [],
+      "drops": [
+        "ArtObject",
+        "ConditionForm",
+        "DependantMod",
+        "ENLT",
+        "EnlightenAutoUVEditorOnly",
+        "EnlightenSimplifiedShapeScale",
+        "FormTag",
+        "MaterialSwap",
+        "ModelAttachIndex",
+        "ModelInformation",
+        "Obstacle",
+        "PossibleModList",
+        "Unnamed",
+        "XALG"
+      ],
+      "field_mappings": [
+        "Data->Data",
+        "Description->Description",
+        "Filter->Filter",
+        "FilterKeywords->FilterKeywords",
+        "LooseMod->LooseMod",
+        "ModelFileName->ModelFileName",
+        "Name->Name",
+        "Priority->Priority",
+        "TargetOMODKeywords->TargetOMODKeywords",
+        "Unused->LooseMod"
+      ],
+      "transforms": [
+        "DATA:{\"list_filters\":[{\"drop_if_int\":true,\"int_to_name_map\":{\"97\":\"AimModelRecoilMaxDegPerShot\",\"102\":\"AimModelConeIronSightsMultiplier\"},\"key\":\"Property\",\"path\":\"Properties\"}],\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Data:{\"list_filters\":[{\"drop_if_int\":true,\"int_to_name_map\":{\"97\":\"AimModelRecoilMaxDegPerShot\",\"102\":\"AimModelConeIronSightsMultiplier\"},\"key\":\"Property\",\"path\":\"Properties\"}],\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Description:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Filter:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "FilterKeywords:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "LooseMod:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "ModelFileName:{\"remove\":[\"ENLT\",\"ENLS\",\"AUUV\"],\"type\":\"strip_subfields\"}",
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Priority:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "TargetOMODKeywords:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "OTFT": {
+      "defaults": [],
+      "drops": [
+        "Keyword"
+      ],
+      "field_mappings": [
+        "Items->Items"
+      ],
+      "transforms": [
+        "Items:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "PERK": {
+      "defaults": [],
+      "drops": [
+        "ActorValue2",
+        "CIS1",
+        "CIS2",
+        "CTDA",
+        "EPF3",
+        "EPFD",
+        "EndMarker",
+        "PRKE",
+        "PerkActivationIcon",
+        "PerkActivationSound",
+        "PerkAddedFaction",
+        "PerkEntryIDUnique",
+        "RunOnTabIndex",
+        "SWFSpriteName",
+        "Sound",
+        "Type",
+        "UnknownSpellValue",
+        "VirtualMachineAdapter"
+      ],
+      "field_mappings": [
+        "Data->Data",
+        "Description->Description",
+        "EffectData->EffectData",
+        "Name->Name"
+      ],
+      "transforms": [
+        "Description:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "EffectData:{\"default_data\":{\"Magnitude\":0.0},\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"translate_effects\"}",
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}"
+      ],
+      "value_maps": []
+    },
+    "PKIN": {
+      "defaults": [],
+      "drops": [
+        "ChildPackIns",
+        "FNAM",
+        "Flags",
+        "KeywordCount",
+        "Keywords",
+        "Name",
+        "OPDS",
+        "PreviewTransform",
+        "Properties",
+        "SnapTemplate",
+        "VirtualMachineAdapter"
+      ],
+      "field_mappings": [
+        "Cell->Cell",
+        "Filter->Filter",
+        "Version->Version"
+      ],
+      "transforms": [
+        "Cell:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Filter:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "PROJ": {
+      "defaults": [],
+      "drops": [
+        "Destructibles",
+        "KeywordCount",
+        "Keywords",
+        "MODT",
+        "ObjectPlacementDefault",
+        "PhysicsSyncType",
+        "SeekStrengthCurveTable",
+        "SpeedCurveTable",
+        "XALG",
+        "XAxisDrag",
+        "ZAxisDrag"
+      ],
+      "field_mappings": [
+        "Data->Data",
+        "MODL->MODL",
+        "NAM1->NAM1",
+        "NAM2->NAM2",
+        "Name->Name",
+        "ObjectBounds->ObjectBounds",
+        "SoundLevel->SoundLevel",
+        "Unused->Unused"
+      ],
+      "transforms": [
+        "Data:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "MODL:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}",
+        "NAM1:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "NAM2:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Unused:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "QUST": {
+      "defaults": [],
+      "drops": [
+        "ActorReserveFlags",
+        "ActorReserveType",
+        "AliasLocationRefType",
+        "COED",
+        "CollectionAliasID",
+        "CombatOverridePackageList",
+        "Count",
+        "DATA",
+        "DESC",
+        "DeathItem",
+        "DisplayName",
+        "DisplayText",
+        "ESAV",
+        "ESDA",
+        "ESRP",
+        "ESRV",
+        "EnableKeyword",
+        "Event",
+        "Filter",
+        "ForcedReference",
+        "ForcedVoice",
+        "Global",
+        "Key",
+        "KeywordCount",
+        "Keywords",
+        "Level",
+        "LinkedAliases",
+        "Location",
+        "LocationAliasID",
+        "LogEntry",
+        "MaxInitialFillCount",
+        "MaxQuestInstances",
+        "Message",
+        "MoreConditions",
+        "NextAliasID",
+        "Note",
+        "Object",
+        "ObjectiveIndex",
+        "Package",
+        "ProgressBarLeftText",
+        "ProgressBarRightText",
+        "Properties",
+        "PublicEventDatas",
+        "QQSDUnknown4Bytes",
+        "QTFSUnknown2Bytes",
+        "QUCF",
+        "QuestCompletionXP",
+        "QuestDialogueConditions",
+        "QuestEventType",
+        "QuestExpireTimerLength",
+        "QuestGroup",
+        "QuestModules",
+        "QuestNotes",
+        "QuestObjectiveTimer",
+        "QuestReward",
+        "QuestStartData",
+        "QuestStartLocation",
+        "QuestTimerLengthMax",
+        "QuestVariable",
+        "RefType",
+        "ReferenceAliasID",
+        "RewardText",
+        "SCCM",
+        "SCFC",
+        "SWFFile",
+        "SpecificLocation",
+        "Spell",
+        "StageFlags",
+        "StageToSet",
+        "StartKeyword",
+        "Target",
+        "Terminal",
+        "Type",
+        "UniqueActor",
+        "Unnamed",
+        "Value",
+        "VoiceTypes"
+      ],
+      "field_mappings": [],
+      "transforms": [
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "VirtualMachineAdapter:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "RACE": {
+      "defaults": [],
+      "drops": [
+        "AimAssistPoseData",
+        "ArmorRace",
+        "AttachParentSlots",
+        "BaseMovementDefaultsFly",
+        "BaseMovementDefaultsSwim",
+        "BehaviorGraphDatas",
+        "BlendOperation",
+        "CTDA",
+        "CategoryIndex",
+        "Comments",
+        "DURL",
+        "Default",
+        "EWSActorCostCurve",
+        "FormTag",
+        "HairColorLookupTexture",
+        "Head",
+        "HeadDatas",
+        "LootBag",
+        "MPGN",
+        "MPGS",
+        "MPPC",
+        "MPPI",
+        "MPPK",
+        "MPPN",
+        "MPPT",
+        "MaxName",
+        "MinName",
+        "MorphRace",
+        "MorphType",
+        "Parameter1",
+        "Playable",
+        "Range",
+        "RangeModifierTargetGender",
+        "RequiredSlot",
+        "ScaleSet",
+        "SkeletalDatas",
+        "SubgraphTemplateRace",
+        "TETI",
+        "TSLT",
+        "TTEC",
+        "TTEF",
+        "TTET",
+        "TTGP",
+        "TintLayerFaceRegionIndex",
+        "WeaponSlot",
+        "WeightScaleTargetGender"
+      ],
+      "field_mappings": [
+        "ATKT->ATKT",
+        "ActorEffect->ActorEffect",
+        "AnimationSound->AnimationSound",
+        "AttackData->AttackData",
+        "AttackEvent->AttackEvent",
+        "BaseMovementDefaultsDefault->BaseMovementDefaultsDefault",
+        "BehaviourGraph->BehaviourGraph",
+        "BipedBodyTemplate->BipedBodyTemplate",
+        "BipedObjectConditionAVs->BipedObjectConditions",
+        "BodyDatas->BodyDatas",
+        "BodyPartData->BodyPartData",
+        "CollarTextureSet->CollarTextureSet",
+        "DESC->DESC",
+        "Data->Data",
+        "DefaultHairColors->DefaultHairColors",
+        "DialogueQuest->DialogueQuest",
+        "EquipSlot->EquipSlot",
+        "EquipmentFlags->EquipmentFlags",
+        "FULL->FULL",
+        "FaceGenFaceClamp->FaceGenFaceClamp",
+        "FaceGenMainClamp->FaceGenMainClamp",
+        "Flags->Flags",
+        "IdleChatterTimeMax->IdleChatterTimeMax",
+        "IdleChatterTimeMin->IdleChatterTimeMin",
+        "ImpactMaterialType->ImpactMaterialType",
+        "KeywordCount->KeywordCount",
+        "Keywords->Keywords",
+        "MTNM->MTNM",
+        "MaleMarker->MaleMarker",
+        "MeatCapTextureSet->MeatCapTextureSet",
+        "MorphLastIndex->MorphLastIndex",
+        "NAME->NAME",
+        "Node->Node",
+        "PHTN->PHTN",
+        "Path->Path",
+        "PhonemeTargetWeight->PhonemeTargetWeight",
+        "Properties->Properties",
+        "SAKD->SAKD",
+        "SPCT->SPCT",
+        "SRAF->SRAF",
+        "STKD->STKD",
+        "Skin->Skin",
+        "SoundCloseCorpse->SoundCloseCorpse",
+        "SoundOpenCorpse->SoundOpenCorpse",
+        "SubgraphAdditiveRace->SubgraphAdditiveRace",
+        "TotalNumberOfTintsInList->TotalNumberOfTintsInList",
+        "UnarmedWeapon->UnarmedWeapon",
+        "Voices->Voices"
+      ],
+      "transforms": [
+        "ActorEffect:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "AnimationSound:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "BaseMovementDefaultsDefault:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "BodyPartData:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "CollarTextureSet:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "DESC:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "Data:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "DefaultHairColors:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "DialogueQuest:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "EquipSlot:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "FULL:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "ImpactMaterialType:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Keywords:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "MeatCapTextureSet:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "SAKD:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "STKD:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Skin:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "SoundCloseCorpse:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "SoundOpenCorpse:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "SubgraphAdditiveRace:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "UnarmedWeapon:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Voices:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "RFCT": {
+      "defaults": [],
+      "drops": [],
+      "field_mappings": [
+        "EffectData->EffectData"
+      ],
+      "transforms": [
+        "EffectData:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "SCOL": {
+      "defaults": [],
+      "drops": [
+        "AUUV",
+        "DEFL",
+        "DefaultLayer",
+        "ENLM",
+        "ENLS",
+        "ENLT",
+        "EnlightenAutoUVEditorOnly",
+        "EnlightenSimplifiedShapeScale",
+        "LODP",
+        "MNAM",
+        "MODD",
+        "NAM1",
+        "OPDS",
+        "ObjectPlacementDefault",
+        "PHST",
+        "PRPS",
+        "PhysicsSyncType",
+        "Properties",
+        "SNTP",
+        "SnapTemplate",
+        "XALG",
+        "XFLG",
+        "group_lod_level_override"
+      ],
+      "field_mappings": [],
+      "transforms": [
+        "ONAM:{\"source_esm\":\"SeventySix.esm\",\"type\":\"fo76_scol_static\"}"
+      ],
+      "value_maps": []
+    },
+    "SNDR": {
+      "defaults": [],
+      "drops": [
+        "Count",
+        "DescriptorType",
+        "File",
+        "Flags",
+        "MarkerEnd",
+        "Notes",
+        "RoFRPM"
+      ],
+      "field_mappings": [
+        "AlternateSoundFor->AlternateSoundFor",
+        "CTDA->CTDA",
+        "Category->Category",
+        "Data->Data",
+        "Descriptor->Descriptor",
+        "HNAM->HNAM",
+        "INAM->INAM",
+        "MarkerStart->MarkerStart",
+        "OutputModel->OutputModel",
+        "PNAM->PNAM",
+        "QNAM->QNAM",
+        "Sound->Sound",
+        "Values->Values"
+      ],
+      "transforms": [
+        "CTDA:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Category:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Data:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "OutputModel:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Sound:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "SOPM": {
+      "defaults": [],
+      "drops": [
+        "DynamicAttenuationValues",
+        "Effect",
+        "OutputValues",
+        "WNAM"
+      ],
+      "field_mappings": [
+        "Data->Data",
+        "StaticAttenuation->StaticAttenuation",
+        "Type->Type"
+      ],
+      "transforms": [],
+      "value_maps": []
+    },
+    "SPEL": {
+      "defaults": [],
+      "drops": [
+        "ActorValue",
+        "CTDA",
+        "CooldownDuration",
+        "CooldownGlobal",
+        "CurveTable",
+        "DefaultLayer",
+        "Duration",
+        "EffectFlags",
+        "KeywordCount",
+        "Keywords",
+        "Magnitude",
+        "MaxItemID",
+        "MenuDisplayObject",
+        "NextStage",
+        "ObjectBounds",
+        "Parameter2",
+        "PhysicsSyncType"
+      ],
+      "field_mappings": [
+        "BaseEffect->BaseEffect",
+        "Data->Data",
+        "Description->Description",
+        "EFIT->EFIT",
+        "EquipmentType->EquipmentType",
+        "Name->Name"
+      ],
+      "transforms": [
+        "BaseEffect:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Description:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "EquipmentType:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Name:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}"
+      ],
+      "value_maps": []
+    },
+    "STAG": {
+      "defaults": [],
+      "drops": [
+        "Flags"
+      ],
+      "field_mappings": [
+        "Sound->Sound"
+      ],
+      "transforms": [
+        "Sound:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "STAT": {
+      "defaults": [],
+      "drops": [
+        "DefaultLayer",
+        "DestructibleObjectFaction",
+        "Destructibles",
+        "DirectionMaterial",
+        "DistantLOD",
+        "ForcedLocRefTypes",
+        "FormTag",
+        "LodLevelOverrides",
+        "MODT",
+        "ObjectPlacementDefault",
+        "PRPS",
+        "PhysicsSyncType",
+        "PreviewTransform",
+        "Properties",
+        "SnapTemplate",
+        "StaticObjectFlags",
+        "VirtualMachineAdapter",
+        "XALG",
+        "XFLG",
+        "group_destructible",
+        "group_lod_level_override"
+      ],
+      "field_mappings": [
+        "DirectionMaterial->DirectionMaterial",
+        "Flags->Flags",
+        "MODL->ModelFileName",
+        "Name->Name",
+        "ObjectBounds->ObjectBounds"
+      ],
+      "transforms": [
+        "DirectionMaterial:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "MODL:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\",\"ENLM\"],\"type\":\"strip_subfields\"}"
+      ],
+      "value_maps": []
+    },
+    "TRNS": {
+      "defaults": [],
+      "drops": [
+        "Flags"
+      ],
+      "field_mappings": [
+        "Data->Data"
+      ],
+      "transforms": [],
+      "value_maps": []
+    },
+    "TXST": {
+      "defaults": [],
+      "drops": [
+        "DecalData",
+        "DefaultLayer",
+        "Filter",
+        "Flags",
+        "Material",
+        "Name",
+        "ObjectPlacementDefault",
+        "TexturesRgbAs"
+      ],
+      "field_mappings": [
+        "ObjectBounds->ObjectBounds",
+        "group_textures_rgb_a->group_textures_rgb_a"
+      ],
+      "transforms": [],
+      "value_maps": []
+    },
+    "VTYP": {
+      "defaults": [],
+      "drops": [
+        "Flags",
+        "Name",
+        "TTSVoiceName"
+      ],
+      "field_mappings": [],
+      "transforms": [],
+      "value_maps": []
+    },
+    "WEAP": {
+      "defaults": [],
+      "drops": [
+        "1stPersonModels",
+        "AimAssistModel",
+        "BashConditionLossScale",
+        "BreakSound",
+        "Capacity",
+        "ConditionLossScale",
+        "DamageCurve",
+        "DamageTypeConditionScalings",
+        "Data",
+        "Destructibles",
+        "EligibleLevels",
+        "KeywordCount",
+        "MODD",
+        "MODT",
+        "MaxDurabilityCurve",
+        "MeleeSpeed",
+        "MinDurabilityCurve",
+        "MinimumChargeTime",
+        "OPDS",
+        "ObjectPlacementDefault",
+        "ObjectTemplates",
+        "RGW3",
+        "SnapTemplate",
+        "SneakAttackMultiplier",
+        "TelegraphDatas",
+        "Unknown",
+        "UnknownCurve",
+        "VirtualMachineAdapter",
+        "XALG",
+        "XFLG",
+        "group_destructible",
+        "group_telegraph_data"
+      ],
+      "field_mappings": [
+        "AimModel->AimModel",
+        "AlternateBlockMaterial->AlternateBlockMaterial",
+        "AnimationSound->AnimationSound",
+        "AttachParentSlots->AttachParentSlots",
+        "BlockBashImpactDataSet->BlockBashImpactDataSet",
+        "CriticalData->CriticalData",
+        "DamageTypes->DamageTypes",
+        "Data->Data",
+        "Description->Description",
+        "Effect->Effect",
+        "EquipmentType->EquipmentType",
+        "FNAM->FNAM",
+        "FULL->FULL",
+        "ImpactDataSet->ImpactDataSet",
+        "InstanceNaming->InstanceNaming",
+        "Keywords->Keywords",
+        "MODL->MODL",
+        "NPCAddAmmoList->NPCAddAmmoList",
+        "ObjectBounds->ObjectBounds",
+        "PreviewTransform->PreviewTransform",
+        "SoundPickUp->SoundPickUp",
+        "SoundPutDown->SoundPutDown",
+        "Zoom->Zoom",
+        "group_1st_person_model->group_1st_person_model",
+        "group_object_template->group_object_template"
+      ],
+      "transforms": [
+        "AimModel:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "AlternateBlockMaterial:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "AttachParentSlots:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "BlockBashImpactDataSet:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "CriticalData:{\"clamp_max_subfields\":{\"CritDamageMult\":2.0},\"remap_source_esm\":\"SeventySix.esm\",\"remap_target_esm\":\"Fallout4.esm\",\"type\":\"scale_nested\"}",
+        "DamageTypes:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Data:{\"remap_source_esm\":\"SeventySix.esm\",\"remap_target_esm\":\"Fallout4.esm\",\"subfields\":{\"MaxRange\":0.08498,\"MinPowerPerShot\":0.1,\"MinRange\":0.12226},\"type\":\"scale_nested\"}",
+        "Effect:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "EquipmentType:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "FNAM:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "FULL:{\"keep\":[\"English\",\"Chinese\",\"German\",\"French\",\"Spanish\",\"Italian\",\"Japanese\",\"Polish\",\"Portuguese_Brazil\",\"Russian\"],\"type\":\"trim_languages\"}",
+        "ImpactDataSet:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "InstanceNaming:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Keywords:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "MODL:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}",
+        "NPCAddAmmoList:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "SoundPickUp:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "SoundPutDown:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "Zoom:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}",
+        "group_1st_person_model:{\"remove\":[\"XFLG\",\"ENLT\",\"ENLS\",\"AUUV\",\"MODD\"],\"type\":\"strip_subfields\"}",
+        "group_object_template:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    },
+    "ZOOM": {
+      "defaults": [],
+      "drops": [],
+      "field_mappings": [
+        "Data->Data"
+      ],
+      "transforms": [
+        "Data:{\"source_esm\":\"SeventySix.esm\",\"target_esm\":\"Fallout4.esm\",\"type\":\"remap_formkey\"}"
+      ],
+      "value_maps": []
+    }
+  }
+}

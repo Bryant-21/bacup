@@ -1,0 +1,47 @@
+current: alpha2
+versions:
+  - id: alpha1
+    families_by_conversion:
+      "fo76:fo4": [ALL]
+      "fnvfo3:fo4": [NONE]
+      "skyrimse:fo4": [NONE]
+    notes_by_conversion:
+      "fo76:fo4":
+        - Initial Tales From Appalachia Alpha.
+  - id: alpha2
+    families_by_conversion:
+      "fo76:fo4": [ALL]
+      "fnvfo3:fo4": [NONE]
+      "skyrimse:fo4": [NONE]
+    force_regen_by_conversion:
+      "fo76:fo4": true
+      "fnvfo3:fo4": true
+      "skyrimse:fo4": true
+    notes_by_conversion:
+      "fo76:fo4":
+        - MO2 Support, OG BA2s, Revamped UI, and no more Fo4 extracted dir
+        - MODT created to records
+        - Fixed issues with textures/nifs being too shiny
+        - Fixed issues with some missing collisions
+        - Lights are not clampped correct / flagged as specular
+        - Fixed missing EDID on land records
+        - Fixed various weapons not working
+        - Fixed issues with random turrets
+        - Radnom missing Textures
+        - Weather Should be less foggy now
+        - Power armor should be capturable
+        - Leveled list look should be reduced
+        - removed holiday/nuke spawns
+        - fixed dlc weapons not properly replacing fo76 versions
+        - workshops should now be capturable
+        - fixed a bunch of VMAD issues
+        - Added prototype of replacing script stubs
+        - teddy bears are soft and fluffy again
+        - hands are back
+        - sunburn be gone
+        - maybe holotapes work?
+        - Tons of bug fixes... so many
+      "skyrimse:fo4":
+        - Added to ui
+      "fnvfo3:fo4":
+        - Added to ui
