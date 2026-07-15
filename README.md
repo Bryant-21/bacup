@@ -1,6 +1,6 @@
 # B.A.C.U.P.
 
-**Bethesda Asset Conversion Universal Platform** — a framework for converting
+**Bethesda Asset Converter Universal Platform** — a framework for converting
 records and assets from one Bethesda / Creation Engine game to another. BACUP
 is not a single-purpose Fallout 76 → Fallout 4 tool: each game's record
 schema, FormID space, and asset formats are modeled independently, and a
