@@ -545,15 +545,37 @@ fn parse_game(value: &str, role: &str) -> PyResult<Game> {
         .ok_or_else(|| PyValueError::new_err(format!("unknown {role} game: {value:?}")))
 }
 
-fn seed_target_localization(source_handle_id: u64, target_handle_id: u64) -> Result<(), RunError> {
+fn normalize_fo76_font_aliases_for_fo4(
+    strings: &mut esp_authoring_core::plugin_runtime::LocalizedStringsState,
+) {
+    for table in strings.by_language.values_mut() {
+        for text in table.values_mut() {
+            if let Some(rewritten) =
+                crate::translator::pair_hooks::fo76_fo4::rewritten_fo76_font_aliases_for_fo4(text)
+            {
+                *text = rewritten;
+            }
+        }
+    }
+}
+
+fn seed_target_localization(
+    source_handle_id: u64,
+    target_handle_id: u64,
+    source: Game,
+    target: Game,
+) -> Result<(), RunError> {
     let mut store = esp_authoring_core::plugin_runtime::plugin_handle_store_ref()
         .lock()
         .map_err(|_| RunError::LockPoisoned)?;
-    let strings = store
+    let mut strings = store
         .get(&source_handle_id)
         .ok_or_else(|| RunError::InvalidConfig("source plugin handle disappeared".to_string()))?
         .strings_ref()
         .clone();
+    if source == Game::Fo76 && target == Game::Fo4 {
+        normalize_fo76_font_aliases_for_fo4(&mut strings);
+    }
     let target = store
         .get_mut(&target_handle_id)
         .ok_or_else(|| RunError::InvalidConfig("target plugin handle disappeared".to_string()))?;
@@ -667,7 +689,7 @@ pub fn create_run_from_paths_py(
                 mark_master_target(target_handle.id())?;
             }
             if is_new && let Some(source_handle) = source_handle.as_ref() {
-                seed_target_localization(source_handle.id(), target_handle.id())?;
+                seed_target_localization(source_handle.id(), target_handle.id(), source, target)?;
             }
 
             let mut masters = Vec::with_capacity(master_plugin_paths.len());
@@ -2313,6 +2335,37 @@ mod tests {
         .expect("save plugin");
         assert!(esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle));
         path
+    }
+
+    #[test]
+    fn fo76_font_aliases_are_rewritten_for_fo4_in_every_language() {
+        let mut strings = esp_authoring_core::plugin_runtime::LocalizedStringsState::default();
+        strings.by_language.insert(
+            "en".to_string(),
+            std::collections::HashMap::from([(
+                1,
+                "<font face='$Typewriter_Font'>typed</font> <font face='$76HandwrittenNeat_Font'>neat</font>"
+                    .to_string(),
+            )]),
+        );
+        strings.by_language.insert(
+            "de".to_string(),
+            std::collections::HashMap::from([(
+                1,
+                "<font face='$76HandwrittenIlliterate'>gekritzelt</font>".to_string(),
+            )]),
+        );
+
+        normalize_fo76_font_aliases_for_fo4(&mut strings);
+
+        assert_eq!(
+            strings.by_language["en"][&1],
+            "<font face='$Terminal_Font'>typed</font> <font face='$HandwrittenFont'>neat</font>"
+        );
+        assert_eq!(
+            strings.by_language["de"][&1],
+            "<font face='$HandwrittenFont'>gekritzelt</font>"
+        );
     }
 
     #[test]

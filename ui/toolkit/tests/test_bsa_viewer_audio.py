@@ -1,4 +1,5 @@
-from ui.bsa_viewer.workspace import _format_time, _is_audio_member, _is_texture_member
+from creation_lib.ui.widgets.audio_player import _format_time
+from ui.bsa_viewer.workspace import _is_audio_member, _is_texture_member
 
 
 def test_bsa_viewer_audio_member_detection() -> None:

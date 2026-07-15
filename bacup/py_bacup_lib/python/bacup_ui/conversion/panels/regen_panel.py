@@ -123,15 +123,54 @@ _INSTALL_LOCATION_KEY = "install_location"
 _INSTALL_LOCATION_VALUES = ["game", "mo2", "vortex", "none"]
 _INSTALL_LOCATION_LABELS = ["Game Dir", "MO2", "Vortex", "None"]
 _RECOVERY_PHASE_KEY = "recovery_phase"
-_RECOVERY_PHASE_VALUES = ["nifs", "textures", "havok", "lodgen", "pack", "deploy"]
+_RECOVERY_PHASE_VALUES = [
+    "prepare",
+    "records",
+    "terrain",
+    "terrain_assets",
+    "nifs",
+    "textures",
+    "materials",
+    "havok",
+    "drivers",
+    "animations",
+    "sounds",
+    "scaffold",
+    "build",
+    "modt",
+    "animtext",
+    "lodgen",
+    "pack",
+    "deploy",
+]
 _RECOVERY_PHASE_LABELS = [
+    "Prepare Conversion (full rebuild)",
+    "Translate Records (full rebuild)",
+    "Convert Terrain (full rebuild)",
+    "Convert Terrain Assets (full rebuild)",
     "Convert NIFs",
     "Convert Textures",
+    "Convert Materials",
     "Convert Havok",
+    "Synthesize Drivers (reruns Havok)",
+    "Convert Animations",
+    "Copy Sounds",
+    "Scaffold Mod (full rebuild)",
+    "Build ESP (full rebuild)",
+    "Regenerate MODT",
+    "Generate AnimTextData",
     "Generate LOD",
     "Pack BA2",
     "Deploy Mod",
 ]
+_RECOVERY_FULL_REBUILD_PHASES = {
+    "prepare",
+    "records",
+    "terrain",
+    "terrain_assets",
+    "scaffold",
+    "build",
+}
 _COMPANION_MOD_NAME = "B21_TalesFromAppalachia"
 _COMPANION_ROOT_FILES = (f"{_COMPANION_MOD_NAME}.esp",)
 _COMPANION_DEPLOY_DIRS = ("PrismaUI_F4",)
@@ -1586,14 +1625,24 @@ class RegenPanel:
                 self.recovery_phase = _RECOVERY_PHASE_VALUES[recovery_idx]
                 self._set_workspace_settings({_RECOVERY_PHASE_KEY: self.recovery_phase})
             imgui.same_line()
-            can_resume = self._is_default_pair() and self.can_deploy_existing()
+            needs_full_rebuild = self.recovery_phase in _RECOVERY_FULL_REBUILD_PHASES
+            can_resume = self._is_default_pair() and (
+                self.can_convert() if needs_full_rebuild else self.can_deploy_existing()
+            )
             if not can_resume:
                 imgui.begin_disabled()
             if imgui.button(f"Resume{_NS}"):
                 self.start_resume_from_phase()
             if not can_resume:
                 imgui.end_disabled()
-            imgui.text_disabled("Resume overwrites outputs from the selected phase onward.")
+            if needs_full_rebuild:
+                imgui.text_disabled(
+                    "No durable ESP exists at this point; recovery reruns record conversion."
+                )
+            else:
+                imgui.text_disabled(
+                    "Resume overwrites outputs from the selected phase onward."
+                )
             if running:
                 imgui.end_disabled()
             imgui.separator()

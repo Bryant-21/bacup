@@ -56,7 +56,7 @@ const ALWAYS_GATED_BASE_EDIDS: &[&str] = &[
     "WorkshopCapturePointBorderCylinderHalf512Trigger",
     "WorkshopCapturePointBorderCylinder512Trigger",
 ];
-const NUKED_FLORA_BASE_PREFIX: &str = "FloraRad";
+const NUKED_FLORA_BASE_MARKER: &str = "FloraRad";
 const CHALKLETTER_BASE_PREFIX: &str = "ChalkLetter_";
 const CHALKLETTER_GATED_CELL: (i32, i32) = (-26, 22);
 const EXTERIOR_CELL_SIZE: f32 = 4096.0;
@@ -800,8 +800,9 @@ fn is_always_gated_base_edid(text: &str) -> bool {
 }
 
 fn is_nuked_flora_base_edid(text: &str) -> bool {
-    text.get(..NUKED_FLORA_BASE_PREFIX.len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(NUKED_FLORA_BASE_PREFIX))
+    text.as_bytes()
+        .windows(NUKED_FLORA_BASE_MARKER.len())
+        .any(|window| window.eq_ignore_ascii_case(NUKED_FLORA_BASE_MARKER.as_bytes()))
 }
 
 fn is_chalkletter_base_edid(text: &str) -> bool {
@@ -1210,29 +1211,47 @@ mod tests {
 
     #[test]
     fn placed_ref_with_nuked_flora_base_is_gated() {
-        let base = record(
+        let nuked_base = record(
             "FLOR",
             0x00525646,
             0,
-            vec![sub("EDID", z("FloraRadRhododendron01"))],
+            vec![sub("EDID", z("UseLPI_FloraRadThistle01"))],
         );
-        let placed = record(
+        let ordinary_base = record(
+            "FLOR",
+            0x003411CB,
+            0,
+            vec![sub("EDID", z("UseLPI_FloraThistle01"))],
+        );
+        let nuked_placed = record(
             "REFR",
             0x00311776,
             0,
             vec![sub("NAME", 0x00525646_u32.to_le_bytes().to_vec())],
         );
+        let ordinary_placed = record(
+            "REFR",
+            0x00311777,
+            0,
+            vec![sub("NAME", 0x003411CB_u32.to_le_bytes().to_vec())],
+        );
 
         let handle = plugin_handle_new_native("NukedFloraGate.esm", Some("fo76")).unwrap();
         {
             let mut store = plugin_handle_store_ref().lock().unwrap();
-            store.get_mut(&handle).unwrap().parsed.root_items = vec![item(base), item(placed)];
+            store.get_mut(&handle).unwrap().parsed.root_items = vec![
+                item(nuked_base),
+                item(ordinary_base),
+                item(nuked_placed),
+                item(ordinary_placed),
+            ];
         }
         let mut session = crate::session::open_session(handle, None).unwrap();
         let scan = session.handle_raw_scan(handle).unwrap();
         let index = GateSourceIndex::from_source_scan(&scan).unwrap();
 
         assert!(index.gated_refs.contains(&0x311776));
+        assert!(!index.gated_refs.contains(&0x311777));
         assert_eq!(index.nuked_flora_base_gated_refs, 1);
     }
 

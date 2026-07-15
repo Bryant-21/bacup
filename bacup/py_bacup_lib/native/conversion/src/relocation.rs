@@ -478,6 +478,7 @@ pub const FO76_FO4_DEFAULT_RELOCATION_MESH_PATHS: &[&str] = &[
     "meshes/architecture/buildings/hightech/lobby/hitextintwalltoptrimblong01.nif",
     "meshes/setdressing/minutemen/flagwallminutemen01.nif",
     "meshes/setdressing/metalbarrel/metalbarrel01staticfiregrating.nif",
+    "meshes/vehicles/automotive/busschool01empty.nif",
 ];
 
 fn append_existing_forced_meshes(
@@ -545,6 +546,7 @@ mod tests {
         );
         touch(&fo76.join("meshes/setdressing/minutemen/flagwallminutemen01.nif"));
         touch(&fo76.join("meshes/setdressing/metalbarrel/metalbarrel01staticfiregrating.nif"));
+        touch(&fo76.join("meshes/vehicles/automotive/busschool01empty.nif"));
 
         let result = build_relocation_member_set(&["meshes/landscape".to_string()], &fo76, &fo4);
 
@@ -560,6 +562,11 @@ mod tests {
             result
                 .members
                 .contains("meshes/setdressing/metalbarrel/metalbarrel01staticfiregrating.nif")
+        );
+        assert!(
+            result
+                .members
+                .contains("meshes/vehicles/automotive/busschool01empty.nif")
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -584,6 +591,11 @@ mod tests {
             !result
                 .members
                 .contains("meshes/setdressing/metalbarrel/metalbarrel01staticfiregrating.nif")
+        );
+        assert!(
+            !result
+                .members
+                .contains("meshes/vehicles/automotive/busschool01empty.nif")
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -853,6 +865,48 @@ mod tests {
         assert!(members.contains("textures/landscape/ground/rootseroded01_d.dds"));
         assert!(members.contains("textures/landscape/ground/rootseroded01_n.dds"));
         assert!(members.contains("textures/landscape/ground/rootseroded01_r.dds"));
+    }
+
+    #[test]
+    fn forced_school_bus_real_data_closes_over_materials_and_textures() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(4)
+            .expect("conversion crate is repo/bacup/py_bacup_lib/native/conversion")
+            .to_path_buf();
+        let fo76 = repo_root.join("extracted").join("fo76");
+        let fo4 = repo_root.join("extracted").join("fo4");
+        let mesh = "meshes/vehicles/automotive/busschool01empty.nif";
+        if !fo76.join(mesh).is_file() || !fo4.join(mesh).is_file() {
+            return;
+        }
+
+        let load_source_nif = |rel: &str| -> Option<ReferencedAssetPaths> {
+            NifFile::load(fo76.join(rel))
+                .ok()
+                .map(|nif| nif.referenced_asset_paths())
+        };
+        let load_target_nif = |rel: &str| -> Option<ReferencedAssetPaths> {
+            NifFile::load(fo4.join(rel))
+                .ok()
+                .map(|nif| nif.referenced_asset_paths())
+        };
+        let load_material = |rel: &str| read_material_texture_paths(&fo76.join(rel));
+        let nif_loaders: [&dyn Fn(&str) -> Option<ReferencedAssetPaths>; 2] =
+            [&load_source_nif, &load_target_nif];
+        let members = build_relocation_member_set_from_loaders(
+            &[mesh.to_string()],
+            &nif_loaders,
+            &load_material,
+        );
+
+        assert!(members.contains(mesh));
+        assert!(members.contains("materials/vehicles/automotive/busschool_decal_01.bgsm"));
+        assert!(
+            members
+                .iter()
+                .any(|member| member.starts_with("textures/vehicles/automotive/"))
+        );
     }
 
     /// Real-data validation: over the repo's extracted FO76 + FO4 dirs, a

@@ -3485,26 +3485,30 @@ const NPC_ACBS_FLAGS_STRIPPED_FOR_FO4: u32 = NPC_ACBS_FLAG_IS_GHOST | NPC_ACBS_F
 const NPC_TEMPLATE_TRAITS: u16 = 0x0001;
 const NPC_TEMPLATE_STATS: u16 = 0x0002;
 const NPC_TEMPLATE_FACTIONS: u16 = 0x0004;
+const NPC_TEMPLATE_SPELL_LIST: u16 = 0x0008;
 const NPC_TEMPLATE_AI_DATA: u16 = 0x0010;
 const NPC_TEMPLATE_AI_PACKAGES: u16 = 0x0020;
 const NPC_TEMPLATE_MODEL_ANIMATION: u16 = 0x0040;
 const NPC_TEMPLATE_BASE_DATA: u16 = 0x0080;
 const NPC_TEMPLATE_INVENTORY: u16 = 0x0100;
 const NPC_TEMPLATE_SCRIPT: u16 = 0x0200;
+const NPC_TEMPLATE_DEF_PACKAGE_LIST: u16 = 0x0400;
+const NPC_TEMPLATE_ATTACK_DATA: u16 = 0x0800;
+const NPC_TEMPLATE_KEYWORDS: u16 = 0x1000;
 const NPC_TPTA_SLOT_TEMPLATE_FLAGS: [u16; 13] = [
     NPC_TEMPLATE_TRAITS,
     NPC_TEMPLATE_STATS,
     NPC_TEMPLATE_FACTIONS,
-    0,
+    NPC_TEMPLATE_SPELL_LIST,
     NPC_TEMPLATE_AI_DATA,
     NPC_TEMPLATE_AI_PACKAGES,
     NPC_TEMPLATE_MODEL_ANIMATION,
     NPC_TEMPLATE_BASE_DATA,
     NPC_TEMPLATE_INVENTORY,
     NPC_TEMPLATE_SCRIPT,
-    0,
-    0,
-    0,
+    NPC_TEMPLATE_DEF_PACKAGE_LIST,
+    NPC_TEMPLATE_ATTACK_DATA,
+    NPC_TEMPLATE_KEYWORDS,
 ];
 
 const FO4_CONT_DATA_FLAGS: u8 = 0x07;
@@ -6544,7 +6548,7 @@ mod tests {
     }
 
     #[test]
-    fn translated_npc_acbs_template_flags_match_ck_safe_tpta_slots() {
+    fn translated_npc_acbs_template_flags_match_fo4_tpta_slots() {
         let interner = StringInterner::new();
         let mut acbs = vec![0u8; 20];
         acbs[..4].copy_from_slice(&0x18_u32.to_le_bytes());
@@ -6594,11 +6598,15 @@ mod tests {
         let flags = u32::from_le_bytes(bytes[..4].try_into().unwrap());
         let template_flags = u16::from_le_bytes(bytes[14..16].try_into().unwrap());
         assert_eq!(flags, 0x18);
-        // Inventory (slot 8) is carried in the full-plugin path; the cell-slice
-        // crash-avoidance strip lives in a !is_whole_plugin fixup instead.
         assert_eq!(
             template_flags,
-            NPC_TEMPLATE_AI_PACKAGES | NPC_TEMPLATE_INVENTORY | NPC_TEMPLATE_SCRIPT
+            NPC_TEMPLATE_SPELL_LIST
+                | NPC_TEMPLATE_AI_PACKAGES
+                | NPC_TEMPLATE_INVENTORY
+                | NPC_TEMPLATE_SCRIPT
+                | NPC_TEMPLATE_DEF_PACKAGE_LIST
+                | NPC_TEMPLATE_ATTACK_DATA
+                | NPC_TEMPLATE_KEYWORDS
         );
         let tpta = record
             .fields
@@ -6615,13 +6623,14 @@ mod tests {
         assert_eq!(
             slots,
             vec![
-                0, 0, 0, 0, 0, 0x00157C5F, 0, 0, 0x00157C5F, 0x00157C5F, 0, 0, 0,
+                0, 0, 0, 0x00157C5F, 0, 0x00157C5F, 0, 0, 0x00157C5F, 0x00157C5F, 0x00157C5F,
+                0x00157C5F, 0x00157C5F,
             ]
         );
     }
 
     #[test]
-    fn translated_npc_struct_tpta_inventory_slot_is_preserved() {
+    fn translated_npc_struct_tpta_fo4_slots_are_preserved() {
         let interner = StringInterner::new();
         let template = FormKey::parse("157C5F@Fallout4.esm", &interner).unwrap();
         let mut acbs = vec![0u8; 20];
@@ -6677,7 +6686,10 @@ mod tests {
         assert_eq!(u32::from_le_bytes(bytes[..4].try_into().unwrap()), 0x18);
         assert_eq!(
             u16::from_le_bytes(bytes[14..16].try_into().unwrap()),
-            NPC_TEMPLATE_AI_PACKAGES | NPC_TEMPLATE_INVENTORY | NPC_TEMPLATE_SCRIPT
+            NPC_TEMPLATE_AI_PACKAGES
+                | NPC_TEMPLATE_INVENTORY
+                | NPC_TEMPLATE_SCRIPT
+                | NPC_TEMPLATE_DEF_PACKAGE_LIST
         );
         let tpta = record
             .fields
@@ -6691,7 +6703,7 @@ mod tests {
         // Inventory slot is carried in the full-plugin path.
         assert!(matches!(&fields[8].1, FieldValue::FormKey(_)));
         assert!(matches!(&fields[9].1, FieldValue::FormKey(_)));
-        assert_eq!(fields[10].1, FieldValue::Uint(0));
+        assert!(matches!(&fields[10].1, FieldValue::FormKey(_)));
     }
 
     #[test]

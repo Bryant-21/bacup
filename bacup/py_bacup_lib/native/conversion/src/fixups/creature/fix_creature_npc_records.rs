@@ -15,9 +15,8 @@
 //! 1. **TPTA.ModelAnimation LVLN cleanup** — clear only the ModelAnimation
 //!    template slot when it points at a leveled NPC list. FO4 allows LVLN in
 //!    other template slots such as BaseData; those remain untouched.
-//! 2. **ACBS.template_flags** — recompute FO4-supported template flags from
-//!    active TPTA slots, clearing FO76-only bits that make CK walk invalid
-//!    template slots.
+//! 2. **ACBS.template_flags** — recompute FO4 template flags from active TPTA
+//!    slots.
 //! 3. **AIDT defaults** — when `assistance` byte (offset 5) is zero, write
 //!    `HelpsAllies` (1).  When `aggro_aggro_radius_behavior` (offset 6) is
 //!    zero, fill the aggro defaults (warn=3000, warn_attack=2500, attack=2000,
@@ -74,28 +73,32 @@ const ACBS_TEMPLATE_FLAGS_OFFSET: usize = 14;
 const TEMPLATE_TRAITS: u16 = 0x0001;
 const TEMPLATE_STATS: u16 = 0x0002;
 const TEMPLATE_FACTIONS: u16 = 0x0004;
+const TEMPLATE_SPELL_LIST: u16 = 0x0008;
 const TEMPLATE_AI_DATA: u16 = 0x0010;
 const TEMPLATE_AI_PACKAGES: u16 = 0x0020;
 const TEMPLATE_MODEL_ANIMATION: u16 = 0x0040;
 const TEMPLATE_BASE_DATA: u16 = 0x0080;
 const TEMPLATE_INVENTORY: u16 = 0x0100;
 const TEMPLATE_SCRIPT: u16 = 0x0200;
+const TEMPLATE_DEF_PACKAGE_LIST: u16 = 0x0400;
+const TEMPLATE_ATTACK_DATA: u16 = 0x0800;
+const TEMPLATE_KEYWORDS: u16 = 0x1000;
 
-/// TPTA has 13 slots, but FO4 exposes template flags for only this subset.
+/// FO4 exposes one template flag for each of its 13 TPTA slots.
 const TPTA_SLOT_TEMPLATE_FLAGS: [u16; 13] = [
     TEMPLATE_TRAITS,
     TEMPLATE_STATS,
     TEMPLATE_FACTIONS,
-    0,
+    TEMPLATE_SPELL_LIST,
     TEMPLATE_AI_DATA,
     TEMPLATE_AI_PACKAGES,
     TEMPLATE_MODEL_ANIMATION,
     TEMPLATE_BASE_DATA,
     TEMPLATE_INVENTORY,
     TEMPLATE_SCRIPT,
-    0,
-    0,
-    0,
+    TEMPLATE_DEF_PACKAGE_LIST,
+    TEMPLATE_ATTACK_DATA,
+    TEMPLATE_KEYWORDS,
 ];
 
 const TPTA_SLOT_BYTES: usize = 4;
@@ -1322,7 +1325,7 @@ mod tests {
     }
 
     #[test]
-    fn syncs_acbs_template_flags_from_tpta_and_drops_fo76_only_bits() {
+    fn syncs_all_fo4_acbs_template_flags_from_tpta() {
         let mut interner = StringInterner::new();
         let mut r = npc(0x000108, "Out.esp", &mut interner);
         push_bytes(&mut r, "ACBS", make_acbs_with_template_flags(0x18, 0x1F28));
@@ -1346,7 +1349,13 @@ mod tests {
         assert_eq!(flags & ACBS_FLAG_AUTO_CALC_STATS, ACBS_FLAG_AUTO_CALC_STATS);
         assert_eq!(
             template_flags,
-            TEMPLATE_AI_PACKAGES | TEMPLATE_INVENTORY | TEMPLATE_SCRIPT
+            TEMPLATE_SPELL_LIST
+                | TEMPLATE_AI_PACKAGES
+                | TEMPLATE_INVENTORY
+                | TEMPLATE_SCRIPT
+                | TEMPLATE_DEF_PACKAGE_LIST
+                | TEMPLATE_ATTACK_DATA
+                | TEMPLATE_KEYWORDS
         );
     }
 

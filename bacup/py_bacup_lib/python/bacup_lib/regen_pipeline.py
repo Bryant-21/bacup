@@ -228,9 +228,42 @@ FO76_PLUGINS = [
     "SeventySix.esm",
 ]
 
-RESUME_PHASES = ("nifs", "textures", "havok", "lodgen", "pack", "deploy")
+RESUME_PHASES = (
+    "prepare",
+    "records",
+    "terrain",
+    "terrain_assets",
+    "nifs",
+    "textures",
+    "materials",
+    "havok",
+    "drivers",
+    "animations",
+    "sounds",
+    "scaffold",
+    "build",
+    "modt",
+    "animtext",
+    "lodgen",
+    "pack",
+    "deploy",
+)
+
+_FULL_REBUILD_RESUME_PHASES = frozenset(
+    {"prepare", "records", "terrain", "terrain_assets", "scaffold", "build"}
+)
 
 _RESUME_PHASE_ALIASES = {
+    "prepare": "prepare",
+    "prepare_conversion": "prepare",
+    "records": "records",
+    "translate_records": "records",
+    "terrain": "terrain",
+    "convert_terrain": "terrain",
+    "terrain_assets": "terrain_assets",
+    "convert_terrain_assets": "terrain_assets",
+    "convert_btos": "terrain_assets",
+    "convert_btos_v2": "terrain_assets",
     "nif": "nifs",
     "nifs": "nifs",
     "convert_nifs": "nifs",
@@ -239,8 +272,31 @@ _RESUME_PHASE_ALIASES = {
     "textures": "textures",
     "convert_textures": "textures",
     "convert_textures_v2": "textures",
+    "material": "materials",
+    "materials": "materials",
+    "convert_materials": "materials",
+    "convert_materials_v2": "materials",
     "havok": "havok",
     "convert_havok": "havok",
+    "driver": "drivers",
+    "drivers": "drivers",
+    "synthesize_drivers": "drivers",
+    "animation": "animations",
+    "animations": "animations",
+    "convert_animations": "animations",
+    "sound": "sounds",
+    "sounds": "sounds",
+    "copy_sounds": "sounds",
+    "scaffold": "scaffold",
+    "scaffold_mod": "scaffold",
+    "build": "build",
+    "build_esp": "build",
+    "modt": "modt",
+    "regenerate_modt": "modt",
+    "animtext": "animtext",
+    "anim_text_data": "animtext",
+    "generate_anim_text_data": "animtext",
+    "generate_animtextdata": "animtext",
     "lod": "lodgen",
     "lodgen": "lodgen",
     "generate_lod": "lodgen",
@@ -250,9 +306,21 @@ _RESUME_PHASE_ALIASES = {
 }
 
 _RESUME_PHASE_LABELS = {
+    "prepare": "Prepare Conversion",
+    "records": "Translate Records",
+    "terrain": "Convert Terrain",
+    "terrain_assets": "Convert Terrain Assets",
     "nifs": "Convert NIFs",
     "textures": "Convert Textures",
+    "materials": "Convert Materials",
     "havok": "Convert Havok",
+    "drivers": "Synthesize Drivers",
+    "animations": "Convert Animations",
+    "sounds": "Copy Sounds",
+    "scaffold": "Scaffold Mod",
+    "build": "Build ESP",
+    "modt": "Regenerate MODT",
+    "animtext": "Generate AnimTextData",
     "lodgen": "Generate LOD",
     "pack": "Pack BA2",
     "deploy": "Deploy Mod",
@@ -1351,6 +1419,8 @@ def _resume_phase_selection(start_phase: str, phases):
         "convert_scripts",
         "copy_sounds",
         "build_esp",
+        "regenerate_modt",
+        "generate_anim_text_data",
     ):
         setattr(selected, attr, False)
 
@@ -1369,10 +1439,26 @@ def _resume_phase_selection(start_phase: str, phases):
         selected.synthesize_drivers = True
         selected.convert_animations = True
         selected.copy_sounds = True
+    elif start_phase == "materials":
+        selected.convert_materials = True
+        selected.convert_havok = True
+        selected.synthesize_drivers = True
+        selected.convert_animations = True
+        selected.copy_sounds = True
     elif start_phase == "havok":
         selected.convert_havok = True
         selected.synthesize_drivers = True
         selected.convert_animations = True
+        selected.copy_sounds = True
+    elif start_phase == "drivers":
+        selected.convert_havok = True
+        selected.synthesize_drivers = True
+        selected.convert_animations = True
+        selected.copy_sounds = True
+    elif start_phase == "animations":
+        selected.convert_animations = True
+        selected.copy_sounds = True
+    elif start_phase == "sounds":
         selected.copy_sounds = True
     else:
         raise ValueError(f"{start_phase!r} is not an asset resume phase")
@@ -3468,55 +3554,74 @@ def run_full_regen(
     )
 
 
-def run_resume_from_phase(
+def _build_existing_post_driver(
+    paths: RegenPaths,
+    plugin_names: list[str],
+    *,
+    resolved_workers: int,
+    runner,
+):
+    from bacup_lib.models import PluginPortOptions, PluginPortRequest
+    from bacup_lib.workflows.unified import UnifiedDriver
+
+    source_plugin = _resolve_source_plugins(
+        plugin_names,
+        data_dir=paths.source_data_dir,
+        extracted_dir=paths.source_extracted_dir,
+    )[0]
+    post_options = PluginPortOptions(
+        translate_records=False,
+        convert_placed_records=False,
+        convert_terrain=False,
+        convert_scripts=False,
+        build_esp=True,
+        conversion_workers=resolved_workers,
+    )
+    request = PluginPortRequest(
+        source_game="fo76",
+        target_game="fo4",
+        source_plugins=[source_plugin],
+        output_root=paths.output_root.parent,
+        output_mod_name=paths.mod_name,
+        target_extracted_dir=paths.target_extracted_dir,
+        target_data_dir=paths.target_data_dir,
+        source_data_dir=paths.source_extracted_dir,
+        additional_source_asset_roots=paths.additional_source_asset_roots,
+        target_asset_catalog_path=paths.target_asset_catalog_path,
+        target_asset_cache_dir=paths.target_asset_cache_dir,
+        options=post_options,
+        emit_authoring_yaml=False,
+        diagnostics_root=paths.diagnostics_root or paths.output_root,
+    )
+    driver = UnifiedDriver(request)
+    ctx = driver.record_runtime._build_context(
+        source_plugin,
+        plugin_names[0],
+        paths.output_root,
+        runner,
+    )
+    driver.ctx = ctx
+    return source_plugin, request, driver, ctx
+
+
+def _run_existing_post_phases(
     paths: RegenPaths,
     options: RegenOptions,
     *,
     start_phase: str,
-    phases,
+    plugin_names: list[str],
     runner,
-    lod_settings: dict | None = None,
-    lod_worldspaces: list[str] | None = None,
+    lod_settings: dict | None,
+    lod_worldspaces: list[str] | None,
     timing_report=None,
 ) -> RegenResult:
-    """Resume a generated Appalachia output from a chosen phase.
-
-    The selected phase and every downstream phase overwrite existing outputs.
-    Earlier conversion phases are used only for the minimal setup the pipeline
-    needs, not for rebuilding records or terrain.
-    """
     from bacup_lib.timing_report import TimingReport
-
-    phase = _normalize_resume_phase(start_phase)
-    plugin_names = list(FO76_PLUGINS)
-    _require_existing_plugins(paths, plugin_names, start_phase=phase)
-
-    if phase in {"nifs", "textures", "havok"}:
-        selected = _resume_phase_selection(phase, phases)
-        selected.lod_mode = options.lod_mode
-        runner.emit_log(
-            "INFO",
-            "Resuming Appalachia conversion from "
-            f"{_RESUME_PHASE_LABELS[phase]}; outputs from this phase onward will be overwritten",
-        )
-        return run_full_regen(
-            paths,
-            options,
-            phases=selected,
-            runner=runner,
-            lod_settings=lod_settings,
-            lod_worldspaces=lod_worldspaces,
-            timing_report=timing_report,
-        )
-
-    if phase == "deploy":
-        runner.emit_log("INFO", "Resuming Appalachia conversion from Deploy Mod")
-        return deploy_existing(
-            paths,
-            plugin_names=plugin_names,
-            update_runtime_ini=options.update_runtime_ini,
-            timing_report=timing_report,
-        )
+    from bacup_lib.workflows.unified import (
+        _finalize_fo76_pipboy_map_texture,
+        _regenerate_modt_after_asset_waves,
+        _run_anim_text_data_generation,
+        _run_post_phase,
+    )
 
     started = time.perf_counter()
     tr = timing_report or TimingReport()
@@ -3528,14 +3633,58 @@ def run_resume_from_phase(
     failures: list[str] = []
     warnings: list[str] = []
     archives_already_deployed = False
+    post_driver = None
+    post_ctx = None
 
     try:
         runner.emit_log(
             "INFO",
             "Resuming Appalachia conversion from "
-            f"{_RESUME_PHASE_LABELS[phase]}; outputs from this phase onward will be overwritten",
+            f"{_RESUME_PHASE_LABELS[start_phase]}; outputs from this phase onward will be overwritten",
         )
-        if phase == "lodgen":
+        if start_phase in {"modt", "animtext"}:
+            source_plugin, request, post_driver, post_ctx = _build_existing_post_driver(
+                paths,
+                plugin_names,
+                resolved_workers=resolved_workers,
+                runner=runner,
+            )
+            if start_phase == "modt":
+                _run_post_phase(
+                    "Regenerate MODT",
+                    lambda progress: _regenerate_modt_after_asset_waves(
+                        post_driver,
+                        runner,
+                        output_root,
+                        progress=progress,
+                    ),
+                    runner,
+                )
+                post_driver.record_runtime._repair_term_marker_parameters_final(
+                    post_ctx,
+                    runner,
+                    source_plugin,
+                )
+                request.options.convert_textures = True
+                _finalize_fo76_pipboy_map_texture(request, post_ctx, runner)
+
+            if start_phase == "animtext" or options.generate_anim_text_data:
+                _run_post_phase(
+                    "Generate AnimTextData",
+                    lambda progress: _run_anim_text_data_generation(
+                        post_ctx,
+                        runner,
+                        force_native=options.anim_text_data_native,
+                        progress=progress,
+                    ),
+                    runner,
+                )
+
+        if start_phase in {"modt", "animtext", "lodgen"} and options.lod_mode in {
+            "generate",
+            "hybrid",
+            "hybrid-atlas",
+        }:
             _run_runner_phase(
                 runner,
                 90,
@@ -3553,7 +3702,7 @@ def run_resume_from_phase(
 
         _sanitize_existing_outputs(output_root, plugin_names)
 
-        if phase in {"lodgen", "pack"}:
+        if start_phase in {"modt", "animtext", "lodgen", "pack"}:
             pack_result = {"archives_already_deployed": False}
 
             def pack_body() -> None:
@@ -3572,7 +3721,7 @@ def run_resume_from_phase(
             archives_already_deployed = bool(pack_result["archives_already_deployed"])
 
         if options.deep_invariants:
-            f, w = _check_run_invariants(
+            invariant_failures, invariant_warnings = _check_run_invariants(
                 output_root,
                 False,
                 plugin_names,
@@ -3580,8 +3729,8 @@ def run_resume_from_phase(
                 deep_invariants=True,
                 skip_pack=archives_already_deployed,
             )
-            failures.extend(f)
-            warnings.extend(w)
+            failures.extend(invariant_failures)
+            warnings.extend(invariant_warnings)
 
         deployed = False
         if not failures and options.deploy:
@@ -3606,6 +3755,9 @@ def run_resume_from_phase(
             time.perf_counter() - started,
         )
         raise
+    finally:
+        if post_driver is not None and post_ctx is not None:
+            post_driver.record_runtime._close_target_master_handles(post_ctx)
 
     elapsed = time.perf_counter() - started
     _write_conversion_reports(tr, None, diagnostics_root, elapsed)
@@ -3623,6 +3775,110 @@ def run_resume_from_phase(
         deployed=deployed,
         failures=failures,
         warnings=warnings,
+    )
+
+
+def run_resume_from_phase(
+    paths: RegenPaths,
+    options: RegenOptions,
+    *,
+    start_phase: str,
+    phases,
+    runner,
+    lod_settings: dict | None = None,
+    lod_worldspaces: list[str] | None = None,
+    timing_report=None,
+) -> RegenResult:
+    """Resume a generated Appalachia output from a chosen phase.
+
+    The selected phase and every downstream phase overwrite existing outputs.
+    Phases before the first durable on-disk ESP checkpoint safely fall back to a
+    full record rebuild.
+    """
+    phase = _normalize_resume_phase(start_phase)
+    plugin_names = list(FO76_PLUGINS)
+    if phase not in _FULL_REBUILD_RESUME_PHASES:
+        _require_existing_plugins(paths, plugin_names, start_phase=phase)
+
+    if phase in _FULL_REBUILD_RESUME_PHASES:
+        runner.emit_log(
+            "INFO",
+            f"{_RESUME_PHASE_LABELS[phase]} has no durable pre-build checkpoint; "
+            "restarting from Translate Records",
+        )
+        return run_full_regen(
+            paths,
+            options,
+            phases=phases,
+            runner=runner,
+            lod_settings=lod_settings,
+            lod_worldspaces=lod_worldspaces,
+            timing_report=timing_report,
+        )
+
+    if phase in {
+        "nifs",
+        "textures",
+        "materials",
+        "havok",
+        "drivers",
+        "animations",
+        "sounds",
+    }:
+        selected = _resume_phase_selection(phase, phases)
+        selected.lod_mode = "none"
+        runner.emit_log(
+            "INFO",
+            "Resuming Appalachia conversion from "
+            f"{_RESUME_PHASE_LABELS[phase]}; outputs from this phase onward will be overwritten",
+        )
+        asset_options = copy.copy(options)
+        asset_options.deploy = False
+        asset_options.lod_mode = "none"
+        asset_options.generate_anim_text_data = False
+        asset_options.write_land_cache = False
+        asset_result = run_full_regen(
+            paths,
+            asset_options,
+            phases=selected,
+            runner=runner,
+            lod_settings=lod_settings,
+            lod_worldspaces=lod_worldspaces,
+            timing_report=timing_report,
+        )
+        if asset_result.failures or asset_result.exit_code not in {0, 3}:
+            return asset_result
+        post_result = _run_existing_post_phases(
+            paths,
+            options,
+            start_phase="modt",
+            plugin_names=plugin_names,
+            runner=runner,
+            lod_settings=lod_settings,
+            lod_worldspaces=lod_worldspaces,
+            timing_report=timing_report,
+        )
+        post_result.warnings = [*asset_result.warnings, *post_result.warnings]
+        return post_result
+
+    if phase == "deploy":
+        runner.emit_log("INFO", "Resuming Appalachia conversion from Deploy Mod")
+        return deploy_existing(
+            paths,
+            plugin_names=plugin_names,
+            update_runtime_ini=options.update_runtime_ini,
+            timing_report=timing_report,
+        )
+
+    return _run_existing_post_phases(
+        paths,
+        options,
+        start_phase=phase,
+        plugin_names=plugin_names,
+        runner=runner,
+        lod_settings=lod_settings,
+        lod_worldspaces=lod_worldspaces,
+        timing_report=timing_report,
     )
 
 

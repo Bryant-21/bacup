@@ -390,6 +390,41 @@ pub(crate) fn is_fo4_incompatible_condition_function_id(function_id: u16) -> boo
 
 pub(crate) const FO76_RADIO_FREQUENCY_NAMESPACE_OFFSET: f32 = 2048.0;
 
+const FO76_FONT_ALIAS_REPLACEMENTS: [(&str, &str); 3] = [
+    ("$Typewriter_Font", "$Terminal_Font"),
+    ("$76HandwrittenNeat_Font", "$HandwrittenFont"),
+    ("$76HandwrittenIlliterate", "$HandwrittenFont"),
+];
+
+pub(crate) fn rewritten_fo76_font_aliases_for_fo4(text: &str) -> Option<String> {
+    if !FO76_FONT_ALIAS_REPLACEMENTS
+        .iter()
+        .any(|(source, _)| text.contains(source))
+    {
+        return None;
+    }
+
+    let mut rewritten = text.to_string();
+    for (source, target) in FO76_FONT_ALIAS_REPLACEMENTS {
+        rewritten = rewritten.replace(source, target);
+    }
+    Some(rewritten)
+}
+
+fn rewrite_fo76_font_aliases_in_record(record: &mut Record, interner: &crate::sym::StringInterner) {
+    for field in &mut record.fields {
+        let FieldValue::String(symbol) = &mut field.value else {
+            continue;
+        };
+        if let Some(rewritten) = interner
+            .resolve(*symbol)
+            .and_then(rewritten_fo76_font_aliases_for_fo4)
+        {
+            *symbol = interner.intern(&rewritten);
+        }
+    }
+}
+
 pub(crate) fn namespace_fo76_radio_frequency(frequency: &mut f32) -> bool {
     if !frequency.is_finite()
         || *frequency <= 0.0
@@ -3006,6 +3041,7 @@ impl PairHook for Fo76Fo4Hook {
     }
 
     fn post_translate(&self, ctx: &mut PairCtx<'_>, record: &mut Record) -> HookResult {
+        rewrite_fo76_font_aliases_in_record(record, ctx.interner);
         Self::namespace_radio_receiver_frequency(ctx.interner, record);
         Self::strip_pack_runtime_refs(record);
         Self::neutralize_dangling_package_alias_targets(record);
@@ -4742,6 +4778,33 @@ mod tests {
             98.2 + FO76_RADIO_FREQUENCY_NAMESPACE_OFFSET
         );
         assert_eq!(record.fields, once);
+    }
+
+    #[test]
+    fn post_translate_rewrites_fo76_font_aliases_in_localized_text() {
+        let interner = StringInterner::new();
+        let mut record = make_record("BOOK", &interner);
+        push_field(
+            &mut record,
+            "DESC",
+            FieldValue::String(interner.intern(
+                "<font face='$Typewriter_Font'>typed</font> <font face='$76HandwrittenNeat_Font'>neat</font> <font face='$76HandwrittenIlliterate'>rough</font>",
+            )),
+        );
+
+        Fo76Fo4Hook
+            .post_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let FieldValue::String(text) = record.fields[0].value else {
+            panic!("expected localized text");
+        };
+        assert_eq!(
+            interner.resolve(text),
+            Some(
+                "<font face='$Terminal_Font'>typed</font> <font face='$HandwrittenFont'>neat</font> <font face='$HandwrittenFont'>rough</font>"
+            )
+        );
     }
 
     #[test]

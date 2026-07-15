@@ -5,9 +5,9 @@ import struct
 
 import pytest
 
-from ui.editor.material_readers.base import MaterialData
-from ui.editor.material_readers.bgsm_reader import read_bgsm, read_bgem
-from ui.editor.material_readers.starfield_mat_reader import read_mat_json
+from creation_lib.renderer.material_readers.base import MaterialData
+from creation_lib.renderer.material_readers.bgsm_reader import read_bgsm, read_bgem
+from creation_lib.renderer.material_readers.starfield_mat_reader import read_mat_json
 
 
 class TestMaterialData:
@@ -148,14 +148,14 @@ class TestStarfieldMatReader:
 
 class TestLayerData:
     def test_layer_data_defaults(self):
-        from ui.editor.material_readers.base import LayerData
+        from creation_lib.renderer.material_readers.base import LayerData
         layer = LayerData()
         assert layer.texture_paths == {}
         assert layer.tint_color is None
         assert layer.opacity == 1.0
 
     def test_layer_data_with_textures(self):
-        from ui.editor.material_readers.base import LayerData
+        from creation_lib.renderer.material_readers.base import LayerData
         layer = LayerData(
             texture_paths={"diffuse": "tex_color.dds", "normal": "tex_normal.dds"},
             tint_color=(1.0, 0.5, 0.0),
@@ -168,7 +168,7 @@ class TestLayerData:
 
 class TestBlenderData:
     def test_blender_data_defaults(self):
-        from ui.editor.material_readers.base import BlenderData
+        from creation_lib.renderer.material_readers.base import BlenderData
         blender = BlenderData()
         assert blender.mode == "linear"
         assert blender.mask_texture is None
@@ -177,7 +177,7 @@ class TestBlenderData:
         assert blender.vertex_color_channel is None
 
     def test_blender_data_custom(self):
-        from ui.editor.material_readers.base import BlenderData
+        from creation_lib.renderer.material_readers.base import BlenderData
         blender = BlenderData(
             mode="position_contrast",
             mask_texture="blend_mask.dds",
@@ -192,7 +192,7 @@ class TestBlenderData:
 
 class TestMaterialDataLayers:
     def test_material_data_with_layers(self):
-        from ui.editor.material_readers.base import MaterialData, LayerData, BlenderData
+        from creation_lib.renderer.material_readers.base import MaterialData, LayerData, BlenderData
         md = MaterialData(
             material_model="metallic-roughness",
             layers=[
@@ -209,7 +209,7 @@ class TestMaterialDataLayers:
 
     def test_material_data_backward_compat(self):
         """Existing code that doesn't set layers should still work."""
-        from ui.editor.material_readers.base import MaterialData
+        from creation_lib.renderer.material_readers.base import MaterialData
         md = MaterialData()
         assert md.layers == []
         assert md.blenders == []
@@ -322,9 +322,9 @@ class TestStarfieldBlenders:
                 },
                 "Layer2": {
                     "Textures": {"Albedo": {"File": "l2.DDS", "UseReplacement": False}},
-                },
-                "Blender1": {
-                    "BlendMode": "Linear",
+                    "Blender": {
+                        "BlendMode": "Linear",
+                    },
                 },
             }
         }
@@ -338,10 +338,12 @@ class TestStarfieldBlenders:
         mat = {
             "Summary": {
                 "Layer1": {"Textures": {"Albedo": {"File": "l1.DDS", "UseReplacement": False}}},
-                "Layer2": {"Textures": {"Albedo": {"File": "l2.DDS", "UseReplacement": False}}},
-                "Blender1": {
-                    "BlendMode": "PositionContrast",
-                    "MaskTexture": {"File": "Textures\\blend_mask.DDS", "UseReplacement": False},
+                "Layer2": {
+                    "Textures": {"Albedo": {"File": "l2.DDS", "UseReplacement": False}},
+                    "Blender": {
+                        "BlendMode": "PositionContrast",
+                        "MaskTexture": {"File": "Textures\\blend_mask.DDS", "UseReplacement": False},
+                    },
                 },
             }
         }
@@ -355,10 +357,12 @@ class TestStarfieldBlenders:
         mat = {
             "Summary": {
                 "Layer1": {"Textures": {"Albedo": {"File": "l1.DDS", "UseReplacement": False}}},
-                "Layer2": {"Textures": {"Albedo": {"File": "l2.DDS", "UseReplacement": False}}},
-                "Blender1": {
-                    "BlendMode": "Linear",
-                    "VertexColorChannel": "R",
+                "Layer2": {
+                    "Textures": {"Albedo": {"File": "l2.DDS", "UseReplacement": False}},
+                    "Blender": {
+                        "BlendMode": "Linear",
+                        "VertexColorChannel": "R",
+                    },
                 },
             }
         }
@@ -371,11 +375,13 @@ class TestStarfieldBlenders:
         mat = {
             "Summary": {
                 "Layer1": {"Textures": {"Albedo": {"File": "l1.DDS", "UseReplacement": False}}},
-                "Layer2": {"Textures": {"Albedo": {"File": "l2.DDS", "UseReplacement": False}}},
-                "Blender1": {
-                    "BlendMode": "Linear",
-                    "HeightBlendThreshold": 0.3,
-                    "HeightBlendFactor": 2.5,
+                "Layer2": {
+                    "Textures": {"Albedo": {"File": "l2.DDS", "UseReplacement": False}},
+                    "Blender": {
+                        "BlendMode": "Linear",
+                        "HeightBlendThreshold": 0.3,
+                        "HeightBlendFactor": 2.5,
+                    },
                 },
             }
         }

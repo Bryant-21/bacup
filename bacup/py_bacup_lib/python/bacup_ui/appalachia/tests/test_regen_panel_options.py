@@ -6,6 +6,9 @@ from bacup_lib.regen_pipeline import RegenOptions, RegenPaths
 from bacup_lib.lod_settings import PROFILE_HIGH_QUALITY
 from bacup_ui.conversion.panels.regen_panel import (
     _COMPANION_MOD_NAME,
+    _PHASE_ROWS,
+    _RECOVERY_PHASE_LABELS,
+    _RECOVERY_PHASE_VALUES,
     RegenPanel,
 )
 
@@ -59,6 +62,13 @@ def _panel(ws):
     p._preflight_report = None
     p._preflight_cache = None
     return p
+
+
+def test_recovery_menu_covers_every_displayed_conversion_stage():
+    assert len(_RECOVERY_PHASE_VALUES) == len(_RECOVERY_PHASE_LABELS)
+    assert [label.split(" (", 1)[0] for label in _RECOVERY_PHASE_LABELS] == [
+        label for _slug, label in _PHASE_ROWS
+    ]
 
 
 def test_build_paths_from_settings(monkeypatch):

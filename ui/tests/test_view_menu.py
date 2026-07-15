@@ -7,7 +7,7 @@ sys.modules.setdefault("imgui_bundle", _imgui_mock)
 sys.modules.setdefault("imgui_bundle.imgui", _imgui_mock)
 sys.modules.setdefault("imgui_bundle.hello_imgui", _imgui_mock)
 
-from ui.toolkit.view_menu import ViewMenuHelper
+from creation_lib.ui.shell.view_menu import ViewMenuHelper
 
 
 def test_display_name_strips_suffix():
@@ -39,7 +39,7 @@ def test_find_window_returns_none_when_not_found():
     fake_rp = MagicMock()
     fake_rp.docking_params = fake_dp
 
-    with patch("ui.toolkit.view_menu.hello_imgui") as mock_hi:
+    with patch("creation_lib.ui.shell.view_menu.hello_imgui") as mock_hi:
         mock_hi.get_runner_params.return_value = fake_rp
         result = ViewMenuHelper._find_window("Missing##nif")
 
@@ -54,7 +54,7 @@ def test_find_window_returns_correct_window():
     fake_rp = MagicMock()
     fake_rp.docking_params = fake_dp
 
-    with patch("ui.toolkit.view_menu.hello_imgui") as mock_hi:
+    with patch("creation_lib.ui.shell.view_menu.hello_imgui") as mock_hi:
         mock_hi.get_runner_params.return_value = fake_rp
         result = ViewMenuHelper._find_window("Files##papyrus")
 

@@ -955,27 +955,31 @@ const NPC_ACBS_TEMPLATE_FLAGS_OFFSET: usize = 14;
 const NPC_TEMPLATE_TRAITS: u16 = 0x0001;
 const NPC_TEMPLATE_STATS: u16 = 0x0002;
 const NPC_TEMPLATE_FACTIONS: u16 = 0x0004;
+const NPC_TEMPLATE_SPELL_LIST: u16 = 0x0008;
 const NPC_TEMPLATE_AI_DATA: u16 = 0x0010;
 const NPC_TEMPLATE_AI_PACKAGES: u16 = 0x0020;
 const NPC_TEMPLATE_MODEL_ANIMATION: u16 = 0x0040;
 const NPC_TEMPLATE_BASE_DATA: u16 = 0x0080;
 const NPC_TEMPLATE_INVENTORY: u16 = 0x0100;
 const NPC_TEMPLATE_SCRIPT: u16 = 0x0200;
+const NPC_TEMPLATE_DEF_PACKAGE_LIST: u16 = 0x0400;
+const NPC_TEMPLATE_ATTACK_DATA: u16 = 0x0800;
+const NPC_TEMPLATE_KEYWORDS: u16 = 0x1000;
 
 const NPC_TPTA_SLOT_TEMPLATE_FLAGS: [u16; 13] = [
     NPC_TEMPLATE_TRAITS,
     NPC_TEMPLATE_STATS,
     NPC_TEMPLATE_FACTIONS,
-    0,
+    NPC_TEMPLATE_SPELL_LIST,
     NPC_TEMPLATE_AI_DATA,
     NPC_TEMPLATE_AI_PACKAGES,
     NPC_TEMPLATE_MODEL_ANIMATION,
     NPC_TEMPLATE_BASE_DATA,
     NPC_TEMPLATE_INVENTORY,
     NPC_TEMPLATE_SCRIPT,
-    0,
-    0,
-    0,
+    NPC_TEMPLATE_DEF_PACKAGE_LIST,
+    NPC_TEMPLATE_ATTACK_DATA,
+    NPC_TEMPLATE_KEYWORDS,
 ];
 
 fn sanitize_npc_actor_runtime_refs(
@@ -5032,6 +5036,19 @@ mod tests {
         assert_eq!(
             slots,
             vec![0x001DFE13, 0x00000000, 0x075F6DC1, 0x075DC207, 0x075B2FFF]
+        );
+    }
+
+    #[test]
+    fn npc_template_flags_include_every_fo4_tpta_slot() {
+        let mut bytes = Vec::new();
+        for slot in 1_u32..=13 {
+            bytes.extend_from_slice(&slot.to_le_bytes());
+        }
+
+        assert_eq!(
+            template_flags_for_tpta_value(&FieldValue::Bytes(SmallVec::from_vec(bytes))),
+            0x1FFF
         );
     }
 
