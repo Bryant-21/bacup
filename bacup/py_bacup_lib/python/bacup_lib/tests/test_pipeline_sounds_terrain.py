@@ -757,11 +757,12 @@ def test_terrain_fo76_dispatches(monkeypatch, tmp_path: Path):
     assert progress.status == "completed"
 
 
-def test_terrain_fnv_legacy_phase_removed(tmp_path: Path):
+@pytest.mark.parametrize("source", ["fnv", "fo3", "skyrimse"])
+def test_terrain_rust_translation_sources_skip_python_phase(tmp_path: Path, source: str):
     from bacup_lib import pipeline
     from bacup_lib.models import PhaseProgress
 
-    ctx = _context("fnv", tmp_path)
+    ctx = _context(source, tmp_path)
     runner = MagicMock()
     progress = PhaseProgress(phase=2, phase_name="Terrain")
 
@@ -771,9 +772,8 @@ def test_terrain_fnv_legacy_phase_removed(tmp_path: Path):
     assert progress.completed_items == 0
     runner.emit_log.assert_called_once()
     level, message = runner.emit_log.call_args.args
-    assert level == "WARN"
-    assert "fnv land is emitted by rust translate_records" in message.lower()
-    assert "legacy python terrain phase has been removed" in message.lower()
+    assert level == "INFO"
+    assert f"{source} land is emitted by rust translate_records" in message.lower()
 
 
 def _hash_tree(root: Path) -> dict[str, bytes]:

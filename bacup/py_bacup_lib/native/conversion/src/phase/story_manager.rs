@@ -8,17 +8,20 @@ use smallvec::SmallVec;
 
 use crate::ids::{FormKey, SigCode, SubrecordSig};
 use crate::phase::{LogLevel, Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
-use crate::record::{FieldValue, Record};
+use crate::record::{FieldEntry, FieldValue, Record};
 use crate::run::{ConversionRun, RunError, TranslateStats};
 use crate::source_read::{iter_form_keys_of_sig, read_record_relayout_by_form_key};
 use crate::sym::StringInterner;
 use crate::translator::pair_hooks::fo76_fo4::{
-    fo76_qust_type_disables_start_game, qust_eid_is_dialogue_conversation,
+    qust_eid_is_dialogue_conversation, qust_has_untranslatable_event_alias,
 };
 
 const SCPT_EVENT_TYPE: u32 = 0x5450_4353;
+pub(crate) const FO4_SCRIPT_EVENT_ROOT_LOCAL: u32 = 0x029152;
 const QUST_FLAG_START_GAME_ENABLED: u16 = 0x0001;
 const QUST_FLAG_HAS_DIALOGUE_DATA: u16 = 0x8000;
+const QUST_FLAG_UNIQUE_INSTANCE: u64 = 0x0001_0000;
+const QUST_STAGE_FLAG_RUN_ON_START: u16 = 0x0002;
 
 const FO4_SM_EVENT_ROOTS: [(u32, u32); 10] = [
     (fourcc(b"ADIA"), 0x021E65),
@@ -29,7 +32,7 @@ const FO4_SM_EVENT_ROOTS: [(u32, u32); 10] = [
     (fourcc(b"LEVL"), 0x16556F),
     (fourcc(b"LOCK"), 0x0A51B5),
     (fourcc(b"REMP"), 0x07956B),
-    (SCPT_EVENT_TYPE, 0x029152),
+    (SCPT_EVENT_TYPE, FO4_SCRIPT_EVENT_ROOT_LOCAL),
     (fourcc(b"TMEE"), 0x02A68B),
 ];
 
@@ -37,10 +40,9 @@ const fn fourcc(code: &[u8; 4]) -> u32 {
     u32::from_le_bytes([code[0], code[1], code[2], code[3]])
 }
 
-/// Story Manager event types (`SMEN.ENAM`) that exist in FO4. A node rooted at one
-/// of these is carried with its event type intact; any other (FO76-only) type —
-/// e.g. ADBO/CBGN/ILOC/LCPG/PCON/QPMT — is remapped to SCPT so FO4's CK does not
-/// crash instantiating an unknown event dispatcher at load.
+/// Story Manager event types (`SMEN.ENAM`) that exist in FO4. Their source roots
+/// map to the corresponding FO4 master records. Other event roots are lowered to
+/// keyword-gated branches beneath FO4's Script Event root.
 const FO4_VALID_SM_EVENT_TYPES: [u32; 10] = [
     fourcc(b"ADIA"),
     fourcc(b"CLOC"),
@@ -110,8 +112,16 @@ pub(crate) struct StoryManagerSourceGraph {
 pub(crate) struct StoryManagerSelection {
     pub ordered_nodes: Vec<FormKey>,
     pub selected_nodes: FxHashSet<FormKey>,
-    pub selected_dialogue_quests: Vec<FormKey>,
+    pub selected_quests_by_node: FxHashMap<FormKey, FxHashSet<FormKey>>,
+    pub selected_event_roots_by_quest: FxHashMap<FormKey, FxHashSet<FormKey>>,
+    pub fallback_dialogue_quests: Vec<FormKey>,
     pub diagnostics: Vec<StoryManagerDiagnostic>,
+}
+
+#[derive(Default, Debug, Clone)]
+pub(crate) struct StoryManagerQuestEventPlan {
+    pub rewrites: FxHashMap<FormKey, u32>,
+    pub unresolved: Vec<(FormKey, Vec<u32>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,7 +209,7 @@ pub(crate) fn load_source_graph(
         .values()
         .filter(|record| record.sig == smqn_sig())
     {
-        if let Some(quest) = story_manager_quest(record) {
+        for quest in story_manager_quests(record) {
             quest_fks.insert(quest);
         }
     }
@@ -229,6 +239,40 @@ pub(crate) fn load_source_graph(
     Ok(graph)
 }
 
+pub(crate) fn npc_referenced_quest_local_ids(
+    source_handle_id: u64,
+) -> Result<FxHashSet<u32>, RunError> {
+    use esp_authoring_core::plugin_runtime::{
+        ensure_core_section, ensure_refs_section, plugin_handle_store_ref,
+    };
+
+    let mut store = plugin_handle_store_ref()
+        .lock()
+        .map_err(|e| RunError::InvalidConfig(format!("plugin handle store poisoned: {e}")))?;
+    let slot = store.get_mut(&source_handle_id).ok_or_else(|| {
+        RunError::InvalidConfig(format!("unknown plugin handle {source_handle_id}"))
+    })?;
+    let core = ensure_core_section(slot);
+    let refs = ensure_refs_section(slot);
+    let mut quests = FxHashSet::default();
+    for (target, incoming) in &refs.reverse_refs_by_form_key {
+        let Some(target_entry) = core.by_form_key.get(target) else {
+            continue;
+        };
+        if !target_entry.signature.eq_ignore_ascii_case("QUST") {
+            continue;
+        }
+        if incoming.iter().any(|source| {
+            core.by_form_key
+                .get(source)
+                .is_some_and(|entry| entry.signature.eq_ignore_ascii_case("NPC_"))
+        }) {
+            quests.insert(target.object_id);
+        }
+    }
+    Ok(quests)
+}
+
 pub(crate) fn classify_story_manager_records(
     graph: &StoryManagerSourceGraph,
     translated_quests: &FxHashSet<FormKey>,
@@ -243,7 +287,8 @@ pub(crate) fn classify_story_manager_records(
     smqns.sort_by_key(|(fk, _)| fk.local);
 
     for (smqn_fk, smqn) in smqns {
-        let Some(quest_fk) = story_manager_quest(smqn) else {
+        let quest_fks = story_manager_quests(smqn);
+        if quest_fks.is_empty() {
             push_skip(
                 &mut selection,
                 *smqn_fk,
@@ -251,34 +296,44 @@ pub(crate) fn classify_story_manager_records(
                 "SMQN has no NNAM quest",
             );
             continue;
-        };
-        if !translated_quests.contains(&quest_fk) {
-            push_skip(
-                &mut selection,
-                *smqn_fk,
-                StoryManagerSkipReason::QuestNotTranslated,
-                format!("quest {:06X} is not translated", quest_fk.local),
-            );
+        }
+        let mut selected_quests = Vec::new();
+        let mut first_rejection = None;
+        for quest_fk in quest_fks {
+            let rejected = if !translated_quests.contains(&quest_fk) {
+                Some((
+                    StoryManagerSkipReason::QuestNotTranslated,
+                    format!("quest {:06X} is not translated", quest_fk.local),
+                ))
+            } else if let Some(quest) = graph.quests.get(&quest_fk) {
+                match classify_quest(quest, interner) {
+                    Some(kind) => {
+                        selected_quests.push((quest_fk, kind));
+                        None
+                    }
+                    None => Some((
+                        StoryManagerSkipReason::UnsupportedQuest,
+                        format!("quest {:06X} is not runtime safe", quest_fk.local),
+                    )),
+                }
+            } else {
+                Some((
+                    StoryManagerSkipReason::MissingQuestRecord,
+                    format!("quest {:06X} could not be read", quest_fk.local),
+                ))
+            };
+            if first_rejection.is_none() {
+                first_rejection = rejected;
+            }
+        }
+        if selected_quests.is_empty() {
+            let (reason, message) = first_rejection.unwrap_or((
+                StoryManagerSkipReason::MissingQuest,
+                "SMQN has no usable NNAM quest".to_string(),
+            ));
+            push_skip(&mut selection, *smqn_fk, reason, message);
             continue;
         }
-        let Some(quest) = graph.quests.get(&quest_fk) else {
-            push_skip(
-                &mut selection,
-                *smqn_fk,
-                StoryManagerSkipReason::MissingQuestRecord,
-                format!("quest {:06X} could not be read", quest_fk.local),
-            );
-            continue;
-        };
-        let Some(quest_kind) = classify_quest(quest, interner) else {
-            push_skip(
-                &mut selection,
-                *smqn_fk,
-                StoryManagerSkipReason::UnsupportedQuest,
-                format!("quest {:06X} is not radio/dialogue safe", quest_fk.local),
-            );
-            continue;
-        };
         let chain = match safe_parent_chain(smqn, graph) {
             Ok(chain) => chain,
             Err(reason) => {
@@ -291,24 +346,53 @@ pub(crate) fn classify_story_manager_records(
                 continue;
             }
         };
+        let root_uses_fo4_event = chain
+            .last()
+            .and_then(|root_fk| graph.nodes.get(root_fk))
+            .and_then(story_manager_event_type)
+            .is_some_and(is_fo4_valid_sm_event);
+        let event_root = *chain
+            .last()
+            .expect("safe Story Manager parent chain ends at an event root");
 
-        for fk in chain.into_iter().rev().chain(std::iter::once(*smqn_fk)) {
+        for fk in chain.iter().rev().copied().chain(std::iter::once(*smqn_fk)) {
             if selection.selected_nodes.insert(fk) {
                 selection.ordered_nodes.push(fk);
             }
         }
-        if quest_kind == StoryQuestKind::Dialogue
-            && !selection.selected_dialogue_quests.contains(&quest_fk)
-        {
-            selection.selected_dialogue_quests.push(quest_fk);
+        let mut selected_ids = Vec::with_capacity(selected_quests.len());
+        let allowed = selection
+            .selected_quests_by_node
+            .entry(*smqn_fk)
+            .or_default();
+        for (quest_fk, quest_kind) in selected_quests {
+            allowed.insert(quest_fk);
+            selection
+                .selected_event_roots_by_quest
+                .entry(quest_fk)
+                .or_default()
+                .insert(event_root);
+            selected_ids.push(format!("{:06X}:{quest_kind:?}", quest_fk.local));
+            let is_unique = graph
+                .quests
+                .get(&quest_fk)
+                .is_some_and(|quest| qust_is_unique_instance(quest, interner));
+            if quest_kind == StoryQuestKind::Dialogue
+                && !root_uses_fo4_event
+                && !is_unique
+                && !selection.fallback_dialogue_quests.contains(&quest_fk)
+            {
+                selection.fallback_dialogue_quests.push(quest_fk);
+            }
         }
         selection.diagnostics.push(StoryManagerDiagnostic {
             form_key: *smqn_fk,
             kind: StoryManagerDiagnosticKind::Selected,
             reason: None,
             message: format!(
-                "selected SMQN {:06X} quest={:06X} kind={quest_kind:?}",
-                smqn_fk.local, quest_fk.local
+                "selected SMQN {:06X} quests={}",
+                smqn_fk.local,
+                selected_ids.join(",")
             ),
         });
     }
@@ -350,9 +434,6 @@ pub(crate) fn force_qust_autostart(record: &mut Record, interner: &StringInterne
 }
 
 fn force_qust_autostart_value(value: &mut FieldValue, interner: &StringInterner) -> bool {
-    if qust_dnam_type(value, interner).is_some_and(fo76_qust_type_disables_start_game) {
-        return false;
-    }
     match value {
         FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
             let mut flags = u16::from_le_bytes([bytes[0], bytes[1]]);
@@ -383,18 +464,6 @@ fn force_qust_autostart_value(value: &mut FieldValue, interner: &StringInterner)
             old != raw
         }
         _ => false,
-    }
-}
-
-fn qust_dnam_type(value: &FieldValue, interner: &StringInterner) -> Option<u8> {
-    match value {
-        FieldValue::Bytes(bytes) if bytes.len() > 8 => Some(bytes[8]),
-        FieldValue::Struct(fields) => fields
-            .iter()
-            .find(|(name, _)| field_name_is(interner, *name, "type"))
-            .and_then(|(_, value)| field_value_u32(value))
-            .and_then(|value| u8::try_from(value).ok()),
-        _ => None,
     }
 }
 
@@ -431,10 +500,8 @@ fn safe_parent_chain(
             return Err(StoryManagerSkipReason::MissingParent);
         };
         if record.sig == smen_sig() {
-            // Every SMEN is a valid event root: FO4-native types are kept as-is and
-            // FO76-only types are neutralized to SCPT at translation time, so no
-            // event root is unsafe anymore. Its PNAM may point to an inherited
-            // base-game root that is intentionally outside the source graph.
+            // Its PNAM may point to an inherited base-game root that is
+            // intentionally outside the source graph.
             found_event_root = true;
             chain.push(current);
             break;
@@ -458,9 +525,9 @@ fn safe_parent_chain(
 }
 
 fn classify_quest(record: &Record, interner: &StringInterner) -> Option<StoryQuestKind> {
-    if qust_eid_is_test_or_dev(record, interner)
-        || qust_eid_is_disabled_local_broadcast(record, interner)
-    {
+    // Never make a source event path runnable after translation discarded the
+    // alias data it needs to start. Proven player aliases are rewritten safely.
+    if qust_eid_is_test_or_dev(record, interner) || qust_has_untranslatable_event_alias(record) {
         return None;
     }
     if qust_eid_is_radio(record, interner) {
@@ -486,18 +553,49 @@ fn qust_eid_is_radio(record: &Record, interner: &StringInterner) -> bool {
     quest_editor_id_lower(record, interner).is_some_and(|eid| eid.contains("radio"))
 }
 
-fn qust_eid_is_disabled_local_broadcast(record: &Record, interner: &StringInterner) -> bool {
-    quest_editor_id_lower(record, interner)
-        .is_some_and(|eid| eid == "cb_highschoolpasystem_radioscenes")
+fn qust_has_dialogue_data(record: &Record, interner: &StringInterner) -> bool {
+    quest_flags(record, interner)
+        .is_some_and(|flags| flags & u64::from(QUST_FLAG_HAS_DIALOGUE_DATA) != 0)
 }
 
-fn qust_has_dialogue_data(record: &Record, interner: &StringInterner) -> bool {
-    record
-        .fields
-        .iter()
-        .find(|entry| entry.sig.0 == *b"DATA" || entry.sig.0 == *b"DNAM")
-        .and_then(|entry| quest_flags(&entry.value, interner))
-        .is_some_and(|flags| flags & QUST_FLAG_HAS_DIALOGUE_DATA != 0)
+fn qust_is_unique_instance(record: &Record, interner: &StringInterner) -> bool {
+    quest_flags(record, interner).is_some_and(|flags| flags & QUST_FLAG_UNIQUE_INSTANCE != 0)
+}
+
+pub(crate) fn is_passive_dialogue_controller(
+    record: &Record,
+    has_incoming_npc_reference: bool,
+    interner: &StringInterner,
+) -> bool {
+    let Some(flags) = quest_flags(record, interner) else {
+        return false;
+    };
+    record.sig == SigCode::from_str("QUST").expect("literal sig")
+        && flags & u64::from(QUST_FLAG_START_GAME_ENABLED) != 0
+        && flags & u64::from(QUST_FLAG_HAS_DIALOGUE_DATA) != 0
+        && flags & QUST_FLAG_UNIQUE_INSTANCE != 0
+        && !record.fields.iter().any(|entry| entry.sig.0 == *b"ENAM")
+        && record.fields.iter().any(|entry| entry.sig.0 == *b"VMAD")
+        && record
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.0 == *b"INDX")
+            .any(|entry| stage_runs_on_start(&entry.value, interner))
+        && has_incoming_npc_reference
+}
+
+fn stage_runs_on_start(value: &FieldValue, interner: &StringInterner) -> bool {
+    match value {
+        FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
+            u16::from_le_bytes([bytes[2], bytes[3]]) & QUST_STAGE_FLAG_RUN_ON_START != 0
+        }
+        FieldValue::Struct(fields) => fields
+            .iter()
+            .find(|(name, _)| field_name_is(interner, *name, "flags"))
+            .and_then(|(_, value)| field_value_u16(value))
+            .is_some_and(|flags| flags & QUST_STAGE_FLAG_RUN_ON_START != 0),
+        _ => false,
+    }
 }
 
 fn quest_editor_id_lower(record: &Record, interner: &StringInterner) -> Option<String> {
@@ -520,16 +618,26 @@ fn quest_editor_id_lower(record: &Record, interner: &StringInterner) -> Option<S
         })
 }
 
-fn quest_flags(value: &FieldValue, interner: &StringInterner) -> Option<u16> {
-    match value {
+fn quest_flags(record: &Record, interner: &StringInterner) -> Option<u64> {
+    let entry = record
+        .fields
+        .iter()
+        .find(|entry| entry.sig.0 == *b"DATA" || entry.sig.0 == *b"DNAM")?;
+    match &entry.value {
+        FieldValue::Bytes(bytes) if entry.sig.0 == *b"DATA" && bytes.len() >= 20 => {
+            Some(u64::from_le_bytes(bytes[0..8].try_into().ok()?))
+        }
+        FieldValue::Bytes(bytes) if entry.sig.0 == *b"DATA" && bytes.len() >= 16 => {
+            Some(u64::from(u32::from_le_bytes(bytes[0..4].try_into().ok()?)))
+        }
         FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
-            Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+            Some(u64::from(u16::from_le_bytes([bytes[0], bytes[1]])))
         }
         FieldValue::Struct(fields) => fields
             .iter()
             .find(|(name, _)| field_name_is(interner, *name, "flags"))
-            .and_then(|(_, value)| field_value_u16(value)),
-        _ => field_value_u16(value),
+            .and_then(|(_, value)| field_value_u64(value)),
+        value => field_value_u64(value),
     }
 }
 
@@ -537,8 +645,26 @@ fn story_manager_parent(record: &Record) -> Option<FormKey> {
     story_manager_fk(record, pnam_sig())
 }
 
-fn story_manager_quest(record: &Record) -> Option<FormKey> {
-    story_manager_fk(record, nnam_sig())
+fn story_manager_quests(record: &Record) -> Vec<FormKey> {
+    record
+        .fields
+        .iter()
+        .filter(|entry| entry.sig == nnam_sig())
+        .filter_map(|entry| first_form_key(&entry.value, record.form_key.plugin))
+        .filter(|fk| fk.local != 0)
+        .collect()
+}
+
+pub(crate) fn retain_story_manager_quests(
+    record: &mut Record,
+    allowed_quests: &FxHashSet<FormKey>,
+) {
+    let fallback_plugin = record.form_key.plugin;
+    record.fields.retain(|entry| {
+        entry.sig != nnam_sig()
+            || first_form_key(&entry.value, fallback_plugin)
+                .is_some_and(|quest| allowed_quests.contains(&quest))
+    });
 }
 
 fn story_manager_fk(record: &Record, sig: SubrecordSig) -> Option<FormKey> {
@@ -567,45 +693,171 @@ pub(crate) fn fo4_story_manager_event_root(record: &Record) -> Option<u32> {
         return None;
     }
     let source_event = story_manager_event_type(record)?;
-    let target_event = if is_fo4_valid_sm_event(source_event) {
-        source_event
-    } else {
-        SCPT_EVENT_TYPE
-    };
     FO4_SM_EVENT_ROOTS
         .iter()
-        .find_map(|(event_type, local)| (*event_type == target_event).then_some(*local))
+        .find_map(|(event_type, local)| (*event_type == source_event).then_some(*local))
 }
 
-/// If `record` is an SMEN whose event type has no FO4 equivalent, remap it to SCPT
-/// (an inert, CK-valid event) so FO4 loads the node without crashing on an unknown
-/// dispatcher. Returns true when the type was changed.
-pub(crate) fn neutralize_fo76_only_event_type(record: &mut Record) -> bool {
-    if record.sig != smen_sig() {
+pub(crate) fn incompatible_story_manager_event_roots(
+    selected_nodes: &FxHashSet<FormKey>,
+    graph: &StoryManagerSourceGraph,
+) -> Vec<(FormKey, u32)> {
+    let mut roots = selected_nodes
+        .iter()
+        .filter_map(|form_key| {
+            let record = graph.nodes.get(form_key)?;
+            let event_type = story_manager_event_type(record)?;
+            (record.sig == smen_sig() && !is_fo4_valid_sm_event(event_type))
+                .then_some((*form_key, event_type))
+        })
+        .collect::<Vec<_>>();
+    roots.sort_by_key(|(form_key, _)| form_key.local);
+    roots
+}
+
+pub(crate) fn plan_story_manager_quest_events(
+    selection: &StoryManagerSelection,
+    graph: &StoryManagerSourceGraph,
+    event_bridges: &FxHashMap<FormKey, u32>,
+    emitted_nodes: &FxHashSet<FormKey>,
+) -> StoryManagerQuestEventPlan {
+    let mut plan = StoryManagerQuestEventPlan::default();
+    let mut quests = selection
+        .selected_event_roots_by_quest
+        .iter()
+        .collect::<Vec<_>>();
+    quests.sort_by_key(|(quest, _)| quest.local);
+
+    for (quest, roots) in quests {
+        let Some(source_event) = graph.quests.get(quest).and_then(story_manager_event_type) else {
+            continue;
+        };
+        if is_fo4_valid_sm_event(source_event) {
+            continue;
+        }
+
+        let mut complete = true;
+        let mut final_events = FxHashSet::default();
+        for root in roots {
+            if !emitted_nodes.contains(root) {
+                complete = false;
+                continue;
+            }
+            if event_bridges.contains_key(root) {
+                final_events.insert(SCPT_EVENT_TYPE);
+                continue;
+            }
+            let Some(event_type) = graph
+                .nodes
+                .get(root)
+                .and_then(story_manager_event_type)
+                .filter(|event_type| is_fo4_valid_sm_event(*event_type))
+            else {
+                complete = false;
+                continue;
+            };
+            final_events.insert(event_type);
+        }
+
+        if complete && final_events.len() == 1 && final_events.contains(&SCPT_EVENT_TYPE) {
+            plan.rewrites.insert(*quest, SCPT_EVENT_TYPE);
+        } else {
+            let mut final_events = final_events.into_iter().collect::<Vec<_>>();
+            final_events.sort_unstable();
+            plan.unresolved.push((*quest, final_events));
+        }
+    }
+
+    plan
+}
+
+pub(crate) fn set_qust_event_type(record: &mut Record, event_type: u32) -> bool {
+    if record.sig != SigCode::from_str("QUST").expect("literal sig") {
         return false;
     }
-    match story_manager_event_type(record) {
-        Some(current) if !is_fo4_valid_sm_event(current) => {}
-        _ => return false,
-    }
-    for entry in &mut record.fields {
-        if entry.sig == enam_sig() {
-            write_u32_value(&mut entry.value, SCPT_EVENT_TYPE);
-            return true;
+    if let Some(entry) = record
+        .fields
+        .iter_mut()
+        .find(|entry| entry.sig == enam_sig())
+    {
+        if field_value_u32(&entry.value) == Some(event_type) {
+            return false;
         }
+        write_u32_value(&mut entry.value, event_type);
+        return true;
     }
-    false
+
+    let insert_at = record
+        .fields
+        .iter()
+        .rposition(|entry| entry.sig.0 == *b"DNAM")
+        .map_or(record.fields.len(), |index| index + 1);
+    record.fields.insert(
+        insert_at,
+        FieldEntry {
+            sig: enam_sig(),
+            value: FieldValue::Uint(u64::from(event_type)),
+        },
+    );
+    true
 }
 
-fn write_u32_value(value: &mut FieldValue, new_value: u32) {
-    match value {
-        FieldValue::Uint(value) => *value = u64::from(new_value),
-        FieldValue::Int(value) => *value = i64::from(new_value),
-        FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
-            bytes[0..4].copy_from_slice(&new_value.to_le_bytes());
-        }
-        other => *other = FieldValue::Uint(u64::from(new_value)),
+pub(crate) fn lower_incompatible_event_root(
+    record: &mut Record,
+    script_event_root: FormKey,
+    keyword_raw: u32,
+) -> bool {
+    if record.sig != smen_sig()
+        || story_manager_event_type(record).is_none_or(is_fo4_valid_sm_event)
+    {
+        return false;
     }
+
+    record.sig = smbn_sig();
+    record
+        .fields
+        .retain(|entry| !matches!(&entry.sig.0, b"PNAM" | b"SNAM" | b"CITC" | b"ENAM"));
+
+    let parent = FieldEntry {
+        sig: pnam_sig(),
+        value: FieldValue::FormKey(script_event_root),
+    };
+    let condition_count = record
+        .fields
+        .iter()
+        .filter(|entry| matches!(&entry.sig.0, b"CTDA" | b"CTDT"))
+        .count()
+        .saturating_add(1) as u32;
+    let count = FieldEntry {
+        sig: SubrecordSig(*b"CITC"),
+        value: FieldValue::Uint(u64::from(condition_count)),
+    };
+    let gate = FieldEntry {
+        sig: SubrecordSig(*b"CTDA"),
+        value: FieldValue::Bytes(SmallVec::from_slice(&script_event_keyword_condition(
+            keyword_raw,
+        ))),
+    };
+
+    let body_start = record
+        .fields
+        .iter()
+        .position(|entry| entry.sig.0 != *b"EDID")
+        .unwrap_or(record.fields.len());
+    record.fields.insert(body_start, parent);
+    record.fields.insert(body_start + 1, count);
+    record.fields.insert(body_start + 2, gate);
+    true
+}
+
+fn script_event_keyword_condition(keyword_raw: u32) -> [u8; 32] {
+    let mut condition = [
+        0x00, 0x04, 0xD5, 0xDC, 0x00, 0x00, 0x80, 0x3F, 0x40, 0x02, 0x11, 0xDB, 0x00, 0x00, 0x4B,
+        0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF,
+        0xFF, 0xFF,
+    ];
+    condition[16..20].copy_from_slice(&keyword_raw.to_le_bytes());
+    condition
 }
 
 fn first_form_key(value: &FieldValue, fallback_plugin: crate::sym::Sym) -> Option<FormKey> {
@@ -656,6 +908,30 @@ fn field_value_u32(value: &FieldValue) -> Option<u32> {
     }
 }
 
+fn field_value_u64(value: &FieldValue) -> Option<u64> {
+    match value {
+        FieldValue::Uint(value) => Some(*value),
+        FieldValue::Int(value) => u64::try_from(*value).ok(),
+        FieldValue::Float(value) if value.is_finite() => {
+            let rounded = value.round();
+            (0.0..=u64::MAX as f32)
+                .contains(&rounded)
+                .then_some(rounded as u64)
+        }
+        FieldValue::Bytes(bytes) if bytes.len() >= 8 => {
+            Some(u64::from_le_bytes(bytes[0..8].try_into().ok()?))
+        }
+        FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
+            Some(u64::from(u32::from_le_bytes(bytes[0..4].try_into().ok()?)))
+        }
+        FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
+            Some(u64::from(u16::from_le_bytes([bytes[0], bytes[1]])))
+        }
+        FieldValue::Struct(fields) => fields.iter().find_map(|(_, value)| field_value_u64(value)),
+        _ => None,
+    }
+}
+
 fn field_value_u16(value: &FieldValue) -> Option<u16> {
     match value {
         FieldValue::Uint(value) => u16::try_from(*value).ok(),
@@ -680,6 +956,17 @@ fn write_u16_value(value: &mut FieldValue, new_value: u16) {
         FieldValue::Int(value) => *value = i64::from(new_value),
         FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
             bytes[0..2].copy_from_slice(&new_value.to_le_bytes());
+        }
+        other => *other = FieldValue::Uint(u64::from(new_value)),
+    }
+}
+
+fn write_u32_value(value: &mut FieldValue, new_value: u32) {
+    match value {
+        FieldValue::Uint(value) => *value = u64::from(new_value),
+        FieldValue::Int(value) => *value = i64::from(new_value),
+        FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
+            bytes[0..4].copy_from_slice(&new_value.to_le_bytes());
         }
         other => *other = FieldValue::Uint(u64::from(new_value)),
     }
@@ -753,9 +1040,9 @@ mod tests {
         FieldValue::Bytes(SmallVec::from_slice(bytes))
     }
 
-    fn quest_data(flags: u16) -> FieldValue {
+    fn quest_data(flags: impl Into<u64>) -> FieldValue {
         let mut data = vec![0u8; 20];
-        data[0..2].copy_from_slice(&flags.to_le_bytes());
+        data[0..8].copy_from_slice(&flags.into().to_le_bytes());
         FieldValue::Bytes(SmallVec::from_vec(data))
     }
 
@@ -826,12 +1113,44 @@ mod tests {
     }
 
     #[test]
+    fn story_manager_selects_and_filters_every_nnam_quest() {
+        let interner = StringInterner::new();
+        let (mut graph, smqn_fk, first_quest_fk) = graph_with_radio(&interner);
+        let second_quest_fk = fk(&interner, 0x1948B5);
+        graph
+            .nodes
+            .get_mut(&smqn_fk)
+            .unwrap()
+            .fields
+            .push(field("NNAM", FieldValue::FormKey(second_quest_fk)));
+        graph.quests.insert(
+            second_quest_fk,
+            record(
+                &interner,
+                "QUST",
+                second_quest_fk.local,
+                Some("SQ_SecondRadio"),
+            ),
+        );
+        let translated = FxHashSet::from_iter([first_quest_fk, second_quest_fk]);
+
+        let selection = classify_story_manager_records(&graph, &translated, &interner);
+        let allowed = selection.selected_quests_by_node.get(&smqn_fk).unwrap();
+        assert_eq!(allowed.len(), 2);
+        assert!(allowed.contains(&first_quest_fk));
+        assert!(allowed.contains(&second_quest_fk));
+
+        let mut smqn = graph.nodes.get(&smqn_fk).unwrap().clone();
+        retain_story_manager_quests(&mut smqn, &FxHashSet::from_iter([second_quest_fk]));
+        assert_eq!(story_manager_quests(&smqn), vec![second_quest_fk]);
+    }
+
+    #[test]
     fn story_manager_carries_fo76_only_event_root() {
         let interner = StringInterner::new();
         let (mut graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
-        // Re-root the chain on a FO76-only event type (ILOC). It must now be
-        // carried, not skipped — the event type is neutralized to SCPT at
-        // translation time so FO4's CK loads it without crashing.
+        // Re-root the chain on a FO76-only event type (ILOC). It is carried so
+        // the emit phase can lower it to an isolated Script Event branch.
         graph
             .nodes
             .get_mut(&fk(&interner, 0x029152))
@@ -882,18 +1201,50 @@ mod tests {
     }
 
     #[test]
-    fn neutralize_remaps_fo76_only_event_type_to_scpt() {
+    fn incompatible_event_root_lowers_to_keyword_gated_script_branch() {
         let interner = StringInterner::new();
-        // FO76-only event (ILOC) → remapped to SCPT.
         let mut smen = record(&interner, "SMEN", 0x1000, Some("ILocEvent"));
         smen.fields.push(field("ENAM", bytes(b"ILOC")));
-        assert!(neutralize_fo76_only_event_type(&mut smen));
-        assert_eq!(story_manager_event_type(&smen), Some(SCPT_EVENT_TYPE));
+        let script_event_root = FormKey {
+            local: FO4_SCRIPT_EVENT_ROOT_LOCAL,
+            plugin: interner.intern("Fallout4.esm"),
+        };
 
-        // FO4-native event (TMEE) → untouched.
+        assert!(lower_incompatible_event_root(
+            &mut smen,
+            script_event_root,
+            0x0110_00AB,
+        ));
+        assert_eq!(smen.sig, smbn_sig());
+        assert_eq!(story_manager_parent(&smen), Some(script_event_root));
+        assert!(story_manager_event_type(&smen).is_none());
+        let count = smen
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"CITC")
+            .and_then(|entry| field_value_u32(&entry.value));
+        assert_eq!(count, Some(1));
+        let FieldValue::Bytes(gate) = &smen
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"CTDA")
+            .unwrap()
+            .value
+        else {
+            panic!("raw GetEventData condition expected");
+        };
+        assert_eq!(
+            u32::from_le_bytes(gate[16..20].try_into().unwrap()),
+            0x0110_00AB
+        );
+
         let mut valid = record(&interner, "SMEN", 0x1001, Some("MineEvent"));
         valid.fields.push(field("ENAM", bytes(b"TMEE")));
-        assert!(!neutralize_fo76_only_event_type(&mut valid));
+        assert!(!lower_incompatible_event_root(
+            &mut valid,
+            script_event_root,
+            0x0110_00AB,
+        ));
         assert_eq!(story_manager_event_type(&valid), Some(fourcc(b"TMEE")));
     }
 
@@ -909,7 +1260,150 @@ mod tests {
 
         assert_eq!(fo4_story_manager_event_root(&script_event), Some(0x029152));
         assert_eq!(fo4_story_manager_event_root(&mine_event), Some(0x02A68B));
-        assert_eq!(fo4_story_manager_event_root(&fo76_only), Some(0x029152));
+        assert_eq!(fo4_story_manager_event_root(&fo76_only), None);
+    }
+
+    #[test]
+    fn incompatible_event_roots_include_every_fo76_only_event_type() {
+        let interner = StringInterner::new();
+        let mut graph = StoryManagerSourceGraph::default();
+        let mut selected = FxHashSet::default();
+        let incompatible = [b"ADBO", b"CBGN", b"ILOC", b"LCPG", b"PCON", b"QPMT"];
+        let compatible = [b"HACK", b"LEVL", b"TMEE"];
+
+        for (index, event_type) in incompatible.iter().enumerate() {
+            let form_key = fk(&interner, 0x2000 + index as u32);
+            let mut event = record(&interner, "SMEN", form_key.local, None);
+            event.fields.push(field("ENAM", bytes(*event_type)));
+            graph.nodes.insert(form_key, event);
+            selected.insert(form_key);
+        }
+        for (index, event_type) in compatible.iter().enumerate() {
+            let form_key = fk(&interner, 0x3000 + index as u32);
+            let mut event = record(&interner, "SMEN", form_key.local, None);
+            event.fields.push(field("ENAM", bytes(*event_type)));
+            graph.nodes.insert(form_key, event);
+            selected.insert(form_key);
+        }
+
+        let roots = incompatible_story_manager_event_roots(&selected, &graph);
+        assert_eq!(roots.len(), incompatible.len());
+        assert_eq!(
+            roots
+                .iter()
+                .map(|(_, event_type)| *event_type)
+                .collect::<FxHashSet<_>>(),
+            incompatible
+                .iter()
+                .map(|event_type| fourcc(*event_type))
+                .collect::<FxHashSet<_>>()
+        );
+    }
+
+    #[test]
+    fn bridged_quest_event_rewrites_to_scpt_after_root_emits() {
+        let interner = StringInterner::new();
+        let (mut graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
+        let root_fk = fk(&interner, 0x029152);
+        graph.nodes.get_mut(&root_fk).unwrap().fields[0].value = bytes(b"ILOC");
+        graph
+            .quests
+            .get_mut(&quest_fk)
+            .unwrap()
+            .fields
+            .push(field("ENAM", bytes(b"ILOC")));
+        let mut selection =
+            classify_story_manager_records(&graph, &FxHashSet::from_iter([quest_fk]), &interner);
+        assert_eq!(
+            selection.selected_event_roots_by_quest.get(&quest_fk),
+            Some(&FxHashSet::from_iter([root_fk]))
+        );
+        let native_scpt_root = fk(&interner, 0x029153);
+        let mut native_scpt = record(&interner, "SMEN", native_scpt_root.local, None);
+        native_scpt.fields.push(field("ENAM", bytes(b"SCPT")));
+        graph.nodes.insert(native_scpt_root, native_scpt);
+        selection
+            .selected_event_roots_by_quest
+            .get_mut(&quest_fk)
+            .unwrap()
+            .insert(native_scpt_root);
+        let emitted_nodes = FxHashSet::from_iter(
+            selection
+                .selected_nodes
+                .iter()
+                .copied()
+                .chain([native_scpt_root]),
+        );
+
+        let plan = plan_story_manager_quest_events(
+            &selection,
+            &graph,
+            &FxHashMap::from_iter([(root_fk, 0x0110_00AB)]),
+            &emitted_nodes,
+        );
+
+        assert_eq!(plan.rewrites.get(&quest_fk), Some(&SCPT_EVENT_TYPE));
+        assert!(plan.unresolved.is_empty());
+
+        let mut target_quest = record(&interner, "QUST", quest_fk.local, Some("SQ_Radio"));
+        target_quest.fields.push(field("DNAM", bytes(&[0; 12])));
+        target_quest.fields.push(field("LNAM", FieldValue::None));
+        assert!(set_qust_event_type(&mut target_quest, SCPT_EVENT_TYPE));
+        assert_eq!(
+            story_manager_event_type(&target_quest),
+            Some(SCPT_EVENT_TYPE)
+        );
+        assert_eq!(
+            target_quest
+                .fields
+                .iter()
+                .map(|entry| entry.sig.as_str())
+                .collect::<Vec<_>>(),
+            vec!["DNAM", "ENAM", "LNAM"]
+        );
+        assert!(selection.selected_quests_by_node.contains_key(&smqn_fk));
+    }
+
+    #[test]
+    fn quest_event_plan_reports_conflicting_final_event_types() {
+        let interner = StringInterner::new();
+        let quest_fk = fk(&interner, 0x2000);
+        let incompatible_root = fk(&interner, 0x3000);
+        let kill_root = fk(&interner, 0x3001);
+        let mut graph = StoryManagerSourceGraph::default();
+        let mut quest = record(&interner, "QUST", quest_fk.local, Some("SQ_Conflict"));
+        quest.fields.push(field("ENAM", bytes(b"ILOC")));
+        graph.quests.insert(quest_fk, quest);
+        let mut incompatible = record(&interner, "SMEN", incompatible_root.local, None);
+        incompatible.fields.push(field("ENAM", bytes(b"ILOC")));
+        graph.nodes.insert(incompatible_root, incompatible);
+        let mut kill = record(&interner, "SMEN", kill_root.local, None);
+        kill.fields.push(field("ENAM", bytes(b"KILL")));
+        graph.nodes.insert(kill_root, kill);
+        let mut selection = StoryManagerSelection::default();
+        selection.selected_event_roots_by_quest.insert(
+            quest_fk,
+            FxHashSet::from_iter([incompatible_root, kill_root]),
+        );
+
+        let plan = plan_story_manager_quest_events(
+            &selection,
+            &graph,
+            &FxHashMap::from_iter([(incompatible_root, 0x0110_00AB)]),
+            &FxHashSet::from_iter([incompatible_root, kill_root]),
+        );
+
+        assert!(plan.rewrites.is_empty());
+        assert_eq!(plan.unresolved.len(), 1);
+        assert_eq!(plan.unresolved[0].0, quest_fk);
+        assert_eq!(
+            plan.unresolved[0]
+                .1
+                .iter()
+                .copied()
+                .collect::<FxHashSet<_>>(),
+            FxHashSet::from_iter([SCPT_EVENT_TYPE, fourcc(b"KILL")])
+        );
     }
 
     #[test]
@@ -926,16 +1420,63 @@ mod tests {
     }
 
     #[test]
-    fn story_manager_skips_high_school_pa_broadcast() {
+    fn story_manager_skips_quest_with_discarded_event_alias() {
         let interner = StringInterner::new();
-        let quest = record(
+        let (mut graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
+        let quest = graph.quests.get_mut(&quest_fk).unwrap();
+        quest
+            .fields
+            .push(field("ALST", bytes(&0_u32.to_le_bytes())));
+        quest.fields.push(field(
+            "ALFE",
+            bytes(&u32::from_le_bytes(*b"CLOC").to_le_bytes()),
+        ));
+        quest
+            .fields
+            .push(field("ALFD", bytes(&1_u32.to_le_bytes())));
+        let translated = FxHashSet::from_iter([quest_fk]);
+
+        let selection = classify_story_manager_records(&graph, &translated, &interner);
+
+        assert!(!selection.selected_nodes.contains(&smqn_fk));
+        assert_eq!(
+            selection.diagnostics[0].reason,
+            Some(StoryManagerSkipReason::UnsupportedQuest)
+        );
+    }
+
+    #[test]
+    fn high_school_pa_broadcast_is_story_manager_driven_not_name_blocked() {
+        let interner = StringInterner::new();
+        let mut quest = record(
             &interner,
             "QUST",
             0x024442,
             Some("CB_HighSchoolPASystem_RadioScenes"),
         );
+        quest
+            .fields
+            .push(field("DATA", quest_data(0x0401_8111_u64)));
 
-        assert_eq!(classify_quest(&quest, &interner), None);
+        assert_eq!(
+            classify_quest(&quest, &interner),
+            Some(StoryQuestKind::Radio)
+        );
+        assert!(!is_passive_dialogue_controller(&quest, true, &interner));
+    }
+
+    #[test]
+    fn whitespring_live_shape_is_passive_dialogue_controller() {
+        let interner = StringInterner::new();
+        let mut quest = record(&interner, "QUST", 0x37D8DD, Some("WhitespringQuest"));
+        quest
+            .fields
+            .push(field("DATA", quest_data(0x0001_8111_u64)));
+        quest.fields.push(field("VMAD", FieldValue::None));
+        quest.fields.push(field("INDX", bytes(&[10, 0, 2, 0])));
+
+        assert!(is_passive_dialogue_controller(&quest, true, &interner));
+        assert!(!is_passive_dialogue_controller(&quest, false, &interner));
     }
 
     #[test]
@@ -971,7 +1512,52 @@ mod tests {
 
         let selection = classify_story_manager_records(&graph, &translated, &interner);
 
-        assert_eq!(selection.selected_dialogue_quests, vec![quest_fk]);
+        assert!(selection.fallback_dialogue_quests.is_empty());
+    }
+
+    #[test]
+    fn story_manager_falls_back_only_for_unsupported_dialogue_event_root() {
+        let interner = StringInterner::new();
+        let (mut graph, _smqn_fk, quest_fk) = graph_with_radio(&interner);
+        graph
+            .nodes
+            .get_mut(&fk(&interner, 0x029152))
+            .unwrap()
+            .fields[0]
+            .value = bytes(b"ILOC");
+        let quest = graph.quests.get_mut(&quest_fk).unwrap();
+        quest.eid = Some(interner.intern("NPCConversation_Biv"));
+        quest
+            .fields
+            .push(field("DATA", quest_data(QUST_FLAG_HAS_DIALOGUE_DATA)));
+        let translated = FxHashSet::from_iter([quest_fk]);
+
+        let selection = classify_story_manager_records(&graph, &translated, &interner);
+
+        assert_eq!(selection.fallback_dialogue_quests, vec![quest_fk]);
+    }
+
+    #[test]
+    fn story_manager_does_not_force_unique_dialogue_fallback() {
+        let interner = StringInterner::new();
+        let (mut graph, _smqn_fk, quest_fk) = graph_with_radio(&interner);
+        graph
+            .nodes
+            .get_mut(&fk(&interner, 0x029152))
+            .unwrap()
+            .fields[0]
+            .value = bytes(b"ILOC");
+        let quest = graph.quests.get_mut(&quest_fk).unwrap();
+        quest.eid = Some(interner.intern("NPCConversation_Unique"));
+        quest.fields.push(field(
+            "DATA",
+            quest_data(u64::from(QUST_FLAG_HAS_DIALOGUE_DATA) | QUST_FLAG_UNIQUE_INSTANCE),
+        ));
+        let translated = FxHashSet::from_iter([quest_fk]);
+
+        let selection = classify_story_manager_records(&graph, &translated, &interner);
+
+        assert!(selection.fallback_dialogue_quests.is_empty());
     }
 
     #[test]
@@ -988,7 +1574,7 @@ mod tests {
         let selection = classify_story_manager_records(&graph, &translated, &interner);
 
         assert!(selection.selected_nodes.contains(&smqn_fk));
-        assert!(selection.selected_dialogue_quests.is_empty());
+        assert!(selection.fallback_dialogue_quests.is_empty());
     }
 
     #[test]
@@ -1029,26 +1615,5 @@ mod tests {
             flags & (QUST_FLAG_HAS_DIALOGUE_DATA | QUST_FLAG_START_GAME_ENABLED),
             QUST_FLAG_HAS_DIALOGUE_DATA | QUST_FLAG_START_GAME_ENABLED
         );
-    }
-
-    #[test]
-    fn story_manager_force_autostart_keeps_event_types_disabled() {
-        let interner = StringInterner::new();
-        for quest_type in [6, 8] {
-            let mut record = record(&interner, "QUST", 0x0100, Some("Dialogue_EventActivity"));
-            let mut dnam = vec![0u8; 12];
-            dnam[0..2].copy_from_slice(&QUST_FLAG_HAS_DIALOGUE_DATA.to_le_bytes());
-            dnam[8] = quest_type;
-            record.fields.push(field("DNAM", bytes(&dnam)));
-
-            assert!(!force_qust_autostart(&mut record, &interner));
-            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-                panic!("DNAM bytes expected");
-            };
-            assert_eq!(
-                u16::from_le_bytes([bytes[0], bytes[1]]) & QUST_FLAG_START_GAME_ENABLED,
-                0
-            );
-        }
     }
 }

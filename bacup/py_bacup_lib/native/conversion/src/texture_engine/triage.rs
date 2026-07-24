@@ -47,6 +47,22 @@ pub enum TextureTask {
         lighting: TexturePathInput,
         out_specular: TexturePathOutput,
     },
+    /// FNV/FO3/Skyrim normal (+ optional env mask) → FO4 normal + spec/gloss.
+    LegacySpecGloss {
+        normal: TexturePathInput,
+        envmask: Option<TexturePathInput>,
+        out_normal: Option<TexturePathOutput>,
+        out_specular: TexturePathOutput,
+        /// Per-game vanilla `Glossiness` default, normalized to FO4's 0..1
+        /// smoothness domain. Captured here because triage has the source game
+        /// and the executor does not.
+        gloss_baseline: f32,
+    },
+    /// Source `_e` environment map → FO4 six-face cubemap.
+    CubemapNormalize {
+        input: TexturePathInput,
+        output: TexturePathOutput,
+    },
 }
 
 impl TextureTask {
@@ -55,7 +71,9 @@ impl TextureTask {
             TextureTask::Single { class, .. } => *class,
             TextureTask::SingleResidue { .. }
             | TextureTask::Bundle { .. }
-            | TextureTask::SpecGloss { .. } => TriageClass::BundleRecompile,
+            | TextureTask::SpecGloss { .. }
+            | TextureTask::LegacySpecGloss { .. }
+            | TextureTask::CubemapNormalize { .. } => TriageClass::BundleRecompile,
         }
     }
 
@@ -77,7 +95,47 @@ impl TextureTask {
                 .map(|o| o.path.as_path())
                 .collect(),
             TextureTask::SpecGloss { out_specular, .. } => vec![out_specular.path.as_path()],
+            TextureTask::LegacySpecGloss {
+                out_normal,
+                out_specular,
+                ..
+            } => out_normal
+                .iter()
+                .map(|o| o.path.as_path())
+                .chain(std::iter::once(out_specular.path.as_path()))
+                .collect(),
+            TextureTask::CubemapNormalize { output, .. } => vec![output.path.as_path()],
         }
+    }
+}
+
+fn is_gamebryo_source(source_game: &str) -> bool {
+    matches!(
+        source_game.to_ascii_lowercase().as_str(),
+        "fnv" | "fo3" | "skyrim" | "skyrimse"
+    )
+}
+
+/// FO4 `_s.G` baseline from each source game's vanilla `Glossiness` default.
+/// Skyrim: `BSLightingShaderProperty.Glossiness` 80.0 / 100 (nif.xml:7773).
+/// FNV/FO3: `NiMaterialProperty.Glossiness` 10.0 / 100 (nif.xml:4906).
+fn legacy_gloss_baseline(source_game: &str) -> f32 {
+    match source_game.to_ascii_lowercase().as_str() {
+        "skyrim" | "skyrimse" => 0.8,
+        _ => 0.1,
+    }
+}
+
+/// Role → output-role for Gamebryo sources. `envmask` is deliberately absent:
+/// it is consumed into `_s.R` by LegacySpecGloss and has no FO4 slot.
+fn mapped_legacy_output_role(role: &str) -> Option<&'static str> {
+    match role {
+        "normal" => Some("normal"),
+        "diffuse" => Some("diffuse"),
+        "glow" => Some("glow"),
+        "subsurface" => Some("subsurface"),
+        "cubemap" => Some("cubemap"),
+        _ => None,
     }
 }
 
@@ -243,6 +301,42 @@ fn triage_request_impl(
     let lighting = find_input(request, "lighting");
 
     let mut bundled_roles: &[&str] = &[];
+
+    // FNV/FO3/Skyrim → FO4 dispatch. Returns early so the FO76 chain below is
+    // untouched for these sources.
+    if is_gamebryo_source(&request.source_game)
+        && let Some(normal) = find_input(request, "normal")
+        && let Some(out_specular) = find_output(request, "specular")
+    {
+        tasks.push(TextureTask::LegacySpecGloss {
+            normal: normal.clone(),
+            envmask: find_input(request, "envmask").cloned(),
+            out_normal: find_output(request, "normal").cloned(),
+            out_specular: out_specular.clone(),
+            gloss_baseline: legacy_gloss_baseline(&request.source_game),
+        });
+        for input in &request.inputs {
+            if matches!(input.role.as_str(), "normal" | "envmask") {
+                continue;
+            }
+            let Some(out_role) = mapped_legacy_output_role(&input.role) else {
+                continue;
+            };
+            let Some(output) = find_output(request, out_role) else {
+                continue;
+            };
+            if input.role == "cubemap" {
+                tasks.push(TextureTask::CubemapNormalize {
+                    input: input.clone(),
+                    output: output.clone(),
+                });
+                continue;
+            }
+            tasks.push(classify_single(input, output, format_overrides));
+        }
+        return tasks;
+    }
+
     if let (Some(d), Some(r), Some(l)) = (diffuse, reflectivity, lighting) {
         let out_diffuse = find_output(request, "diffuse").cloned();
         tasks.push(TextureTask::Bundle {

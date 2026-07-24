@@ -139,7 +139,7 @@ class TestMatPipelineIntegration:
 class TestMultiLayerTextureLoading:
     def test_build_material_sets_layer_count(self):
         """When _parse_mat returns multi-layer data, Material.layer_count should match."""
-        from ui.editor.material_readers.base import LayerData, BlenderData
+        from creation_lib.renderer.material_readers.base import LayerData, BlenderData
 
         # Verify the data structures flow correctly
         layers = [

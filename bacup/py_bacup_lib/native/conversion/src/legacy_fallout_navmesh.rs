@@ -8,10 +8,13 @@
 use std::collections::HashMap;
 
 use esp_authoring_core::plugin_runtime::{
-    ParsedItem, ParsedRecord, effective_subrecords_for_record, plugin_handle_store_ref,
+    FO4_PATHING_CELL_CRC_HASH, ParsedItem, ParsedRecord, effective_subrecords_for_record,
+    plugin_handle_store_ref,
 };
 
 use crate::source_read::{SourceRecordSnapshot, raw_cell_is_interior};
+
+const FO4_PATHING_DOOR_CRC_HASH: u32 = 0xE48B_73F3;
 
 #[derive(Debug, Default)]
 pub(crate) struct LegacyFalloutNavmeshBatch {
@@ -164,7 +167,7 @@ fn assemble_legacy_navmesh(
 
     let mut out = Vec::new();
     out.extend_from_slice(&12u32.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&FO4_PATHING_CELL_CRC_HASH.to_le_bytes());
     match parent {
         LegacyNavmeshParent::Interior { cell } => {
             out.extend_from_slice(&0u32.to_le_bytes());
@@ -245,12 +248,15 @@ fn push_legacy_doors(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), String> {
             bytes.len()
         ));
     }
-    let count = u32::try_from(bytes.len() / 8).map_err(|_| "door count exceeds u32")?;
+    let rows = bytes
+        .chunks_exact(8)
+        .filter(|row| u32::from_le_bytes(row[0..4].try_into().unwrap()) != 0)
+        .collect::<Vec<_>>();
+    let count = u32::try_from(rows.len()).map_err(|_| "door count exceeds u32")?;
     out.extend_from_slice(&count.to_le_bytes());
-    for row in bytes.chunks_exact(8) {
+    for row in rows {
         out.extend_from_slice(&row[4..6]);
-        out.extend_from_slice(&row[6..8]);
-        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(&FO4_PATHING_DOOR_CRC_HASH.to_le_bytes());
         out.extend_from_slice(&row[0..4]);
     }
     Ok(())
@@ -407,15 +413,40 @@ mod tests {
         assert_eq!(converted.report.edge_links_dropped, 1);
         let target = parse_nvnm(&converted.bytes).expect("parse FO4 NVNM");
         assert_eq!(target.version, 15);
+        assert_eq!(target.flags, FO4_PATHING_CELL_CRC_HASH);
         assert_eq!(target.parent, NvnmParent::Interior { cell: 0x000801 });
         assert_eq!(target.vertices.len(), 3);
         assert_eq!(target.triangles.len(), 1);
         assert!(target.edge_links.is_empty());
         assert_eq!(target.door_refs.len(), 1);
         assert_eq!(target.door_refs[0].door_ref_form_id, 0x000A00);
-        assert_eq!(target.door_refs[0].padding, [0xAA, 0xBB, 0, 0]);
+        assert_eq!(
+            target.door_refs[0].padding,
+            FO4_PATHING_DOOR_CRC_HASH.to_le_bytes()
+        );
         assert_eq!(target.grid.divisor, 1);
         assert_eq!(target.grid.cells[0].triangle_indices, vec![0]);
+    }
+
+    #[test]
+    fn legacy_doors_emit_fo4_pathing_door_rows() {
+        let mut source = Vec::new();
+        source.extend_from_slice(&0_u32.to_le_bytes());
+        source.extend_from_slice(&7_u16.to_le_bytes());
+        source.extend_from_slice(&[0xAA, 0xBB]);
+        source.extend_from_slice(&0x0012_3456_u32.to_le_bytes());
+        source.extend_from_slice(&9_u16.to_le_bytes());
+        source.extend_from_slice(&[0xCC, 0xDD]);
+
+        let mut target = Vec::new();
+        push_legacy_doors(&mut target, &source).expect("convert legacy doors");
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&1_u32.to_le_bytes());
+        expected.extend_from_slice(&9_u16.to_le_bytes());
+        expected.extend_from_slice(&FO4_PATHING_DOOR_CRC_HASH.to_le_bytes());
+        expected.extend_from_slice(&0x0012_3456_u32.to_le_bytes());
+        assert_eq!(target, expected);
     }
 
     #[test]

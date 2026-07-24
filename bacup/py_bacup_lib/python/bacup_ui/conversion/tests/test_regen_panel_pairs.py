@@ -68,8 +68,14 @@ def test_build_paths_uses_fnv_pair_and_populates_merge_inputs(monkeypatch, tmp_p
     assert paths.source_data_dir == tmp_path / "FalloutNV" / "Data"
     assert paths.source_extracted_dir == tmp_path / "extracted" / "fnv"
     assert paths.target_data_dir == tmp_path / "Fallout4" / "Data"
-    assert paths.output_root == tmp_path / "app" / "mods" / "MojaveCapital"
-    assert paths.mod_name == "MojaveCapital"
+    assert paths.output_root == tmp_path / "app" / "mods" / "FNV_FO3_Merged"
+    assert paths.target_asset_catalog_path == (
+        tmp_path / "app" / "cache" / "conversion" / "fo4_target_assets.sqlite3"
+    )
+    assert paths.target_asset_cache_dir == (
+        tmp_path / "app" / "cache" / "conversion" / "target_assets"
+    )
+    assert paths.mod_name == "FNV_FO3_Merged"
     assert paths.merge_primary_plugin_paths == tuple(
         tmp_path / "FalloutNV" / "Data" / name
         for name in (*pair.source_plugins, "CaravanPack.esm")
@@ -91,7 +97,7 @@ def test_build_paths_populates_skyrim_flatten_only_inputs(monkeypatch, tmp_path)
 
     paths = panel.build_paths()
 
-    assert paths.output_root == tmp_path / "app" / "mods" / "Skyrim"
+    assert paths.output_root == tmp_path / "app" / "mods" / "Skyrim_Merged"
     assert paths.merge_primary_plugin_paths == tuple(
         tmp_path / "SkyrimSE" / "Data" / name for name in pair.source_plugins
     )
@@ -203,7 +209,7 @@ def test_non_default_start_passes_pair_and_supports_pair_upgrade(
 
     assert captured["pair"] is pair
     assert captured["options"].upgrade is True
-    assert captured["paths"].mod_name == "MojaveCapital"
+    assert captured["paths"].mod_name == "FNV_FO3_Merged"
     assert captured["paths"].additional_source_asset_roots == (
         tmp_path / "extracted" / "fo3",
     )

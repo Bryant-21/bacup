@@ -3,7 +3,11 @@ Function BreakStatue()
         Return
     EndIf
     GoToState("done")
+    UnRegisterForHitEvent(Self)
     DamageObject(1000000.0)
+    If GetCurrentDestructionStage() < 1
+        DamageObject(1000000.0)
+    EndIf
 EndFunction
 
 Event OnInit()
@@ -28,7 +32,17 @@ Event OnActivate(ObjectReference akActionRef)
     BreakStatue()
 EndEvent
 
-Event OnHit(ObjectReference akAggressor, Form akSource, Projectile akProjectile, Bool abPowerAttack, Bool abSneakAttack, Bool abBashAttack, Bool abHitBlocked, String apMaterial)
+Event OnLoad()
+    If GetState() != "done"
+        RegisterForHitEvent(Self)
+    EndIf
+EndEvent
+
+Event OnUnload()
+    UnRegisterForHitEvent(Self)
+EndEvent
+
+Event OnHit(ObjectReference akTarget, ObjectReference akAggressor, Form akSource, Projectile akProjectile, Bool abPowerAttack, Bool abSneakAttack, Bool abBashAttack, Bool abHitBlocked, String apMaterial)
     BreakStatue()
 EndEvent
 

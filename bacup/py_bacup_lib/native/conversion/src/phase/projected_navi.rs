@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_reuses_source_navi_object_id() {
+    fn phase_uses_fo4_canonical_navi_form_id() {
         let source_handle =
             plugin_handle_new_native("Source.esm", Some("fo76")).expect("source plugin handle");
         let target_handle =
@@ -125,7 +125,7 @@ mod tests {
             source_handle,
             &serde_json::json!({
                 "signature": "NAVI",
-                "form_id": "000FF1:Source.esm",
+                "form_id": "014B92:Source.esm",
                 "subrecords": [
                     { "signature": "NVER", "data_hex": "0F000000" }
                 ]

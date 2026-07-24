@@ -17,3 +17,26 @@ outputs.
 
 The old FNV script and single-asset/backend-parity helpers are available only in
 Git history.
+
+## Isolated agent runner
+
+Build a folder-based snapshot of `regen.py` and both native extensions:
+
+```powershell
+bacup\build_regen_onedir.bat
+```
+
+The build writes a filtered `.env` beside `dist\BACUP-Regen\BACUP-Regen.exe`
+containing only conversion game/data/extracted paths. Credentials and unrelated
+repository settings are excluded. You can still override those paths in the
+calling process, then run either pair without loading the editable environment's
+native DLLs:
+
+```powershell
+dist\BACUP-Regen\BACUP-Regen.exe --pair fnvfo3:fo4
+dist\BACUP-Regen\BACUP-Regen.exe --pair skyrimse:fo4
+```
+
+The executable is a build-time snapshot. Rebuild it after converter or native
+changes before using it as end-to-end evidence. Its `mods/`, `cache/`, and logs
+are written beside the executable.

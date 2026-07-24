@@ -15,6 +15,7 @@ def test_null_runner_has_runner_interface():
     # Use attribute checks instead.
     runner = NullConversionRunner()
     assert hasattr(runner, "emit_log")
+    assert hasattr(runner, "emit_status")
     assert hasattr(runner, "emit_phase_start")
     assert hasattr(runner, "emit_item_progress")
     assert hasattr(runner, "emit_phase_complete")
@@ -26,6 +27,7 @@ def test_null_runner_silent():
     runner = NullConversionRunner()
     assert runner.is_cancelled() is False
     runner.emit_log("INFO", "anything")
+    runner.emit_status("working")
     runner.emit_phase_start(object())
     runner.emit_item_progress(object())
     runner.emit_phase_complete(object())
@@ -45,6 +47,13 @@ def test_streaming_runner_writes_phase():
     runner = StreamingConversionRunner(stream=buf)
     runner.emit_phase_start("nifs")
     assert "nifs" in buf.getvalue()
+
+
+def test_streaming_runner_writes_status():
+    buf = io.StringIO()
+    runner = StreamingConversionRunner(stream=buf)
+    runner.emit_status("Writing reports")
+    assert "status" in buf.getvalue() and "Writing reports" in buf.getvalue()
 
 
 def test_streaming_runner_not_cancelled():

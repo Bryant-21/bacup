@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from bacup_lib.models import PhaseSelection, PluginPortOptions
 from bacup_lib.regen_pipeline import RegenOptions, RegenPaths, RegenResult
 
 
@@ -12,11 +13,21 @@ def test_regen_options_release_defaults():
     assert o.write_land_cache is True
     assert o.include_interior is True
     assert o.carry_interior_previs is False
+    assert o.generate_precombines is False
     assert o.records_limit is None
     assert o.memory_report is False
     assert o.validate_collision is False
     assert o.direct_deploy_archives is False
     assert o.update_runtime_ini is True
+
+
+def test_generate_precombines_defaults_off_across_option_types():
+    # Experimental gate: every option surface defaults the flag off so a standard
+    # full build never schedules the phase.
+    assert PhaseSelection().generate_precombines is False
+    assert PhaseSelection.defaults().generate_precombines is False
+    assert PluginPortOptions().generate_precombines is False
+    assert RegenOptions().generate_precombines is False
 
 
 def test_regen_paths_requires_explicit_paths():

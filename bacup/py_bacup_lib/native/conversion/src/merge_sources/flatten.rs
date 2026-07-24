@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use bytes::Bytes;
 use esp_authoring_core::plugin_runtime::{
-    CompiledSchema, ParsedGroup, ParsedItem, ParsedPlugin, ParsedRecord, ParsedSubrecord,
+    CompiledSchema, LocalizedStringsState, ParsedGroup, ParsedItem, ParsedPlugin, ParsedRecord,
     clone_plugin_handle_state_no_py, compiled_schema_for_game_str,
-    editor_id_from_effective_subrecords,
+    editor_id_from_effective_subrecords, schema_record_spec, schema_subrecord_spec,
 };
 use smol_str::SmolStr;
 
@@ -17,6 +17,17 @@ pub(crate) struct FlattenedLineage {
     pub used_ids: HashSet<u32>,
     pub eid_index: HashMap<(String, SmolStr), u32>,
     pub template: ParsedPlugin,
+    pub strings: LocalizedStringsState,
+    pub pack_origins: HashMap<u32, FlattenedPackOrigin>,
+    pub raw_pack_records: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FlattenedPackOrigin {
+    pub source_game: String,
+    pub source_plugin: String,
+    pub source_form_id: u32,
+    pub form_id_remapped: bool,
 }
 
 struct PreparedPlugin {
@@ -28,13 +39,9 @@ struct PreparedPlugin {
 pub(crate) fn flatten_lineage(handles: &[u64]) -> Result<FlattenedLineage, MergeError> {
     let mut plugins = Vec::with_capacity(handles.len());
     for handle in handles {
-        plugins.push(
-            clone_plugin_handle_state_no_py(*handle)
-                .map_err(MergeError::Load)?
-                .0,
-        );
+        plugins.push(clone_plugin_handle_state_no_py(*handle).map_err(MergeError::Load)?);
     }
-    let Some(template) = plugins.first().cloned() else {
+    let Some(template) = plugins.first().map(|(plugin, _)| plugin.clone()) else {
         return Err(MergeError::Load("lineage has no plugins".to_string()));
     };
     validate_plugins(&plugins)?;
@@ -45,12 +52,24 @@ pub(crate) fn flatten_lineage(handles: &[u64]) -> Result<FlattenedLineage, Merge
     let mut identities: HashMap<(String, u32), u32> = HashMap::new();
     let mut override_winners = HashMap::new();
     let mut container_appends = HashMap::new();
+    let mut pack_origins = HashMap::new();
+    let mut raw_pack_records = 0;
+    let mut strings = LocalizedStringsState::default();
+    let mut used_string_ids = HashSet::new();
+    let mut next_string_id = 1;
     let lineage_names: Vec<String> = plugins
         .iter()
-        .map(|plugin| plugin.plugin_name.to_lowercase())
+        .map(|(plugin, _)| plugin.plugin_name.to_lowercase())
         .collect();
     let mut prepared = Vec::with_capacity(plugins.len());
-    for plugin in plugins {
+    for (mut plugin, plugin_strings) in plugins {
+        merge_plugin_localized_strings(
+            &mut plugin,
+            &plugin_strings,
+            &mut strings,
+            &mut used_string_ids,
+            &mut next_string_id,
+        )?;
         let plugin_name = plugin.plugin_name.to_lowercase();
         let mut raw_to_output = HashMap::new();
         let mut overrides = HashSet::new();
@@ -77,6 +96,8 @@ pub(crate) fn flatten_lineage(handles: &[u64]) -> Result<FlattenedLineage, Merge
             &lineage_names,
             &mut override_winners,
             &mut container_appends,
+            &mut pack_origins,
+            &mut raw_pack_records,
             plugin,
         )?;
     }
@@ -89,12 +110,15 @@ pub(crate) fn flatten_lineage(handles: &[u64]) -> Result<FlattenedLineage, Merge
         used_ids,
         eid_index,
         template,
+        strings,
+        pack_origins,
+        raw_pack_records,
     })
 }
 
-fn validate_plugins(plugins: &[ParsedPlugin]) -> Result<(), MergeError> {
+fn validate_plugins(plugins: &[(ParsedPlugin, LocalizedStringsState)]) -> Result<(), MergeError> {
     let mut earlier = HashSet::new();
-    for plugin in plugins {
+    for (plugin, _) in plugins {
         for master in &plugin.header.masters {
             if !earlier.contains(&master.to_lowercase()) {
                 return Err(MergeError::UnknownMaster(format!(
@@ -108,12 +132,172 @@ fn validate_plugins(plugins: &[ParsedPlugin]) -> Result<(), MergeError> {
     Ok(())
 }
 
+fn merge_plugin_localized_strings(
+    plugin: &mut ParsedPlugin,
+    source: &LocalizedStringsState,
+    target: &mut LocalizedStringsState,
+    used_ids: &mut HashSet<u32>,
+    next_id: &mut u32,
+) -> Result<(), MergeError> {
+    if plugin.header.flags & crate::source_read::TES4_FLAG_LOCALIZED == 0 {
+        return Ok(());
+    }
+    let schema = plugin
+        .game
+        .as_deref()
+        .map(compiled_schema_for_game_str)
+        .transpose()
+        .map_err(MergeError::Load)?;
+    let mut source_ids = BTreeSet::new();
+    collect_localized_string_ids(&plugin.root_items, schema.as_deref(), &mut source_ids);
+    let mut remap = HashMap::new();
+
+    for source_id in source_ids {
+        if source_id == 0 {
+            continue;
+        }
+        let target_id = if used_ids.insert(source_id) {
+            source_id
+        } else {
+            while *next_id == 0 || used_ids.contains(next_id) {
+                *next_id = next_id.checked_add(1).ok_or_else(|| {
+                    MergeError::Load("localized string ID space exhausted".to_string())
+                })?;
+            }
+            let allocated = *next_id;
+            used_ids.insert(allocated);
+            *next_id = next_id.saturating_add(1);
+            allocated
+        };
+        remap.insert(source_id, target_id);
+
+        for (language, table) in &source.by_language {
+            if let Some(text) = table.get(&source_id) {
+                target
+                    .by_language
+                    .entry(language.clone())
+                    .or_default()
+                    .insert(target_id, text.clone());
+            }
+        }
+        if let Some(table_type) = source.table_types.get(&source_id) {
+            target.table_types.insert(target_id, table_type.clone());
+        }
+    }
+
+    if target.default_language.is_empty() && !source.default_language.is_empty() {
+        target.default_language = source.default_language.clone();
+    }
+    remap_localized_string_ids(&mut plugin.root_items, schema.as_deref(), &remap);
+    Ok(())
+}
+
+fn is_localized_subrecord(
+    schema: Option<&CompiledSchema>,
+    record_signature: &str,
+    signature: &str,
+    occurrence: usize,
+    semantic_type: Option<&str>,
+) -> bool {
+    if semantic_type == Some("localized_string") {
+        return true;
+    }
+    let Some(record_spec) = schema.and_then(|schema| schema_record_spec(schema, record_signature))
+    else {
+        return false;
+    };
+    schema_subrecord_spec(record_spec, signature, occurrence).is_some_and(|spec| spec.localized)
+}
+
+fn collect_localized_string_ids(
+    items: &[ParsedItem],
+    schema: Option<&CompiledSchema>,
+    ids: &mut BTreeSet<u32>,
+) {
+    for item in items {
+        match item {
+            ParsedItem::Group(group) => collect_localized_string_ids(&group.children, schema, ids),
+            ParsedItem::Record(record) => {
+                let mut occurrences: HashMap<SmolStr, usize> = HashMap::new();
+                for subrecord in &record.subrecords {
+                    let signature = subrecord.signature.clone();
+                    let occurrence = *occurrences.get(&signature).unwrap_or(&0);
+                    occurrences.insert(signature.clone(), occurrence.saturating_add(1));
+                    if subrecord.data.len() == 4
+                        && is_localized_subrecord(
+                            schema,
+                            record.signature.as_str(),
+                            signature.as_str(),
+                            occurrence,
+                            subrecord.semantic_type.as_deref(),
+                        )
+                    {
+                        ids.insert(u32::from_le_bytes(
+                            subrecord
+                                .data
+                                .as_ref()
+                                .try_into()
+                                .expect("four-byte string ID"),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn remap_localized_string_ids(
+    items: &mut [ParsedItem],
+    schema: Option<&CompiledSchema>,
+    remap: &HashMap<u32, u32>,
+) {
+    for item in items {
+        match item {
+            ParsedItem::Group(group) => {
+                remap_localized_string_ids(&mut group.children, schema, remap)
+            }
+            ParsedItem::Record(record) => {
+                let record_signature = record.signature.clone();
+                let mut occurrences: HashMap<SmolStr, usize> = HashMap::new();
+                for subrecord in &mut record.subrecords {
+                    let signature = subrecord.signature.clone();
+                    let occurrence = *occurrences.get(&signature).unwrap_or(&0);
+                    occurrences.insert(signature.clone(), occurrence.saturating_add(1));
+                    if subrecord.data.len() != 4
+                        || !is_localized_subrecord(
+                            schema,
+                            record_signature.as_str(),
+                            signature.as_str(),
+                            occurrence,
+                            subrecord.semantic_type.as_deref(),
+                        )
+                    {
+                        continue;
+                    }
+                    let source_id = u32::from_le_bytes(
+                        subrecord
+                            .data
+                            .as_ref()
+                            .try_into()
+                            .expect("four-byte string ID"),
+                    );
+                    if let Some(target_id) = remap.get(&source_id) {
+                        subrecord.data = Bytes::copy_from_slice(&target_id.to_le_bytes());
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn merge_prepared_plugin(
     output: &mut Vec<ParsedItem>,
     identities: &HashMap<(String, u32), u32>,
     lineage_names: &[String],
     override_winners: &mut HashMap<u32, ParsedRecord>,
     container_appends: &mut HashMap<u32, (i32, Vec<ParsedItem>)>,
+    pack_origins: &mut HashMap<u32, FlattenedPackOrigin>,
+    raw_pack_records: &mut u64,
     prepared: PreparedPlugin,
 ) -> Result<(), MergeError> {
     let PreparedPlugin {
@@ -121,6 +305,14 @@ fn merge_prepared_plugin(
         raw_to_output,
         overrides,
     } = prepared;
+    collect_pack_origins(
+        &plugin.root_items,
+        &raw_to_output,
+        plugin.game.as_deref().unwrap_or_default(),
+        &plugin.plugin_name,
+        pack_origins,
+        raw_pack_records,
+    );
     let plugin_name = plugin.plugin_name.to_lowercase();
     let schema = plugin
         .game
@@ -149,6 +341,43 @@ fn merge_prepared_plugin(
         }
     }
     Ok(())
+}
+
+fn collect_pack_origins(
+    items: &[ParsedItem],
+    raw_to_output: &HashMap<u32, u32>,
+    source_game: &str,
+    source_plugin: &str,
+    origins: &mut HashMap<u32, FlattenedPackOrigin>,
+    raw_pack_records: &mut u64,
+) {
+    for item in items {
+        match item {
+            ParsedItem::Group(group) => collect_pack_origins(
+                &group.children,
+                raw_to_output,
+                source_game,
+                source_plugin,
+                origins,
+                raw_pack_records,
+            ),
+            ParsedItem::Record(record) if record.signature.as_str() == "PACK" => {
+                *raw_pack_records += 1;
+                if let Some(&output_form_id) = raw_to_output.get(&record.form_id) {
+                    origins.insert(
+                        output_form_id,
+                        FlattenedPackOrigin {
+                            source_game: source_game.to_string(),
+                            source_plugin: source_plugin.to_string(),
+                            source_form_id: record.form_id,
+                            form_id_remapped: output_form_id != (record.form_id & 0x00FF_FFFF),
+                        },
+                    );
+                }
+            }
+            ParsedItem::Record(_) => {}
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -490,7 +719,7 @@ fn collect_eids(items: &[ParsedItem], index: &mut HashMap<(String, SmolStr), u32
 #[cfg(test)]
 mod tests {
     use esp_authoring_core::plugin_runtime::authoring::authoring_serialize::extract_skyrim_nvmi_form_ids;
-    use esp_authoring_core::plugin_runtime::plugin_handle_close_native;
+    use esp_authoring_core::plugin_runtime::{ParsedSubrecord, plugin_handle_close_native};
 
     use super::*;
     use crate::merge_sources::test_util::{formid_sub, rec, write_test_plugin_with_masters};

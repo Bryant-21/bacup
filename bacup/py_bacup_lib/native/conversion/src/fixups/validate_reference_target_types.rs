@@ -38,7 +38,7 @@ use crate::fixups::rewrite_raw_object_template_formids::{
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
-use crate::record::{FieldValue, Record, RecordFlags};
+use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
 use crate::schema::AuthoringSchema;
 use crate::session::PluginSession;
 use crate::sym::{StringInterner, Sym};
@@ -625,7 +625,7 @@ impl Fixup for ValidateReferenceTargetTypesFixup {
         if present_sigs.iter().any(|s| s.as_str() == "INFO") {
             let info_sig = SigCode::from_str("INFO").expect("INFO sigcode");
             let anam_sig = SubrecordSig::from_str("ANAM").expect("ANAM subrecord");
-            let voice_type_npcs =
+            let mut voice_type_npcs =
                 build_voice_type_npc_index(session, target_schema, mapper.interner)?;
             let output_plugin_name = session.target_slot().parsed.plugin_name.clone();
             let target_masters = session.target_masters().to_vec();
@@ -633,6 +633,70 @@ impl Fixup for ValidateReferenceTargetTypesFixup {
             let fks = session
                 .form_keys_of_sig(info_sig, mapper.interner)
                 .map_err(|e| FixupError::HandleError(e.to_string()))?;
+
+            let mut missing_voice_types = FxHashSet::default();
+            for fk in &fks {
+                let record = match session.record_decoded(fk, target_schema, mapper.interner) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                let Some(speaker_fk) = record
+                    .fields
+                    .iter()
+                    .find(|e| e.sig == anam_sig)
+                    .and_then(|e| first_formkey(&e.value))
+                else {
+                    continue;
+                };
+                let speaker_sig = resolve_speaker_sig(
+                    session,
+                    mapper.interner,
+                    &fk_to_sig,
+                    &output_plugin_name,
+                    &target_masters,
+                    &target_master_handle_ids,
+                    &speaker_fk,
+                );
+                if speaker_sig.is_some_and(|sig| sig.as_str() == "VTYP")
+                    && !voice_type_npcs
+                        .by_voice
+                        .contains_key(&(speaker_fk.local, speaker_fk.plugin))
+                {
+                    missing_voice_types.insert(speaker_fk);
+                }
+            }
+
+            if let Some(template) = voice_type_npcs.proxy_template.as_ref() {
+                let mut missing_voice_types: Vec<_> = missing_voice_types.into_iter().collect();
+                missing_voice_types.sort_by(|left, right| {
+                    let left_plugin = mapper.interner.resolve(left.plugin).unwrap_or("");
+                    let right_plugin = mapper.interner.resolve(right.plugin).unwrap_or("");
+                    left_plugin
+                        .cmp(right_plugin)
+                        .then_with(|| left.local.cmp(&right.local))
+                });
+                let mut proxies = Vec::with_capacity(missing_voice_types.len());
+                for voice_type in missing_voice_types {
+                    let source_key = synthetic_info_speaker_source_key(voice_type, mapper.interner);
+                    let proxy_fk = mapper.allocate_or_resolve(source_key, None, npc_sig());
+                    proxies.push(build_info_speaker_proxy(
+                        template,
+                        proxy_fk,
+                        voice_type,
+                        mapper.interner,
+                    )?);
+                    voice_type_npcs
+                        .by_voice
+                        .insert((voice_type.local, voice_type.plugin), vec![proxy_fk]);
+                }
+                let added = session
+                    .add_records(proxies, target_schema, mapper.interner)
+                    .map_err(|e| FixupError::HandleError(e.to_string()))?;
+                report.records_added = report
+                    .records_added
+                    .saturating_add(added.try_into().unwrap_or(u32::MAX));
+            }
+
             let mut changed_records = Vec::new();
             let mut acted = 0u32;
             for fk in fks {
@@ -665,7 +729,7 @@ impl Fixup for ValidateReferenceTargetTypesFixup {
                     &mut record,
                     anam_sig,
                     speaker_sig,
-                    &voice_type_npcs,
+                    &voice_type_npcs.by_voice,
                 );
                 if outcome.changed {
                     acted = acted.saturating_add(outcome.acted);
@@ -1782,14 +1846,24 @@ fn resolve_keyword_list_fk_masters(
     out
 }
 
+struct VoiceTypeNpcIndex {
+    by_voice: FxHashMap<(u32, Sym), Vec<FormKey>>,
+    proxy_template: Option<Record>,
+}
+
+fn npc_sig() -> SigCode {
+    SigCode::from_str("NPC_").expect("NPC_ sigcode")
+}
+
 fn build_voice_type_npc_index(
     session: &mut PluginSession,
     target_schema: &AuthoringSchema,
     interner: &StringInterner,
-) -> Result<FxHashMap<(u32, Sym), Vec<FormKey>>, FixupError> {
-    let npc_sig = SigCode::from_str("NPC_").expect("NPC_ sigcode");
+) -> Result<VoiceTypeNpcIndex, FixupError> {
+    let npc_sig = npc_sig();
     let vtck_sig = SubrecordSig::from_str("VTCK").expect("VTCK subrecord");
     let mut voice_type_npcs: FxHashMap<(u32, Sym), Vec<FormKey>> = FxHashMap::default();
+    let mut proxy_template: Option<Record> = None;
     let fks = session
         .form_keys_of_sig(npc_sig, interner)
         .map_err(|e| FixupError::HandleError(e.to_string()))?;
@@ -1798,6 +1872,9 @@ fn build_voice_type_npc_index(
             Ok(r) => r,
             Err(_) => continue,
         };
+        if record.flags.contains(RecordFlags::DELETED) {
+            continue;
+        }
         for entry in &record.fields {
             if entry.sig != vtck_sig {
                 continue;
@@ -1811,9 +1888,89 @@ fn build_voice_type_npc_index(
                     .or_default()
                     .push(record.form_key);
             }
+            if proxy_template
+                .as_ref()
+                .is_none_or(|current| prefer_info_speaker_template(&record, current, interner))
+            {
+                proxy_template = Some(record.clone());
+            }
         }
     }
-    Ok(voice_type_npcs)
+    Ok(VoiceTypeNpcIndex {
+        by_voice: voice_type_npcs,
+        proxy_template,
+    })
+}
+
+fn prefer_info_speaker_template(
+    candidate: &Record,
+    current: &Record,
+    interner: &StringInterner,
+) -> bool {
+    let tplt_sig = SubrecordSig::from_str("TPLT").expect("TPLT subrecord");
+    let score = |record: &Record| {
+        (
+            record.fields.iter().any(|entry| entry.sig == tplt_sig),
+            record.fields.len(),
+            interner.resolve(record.form_key.plugin).unwrap_or(""),
+            record.form_key.local,
+        )
+    };
+    score(candidate) < score(current)
+}
+
+fn synthetic_info_speaker_source_key(voice_type: FormKey, interner: &StringInterner) -> FormKey {
+    let plugin = interner.resolve(voice_type.plugin).unwrap_or("unknown");
+    FormKey {
+        local: voice_type.local,
+        plugin: interner.intern(&format!("__synth_info_speaker__{plugin}")),
+    }
+}
+
+fn build_info_speaker_proxy(
+    template: &Record,
+    form_key: FormKey,
+    voice_type: FormKey,
+    interner: &StringInterner,
+) -> Result<Record, FixupError> {
+    let edid_sig = SubrecordSig::from_str("EDID").map_err(FixupError::SchemaError)?;
+    let vmad_sig = SubrecordSig::from_str("VMAD").map_err(FixupError::SchemaError)?;
+    let vtck_sig = SubrecordSig::from_str("VTCK").map_err(FixupError::SchemaError)?;
+    let plugin = interner.resolve(voice_type.plugin).unwrap_or("unknown");
+    let plugin_token: String = plugin
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect();
+    let eid = interner.intern(&format!(
+        "BACUP_InfoSpeaker_{plugin_token}_{:06X}",
+        voice_type.local
+    ));
+
+    let mut proxy = template.clone();
+    proxy.form_key = form_key;
+    proxy.eid = Some(eid);
+    proxy.flags = RecordFlags::empty();
+    proxy.warnings.clear();
+    proxy.fields.retain(|entry| entry.sig != vmad_sig);
+
+    if let Some(entry) = proxy.fields.iter_mut().find(|entry| entry.sig == edid_sig) {
+        entry.value = FieldValue::String(eid);
+    } else {
+        proxy.fields.insert(
+            0,
+            FieldEntry {
+                sig: edid_sig,
+                value: FieldValue::String(eid),
+            },
+        );
+    }
+    let Some(entry) = proxy.fields.iter_mut().find(|entry| entry.sig == vtck_sig) else {
+        return Err(FixupError::Other(
+            "INFO speaker proxy template has no VTCK".to_string(),
+        ));
+    };
+    entry.value = FieldValue::FormKey(voice_type);
+    Ok(proxy)
 }
 
 /// Resolve an INFO ANAM speaker FK's target signature, consulting the output
@@ -3195,6 +3352,94 @@ mod tests {
             panic!("expected retargeted speaker FormKey");
         };
         assert_eq!(*actual, npc_fk);
+    }
+
+    #[test]
+    fn synthesized_info_speaker_proxy_uses_requested_voice_and_drops_template_script() {
+        let interner = StringInterner::new();
+        let template_voice = make_fk(0x00002D, "Fallout4.esm", &interner);
+        let requested_voice = make_fk(0x590FB9, "SeventySix.esm", &interner);
+        let proxy_fk = make_fk(0x800123, "SeventySix.esm", &interner);
+        let template = make_record(
+            "NPC_",
+            vec![
+                FieldEntry {
+                    sig: SubrecordSig::from_str("EDID").unwrap(),
+                    value: FieldValue::String(interner.intern("TemplateNPC")),
+                },
+                FieldEntry {
+                    sig: SubrecordSig::from_str("VMAD").unwrap(),
+                    value: FieldValue::Bytes(smallvec::SmallVec::from_slice(b"script")),
+                },
+                fk_field("VTCK", template_voice),
+                bytes_field("DATA", vec![0; 24]),
+            ],
+            &interner,
+        );
+
+        let proxy =
+            build_info_speaker_proxy(&template, proxy_fk, requested_voice, &interner).unwrap();
+
+        assert_eq!(proxy.form_key, proxy_fk);
+        assert_eq!(proxy.flags, RecordFlags::empty());
+        assert!(
+            proxy
+                .fields
+                .iter()
+                .all(|entry| entry.sig.as_str() != "VMAD")
+        );
+        let eid = proxy.eid.and_then(|sym| interner.resolve(sym)).unwrap();
+        assert_eq!(eid, "BACUP_InfoSpeaker_SeventySix_esm_590FB9");
+        let voice = proxy
+            .fields
+            .iter()
+            .find(|entry| entry.sig.as_str() == "VTCK")
+            .and_then(|entry| first_formkey(&entry.value));
+        assert_eq!(voice, Some(requested_voice));
+    }
+
+    #[test]
+    fn synthesized_info_speaker_allocation_keys_distinguish_source_plugins() {
+        let interner = StringInterner::new();
+        let first = synthetic_info_speaker_source_key(
+            make_fk(0x001234, "SourceA.esm", &interner),
+            &interner,
+        );
+        let second = synthetic_info_speaker_source_key(
+            make_fk(0x001234, "SourceB.esm", &interner),
+            &interner,
+        );
+
+        assert_ne!(first.plugin, second.plugin);
+        assert_eq!(first.local, second.local);
+    }
+
+    #[test]
+    fn synthesized_info_speaker_prefers_small_non_templated_npc() {
+        let interner = StringInterner::new();
+        let voice = make_fk(0x00002D, "Fallout4.esm", &interner);
+        let templated = make_record(
+            "NPC_",
+            vec![
+                fk_field("VTCK", voice),
+                fk_field("TPLT", make_fk(0x123, "Fallout4.esm", &interner)),
+            ],
+            &interner,
+        );
+        let direct = make_record(
+            "NPC_",
+            vec![
+                fk_field("VTCK", voice),
+                bytes_field("DATA", vec![0; 24]),
+                bytes_field("DNAM", vec![0; 8]),
+            ],
+            &interner,
+        );
+
+        assert!(prefer_info_speaker_template(&direct, &templated, &interner));
+        assert!(!prefer_info_speaker_template(
+            &templated, &direct, &interner
+        ));
     }
 
     #[test]

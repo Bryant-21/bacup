@@ -7,7 +7,18 @@ import yaml
 from bacup_lib.source_pairs import SOURCE_PAIRS
 
 VALID_FAMILIES = frozenset(
-    {"Meshes", "Materials", "Textures", "Terrain", "LOD", "Animations", "Scripts", "Sounds"}
+    {
+        "NIFs",
+        "Havok",
+        "Meshes",
+        "Materials",
+        "Textures",
+        "Terrain",
+        "LOD",
+        "Animations",
+        "Scripts",
+        "Sounds",
+    }
 )
 FAMILY_SENTINELS = frozenset({"ALL", "NONE"})
 
@@ -190,12 +201,12 @@ def resolve_family_union(
         if "ALL" in version_families:
             return frozenset({"ALL"})
         families.update(version_families)
-    # Script patches can change without a version bump, so a target that opts
-    # into Scripts keeps that family repeatable even when already installed.
-    if "Scripts" in manifest.versions[target_idx].families_for_conversion(
-        conversion_id
-    ):
-        families.add("Scripts")
+    target_families = set(
+        manifest.versions[target_idx].families_for_conversion(conversion_id)
+    )
+    if "ALL" in target_families:
+        return frozenset({"ALL"})
+    families.update(target_families)
     return frozenset(families)
 
 

@@ -63,6 +63,7 @@ def main() -> int:
     parser.add_argument("fo4_data_dir", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--game-build", default="")
+    parser.add_argument("--workers", type=int)
     parser.add_argument(
         "--finalize-temp",
         action="store_true",
@@ -82,7 +83,12 @@ def main() -> int:
         raise RuntimeError(
             "conversion native runtime lacks catalog builder; run scripts/ensure_native.py"
         )
-    builder(str(args.fo4_data_dir), str(args.output), str(args.game_build))
+    builder(
+        str(args.fo4_data_dir),
+        str(args.output),
+        str(args.game_build),
+        args.workers,
+    )
     return 0
 
 

@@ -65,6 +65,37 @@ pub fn add_record_native(
     Ok(())
 }
 
+pub(crate) fn encode_form_key_for_handle(
+    handle_id: u64,
+    form_key: crate::ids::FormKey,
+    interner: &StringInterner,
+) -> Result<u32, WriteError> {
+    let store = plugin_handle_store_ref().lock().unwrap();
+    let slot = store
+        .get(&handle_id)
+        .ok_or(WriteError::InvalidHandle(handle_id))?;
+    let plugin_name = interner.resolve(form_key.plugin).ok_or_else(|| {
+        WriteError::EncodeFailure(format!(
+            "unresolved plugin symbol for FormKey {:06X}",
+            form_key.local
+        ))
+    })?;
+    let master_index = slot
+        .parsed
+        .header
+        .masters
+        .iter()
+        .position(|master| master.eq_ignore_ascii_case(plugin_name))
+        .map(|index| index as u32)
+        .unwrap_or(slot.parsed.header.masters.len() as u32);
+    if master_index > 0xFF {
+        return Err(WriteError::EncodeFailure(format!(
+            "master index {master_index} exceeds FormID capacity"
+        )));
+    }
+    Ok((master_index << 24) | (form_key.local & 0x00FF_FFFF))
+}
+
 /// Encode a NAVM and insert it into the target CELL child group described by
 /// its NVNM parent data. Returns `Ok(false)` when the target cell/world is not
 /// present in the target handle.
@@ -2147,6 +2178,8 @@ fn encode_record_for_target(
     let mut seen_term_xmrk = false;
     let is_scen_record = sig_str == "SCEN";
     let mut seen_scen_body_vnam = false;
+    let is_perk_record = sig_str == "PERK";
+    let mut in_perk_effect = false;
     for entry in &record.fields {
         let subrec_sig = entry.sig.as_str();
         if is_term_record
@@ -2168,6 +2201,8 @@ fn encode_record_for_target(
                     term_snam_def_for_position(record_def, seen_term_xmrk)
                 } else if is_scen_record {
                     scen_tnam_def_for_entry(record_def, entry, seen_scen_body_vnam)
+                } else if is_perk_record && in_perk_effect && subrec_sig == "DATA" {
+                    perk_effect_data_def(record_def)
                 } else {
                     None
                 };
@@ -2193,6 +2228,13 @@ fn encode_record_for_target(
         }
         if is_scen_record && subrec_sig == "VNAM" {
             seen_scen_body_vnam = true;
+        }
+        if is_perk_record {
+            match subrec_sig {
+                "PRKE" => in_perk_effect = true,
+                "PRKF" => in_perk_effect = false,
+                _ => {}
+            }
         }
 
         if is_pack_record {
@@ -2388,11 +2430,18 @@ fn apply_fo4_ck_payload_limits(
 
     match record_sig {
         "SCEN" => truncate_scen_contextual_subrecords(subrecords),
-        "FURN" | "TERM" => {
+        "FURN" => {
             subrecords.retain(|subrecord| {
                 subrecord.signature.as_str() != "WBDT" || !subrecord.data.is_empty()
             });
-            truncate_subrecords(subrecords, "WBDT", 2);
+            normalize_fo4_furniture_workbench_data_width(subrecords);
+            normalize_fo4_projected_furniture_marker_parameters(subrecords);
+        }
+        "TERM" => {
+            subrecords.retain(|subrecord| {
+                subrecord.signature.as_str() != "WBDT" || !subrecord.data.is_empty()
+            });
+            truncate_subrecords(subrecords, "WBDT", 1);
         }
         "MOVT" => truncate_subrecords(subrecords, "SPED", 112),
         "ARMO" | "WEAP" => project_subrecord_rows(subrecords, "DAMA", 12, 8),
@@ -2431,6 +2480,47 @@ fn truncate_subrecords(subrecords: &mut [ParsedSubrecord], sig: &str, max_len: u
             continue;
         }
         subrecord.data = Bytes::copy_from_slice(&subrecord.data[..max_len]);
+    }
+}
+
+fn normalize_fo4_furniture_workbench_data_width(subrecords: &mut [ParsedSubrecord]) {
+    for subrecord in subrecords {
+        if subrecord.signature.as_str() != "WBDT" {
+            continue;
+        }
+        let preserve_legacy_tail = subrecord.data.first().copied().unwrap_or_default() == 0
+            && subrecord.data.get(1).copied() == Some(u8::MAX);
+        let max_len = if preserve_legacy_tail { 2 } else { 1 };
+        if subrecord.data.len() > max_len {
+            subrecord.data = Bytes::copy_from_slice(&subrecord.data[..max_len]);
+        }
+    }
+}
+
+fn normalize_fo4_projected_furniture_marker_parameters(subrecords: &mut [ParsedSubrecord]) {
+    const MARKER_PARAMETERS_ROW_LEN: usize = 24;
+    const FO4_MARKER_TAIL_LEN: usize = 3;
+
+    let has_projected_workbench_data = subrecords
+        .iter()
+        .any(|subrecord| subrecord.signature.as_str() == "WBDT" && subrecord.data.len() == 1);
+    if !has_projected_workbench_data {
+        return;
+    }
+
+    for subrecord in subrecords {
+        if subrecord.signature.as_str() != "SNAM"
+            || subrecord.data.is_empty()
+            || subrecord.data.len() % MARKER_PARAMETERS_ROW_LEN != 0
+        {
+            continue;
+        }
+
+        let mut data = subrecord.data.to_vec();
+        for row in data.chunks_exact_mut(MARKER_PARAMETERS_ROW_LEN) {
+            row[MARKER_PARAMETERS_ROW_LEN - FO4_MARKER_TAIL_LEN..].fill(u8::MAX);
+        }
+        subrecord.data = Bytes::from(data);
     }
 }
 
@@ -2562,6 +2652,19 @@ pub fn replace_record_native(
     Ok(())
 }
 
+pub fn replace_record_contents_native(
+    handle_id: u64,
+    record: Record,
+    schema: &AuthoringSchema,
+    interner: &StringInterner,
+) -> Result<bool, WriteError> {
+    let mut store = plugin_handle_store_ref().lock().unwrap();
+    let slot = store
+        .get_mut(&handle_id)
+        .ok_or_else(|| WriteError::InsertFailure(format!("no plugin handle: {handle_id}")))?;
+    Ok(replace_record_contents_in_slot(slot, record, schema, interner)?.is_some())
+}
+
 pub(crate) fn replace_record_in_slot(
     slot: &mut NativePluginSlot,
     record: Record,
@@ -2672,22 +2775,11 @@ pub(crate) fn add_skyrim_navmesh_record_in_slot(
         .ok_or_else(|| {
             WriteError::EncodeFailure("Skyrim NAVM has no NVNM subrecord".to_string())
         })?;
-    let parent = parse_nvnm(nvnm.data.as_ref())
+    parse_nvnm(nvnm.data.as_ref())
         .map_err(|error| WriteError::EncodeFailure(format!("Skyrim NAVM NVNM: {error}")))?
         .parent;
 
-    if matches!(parent, NvnmParent::Interior { .. }) {
-        let form_id = parsed_record.form_id;
-        let inserted = insert_projected_navmesh_record_in_slot(slot, parsed_record)
-            .map_err(WriteError::InsertFailure)?;
-        if !inserted {
-            return Err(WriteError::InsertFailure(format!(
-                "Skyrim interior NAVM {form_id:08X} has no emitted parent CELL"
-            )));
-        }
-    } else {
-        insert_parsed_record_in_slot(slot, parsed_record);
-    }
+    insert_parsed_record_in_slot(slot, parsed_record);
     Ok(())
 }
 pub fn replace_records_native(
@@ -2867,6 +2959,14 @@ fn scen_tnam_def_for_entry<'a>(
             subrecord.scope_id.as_deref() == Some("actions")
                 && subrecord.codec.as_deref() == Some("float32")
         }
+    })
+}
+
+fn perk_effect_data_def(
+    record_def: &crate::schema::RecordDef,
+) -> Option<&crate::schema::SubrecordDef> {
+    record_def.subrecords.iter().find(|subrecord| {
+        subrecord.id == "DATA" && subrecord.scope_id.as_deref() == Some("effects")
     })
 }
 
@@ -3968,6 +4068,70 @@ mod tests {
     }
 
     #[test]
+    fn encode_perk_keeps_effect_conditions_scoped_and_entry_data_three_bytes() {
+        let interner = StringInterner::new();
+        let schema = fo4_schema();
+        let mut record = Record::new(
+            SigCode::from_str("PERK").unwrap(),
+            FormKey::parse("000800@Test.esm", &interner).unwrap(),
+        );
+        let field = |sig: &str, bytes: Vec<u8>| FieldEntry {
+            sig: SubrecordSig::from_str(sig).unwrap(),
+            value: FieldValue::Bytes(SmallVec::from_vec(bytes)),
+        };
+        let mut top_condition = vec![0_u8; 32];
+        top_condition[8..10].copy_from_slice(&72_u16.to_le_bytes());
+        let mut effect_condition = vec![0_u8; 32];
+        effect_condition[8..10].copy_from_slice(&494_u16.to_le_bytes());
+        record.fields.extend([
+            field("EDID", b"ScopedPerk\0".to_vec()),
+            field("CTDA", top_condition),
+            field("DATA", vec![0, 0, 1, 1, 0]),
+            field("PRKE", vec![2, 0, 0]),
+            field("DATA", vec![35, 3, 3]),
+            field("PRKC", vec![1]),
+            field("CTDA", effect_condition),
+            field("EPFT", vec![1]),
+            field("EPFD", 1.2_f32.to_le_bytes().to_vec()),
+            FieldEntry {
+                sig: SubrecordSig::from_str("PRKF").unwrap(),
+                value: FieldValue::None,
+            },
+        ]);
+        let master_map = no_masters();
+        let mut ctx = EncodeContext {
+            interner: &interner,
+            master_map: &master_map,
+            own_index: 0,
+            target_is_localized: false,
+            slot: None,
+            localized_strings: None,
+        };
+
+        let parsed = encode_record_for_target(record, &schema, &mut ctx, Some("fo4"))
+            .unwrap()
+            .expect("PERK should encode");
+
+        assert_eq!(
+            parsed
+                .subrecords
+                .iter()
+                .map(|subrecord| subrecord.signature.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "EDID", "CTDA", "DATA", "PRKE", "DATA", "PRKC", "CTDA", "EPFT", "EPFD", "PRKF",
+            ]
+        );
+        let effect_data = parsed
+            .subrecords
+            .iter()
+            .skip_while(|subrecord| subrecord.signature.as_str() != "PRKE")
+            .find(|subrecord| subrecord.signature.as_str() == "DATA")
+            .expect("entry-point DATA");
+        assert_eq!(effect_data.data.as_ref(), &[35, 3, 3]);
+    }
+
+    #[test]
     fn encode_term_snam_uses_payload_length_to_select_schema() {
         let interner = StringInterner::new();
         let schema = fo4_schema();
@@ -5049,7 +5213,7 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_interior_navmesh_writer_builds_cell_temporary_topology() {
+    fn skyrim_interior_navmesh_writer_defers_cell_topology() {
         let handle_id = plugin_handle_new_native("SkyrimMerged.esp", Some("fo4")).unwrap();
         let schema = fo4_schema();
         let interner = StringInterner::new();
@@ -5082,74 +5246,11 @@ mod tests {
         add_record_in_slot(slot, cell, &schema, &interner).unwrap();
         add_skyrim_navmesh_record_in_slot(slot, navmesh, &schema, &interner).unwrap();
 
-        let cell_top = slot
-            .parsed
-            .root_items
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group) if group.group_type == 0 && group.label == *b"CELL" => {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("CELL top group");
-        let block = cell_top
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == 2 && group.label == 0i32.to_le_bytes() =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("interior block group");
-        let subblock = block
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == 3 && group.label == 1i32.to_le_bytes() =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("interior subblock group");
-        assert!(subblock.children.iter().any(|item| {
-            matches!(item, ParsedItem::Record(record) if record.signature.as_str() == "CELL" && record.form_id == cell_form_id)
-        }));
-        let cell_children = subblock
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == 6 && group.label == cell_form_id.to_le_bytes() =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("cell children group");
-        let temporary = cell_children
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == 9 && group.label == cell_form_id.to_le_bytes() =>
-                {
-                    Some(group)
-                }
-                _ => None,
-            })
-            .expect("temporary group");
-        assert!(temporary.children.iter().any(|item| {
-            matches!(item, ParsedItem::Record(record) if record.signature.as_str() == "NAVM" && record.form_id == navm_form_id)
-        }));
-        assert!(!slot.parsed.root_items.iter().any(|item| {
-            matches!(item, ParsedItem::Group(group) if group.group_type == 0 && group.label == *b"NAVM")
-        }));
+        let cell_top = top_group_ref(&slot.parsed.root_items, b"CELL").expect("CELL top group");
+        assert!(contains_record(&cell_top.children, "CELL", cell_form_id));
+
+        let navm_top = top_group_ref(&slot.parsed.root_items, b"NAVM").expect("NAVM top group");
+        assert!(contains_record(&navm_top.children, "NAVM", navm_form_id));
     }
 
     #[test]
@@ -5432,21 +5533,9 @@ mod tests {
             target.parsed.root_items = vec![
                 top_group(
                     *b"CELL",
-                    vec![
-                        ParsedItem::Record(parsed_record("CELL", TARGET_CELL)),
-                        ParsedItem::Group(ParsedGroup {
-                            label: TARGET_CELL.to_le_bytes(),
-                            group_type: 6,
-                            tail: Bytes::new(),
-                            children: vec![ParsedItem::Group(ParsedGroup {
-                                label: TARGET_CELL.to_le_bytes(),
-                                group_type: 9,
-                                tail: Bytes::new(),
-                                children: vec![ParsedItem::Record(converted_navm)],
-                            })],
-                        }),
-                    ],
+                    vec![ParsedItem::Record(parsed_record("CELL", TARGET_CELL))],
                 ),
+                top_group(*b"NAVM", vec![ParsedItem::Record(converted_navm)]),
                 top_group(
                     *b"REFR",
                     vec![
@@ -5471,7 +5560,7 @@ mod tests {
 
         assert_eq!(stats.groups_rebuilt, 1);
         assert_eq!(stats.records_nested, 4);
-        assert_eq!(stats.flat_records_removed, 2);
+        assert_eq!(stats.flat_records_removed, 3);
 
         let store = plugin_handle_store_ref().lock().unwrap();
         let target = store.get(&target_handle).unwrap();
@@ -5837,7 +5926,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_record_pads_skyrim_workbench_data_to_fo4_schema_size() {
+    fn encode_record_projects_skyrim_workbench_data_to_fo4_crafting_width() {
         let schema = fo4_schema();
         let mut interner = StringInterner::new();
         let fk = FormKey::parse("000800@Test.esm", &mut interner).unwrap();
@@ -5871,7 +5960,7 @@ mod tests {
             .find(|subrecord| subrecord.signature.as_str() == "WBDT")
             .expect("WBDT should be present");
 
-        assert_eq!(wbdt.data.as_ref(), &[8, 0]);
+        assert_eq!(wbdt.data.as_ref(), &[8]);
     }
 
     #[test]
@@ -5897,18 +5986,77 @@ mod tests {
     }
 
     #[test]
-    fn fo4_ck_limits_nonempty_workbench_data_to_two_bytes() {
-        for record_sig in ["FURN", "TERM"] {
-            let mut subrecords = vec![
-                parsed_subrecord("WBDT", &[0x7f, 0xaa, 0xbb]),
-                parsed_subrecord("WBDT", &[0x33]),
-            ];
+    fn fo4_ck_projects_crafting_workbench_data_but_preserves_legacy_furniture_tail() {
+        let mut subrecords = vec![
+            parsed_subrecord("WBDT", &[0x05, 0x01]),
+            parsed_subrecord("WBDT", &[0x00, 0xFF, 0xBB]),
+            parsed_subrecord("WBDT", &[0x00, 0x00]),
+            parsed_subrecord("WBDT", &[0x07]),
+        ];
 
-            apply_fo4_ck_payload_limits(record_sig, &mut subrecords, Some("fo4"));
+        apply_fo4_ck_payload_limits("FURN", &mut subrecords, Some("fo4"));
 
-            assert_eq!(subrecords[0].data.as_ref(), &[0x7f, 0xaa]);
-            assert_eq!(subrecords[1].data.as_ref(), &[0x33]);
-        }
+        assert_eq!(subrecords[0].data.as_ref(), &[0x05]);
+        assert_eq!(subrecords[1].data.as_ref(), &[0x00, 0xFF]);
+        assert_eq!(subrecords[2].data.as_ref(), &[0x00]);
+        assert_eq!(subrecords[3].data.as_ref(), &[0x07]);
+    }
+
+    #[test]
+    fn fo4_ck_normalizes_crafting_furniture_marker_parameter_tails() {
+        let mut marker_rows = vec![0x11; 48];
+        marker_rows[21..24].copy_from_slice(&[0x01, 0x00, 0x00]);
+        marker_rows[45..48].copy_from_slice(&[0x00, 0x00, 0x00]);
+        let mut subrecords = vec![
+            parsed_subrecord("WBDT", &[0x05, 0x01]),
+            parsed_subrecord("SNAM", &marker_rows),
+        ];
+
+        apply_fo4_ck_payload_limits("FURN", &mut subrecords, Some("fo4"));
+
+        assert_eq!(subrecords[0].data.as_ref(), &[0x05]);
+        assert_eq!(&subrecords[1].data[21..24], &[0xFF, 0xFF, 0xFF]);
+        assert_eq!(&subrecords[1].data[45..48], &[0xFF, 0xFF, 0xFF]);
+        assert!(subrecords[1].data[..21].iter().all(|byte| *byte == 0x11));
+    }
+
+    #[test]
+    fn fo4_ck_normalizes_instrument_furniture_marker_parameter_tails() {
+        let mut marker_row = [0x33; 24];
+        marker_row[21..24].copy_from_slice(&[0x01, 0x00, 0x00]);
+        let mut subrecords = vec![
+            parsed_subrecord("WBDT", &[0x00, 0x01]),
+            parsed_subrecord("SNAM", &marker_row),
+        ];
+
+        apply_fo4_ck_payload_limits("FURN", &mut subrecords, Some("fo4"));
+
+        assert_eq!(subrecords[0].data.as_ref(), &[0x00]);
+        assert_eq!(&subrecords[1].data[21..24], &[0xFF, 0xFF, 0xFF]);
+        assert!(subrecords[1].data[..21].iter().all(|byte| *byte == 0x33));
+    }
+
+    #[test]
+    fn fo4_ck_preserves_legacy_furniture_marker_parameter_tails() {
+        let marker_row = [0x22; 24];
+        let mut subrecords = vec![
+            parsed_subrecord("WBDT", &[0x00, 0xFF]),
+            parsed_subrecord("SNAM", &marker_row),
+        ];
+
+        apply_fo4_ck_payload_limits("FURN", &mut subrecords, Some("fo4"));
+
+        assert_eq!(subrecords[0].data.as_ref(), &[0x00, 0xFF]);
+        assert_eq!(subrecords[1].data.as_ref(), &marker_row);
+    }
+
+    #[test]
+    fn fo4_ck_projects_terminal_workbench_data_to_one_byte() {
+        let mut subrecords = vec![parsed_subrecord("WBDT", &[0x00, 0xFF])];
+
+        apply_fo4_ck_payload_limits("TERM", &mut subrecords, Some("fo4"));
+
+        assert_eq!(subrecords[0].data.as_ref(), &[0x00]);
     }
 
     #[test]
@@ -6451,6 +6599,72 @@ mod tests {
             "replace_record_native failed: {:?}",
             result.err()
         );
+    }
+
+    #[test]
+    fn replace_record_contents_native_preserves_quest_child_group_adjacency() {
+        const QUEST_FORM_ID: u32 = 0x0010_0001;
+        const DIALOGUE_FORM_ID: u32 = 0x0010_0002;
+
+        let handle_id = match plugin_handle_new_native("QuestReplaceTest.esm", Some("fo4")) {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle_id).unwrap();
+            let mut parsed_quest = parsed_record("QUST", QUEST_FORM_ID);
+            parsed_quest
+                .subrecords
+                .push(parsed_subrecord("EDID", b"QuestReplaceTest\0"));
+            slot.parsed.root_items = vec![ParsedItem::Group(ParsedGroup {
+                label: *b"QUST",
+                group_type: 0,
+                tail: Bytes::new(),
+                children: vec![
+                    ParsedItem::Record(parsed_quest),
+                    ParsedItem::Group(ParsedGroup {
+                        label: QUEST_FORM_ID.to_le_bytes(),
+                        group_type: 10,
+                        tail: Bytes::new(),
+                        children: vec![ParsedItem::Record(parsed_record("DIAL", DIALOGUE_FORM_ID))],
+                    }),
+                ],
+            })];
+        }
+
+        let schema = fo4_schema();
+        let interner = StringInterner::new();
+        let mut quest = Record::new(
+            SigCode::from_str("QUST").unwrap(),
+            FormKey {
+                local: QUEST_FORM_ID,
+                plugin: interner.intern("QuestReplaceTest.esm"),
+            },
+        );
+        let editor_id = interner.intern("QuestReplaceTest");
+        quest.eid = Some(editor_id);
+        quest.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("EDID").unwrap(),
+            value: FieldValue::String(editor_id),
+        });
+
+        assert!(replace_record_contents_native(handle_id, quest, &schema, &interner).unwrap());
+
+        let store = plugin_handle_store_ref().lock().unwrap();
+        let slot = store.get(&handle_id).unwrap();
+        let ParsedItem::Group(quest_top_group) = &slot.parsed.root_items[0] else {
+            panic!("expected QUST top group");
+        };
+        assert!(matches!(
+            &quest_top_group.children[..],
+            [
+                ParsedItem::Record(record),
+                ParsedItem::Group(child_group),
+            ] if record.form_id == QUEST_FORM_ID
+                && child_group.group_type == 10
+                && child_group.label == QUEST_FORM_ID.to_le_bytes()
+        ));
     }
 
     #[test]

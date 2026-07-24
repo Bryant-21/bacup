@@ -20,6 +20,7 @@ pub mod model;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::fixups::face::materialize_leveled_template_npcs::read_target_or_master_record;
 use crate::fixups::{FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
@@ -568,10 +569,94 @@ fn scalar_form_key(value: &FieldValue, plugin: crate::sym::Sym) -> Option<FormKe
     }
 }
 
+fn lvln_entry_form_key(
+    value: &FieldValue,
+    plugin: crate::sym::Sym,
+    interner: &crate::sym::StringInterner,
+) -> Option<FormKey> {
+    match value {
+        // FO4 LVLO decodes as a struct; the entry form is the `npc` field
+        // (not the leading `level`, which is also a non-zero uint).
+        FieldValue::Struct(fields) => fields.iter().find_map(|(name, value)| {
+            (interner.resolve(*name) == Some("npc"))
+                .then(|| scalar_form_key(value, plugin))
+                .flatten()
+        }),
+        FieldValue::FormKey(fk) => Some(*fk),
+        // Raw fallback is either FO4's H,I,H layout (offset 2) or the
+        // expanded H,B,B,I,... layout retained by some conversion records.
+        FieldValue::Bytes(bytes) if bytes.len() >= 8 => {
+            let offset = if bytes.len() >= 12 { 4 } else { 2 };
+            let local = u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ]) & 0x00FF_FFFF;
+            (local != 0).then_some(FormKey { local, plugin })
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a selected ESS branch to a concrete NPC template. FO4 does not
+/// resolve NPC template categories through an LVLN, so leaving a synthesized
+/// clone's TPLT/TPTA pointed at the selected species list produces an actor with
+/// no effective traits, model, or combat data.
+fn resolve_branch_template_npc(
+    session: &mut PluginSession,
+    schema: &crate::schema::AuthoringSchema,
+    interner: &crate::sym::StringInterner,
+    target_plugin: crate::sym::Sym,
+    target_masters: &[String],
+    target_master_handle_ids: &[u64],
+    current: FormKey,
+    visited: &mut HashSet<FormKey>,
+    depth: u32,
+) -> Option<FormKey> {
+    if depth > 8 || !visited.insert(current) {
+        return None;
+    }
+    let record = read_target_or_master_record(
+        session,
+        schema,
+        interner,
+        target_plugin,
+        target_masters,
+        target_master_handle_ids,
+        current,
+    )?;
+    match record.sig.as_str() {
+        "NPC_" => Some(record.form_key),
+        "LVLN" => record
+            .fields
+            .iter()
+            .filter(|field| field.sig.as_str() == "LVLO")
+            .filter_map(|field| lvln_entry_form_key(&field.value, record.form_key.plugin, interner))
+            .find_map(|entry| {
+                resolve_branch_template_npc(
+                    session,
+                    schema,
+                    interner,
+                    target_plugin,
+                    target_masters,
+                    target_master_handle_ids,
+                    entry,
+                    visited,
+                    depth + 1,
+                )
+            }),
+        _ => None,
+    }
+}
+
 fn resolve_branch_display_name(
     session: &mut PluginSession,
     schema: &crate::schema::AuthoringSchema,
     interner: &crate::sym::StringInterner,
+    target_plugin: crate::sym::Sym,
+    target_masters: &[String],
+    target_master_handle_ids: &[u64],
     current: FormKey,
     visited: &mut HashSet<FormKey>,
     depth: u32,
@@ -579,7 +664,15 @@ fn resolve_branch_display_name(
     if depth > 8 || !visited.insert(current) {
         return None;
     }
-    let record = session.record_decoded(&current, schema, interner).ok()?;
+    let record = read_target_or_master_record(
+        session,
+        schema,
+        interner,
+        target_plugin,
+        target_masters,
+        target_master_handle_ids,
+        current,
+    )?;
     let plugin = record.form_key.plugin;
     match record.sig.as_str() {
         "LVLN" => {
@@ -588,28 +681,15 @@ fn resolve_branch_display_name(
                 if field.sig.as_str() != "LVLO" {
                     continue;
                 }
-                let leaf = match &field.value {
-                    // FO4 LVLO decodes as a struct; the entry form is the `npc` field
-                    // (not the leading `level`, which is also a non-zero uint).
-                    FieldValue::Struct(fields) => fields.iter().find_map(|(name, value)| {
-                        (interner.resolve(*name) == Some("npc"))
-                            .then(|| scalar_form_key(value, plugin))
-                            .flatten()
-                    }),
-                    FieldValue::FormKey(fk) => Some(*fk),
-                    // Raw-fallback LVLO (struct:H,B,B,I,...): npc formid is at offset 4.
-                    FieldValue::Bytes(bytes) if bytes.len() >= 8 => {
-                        let local = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]])
-                            & 0x00FF_FFFF;
-                        (local != 0).then_some(FormKey { local, plugin })
-                    }
-                    _ => None,
-                };
+                let leaf = lvln_entry_form_key(&field.value, plugin, interner);
                 if let Some(leaf) = leaf {
                     if let Some(found) = resolve_branch_display_name(
                         session,
                         schema,
                         interner,
+                        target_plugin,
+                        target_masters,
+                        target_master_handle_ids,
                         leaf,
                         visited,
                         depth + 1,
@@ -647,7 +727,17 @@ fn resolve_branch_display_name(
                         .find(|f| f.sig.as_str() == "TPLT")
                         .and_then(|f| scalar_form_key(&f.value, plugin))
                 })?;
-            resolve_branch_display_name(session, schema, interner, next, visited, depth + 1)
+            resolve_branch_display_name(
+                session,
+                schema,
+                interner,
+                target_plugin,
+                target_masters,
+                target_master_handle_ids,
+                next,
+                visited,
+                depth + 1,
+            )
         }
         _ => None,
     }
@@ -702,6 +792,8 @@ fn specialize_actor_to_branch(
     warnings: &mut Vec<crate::sym::Sym>,
     seen_warnings: &mut HashSet<String>,
     output_plugin: crate::sym::Sym,
+    target_masters: &[String],
+    target_master_handle_ids: &[u64],
     mut actor_record: Record,
     base_fk: FormKey,
     base_local: u32,
@@ -716,7 +808,43 @@ fn specialize_actor_to_branch(
     let clone_fk = if let Some(clone_fk) = mapper.ess_clone_lookup(cache_key) {
         clone_fk
     } else {
-        let mut clone = base_npc.clone();
+        let mut template_visited: HashSet<FormKey> = HashSet::new();
+        let concrete_template = resolve_branch_template_npc(
+            session,
+            target_schema,
+            mapper.interner,
+            output_plugin,
+            target_masters,
+            target_master_handle_ids,
+            branch_target,
+            &mut template_visited,
+            0,
+        );
+        let (mut clone, materialized_concrete_actor) = match concrete_template.and_then(|fk| {
+            read_target_or_master_record(
+                session,
+                target_schema,
+                mapper.interner,
+                output_plugin,
+                target_masters,
+                target_master_handle_ids,
+                fk,
+            )
+        }) {
+            Some(record) => (record, true),
+            None => {
+                warning_once(
+                    warnings,
+                    seen_warnings,
+                    mapper.interner,
+                    format!(
+                        "ess_spawn_fallback:no_concrete_branch_npc branch={:06X}",
+                        branch_target.local & 0x00FF_FFFF
+                    ),
+                );
+                (base_npc.clone(), false)
+            }
+        };
         let source_fk = FormKey {
             local: mapper.ess_clone_next_source_local(),
             plugin: synth_plugin,
@@ -733,7 +861,9 @@ fn specialize_actor_to_branch(
             local: template_local,
             plugin: output_plugin,
         };
-        if !replace_template_form_key(&mut clone, old_template, branch_target) {
+        if !materialized_concrete_actor
+            && !replace_template_form_key(&mut clone, old_template, branch_target)
+        {
             warning_once(
                 warnings,
                 seen_warnings,
@@ -756,6 +886,9 @@ fn specialize_actor_to_branch(
             session,
             target_schema,
             mapper.interner,
+            output_plugin,
+            target_masters,
+            target_master_handle_ids,
             branch_target,
             &mut name_visited,
             0,
@@ -798,6 +931,7 @@ fn specialize_placed_actor_templates(
         return Ok((0, 0, Vec::new()));
     }
 
+    let target_masters = session.target_masters().to_vec();
     let npc_sig = SigCode::from_str("NPC_").map_err(FixupError::SchemaError)?;
     let synth_plugin = mapper.interner.intern(SYNTH_ESS_SPAWN_PLUGIN);
     let mut clone_records: Vec<Record> = Vec::new();
@@ -947,6 +1081,8 @@ fn specialize_placed_actor_templates(
             &mut warnings,
             &mut seen_warnings,
             output_plugin,
+            &target_masters,
+            &config.target_master_handle_ids,
             actor_record,
             base_fk,
             base_local,
@@ -1023,6 +1159,8 @@ fn specialize_placed_actor_templates(
             &mut warnings,
             &mut seen_warnings,
             output_plugin,
+            &target_masters,
+            &config.target_master_handle_ids,
             actor_record,
             base_fk,
             base_local,
@@ -2206,7 +2344,8 @@ mod interior_tests {
     use bytes::Bytes;
     use esp_authoring_core::plugin_runtime::{
         ParsedItem, ParsedRecord, ParsedSubrecord, ensure_interior_cell_and_child_group,
-        insert_placed_child_into_cell_group, plugin_handle_new_native, plugin_handle_store_ref,
+        insert_placed_child_into_cell_group, plugin_handle_add_master_native,
+        plugin_handle_new_native, plugin_handle_store_ref,
     };
     use smol_str::SmolStr;
 
@@ -3389,8 +3528,12 @@ mod interior_tests {
         );
     }
 
+    /// Regression for synthesized F00004: `LvlMainMedium` carries Mole Miner
+    /// literals, while its location ESS selects the Scorched branch. The clone
+    /// must materialize the selected NPC instead of retaining a cross-species
+    /// race, inventory, and combat style.
     #[test]
-    fn placed_actor_template_specialized_from_location_ess_property() {
+    fn placed_actor_materializes_selected_branch_instead_of_cross_species_base() {
         let interner = StringInterner::new();
         let source = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
         let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
@@ -3399,17 +3542,24 @@ mod interior_tests {
         let sevsix = interner.intern("SeventySix.esm");
         let src_lctn_local = 0x09A451u32;
         let avif_local = 0x00594Fu32;
-        let ghoul_keyword = 0x0581DEu32;
+        let scorched_keyword = 0x0581DEu32;
         let main_all = 0x51C55Bu32;
-        let ghoul_branch = 0x51C577u32;
-        let base_npc = 0x1D513Du32;
+        let scorched_branch = 0x51C55Du32;
+        let scorched_leaf = 0x3D0059u32;
+        let stale_race = 0x012E6Bu32;
+        let scorched_race = 0x10CA5Fu32;
+        let stale_inventory = 0x31FA7Bu32;
+        let scorched_inventory = 0x238C64u32;
+        let stale_combat_style = 0x018D58u32;
+        let scorched_combat_style = 0x16CC3Cu32;
+        let base_npc = 0x1D5136u32;
         let cell_local = 0xA044E2u32;
         let actor_local = 0x1F0F76u32;
 
         put_record_in_group(
             source,
             *b"AVIF",
-            source_avif_record(avif_local, "ESSChanceMainGhouls", ghoul_keyword),
+            source_avif_record(avif_local, "ESSChanceMainScorched", scorched_keyword),
         );
         put_source_lctn(
             source,
@@ -3427,7 +3577,12 @@ mod interior_tests {
         put_record_in_group(
             source,
             *b"LVLN",
-            source_lvln_condition_record(main_all, "LChar_MainAll", ghoul_branch, ghoul_keyword),
+            source_lvln_condition_record(
+                main_all,
+                "LChar_MainAll",
+                scorched_branch,
+                scorched_keyword,
+            ),
         );
 
         put_target_lctn(target, src_lctn_local);
@@ -3439,13 +3594,40 @@ mod interior_tests {
         put_record_in_group(
             target,
             *b"LVLN",
-            target_lvln_record(ghoul_branch, "LChar_TGroupGhouls"),
+            target_lvln_record_with_entry(scorched_branch, "LChar_TGroupScorched", scorched_leaf),
         );
-        put_record_in_group(
-            target,
-            *b"NPC_",
-            target_npc_template_record(base_npc, "LvlMainMelee", main_all),
-        );
+        let mut branch_actor =
+            target_npc_named_record(scorched_leaf, "EncScorched_Template_GenderMale", "Scorched");
+        branch_actor
+            .subrecords
+            .push(sub("RNAM", scorched_race.to_le_bytes().to_vec()));
+        branch_actor
+            .subrecords
+            .push(sub("COCT", 1u32.to_le_bytes().to_vec()));
+        let mut branch_inventory = scorched_inventory.to_le_bytes().to_vec();
+        branch_inventory.extend_from_slice(&1i32.to_le_bytes());
+        branch_actor.subrecords.push(sub("CNTO", branch_inventory));
+        branch_actor
+            .subrecords
+            .push(sub("ZNAM", scorched_combat_style.to_le_bytes().to_vec()));
+        put_record_in_group(target, *b"NPC_", branch_actor);
+
+        let mut generic_actor = target_npc_template_record(base_npc, "LvlMainMedium", main_all);
+        generic_actor
+            .subrecords
+            .push(sub("RNAM", stale_race.to_le_bytes().to_vec()));
+        generic_actor
+            .subrecords
+            .push(sub("COCT", 1u32.to_le_bytes().to_vec()));
+        let mut generic_inventory = stale_inventory.to_le_bytes().to_vec();
+        generic_inventory.extend_from_slice(&1i32.to_le_bytes());
+        generic_actor
+            .subrecords
+            .push(sub("CNTO", generic_inventory));
+        generic_actor
+            .subrecords
+            .push(sub("ZNAM", stale_combat_style.to_le_bytes().to_vec()));
+        put_record_in_group(target, *b"NPC_", generic_actor);
         ensure_interior_cell_and_child_group(
             target,
             interior_cell_record(cell_local, "WhitespringGolfClub", Some(src_lctn_local)),
@@ -3461,7 +3643,7 @@ mod interior_tests {
         invalidate_handle(target);
 
         let mut state = crate::formkey_mapper::MapperState::new([], mapper_options());
-        for local in [src_lctn_local, main_all, ghoul_branch, base_npc] {
+        for local in [src_lctn_local, main_all, scorched_branch, base_npc] {
             state.source_to_target.insert(
                 FormKey {
                     local,
@@ -3502,21 +3684,25 @@ mod interior_tests {
         let clone = find_record_by_sig_id(&slot.parsed.root_items, "NPC_", clone_local)
             .expect("specialized NPC clone");
         assert_eq!(
-            subrecord_formid(clone, "TPLT"),
-            Some(ghoul_branch),
-            "clone template points at the location-selected ghoul branch"
+            subrecord_formid(clone, "RNAM"),
+            Some(scorched_race),
+            "clone materializes the selected branch actor's race"
         );
+        assert_eq!(
+            subrecord_formid(clone, "CNTO"),
+            Some(scorched_inventory),
+            "clone materializes the selected branch actor's weapon inventory"
+        );
+        assert_eq!(
+            subrecord_formid(clone, "ZNAM"),
+            Some(scorched_combat_style),
+            "clone materializes the selected branch actor's combat style"
+        );
+        assert_eq!(subrecord_formid(clone, "TPLT"), None);
         let template_actor_slots = subrecord_formids(clone, "TPTA");
-        for slot in [0usize, 1, 2, 4, 5, 7, 8, 9] {
-            assert_eq!(
-                template_actor_slots.get(slot).copied(),
-                Some(ghoul_branch),
-                "clone TemplateActors slot {slot} points at the location-selected ghoul branch"
-            );
-        }
         assert!(
             !template_actor_slots.contains(&main_all),
-            "clone no longer inherits TemplateActors from LChar_MainAll"
+            "clone no longer inherits from the cross-species LChar_MainAll base"
         );
     }
 
@@ -3862,11 +4048,37 @@ mod interior_tests {
         invalidate_handle(target);
 
         let mut session = open_session(target, None).unwrap();
+        let mut template_visited: HashSet<FormKey> = HashSet::new();
+        let concrete_template = resolve_branch_template_npc(
+            &mut session,
+            &schema,
+            &interner,
+            out,
+            &[],
+            &[],
+            FormKey {
+                local: branch,
+                plugin: out,
+            },
+            &mut template_visited,
+            0,
+        );
+        assert_eq!(
+            concrete_template,
+            Some(FormKey {
+                local: leaf,
+                plugin: out,
+            }),
+            "LVLN branch resolves to its first concrete NPC leaf"
+        );
         let mut visited: HashSet<FormKey> = HashSet::new();
         let resolved = resolve_branch_display_name(
             &mut session,
             &schema,
             &interner,
+            out,
+            &[],
+            &[],
             FormKey {
                 local: branch,
                 plugin: out,
@@ -3912,6 +4124,58 @@ mod interior_tests {
             1,
             "baking is idempotent — no duplicate FULL"
         );
+    }
+
+    #[test]
+    fn branch_resolvers_read_target_master_npcs() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").unwrap();
+        let master_name = "Fallout4.esm";
+        let master = plugin_handle_new_native(master_name, Some("fo4")).unwrap();
+        let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target, master_name, None).unwrap();
+        let terminal = 0x12345u32;
+        put_record_in_group(
+            master,
+            *b"NPC_",
+            target_npc_named_record(terminal, "EncMasterActor", "Master Actor"),
+        );
+        invalidate_handle(master);
+        invalidate_handle(target);
+
+        let output_plugin = interner.intern(OUTPUT_PLUGIN);
+        let master_plugin = interner.intern(master_name);
+        let mut session = open_session(target, None).unwrap();
+        let current = FormKey {
+            local: terminal,
+            plugin: master_plugin,
+        };
+        let concrete = resolve_branch_template_npc(
+            &mut session,
+            &schema,
+            &interner,
+            output_plugin,
+            &[master_name.to_string()],
+            &[master],
+            current,
+            &mut HashSet::new(),
+            0,
+        );
+        assert_eq!(concrete, Some(current));
+
+        let (full, _) = resolve_branch_display_name(
+            &mut session,
+            &schema,
+            &interner,
+            output_plugin,
+            &[master_name.to_string()],
+            &[master],
+            current,
+            &mut HashSet::new(),
+            0,
+        )
+        .expect("master NPC name should resolve");
+        assert_eq!(full.sig.as_str(), "FULL");
     }
 
     /// Runs the late pass against a prepared source/target pair and returns

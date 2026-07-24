@@ -1,4 +1,5 @@
 Event OnActivate(ObjectReference akActionRef)
+    ; TODO
     Actor player = Game.GetPlayer()
     If PlayerTriggerOnly && akActionRef != player
         Return

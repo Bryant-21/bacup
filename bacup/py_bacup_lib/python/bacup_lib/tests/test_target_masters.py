@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 
 def test_resolve_official_target_master_paths_includes_fo4_dlc_in_order(tmp_path):
     from bacup_lib.target_masters import (
@@ -100,6 +102,90 @@ def test_resolve_target_master_plugin_paths_official_then_explicit(tmp_path):
     ]
     assert "Fallout4.esm" not in missing
     assert "DLCRobot.esm" not in missing
+
+
+def test_resolve_required_target_master_path_finds_xdi_or_fails(tmp_path):
+    from bacup_lib.target_masters import resolve_required_target_master_path
+
+    data_dir = tmp_path / "Fallout 4" / "Data"
+    data_dir.mkdir(parents=True)
+    with pytest.raises(FileNotFoundError, match="required target master XDI.esm"):
+        resolve_required_target_master_path("XDI.esm", target_data_dir=data_dir)
+
+    xdi_master = data_dir / "XDI.esm"
+    xdi_master.write_bytes(b"TES4")
+
+    assert (
+        resolve_required_target_master_path(
+            "XDI.esm", target_data_dir=tmp_path / "Fallout 4"
+        )
+        == xdi_master
+    )
+
+
+def test_resolve_required_target_master_path_finds_xdi_in_renamed_mo2_mod(
+    tmp_path,
+):
+    from bacup_lib.target_masters import resolve_required_target_master_path
+
+    mods_dir = tmp_path / "ModOrganizer" / "mods"
+    xdi_master = mods_dir / "My Renamed Dialogue Mod" / "XDI.esm"
+    xdi_master.parent.mkdir(parents=True)
+    xdi_master.write_bytes(b"TES4")
+
+    assert (
+        resolve_required_target_master_path(
+            "XDI.esm",
+            target_master_paths=[mods_dir],
+        )
+        == xdi_master
+    )
+
+
+def test_fo76_record_conversion_adds_xdi_to_master_inputs(tmp_path):
+    from bacup_lib.models import PluginPortOptions, PluginPortRequest
+    from bacup_lib.workflows.unified import _conversion_target_master_inputs
+
+    data_dir = tmp_path / "Data"
+    data_dir.mkdir()
+    xdi_master = data_dir / "XDI.esm"
+    xdi_master.write_bytes(b"TES4")
+    request = PluginPortRequest(
+        source_game="fo76",
+        target_game="fo4",
+        source_plugins=[],
+        output_root=tmp_path / "output",
+        target_data_dir=data_dir,
+        options=PluginPortOptions(translate_records=True),
+    )
+
+    assert _conversion_target_master_inputs(request) == [xdi_master]
+
+
+def test_fo76_record_conversion_adds_xdi_from_mo2_sibling_mod(tmp_path):
+    from bacup_lib.models import PluginPortOptions, PluginPortRequest
+    from bacup_lib.workflows.unified import _conversion_target_master_inputs
+
+    mods_dir = tmp_path / "ModOrganizer" / "mods"
+    install_dir = mods_dir / "fo76"
+    install_dir.mkdir(parents=True)
+    xdi_master = mods_dir / "Any Folder Name" / "XDI.esm"
+    xdi_master.parent.mkdir()
+    xdi_master.write_bytes(b"TES4")
+    request = PluginPortRequest(
+        source_game="fo76",
+        target_game="fo4",
+        source_plugins=[],
+        output_root=tmp_path / "output",
+        target_data_dir=tmp_path / "Fallout 4" / "Data",
+        target_master_paths=[install_dir.parent],
+        options=PluginPortOptions(translate_records=True),
+    )
+
+    assert _conversion_target_master_inputs(request) == [
+        install_dir.parent,
+        xdi_master,
+    ]
 
 
 def test_open_target_master_handles_uses_official_order_then_explicit_extras(

@@ -41,11 +41,16 @@ pub fn game_texture_suffixes(game: &str) -> &'static [(&'static str, &'static st
             ("reflectivity", "_r"),
         ],
         "skyrimse" | "skyrim" => &[
+            // "_em" must precede "_m": "foo_em".ends_with("_m") is true.
+            ("envmask", "_em"),
             ("subsurface", "_sk"), // longer than "_s", must be first
             ("diffuse", "_d"),
             ("normal", "_n"),
             ("glow", "_g"),
-            ("specular", "_s"),
+            ("envmask", "_m"),
+            ("cubemap", "_e"),
+            // Skyrim "_s" is the subsurface / skin tint map, not a specular map.
+            ("subsurface", "_s"),
         ],
         "starfield" => &[
             ("normal", "_normal"),
@@ -55,7 +60,15 @@ pub fn game_texture_suffixes(game: &str) -> &'static [(&'static str, &'static st
             ("ao", "_ao"),
             ("glow", "_emissive"),
         ],
-        "fo3" | "fnv" => &[("diffuse", "_d"), ("normal", "_n")],
+        "fo3" | "fnv" => &[
+            // "_em" must precede "_m": "foo_em".ends_with("_m") is true.
+            ("envmask", "_em"),
+            ("diffuse", "_d"),
+            ("normal", "_n"),
+            ("glow", "_g"),
+            ("envmask", "_m"),
+            ("cubemap", "_e"),
+        ],
         // fo4 and all other games
         _ => &[
             ("subsurface", "_sk"),
@@ -63,6 +76,7 @@ pub fn game_texture_suffixes(game: &str) -> &'static [(&'static str, &'static st
             ("normal", "_n"),
             ("glow", "_g"),
             ("specular", "_s"),
+            ("cubemap", "_e"),
         ],
     }
 }
@@ -110,18 +124,22 @@ fn role_stem_base(
             return stem.to_ascii_lowercase();
         }
     }
+    let lower = stem.to_ascii_lowercase();
+    // A role may have several spellings (envmask is both "_m" and "_em"); strip
+    // the one this stem actually ends with, not just the first table entry.
     let sfx = suffixes
         .iter()
-        .find(|(r, _)| *r == role)
+        .filter(|(r, _)| *r == role)
+        .find(|(_, s)| lower.ends_with(&s.to_ascii_lowercase()))
+        .or_else(|| suffixes.iter().find(|(r, _)| *r == role))
         .map(|(_, s)| *s)
         .unwrap_or("");
-    let lower = stem.to_ascii_lowercase();
     let sfx_lower = sfx.to_ascii_lowercase();
     let idx = lower.rfind(&sfx_lower).unwrap_or(lower.len());
     stem[..idx].to_ascii_lowercase()
 }
 
-fn texture_group_base_alias(path: &Path, base: &str, source_game: &str) -> String {
+fn texture_group_base_alias(path: &Path, base: &str, role: &str, source_game: &str) -> String {
     // The FO76 eye lash bundle (abbreviated eyebro_* aux maps + the
     // eyebrown_d diffuse whose alpha carries the lash strands the FO76 lash
     // geometry UVs sample) must group apart from the bare vanilla-named eye
@@ -131,7 +149,29 @@ fn texture_group_base_alias(path: &Path, base: &str, source_game: &str) -> Strin
     if source_game.eq_ignore_ascii_case("fo76") && is_fo76_character_eye_lash_texture(path) {
         return "eyebrown_lashes".to_owned();
     }
+    if source_game.eq_ignore_ascii_case("fo76")
+        && role == "diffuse"
+        && has_suffixed_diffuse_sibling(path)
+    {
+        return format!("{base}__bare");
+    }
     base.to_owned()
+}
+
+fn has_suffixed_diffuse_sibling(path: &Path) -> bool {
+    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    if stem.to_ascii_lowercase().ends_with("_d") {
+        return false;
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+    path.with_file_name(format!("{stem}_d{extension}"))
+        .is_file()
 }
 
 fn is_fo76_character_eye_lash_texture(path: &Path) -> bool {
@@ -152,6 +192,9 @@ fn is_fo76_character_eye_lash_texture(path: &Path) -> bool {
 fn compression_for_role(role: &str) -> &'static str {
     match role {
         "normal" | "specular" => "BC5_UNORM",
+        // FO4's vanilla cubemaps are 45/72 uncompressed 32bpp; keep the
+        // normalized output on that convention.
+        "cubemap" => "R8G8B8A8_UNORM",
         _ => "BC7_UNORM",
     }
 }
@@ -293,7 +336,7 @@ pub fn group_textures(
         } else {
             stem.to_ascii_lowercase()
         };
-        let base = texture_group_base_alias(&abs, &base, source_game);
+        let base = texture_group_base_alias(&abs, &base, &role, source_game);
 
         map.entry(base).or_default().push((abs, role));
     }
@@ -682,6 +725,17 @@ fn conversion_params_for_group(
     adjusted
 }
 
+/// FNV/FO3/Skyrim sources synthesize FO4's `_s` from the normal's alpha plus an
+/// optional `_m`/`_em` env mask. FO4 has no env-mask texture slot, so the mask
+/// is folded into `_s.R` and never gets a standalone output.
+pub(crate) fn is_gamebryo_spec_source(source_game: &str, target_game: &str) -> bool {
+    target_game.eq_ignore_ascii_case("fo4")
+        && matches!(
+            source_game.to_ascii_lowercase().as_str(),
+            "fnv" | "fo3" | "skyrim" | "skyrimse"
+        )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_request(
     group: &TextureGroup,
@@ -752,6 +806,35 @@ pub fn build_request(
             path: output_dir.join(&out_name),
             format: fmt,
         });
+    }
+
+    // FNV/FO3/Skyrim → FO4: every group with a normal map yields an `_s`,
+    // built from the normal's alpha and any `_m`/`_em` sibling.
+    if is_gamebryo_spec_source(source_game, target_game)
+        && let Some((normal_path, _)) = group.files.iter().find(|(_, r)| r == "normal")
+        && normal_path.is_file()
+        && let Some(filename) = normal_path.file_name().and_then(|n| n.to_str())
+    {
+        let normal_sfx = suffix_for_role(source_suffixes, "normal").unwrap_or("_n");
+        let spec_sfx = suffix_for_role(target_suffixes, "specular").unwrap_or("_s");
+        if let Some(spec_name) = path_with_role_suffix(Path::new(filename), normal_sfx, spec_sfx)
+            .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_owned))
+        {
+            let key = ("specular".to_owned(), spec_name.clone());
+            if !seen_out.contains(&key) {
+                seen_out.insert(key);
+                let fmt = format_overrides
+                    .get(filename)
+                    .map(String::as_str)
+                    .unwrap_or_else(|| compression_for_role("specular"))
+                    .to_owned();
+                outputs.push(TexturePathOutput {
+                    role: "specular".to_owned(),
+                    path: output_dir.join(&spec_name),
+                    format: fmt,
+                });
+            }
+        }
     }
 
     // For fo76→fo4, add the merged specular output whenever _r + _l exist,
@@ -948,6 +1031,21 @@ pub(crate) fn output_exists_in_target(
     target_dirs.iter().any(|t| t.join(rel).is_file())
 }
 
+pub(crate) fn output_exists_in_target_game(
+    output_path: &Path,
+    data_root: &Path,
+    target_dirs: &[PathBuf],
+    target_assets: Option<&crate::target_assets::TargetAssetStore>,
+) -> bool {
+    if let Some(store) = target_assets
+        && let Ok(relative) = output_path.strip_prefix(data_root)
+        && store.has_asset(&relative.to_string_lossy())
+    {
+        return true;
+    }
+    output_exists_in_target(output_path, data_root, target_dirs)
+}
+
 /// A texture group is "base-owned" when the target game already ships it, so
 /// converting it would overwrite base-game textures. Keyed on the diffuse
 /// output: if the diffuse already exists in the target, the whole set is treated
@@ -965,15 +1063,8 @@ pub(crate) fn group_is_base_owned(
     if target_dirs.is_empty() && target_assets.is_none() {
         return false;
     }
-    let exists = |output: &Path| {
-        if let Some(store) = target_assets
-            && let Ok(relative) = output.strip_prefix(data_root)
-            && store.has_asset(&relative.to_string_lossy())
-        {
-            return true;
-        }
-        output_exists_in_target(output, data_root, target_dirs)
-    };
+    let exists =
+        |output: &Path| output_exists_in_target_game(output, data_root, target_dirs, target_assets);
     let diffuse_in_target = outputs
         .iter()
         .find(|output| output.role == "diffuse")
@@ -1010,6 +1101,164 @@ pub(crate) fn parse_conversion_workers(
 mod tests {
     use super::*;
     use crate::phase::Phase;
+
+    #[test]
+    fn fnv_suffixes_detect_env_mask_and_cubemap() {
+        let sfx = game_texture_suffixes("fnv");
+        assert_eq!(detect_role("crate01_n", sfx), Some("normal"));
+        assert_eq!(detect_role("crate01_m", sfx), Some("envmask"));
+        assert_eq!(detect_role("crate01_em", sfx), Some("envmask"));
+        assert_eq!(detect_role("crate01_e", sfx), Some("cubemap"));
+        assert_eq!(detect_role("crate01_g", sfx), Some("glow"));
+    }
+
+    #[test]
+    fn env_mask_suffix_em_is_matched_before_m() {
+        // "foo_em".ends_with("_m") is true, so ordering in the table is load-bearing.
+        for game in ["fnv", "fo3", "skyrimse"] {
+            let sfx = game_texture_suffixes(game);
+            let em_index = sfx
+                .iter()
+                .position(|(_, s)| *s == "_em")
+                .expect("_em present");
+            let m_index = sfx
+                .iter()
+                .position(|(_, s)| *s == "_m")
+                .expect("_m present");
+            assert!(em_index < m_index, "{game}: _em must precede _m");
+        }
+    }
+
+    #[test]
+    fn skyrim_s_suffix_is_subsurface_not_specular() {
+        // actors/character/argonianfemale/argonianfemalebody_s.dds is a skin tint
+        // map, not a specular map.
+        let sfx = game_texture_suffixes("skyrimse");
+        assert_eq!(detect_role("argonianfemalebody_s", sfx), Some("subsurface"));
+        assert!(
+            !sfx.iter().any(|(role, _)| *role == "specular"),
+            "Skyrim has no specular source role"
+        );
+    }
+
+    #[test]
+    fn skyrim_subsurface_converts_to_fo4_sk_not_s() {
+        // Prevents the generated foo_s.dds from colliding with the source's own
+        // subsurface foo_s.dds.
+        let out = convert_filename(
+            "argonianfemalebody_s.dds",
+            game_texture_suffixes("skyrimse"),
+            game_texture_suffixes("fo4"),
+        );
+        assert_eq!(out, "argonianfemalebody_sk.dds");
+    }
+
+    #[test]
+    fn cubemap_role_compresses_to_uncompressed_rgba() {
+        assert_eq!(compression_for_role("cubemap"), "R8G8B8A8_UNORM");
+        assert_eq!(compression_for_role("normal"), "BC5_UNORM");
+        assert_eq!(compression_for_role("specular"), "BC5_UNORM");
+    }
+
+    #[test]
+    fn env_mask_has_no_standalone_fo4_output_role() {
+        for game in ["fnv", "skyrimse"] {
+            assert_eq!(
+                output_role("envmask", game, "fo4", game_texture_suffixes("fo4")),
+                None,
+                "{game}: envmask is consumed by the spec bundle"
+            );
+        }
+    }
+
+    #[test]
+    fn fnv_group_with_normal_and_env_mask_declares_a_specular_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("crate01.dds"), b"d").unwrap();
+        std::fs::write(dir.join("crate01_n.dds"), b"n").unwrap();
+        std::fs::write(dir.join("crate01_m.dds"), b"m").unwrap();
+
+        let paths = vec![
+            dir.join("crate01.dds").to_string_lossy().to_string(),
+            dir.join("crate01_n.dds").to_string_lossy().to_string(),
+            dir.join("crate01_m.dds").to_string_lossy().to_string(),
+        ];
+        let groups = group_textures(&paths, dir, game_texture_suffixes("fnv"), "fnv");
+        assert_eq!(groups.len(), 1, "all three files share one base");
+
+        let out_dir = dir.join("out");
+        let request = build_request(
+            &groups[0],
+            &out_dir,
+            "fnv",
+            "fo4",
+            game_texture_suffixes("fnv"),
+            game_texture_suffixes("fo4"),
+            &HashMap::new(),
+            TextureConversionParamsPayload::default(),
+            false,
+            0,
+        )
+        .expect("request built");
+
+        let input_roles: HashSet<&str> = request.inputs.iter().map(|i| i.role.as_str()).collect();
+        assert!(input_roles.contains("normal"));
+        assert!(input_roles.contains("envmask"));
+
+        let specular = request
+            .outputs
+            .iter()
+            .find(|o| o.role == "specular")
+            .expect("specular output declared");
+        assert_eq!(
+            specular.path.file_name().unwrap().to_str().unwrap(),
+            "crate01_s.dds"
+        );
+        assert_eq!(specular.format, "BC5_UNORM");
+
+        assert!(
+            !request.outputs.iter().any(|o| o.role == "envmask"),
+            "env mask has no standalone output"
+        );
+    }
+
+    #[test]
+    fn skyrim_group_without_env_mask_still_declares_a_specular_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("ebony.dds"), b"d").unwrap();
+        std::fs::write(dir.join("ebony_n.dds"), b"n").unwrap();
+
+        let paths = vec![
+            dir.join("ebony.dds").to_string_lossy().to_string(),
+            dir.join("ebony_n.dds").to_string_lossy().to_string(),
+        ];
+        let groups = group_textures(&paths, dir, game_texture_suffixes("skyrimse"), "skyrimse");
+        let request = build_request(
+            &groups[0],
+            &dir.join("out"),
+            "skyrimse",
+            "fo4",
+            game_texture_suffixes("skyrimse"),
+            game_texture_suffixes("fo4"),
+            &HashMap::new(),
+            TextureConversionParamsPayload::default(),
+            false,
+            0,
+        )
+        .expect("request built");
+
+        let specular = request
+            .outputs
+            .iter()
+            .find(|o| o.role == "specular")
+            .expect("specular output declared even with no env mask");
+        assert_eq!(
+            specular.path.file_name().unwrap().to_str().unwrap(),
+            "ebony_s.dds"
+        );
+    }
 
     #[test]
     fn detect_fo4_diffuse_role() {

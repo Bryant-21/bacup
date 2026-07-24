@@ -26,16 +26,17 @@ use crate::fixups::creature::synthesize_weapon_innr::SynthesizeWeaponInnrFixup;
 use crate::fixups::drop_incompatible_player_idles::DropIncompatiblePlayerIdlesFixup;
 use crate::fixups::drop_untranslatable_loadscreen_records::DropUntranslatableLoadscreenRecordsFixup;
 use crate::fixups::expand_arma_races_from_armor_race::ExpandArmaRacesFromArmorRaceFixup;
-use crate::fixups::face::filter_lchar_template_npcs::FilterLcharTemplateNpcsFixup;
+use crate::fixups::face::flatten_nested_traits_lvlns::FlattenNestedTraitsLvlnsFixup;
 use crate::fixups::face::generate_additive_races::GenerateAdditiveRacesFixup;
 use crate::fixups::face::inject_human_npc_head_parts::InjectHumanNpcHeadPartsFixup;
+use crate::fixups::face::materialize_leveled_template_npcs::MaterializeLeveledTemplateNpcsFixup;
 use crate::fixups::face::strip_invalid_npc_face_morphs::StripInvalidNpcFaceMorphsFixup;
 use crate::fixups::face::strip_unbaked_human_npc_face_morphs::StripUnbakedHumanNpcFaceMorphsFixup;
 use crate::fixups::filter_non_vanilla_races_for_weapon_roots::FilterNonVanillaRacesForWeaponRootsFixup;
 use crate::fixups::fix_invalid_target_formkeys::FixInvalidTargetFormKeysFixup;
 use crate::fixups::fix_stag_sound_refs::FixStagSoundRefsFixup;
-use crate::fixups::remap_idle_anchor_actions::RemapIdleAnchorActionsFixup;
 use crate::fixups::fix_water_spell_refs::FixWaterSpellRefsFixup;
+use crate::fixups::flatten_npc_property_curves::FlattenNpcPropertyCurvesFixup;
 use crate::fixups::flatten_omod_includes::FlattenOmodIncludesFixup;
 use crate::fixups::harvest_modt::HarvestModtFixup;
 use crate::fixups::havok::filter_unreferenced_behaviors::FilterUnreferencedBehaviorsFixup;
@@ -55,7 +56,11 @@ use crate::fixups::null_dangling_own_plugin_refs::NullDanglingOwnPluginRefsFixup
 use crate::fixups::preserve_packin_storage_cells::PreservePackinStorageCellsFixup;
 use crate::fixups::prune_orphaned_records::PruneOrphanedRecordsFixup;
 use crate::fixups::recover_fo76_leveled_list_values::RecoverFo76LeveledListValuesFixup;
+use crate::fixups::remap_idle_anchor_actions::RemapIdleAnchorActionsFixup;
 use crate::fixups::remap_light_gobo_to_fo4_base::RemapLightGoboToFo4BaseFixup;
+use crate::fixups::repair_omod_target_keywords::RepairOmodTargetKeywordsFixup;
+use crate::fixups::repair_quest_completion_xp::RepairQuestCompletionXpFixup;
+use crate::fixups::repair_radio_scene_properties::RepairRadioScenePropertiesFixup;
 use crate::fixups::resolve_addon_node_indices::ResolveAddonNodeIndicesFixup;
 use crate::fixups::resolve_injected_stub_refs::ResolveInjectedStubRefsFixup;
 use crate::fixups::restrict_translated_npc_for_slice::RestrictTranslatedNpcForSliceFixup;
@@ -114,6 +119,7 @@ pub fn build_default_segment_plan() -> Vec<Segment> {
         Segment::Fixup(|| Box::new(ResolveAddonNodeIndicesFixup)),
         Segment::Fixup(|| Box::new(ResolveInjectedStubRefsFixup)),
         Segment::Fixup(|| Box::new(PreservePackinStorageCellsFixup)),
+        Segment::Fixup(|| Box::new(RepairQuestCompletionXpFixup)),
         Segment::Fixup(|| Box::new(LtexTxstSynthFixup)),
         Segment::Fixup(|| Box::new(ClearInteriorHandChangedFixup)),
         Segment::Fixup(|| Box::new(SweepUnmappedFormKeysFixup)),
@@ -143,6 +149,7 @@ pub fn build_default_segment_plan() -> Vec<Segment> {
                 Box::new(NullInvalidQustAllaKeywordsVisitor),
             ]
         }),
+        Segment::Fixup(|| Box::new(RepairRadioScenePropertiesFixup)),
         Segment::Fixup(|| Box::new(DropUntranslatableLoadscreenRecordsFixup)),
         Segment::Fixup(|| Box::new(FixWaterSpellRefsFixup)),
         Segment::Fixup(|| Box::new(CleanLeveledItemEntriesFixup)),
@@ -155,12 +162,14 @@ pub fn build_default_segment_plan() -> Vec<Segment> {
         Segment::Fixup(|| {
             Box::new(crate::fixups::strip_orphan_race_properties::StripOrphanRacePropertiesFixup)
         }),
+        Segment::Fixup(|| Box::new(FlattenNpcPropertyCurvesFixup)),
         Segment::Fixup(|| Box::new(SynthesizeWeapDataBlocksFixup)),
         Segment::Fixup(|| Box::new(InjectWeapExtraDataFixup)),
         Segment::Fixup(|| Box::new(FilterNonVanillaRacesForWeaponRootsFixup)),
         Segment::Fixup(|| Box::new(GenerateAdditiveRacesFixup)),
         Segment::Fixup(|| Box::new(SynthesizeWeaponInnrFixup)),
-        Segment::Fixup(|| Box::new(FilterLcharTemplateNpcsFixup)),
+        Segment::Fixup(|| Box::new(FlattenNestedTraitsLvlnsFixup)),
+        Segment::Fixup(|| Box::new(MaterializeLeveledTemplateNpcsFixup)),
         Segment::Fixup(|| Box::new(RestrictTranslatedNpcForSliceFixup)),
         Segment::Fixup(|| Box::new(InjectHumanNpcHeadPartsFixup)),
         Segment::Fixup(|| Box::new(StripUnbakedHumanNpcFaceMorphsFixup)),
@@ -186,6 +195,7 @@ pub fn build_default_segment_plan() -> Vec<Segment> {
         Segment::Sweep("sweep@49", || vec![Box::new(StripAtxCobjConditionsVisitor)]),
         Segment::Fixup(|| Box::new(HarvestModtFixup)),
         Segment::Fixup(|| Box::new(PruneOrphanedRecordsFixup)),
+        Segment::Fixup(|| Box::new(RepairOmodTargetKeywordsFixup)),
     ]
 }
 
@@ -208,10 +218,15 @@ mod tests {
             "duplicate fixup name in canonical segment plan"
         );
         assert!(plan_names.contains(&"drop_incompatible_player_idles"));
+        assert!(plan_names.contains(&"flatten_nested_traits_lvlns"));
+        assert!(plan_names.contains(&"materialize_leveled_template_npcs"));
+        assert!(!plan_names.contains(&"filter_lchar_template_npcs"));
         assert!(plan_names.contains(&"inject_animation_names"));
         assert!(plan_names.contains(&"normalize_creature_lvln_template_chains"));
         assert!(plan_names.contains(&"normalize_fo76_weather"));
         assert!(plan_names.contains(&"apply_fo76_workshop_catalog"));
+        assert!(plan_names.contains(&"repair_quest_completion_xp"));
+        assert!(plan_names.contains(&"repair_radio_scene_properties"));
     }
 }
 
@@ -368,6 +383,11 @@ mod keystone_tests {
             reports
                 .iter()
                 .any(|(name, _)| name == "inject_animation_names")
+        );
+        assert!(
+            reports
+                .iter()
+                .any(|(name, _)| name == "repair_omod_target_keywords")
         );
     }
 }

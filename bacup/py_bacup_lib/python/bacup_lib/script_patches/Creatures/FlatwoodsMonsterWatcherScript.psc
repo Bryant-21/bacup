@@ -41,3 +41,14 @@ Event OnEffectFinish(Actor akTarget, Actor akCaster)
 	UnregisterWatcherEvents()
 	selfRef = None
 EndEvent
+
+State disappear
+	Event OnAnimationEvent(ObjectReference akSource, String asEventName)
+		If selfRef != None && !selfRef.IsDead() && akSource == selfRef && asEventName == animEventTeleportStart
+			If DisappearSound != None
+				DisappearSound.Play(selfRef)
+			EndIf
+			selfRef.Disable()
+		EndIf
+	EndEvent
+EndState

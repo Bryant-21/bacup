@@ -121,6 +121,7 @@ def test_upgrade_alpha1_to_alpha2_partial_plan(tmp_path, monkeypatch):
     assert not ps.convert_textures and not ps.convert_havok and not ps.convert_lod
     assert ps.convert_terrain  # always on (graft lives in this phase)
     assert ps.regenerate_modt  # Bucket B: never family-gated
+    assert ps.generate_precombines is False  # experimental gate: off unless enabled
     assert set(plan.swap_labels) == {"Meshes", "MeshesExtra", "Materials"}
 
 
@@ -324,8 +325,20 @@ def test_upgrade_from_override_beats_snam_read(tmp_path, monkeypatch):
     assert set(plan.swap_labels) == {"Meshes", "MeshesExtra", "Materials"}
 
 
-def test_from_equals_target_is_noop(tmp_path):
-    manifest = _write_manifest(tmp_path, _ALPHA1_ALPHA2)
+def test_from_equals_target_none_is_noop(tmp_path):
+    manifest = _write_manifest(
+        tmp_path,
+        """\
+current: alpha2
+versions:
+  - id: alpha1
+    families_by_conversion:
+      'fo76:fo4': [ALL]
+  - id: alpha2
+    families_by_conversion:
+      'fo76:fo4': [NONE]
+""",
+    )
     options = RegenOptions(
         upgrade=True, upgrade_manifest_path=manifest, upgrade_from="alpha2"
     )
@@ -359,6 +372,60 @@ versions:
     assert isinstance(plan, UpgradePlan)
     assert plan.phases.convert_scripts is True
     assert plan.swap_labels == ("Misc",)
+
+
+def test_from_equals_target_repeats_nifs_and_havok(tmp_path):
+    manifest = _write_manifest(
+        tmp_path,
+        """\
+current: alpha2.1
+versions:
+  - id: alpha2
+    families_by_conversion:
+      'fo76:fo4': [ALL]
+  - id: alpha2.1
+    families_by_conversion:
+      'fo76:fo4': [NIFs, Havok]
+""",
+    )
+    options = RegenOptions(
+        upgrade=True, upgrade_manifest_path=manifest, upgrade_from="alpha2.1"
+    )
+
+    plan = _resolve_upgrade_plan(_paths(tmp_path), options)
+
+    assert isinstance(plan, UpgradePlan)
+    assert plan.phases.convert_nifs is True
+    assert plan.phases.convert_havok is True
+    assert plan.phases.synthesize_drivers is True
+    assert plan.phases.convert_animations is False
+    assert plan.phases.generate_anim_text_data is True
+    assert set(plan.swap_labels) == {"Meshes", "MeshesExtra", "Animations"}
+
+
+def test_from_equals_target_runs_lod_when_target_declares_it(tmp_path):
+    manifest = _write_manifest(
+        tmp_path,
+        """\
+current: alpha2.1
+versions:
+  - id: alpha2
+    families_by_conversion:
+      'fo76:fo4': [ALL]
+  - id: alpha2.1
+    families_by_conversion:
+      'fo76:fo4': [LOD]
+""",
+    )
+    options = RegenOptions(
+        upgrade=True, upgrade_manifest_path=manifest, upgrade_from="alpha2.1"
+    )
+
+    plan = _resolve_upgrade_plan(_paths(tmp_path), options)
+
+    assert isinstance(plan, UpgradePlan)
+    assert plan.phases.convert_lod is True
+    assert set(plan.swap_labels) == {"LOD", "LODTextures"}
 
 
 def test_downgrade_raises(tmp_path):
@@ -418,6 +485,10 @@ def _stub_pipeline(monkeypatch):
     monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_payloads_for_outputs", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_materials_for_outputs", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_check_run_invariants", lambda *_a, **_k: ([], []))
+    monkeypatch.setattr(
+        "bacup_lib.target_assets.ensure_target_asset_catalog",
+        lambda *_a, **_k: None,
+    )
 
     import bacup_lib.models as models
 
@@ -446,6 +517,7 @@ def test_run_full_regen_upgrade_wires_phases_graft_swap_and_stamp(monkeypatch, t
         captures["convert_materials"] = opts.convert_materials
         captures["convert_textures"] = opts.convert_textures
         captures["convert_havok"] = opts.convert_havok
+        captures["generate_anim_text_data"] = opts.generate_anim_text_data
         captures["convert_terrain"] = opts.convert_terrain
         captures["reuse_terrain_navmesh"] = opts.reuse_terrain_navmesh
         captures["terrain_graft_esm"] = opts.terrain_graft_esm
@@ -453,6 +525,7 @@ def test_run_full_regen_upgrade_wires_phases_graft_swap_and_stamp(monkeypatch, t
         captures["terrain_lod_mode"] = opts.terrain.lod_mode
         captures["mod_version"] = getattr(request, "mod_version", "<unset>")
         captures["archive_output_dir"] = kwargs.get("archive_output_dir")
+        captures["archive_labels"] = kwargs.get("archive_labels")
         captures["lod_hook"] = kwargs.get("lod_hook")
         paths.output_root.mkdir(parents=True, exist_ok=True)
         (paths.output_root / "SeventySix.esm").write_bytes(b"TES4-built")
@@ -498,6 +571,7 @@ def test_run_full_regen_upgrade_wires_phases_graft_swap_and_stamp(monkeypatch, t
     assert captures["convert_materials"] is True
     assert captures["convert_textures"] is False
     assert captures["convert_havok"] is False
+    assert captures["generate_anim_text_data"] is True
     assert captures["convert_terrain"] is True  # graft rides this phase
     # Terrain reuse via the live deployed ESM.
     assert captures["reuse_terrain_navmesh"] is True
@@ -510,6 +584,7 @@ def test_run_full_regen_upgrade_wires_phases_graft_swap_and_stamp(monkeypatch, t
     assert captures["mod_version"] == "alpha2"
     # Selective swap must pack into output_root, not direct-deploy.
     assert captures["archive_output_dir"] is None
+    assert captures["archive_labels"] == ("Materials", "Meshes", "MeshesExtra")
     assert deploy_kwargs == [
         {
             "archives_already_deployed": False,
@@ -521,7 +596,19 @@ def test_run_full_regen_upgrade_wires_phases_graft_swap_and_stamp(monkeypatch, t
 
 def test_run_full_regen_upgrade_noop_short_circuits(monkeypatch, tmp_path):
     paths = _paths(tmp_path)
-    manifest = _write_manifest(tmp_path, _ALPHA1_ALPHA2)
+    manifest = _write_manifest(
+        tmp_path,
+        """\
+current: alpha2
+versions:
+  - id: alpha1
+    families_by_conversion:
+      'fo76:fo4': [ALL]
+  - id: alpha2
+    families_by_conversion:
+      'fo76:fo4': [NONE]
+""",
+    )
     _stub_pipeline(monkeypatch)
 
     called: list[str] = []

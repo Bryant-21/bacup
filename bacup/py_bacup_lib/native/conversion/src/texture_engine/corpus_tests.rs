@@ -81,6 +81,8 @@ fn task_quota_key(task: &TextureTask) -> &'static str {
         TextureTask::Bundle { .. } => "bundle",
         TextureTask::SpecGloss { .. } => "specgloss",
         TextureTask::SingleResidue { .. } => "residue",
+        TextureTask::LegacySpecGloss { .. } => "legacy_specgloss",
+        TextureTask::CubemapNormalize { .. } => "cubemap",
     }
 }
 
@@ -234,6 +236,11 @@ fn sample_equivalence_vs_legacy() {
                             input.path.display()
                         );
                     }
+                }
+                // This corpus is FO76-only, so the Gamebryo task classes cannot
+                // be produced here and have no legacy counterpart to diff against.
+                TextureTask::LegacySpecGloss { .. } | TextureTask::CubemapNormalize { .. } => {
+                    panic!("Gamebryo task class in an FO76 corpus sample")
                 }
                 TextureTask::Bundle { .. }
                 | TextureTask::SpecGloss { .. }

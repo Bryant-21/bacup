@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -11,9 +12,8 @@ CATALOG_FILENAME = "fo4_target_assets.sqlite3"
 
 
 def _conversion_data_root() -> Path:
-    # LOCALAPPDATA read is an OS-level path (allowed by the env-read policy),
-    # not project config. The catalog is a large derived index of the FO4 BA2s;
-    # it lives in this writable cache root, never in git or packaged resources.
+    if bool(getattr(sys, "frozen", False)):
+        return Path(sys.executable).resolve().parent / "cache" / "conversion"
     local_app_data = os.environ.get("LOCALAPPDATA")
     root = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
     return root / "modkit21" / "conversion"
@@ -48,6 +48,7 @@ def ensure_target_asset_catalog(
     catalog_path: str | Path | None = None,
     *,
     game_build: str = "",
+    workers: int | None = None,
     log: Callable[[str], None] | None = None,
 ) -> Path:
     """Build the FO4 target-asset catalog from the official BA2s if it is
@@ -71,7 +72,7 @@ def ensure_target_asset_catalog(
     from bacup_lib.native_runtime import load_native_module
 
     load_native_module().conversion_build_target_asset_catalog(
-        str(fo4_data_dir), str(catalog_path), game_build
+        str(fo4_data_dir), str(catalog_path), game_build, workers
     )
     if log:
         log(f"FO4 target-asset catalog ready: {catalog_path}")
@@ -145,6 +146,10 @@ class TargetAssetStore:
     @property
     def cache_data_root(self) -> Path:
         return Path(self._native.cache_data_root)
+
+    @property
+    def archive_paths(self) -> tuple[Path, ...]:
+        return tuple(Path(path) for path in self._native.archive_paths)
 
     @property
     def asset_count(self) -> int:

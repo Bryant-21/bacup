@@ -142,6 +142,7 @@ def test_join_produces_legacy_identical_archives(tmp_path):
 def test_finalize_can_write_archives_to_deploy_dir(tmp_path):
     mod_name = "X"
     mod = build_fixture_mod(tmp_path, mod_name)
+    (mod / "X - Meshes.ba2").write_bytes(b"old local archive")
     deploy_dir = tmp_path / "Fallout4" / "Data"
     deploy_dir.mkdir(parents=True)
     sink_id = conversion.sinks_create(
@@ -171,6 +172,112 @@ def test_finalize_can_write_archives_to_deploy_dir(tmp_path):
     assert sorted(path.name for path in deploy_dir.glob("*.ba2")) == expected_names
     assert not list(mod.glob("*.ba2"))
     assert not list(deploy_dir.glob("*.tmp"))
+
+
+def test_finalize_archive_labels_only_packs_selected_families(tmp_path):
+    mod_name = "SeventySix"
+    mod = tmp_path / "mods" / mod_name
+    meshes = mod / "data" / "Meshes"
+    animations = meshes / "Actors" / "Fixture" / "Animations"
+    materials = mod / "data" / "Materials"
+    animations.mkdir(parents=True)
+    materials.mkdir(parents=True)
+    (meshes / "fixture.nif").write_bytes(b"nif")
+    (animations / "idle.hkx").write_bytes(b"hkx")
+    (materials / "fixture.bgsm").write_bytes(b"bgsm")
+    stale_selected = mod / f"{mod_name} - MeshesExtra.ba2"
+    untouched = mod / f"{mod_name} - Materials.ba2"
+    stale_selected.write_bytes(b"stale")
+    untouched.write_bytes(b"keep")
+
+    sink_id = conversion.sinks_create(
+        json.dumps(
+            {
+                "mod_root": str(mod),
+                "spill_dir": str(mod / "_sink_tmp"),
+                "emit_loose": True,
+                "enable_ba2": False,
+            }
+        )
+    )
+    try:
+        plans = finalize_sinks_for_mod(
+            sink_id,
+            mod,
+            mod_name=mod_name,
+            direct_pack_all=True,
+            archive_labels=("Meshes", "MeshesExtra", "Animations"),
+        )
+    finally:
+        conversion.sinks_drop(sink_id)
+
+    assert {plan.family for plan in plans} == {"Meshes", "Animations"}
+    assert (mod / f"{mod_name} - Meshes.ba2").is_file()
+    assert (mod / f"{mod_name} - Animations.ba2").is_file()
+    assert not stale_selected.exists()
+    assert untouched.read_bytes() == b"keep"
+
+
+def test_finalize_external_archive_root_packs_to_target_temp_then_replaces(
+    tmp_path, monkeypatch
+):
+    from bacup_lib.workflows import unified
+
+    mod = tmp_path / "mods" / "SeventySix"
+    textures = mod / "data" / "Textures"
+    textures.mkdir(parents=True)
+    texture = textures / "a.dds"
+    texture.write_bytes(b"dds")
+    deploy_dir = tmp_path / "MO2" / "mods" / "SeventySix"
+    captured_outputs: list[Path] = []
+
+    class Native:
+        def sinks_streamed(self, sink_id):
+            return []
+
+        def sinks_add_files(self, sink_id, items, workers):
+            return len(items)
+
+        def sinks_abort(self, sink_id):
+            raise AssertionError("unexpected abort")
+
+        def sinks_cleanup_spills(self, sink_id):
+            return None
+
+    class Entry:
+        source_path = texture
+        relative_path = "Textures/a.dds"
+        size = 3
+
+    class Plan:
+        output_name = "SeventySix - Textures.ba2"
+        texture_archive = True
+        entries = (Entry(),)
+
+    def fake_run_native_pack_plans(plans, *_args, **_kwargs):
+        for _planned, output_path in plans:
+            captured_outputs.append(Path(output_path))
+            Path(output_path).write_bytes(b"BA2")
+        return len(plans)
+
+    monkeypatch.setattr(unified, "load_native_module", lambda: Native())
+    monkeypatch.setattr(unified, "plan_archive_outputs", lambda *a, **k: [Plan()])
+    monkeypatch.setattr(unified, "_run_native_pack_plans", fake_run_native_pack_plans)
+    monkeypatch.setattr(unified, "_validate_archive_size", lambda *a, **k: None)
+
+    unified.finalize_sinks_for_mod(
+        1,
+        mod,
+        mod_name="SeventySix",
+        direct_pack_all=True,
+        archive_output_dir=deploy_dir,
+    )
+
+    final_archive = deploy_dir / "SeventySix - Textures.ba2"
+    assert captured_outputs == [deploy_dir / "SeventySix - Textures.ba2.tmp"]
+    assert final_archive.read_bytes() == b"BA2"
+    assert not list(deploy_dir.glob("*.tmp"))
+    assert not list(mod.glob("*.ba2"))
 
 
 def test_join_mixed_streamed_and_reconciled(tmp_path):
@@ -217,9 +324,21 @@ def test_join_compact_archives_remove_obsolete_generated_ba2s(tmp_path):
     mod_name = "Compact"
     proj = tmp_path / "proj"
     mod = build_fixture_mod(proj, mod_name)
+    terrain_textures = mod / "data" / "Textures" / "Terrain" / "Appalachia"
+    terrain_textures.mkdir(parents=True)
+    shutil.copyfile(
+        mod / "data" / "Textures" / "t.dds",
+        terrain_textures / "Appalachia.4.0.0.dds",
+    )
+    shutil.copyfile(
+        mod / "data" / "Textures" / "t.dds",
+        terrain_textures / "lswamprocks01_d.dds",
+    )
     stale_names = [
         f"{mod_name} - Meshes.ba2",
         f"{mod_name} - Materials.ba2",
+        f"{mod_name} - LODTextures.ba2",
+        f"{mod_name} - TerrainTextures.ba2",
         f"{mod_name} - Textures1.ba2",
     ]
     for stale_name in stale_names:
@@ -260,7 +379,9 @@ def test_join_compact_archives_remove_obsolete_generated_ba2s(tmp_path):
             f"strings/{mod_name.lower()}_en.strings",
         ]
         assert archive_listing(mod / f"{mod_name} - Textures.ba2") == [
-            "textures/t.dds"
+            "textures/t.dds",
+            "textures/terrain/appalachia/appalachia.4.0.0.dds",
+            "textures/terrain/appalachia/lswamprocks01_d.dds",
         ]
     finally:
         conversion.sinks_drop(sink_id)
@@ -607,3 +728,21 @@ def test_sidecar_registry_roundtrip(tmp_path):
         assert conversion.sinks_sidecars(sink_id) == ["Terrain/APPALACHIA.btd4"]
     finally:
         conversion.sinks_drop(sink_id)
+
+
+def test_cleanup_temp_save_strings_removes_only_that_temp_stem(tmp_path):
+    from bacup_lib.workflows.unified import _cleanup_temp_save_strings
+
+    strings = tmp_path / "Strings"
+    strings.mkdir()
+    (strings / "SeventySix_en.STRINGS").write_bytes(b"real")
+    (strings / ".SeventySix.esm.abc12345_en.STRINGS").write_bytes(b"orphan")
+    (strings / ".SeventySix.esm.abc12345_ru.DLSTRINGS").write_bytes(b"orphan")
+    (strings / ".SeventySix.esm.zzz99999_en.STRINGS").write_bytes(b"other run")
+
+    _cleanup_temp_save_strings(tmp_path / ".SeventySix.esm.abc12345.tmp")
+
+    assert (strings / "SeventySix_en.STRINGS").is_file()
+    assert not (strings / ".SeventySix.esm.abc12345_en.STRINGS").exists()
+    assert not (strings / ".SeventySix.esm.abc12345_ru.DLSTRINGS").exists()
+    assert (strings / ".SeventySix.esm.zzz99999_en.STRINGS").is_file()

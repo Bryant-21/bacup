@@ -598,10 +598,22 @@ fn placed_base_action(
 /// otherwise a placement can land on a nuke-only variant (e.g. a flux-producing
 /// flora) that in FO76 only appears inside an active blast zone.
 fn prefer_default_leaf_index(base_eid: &str, leaf_eids: &[Option<String>]) -> Option<usize> {
-    let want = format!("use{}", base_eid.to_ascii_lowercase());
+    let exact = format!("use{base_eid}");
+    if let Some(index) = leaf_eids.iter().position(|eid| {
+        eid.as_deref()
+            .is_some_and(|eid| eid.eq_ignore_ascii_case(&exact))
+    }) {
+        return Some(index);
+    }
+
+    let unnumbered_base = base_eid.trim_end_matches(|c: char| c.is_ascii_digit());
+    if unnumbered_base.len() == base_eid.len() {
+        return None;
+    }
+    let unnumbered = format!("use{unnumbered_base}");
     leaf_eids.iter().position(|eid| {
         eid.as_deref()
-            .is_some_and(|e| e.to_ascii_lowercase() == want)
+            .is_some_and(|eid| eid.eq_ignore_ascii_case(&unnumbered))
     })
 }
 
@@ -1303,6 +1315,15 @@ mod tests {
         assert_eq!(
             prefer_default_leaf_index("LPI_FloraSootFlower01", &leaves),
             Some(2)
+        );
+        let rhododendron_leaves = vec![
+            Some("FloraRadRhododendron01".to_string()),
+            Some("UseLPI_FloraRhododendron".to_string()),
+            Some("UseLPI_FloraRhododendron01_Harvested".to_string()),
+        ];
+        assert_eq!(
+            prefer_default_leaf_index("LPI_FloraRhododendron01", &rhododendron_leaves),
+            Some(1)
         );
         // No matching default leaf → None (caller falls back to stable pick).
         let no_default = vec![

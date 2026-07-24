@@ -352,8 +352,12 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 name = "ck_native"
 version = "0.1.0"
 dependencies = [
+ "bsarchive_native",
+ "crc32fast",
  "esp_authoring_core",
  "havok_native",
+ "indexmap",
+ "nif_core_native",
  "pyo3",
  "rayon",
  "regex",

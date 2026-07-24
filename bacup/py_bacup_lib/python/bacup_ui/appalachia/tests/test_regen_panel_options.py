@@ -2,13 +2,22 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from bacup_lib.regen_pipeline import RegenOptions, RegenPaths
+from bacup_lib.regen_pipeline import (
+    _clean_forced_regen_output,
+    RegenOptions,
+    RegenPaths,
+)
 from bacup_lib.lod_settings import PROFILE_HIGH_QUALITY
 from bacup_ui.conversion.panels.regen_panel import (
     _COMPANION_MOD_NAME,
+    _DiskSpaceVolume,
+    _LOOSE_WORKSPACE_PEAK_BYTES,
+    _PACKED_MOD_PEAK_BYTES,
     _PHASE_ROWS,
     _RECOVERY_PHASE_LABELS,
     _RECOVERY_PHASE_VALUES,
+    _mod_archive_sizes,
+    _project_disk_space,
     RegenPanel,
 )
 
@@ -53,9 +62,13 @@ def _panel(ws):
     p._summary = None
     p._completion = None
     p._disk_usage_cache = None
+    p._disk_usage_cache_key = None
+    p._disk_space_cache = None
     p._disk_usage_lock = threading.Lock()
     p._disk_usage_running = False
     p._disk_usage_thread = None
+    p._waiting_for_space_check = False
+    p._low_space_warning = None
     p.ba2_target = "auto"
     p._ba2_detect_cache = None
     p._steam_install_cache = {}
@@ -116,6 +129,31 @@ def test_build_paths_sets_resource_dir_from_get_resource_dir(monkeypatch):
     assert paths.resource_dir == Path("X:/app/_internal/resource")
 
 
+def test_build_paths_relocates_workspace_outside_target_data(monkeypatch, tmp_path):
+    fo4_root = tmp_path / "Fallout 4"
+    fo4_data = fo4_root / "Data"
+    fo76_root = tmp_path / "Fallout76"
+    fo76_extracted = tmp_path / "extracted" / "fo76"
+    fo4_data.mkdir(parents=True)
+    (fo76_root / "Data").mkdir(parents=True)
+    fo76_extracted.mkdir(parents=True)
+    monkeypatch.setattr(
+        "bacup_ui.conversion.panels.regen_panel.get_exe_dir",
+        lambda: fo4_data,
+    )
+    panel = _panel(_ws(str(fo4_root), str(fo76_root), str(fo76_extracted)))
+
+    paths = panel.build_paths()
+
+    assert paths.output_root == (
+        fo4_root / "BACUP Workspace" / "mods" / "SeventySix"
+    )
+    paths.output_root.mkdir(parents=True)
+    runner = SimpleNamespace(emit_log=lambda *_args: None)
+    _clean_forced_regen_output(paths, runner)
+    assert not paths.output_root.exists()
+
+
 def test_build_options_reflects_controls():
     panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
     panel.install_location = "none"
@@ -148,6 +186,35 @@ def test_build_options_zero_means_unset():
     assert opts.workers is None
     assert opts.include_interior is True
     assert opts.records_limit is None
+
+
+def test_generate_precombines_toggle_defaults_off_and_maps_to_options():
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    # _panel() (via __new__) never sets the attr — build_options must still
+    # default it off through the getattr guard.
+    assert panel.build_options().generate_precombines is False
+
+    panel.generate_precombines = True
+    assert panel.build_options().generate_precombines is True
+
+
+def test_generate_precombines_toggle_loads_from_workspace_settings():
+    default = RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    assert default.generate_precombines is False
+
+    enabled = RegenPanel(
+        _ws("C:/FO4", "C:/FO76", "C:/x/fo76", {"generate_precombines": True})
+    )
+    assert enabled.generate_precombines is True
+    assert enabled.build_options().generate_precombines is True
+
+
+def test_min_eligible_refs_is_not_a_panel_or_options_control():
+    # Advanced precombine tuning stays config-file only; it must never surface as
+    # a panel attribute or a RegenOptions field.
+    panel = RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    assert not hasattr(panel, "min_eligible_refs")
+    assert not hasattr(panel.build_options(), "min_eligible_refs")
 
 
 def test_panel_defaults_to_expanded_high_quality_atlas_generation():
@@ -213,18 +280,20 @@ def test_selected_lod_settings_applies_mip_flooding_override(monkeypatch):
     assert settings["objects"]["atlas_mip_flooding"] is True
 
 
-def test_disk_usage_scan_does_not_block_first_draw(monkeypatch):
+def test_disk_usage_archive_check_does_not_block_first_draw(monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
-    def slow_dir_size(_path):
+    def slow_archive_sizes(*_args):
         started.set()
         release.wait(2.0)
-        return 10
+        return 5, 5
 
     panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel._dir_size_bytes", slow_dir_size)
-    monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel._ba2_size_bytes", lambda _p: 5)
+    monkeypatch.setattr(
+        "bacup_ui.conversion.panels.regen_panel._mod_archive_sizes",
+        slow_archive_sizes,
+    )
 
     summary = panel.disk_usage_summary()
 
@@ -236,6 +305,7 @@ def test_disk_usage_scan_does_not_block_first_draw(monkeypatch):
     }
     assert started.wait(1.0)
     assert panel.disk_usage_loading() is True
+    assert panel._disk_space_projection() is None
 
     release.set()
     assert panel._disk_usage_thread is not None
@@ -243,11 +313,413 @@ def test_disk_usage_scan_does_not_block_first_draw(monkeypatch):
 
     assert panel.disk_usage_loading() is False
     assert panel.disk_usage_summary() == {
-        "extracted": 20,
-        "mod_output": 10,
+        "extracted": 0,
+        "mod_output": 5,
         "mod_ba2": 5,
         "deployed_ba2": 5,
     }
+
+
+def test_disk_space_projection_groups_requirements_on_same_volume():
+    usage = SimpleNamespace(total=500 * 1024**3, used=100 * 1024**3, free=400 * 1024**3)
+
+    volumes = _project_disk_space(
+        output_root=Path("C:/BACUP/mods/SeventySix"),
+        archive_root=Path("C:/Fallout4/Data"),
+        volume_key=lambda _path: "c:",
+        disk_usage=lambda _path: usage,
+    )
+
+    assert len(volumes) == 1
+    assert volumes[0].required_bytes == (
+        _LOOSE_WORKSPACE_PEAK_BYTES + _PACKED_MOD_PEAK_BYTES
+    )
+    assert volumes[0].labels == ("loose workspace", "packed BA2s")
+
+
+def test_disk_space_projection_splits_direct_deploy_across_volumes():
+    usages = {
+        "c:": SimpleNamespace(total=250 * 1024**3, used=100, free=150 * 1024**3),
+        "n:": SimpleNamespace(total=100 * 1024**3, used=50, free=50 * 1024**3),
+    }
+
+    volumes = _project_disk_space(
+        output_root=Path("C:/BACUP/mods/SeventySix"),
+        archive_root=Path("N:/MO2/mods/SeventySix"),
+        volume_key=lambda path: f"{str(path)[0].lower()}:",
+        disk_usage=lambda path: usages[f"{str(path)[0].lower()}:"],
+    )
+
+    by_key = {volume.key: volume for volume in volumes}
+    assert by_key["c:"].required_bytes == _LOOSE_WORKSPACE_PEAK_BYTES
+    assert by_key["c:"].insufficient is False
+    assert by_key["n:"].required_bytes == _PACKED_MOD_PEAK_BYTES
+    assert by_key["n:"].insufficient is True
+
+
+def test_disk_space_level_reflects_projected_capacity():
+    gib = 1024**3
+
+    def volume(*, free_gib: int) -> _DiskSpaceVolume:
+        return _DiskSpaceVolume(
+            key="c:",
+            path=Path("C:/"),
+            labels=("conversion",),
+            required_bytes=10 * gib,
+            total_bytes=100 * gib,
+            free_bytes=free_gib * gib,
+        )
+
+    assert volume(free_gib=50).space_level == "green"
+    assert volume(free_gib=30).space_level == "green"
+    assert volume(free_gib=25).space_level == "yellow"
+    assert volume(free_gib=15).space_level == "yellow"
+    assert volume(free_gib=5).space_level == "red"
+    assert volume(free_gib=-1).space_level == "yellow"
+
+    large_drive = _DiskSpaceVolume(
+        key="d:",
+        path=Path("D:/"),
+        labels=("conversion",),
+        required_bytes=180 * gib,
+        total_bytes=4_000 * gib,
+        free_bytes=881 * gib,
+    )
+    assert large_drive.space_level == "green"
+
+
+def test_mod_archive_sizes_filter_other_mods(tmp_path):
+    output_root = tmp_path / "SeventySix"
+    deploy_root = tmp_path / "Data"
+    output_root.mkdir()
+    deploy_root.mkdir()
+    (output_root / "SeventySix - Meshes.ba2").write_bytes(b"a" * 10)
+    (output_root / "OtherMod - Meshes.ba2").write_bytes(b"b" * 50)
+    (deploy_root / "SeventySix - Textures.ba2").write_bytes(b"c" * 20)
+    (deploy_root / "Fallout4 - Textures.ba2").write_bytes(b"d" * 100)
+
+    local_bytes, deployed_bytes = _mod_archive_sizes(
+        output_root,
+        deploy_root,
+        "SeventySix",
+    )
+
+    assert local_bytes == 10
+    assert deployed_bytes == 20
+
+
+def test_mod_archive_sizes_deduplicate_same_root(tmp_path):
+    output_root = tmp_path / "SeventySix"
+    output_root.mkdir()
+    (output_root / "SeventySix - Meshes.ba2").write_bytes(b"a" * 10)
+
+    local_bytes, deployed_bytes = _mod_archive_sizes(
+        output_root,
+        output_root,
+        "SeventySix",
+    )
+
+    assert local_bytes == 10
+    assert deployed_bytes == 0
+
+
+def test_disk_usage_summary_counts_only_named_mod_once(tmp_path):
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    archive_root = tmp_path / "shared"
+    archive_root.mkdir()
+    (archive_root / "CurrentMod - Meshes.ba2").write_bytes(b"a" * 10)
+    (archive_root / "SeventySix - Textures.ba2").write_bytes(b"b" * 20)
+    (archive_root / "Fallout4 - Textures.ba2").write_bytes(b"c" * 30)
+    paths = panel.build_paths()
+    paths.output_root = archive_root
+    paths.deploy_data_dir = archive_root
+    paths.mod_name = "CurrentMod"
+    summary = panel._compute_disk_usage_summary(paths)
+
+    assert summary["extracted"] == 0
+    assert summary["mod_output"] == 10
+    assert summary["mod_ba2"] == 10
+    assert summary["deployed_ba2"] == 0
+    assert summary["mod_ba2"] + summary["deployed_ba2"] == 10
+
+
+def test_panel_projection_uses_direct_deploy_root_and_measured_larger_sizes(monkeypatch):
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    captured = {}
+    paths = SimpleNamespace(
+        output_root=Path("C:/BACUP/mods/SeventySix"),
+        deploy_data_dir=Path("N:/MO2/mods/SeventySix"),
+        target_data_dir=Path("D:/Fallout4/Data"),
+    )
+    options = SimpleNamespace(deploy=True, direct_deploy_archives=True)
+    panel._disk_usage_cache = (
+        0.0,
+        {
+            "extracted": 0,
+            "mod_output": 200 * 1024**3,
+            "mod_ba2": 20 * 1024**3,
+            "deployed_ba2": 75 * 1024**3,
+        },
+    )
+    panel._disk_usage_cache_key = panel._disk_space_target(paths, options)[0]
+    monkeypatch.setattr(
+        "bacup_ui.conversion.panels.regen_panel._project_disk_space",
+        lambda **kwargs: captured.update(kwargs) or (),
+    )
+
+    projection = panel._disk_space_projection(
+        paths=paths,
+        options=options,
+    )
+    assert projection is None
+    assert panel._disk_usage_thread is not None
+    panel._disk_usage_thread.join(timeout=2.0)
+
+    assert captured["archive_root"] == Path("N:/MO2/mods/SeventySix")
+    assert captured["loose_bytes"] == 180 * 1024**3
+    assert captured["packed_bytes"] == 75 * 1024**3
+
+
+def test_changed_deploy_root_recomputes_disk_usage_summary(monkeypatch):
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    old_paths = panel.build_paths()
+    old_paths.deploy_data_dir = Path("N:/MO2/mods/SeventySix")
+    new_paths = panel.build_paths()
+    new_paths.deploy_data_dir = Path("M:/MO2/mods/SeventySix")
+    old_key = panel._disk_space_target(old_paths)[0]
+    new_key = panel._disk_space_target(new_paths)[0]
+    old_summary = {
+        "extracted": 1,
+        "mod_output": 2,
+        "mod_ba2": 3,
+        "deployed_ba2": 4,
+    }
+    new_summary = {
+        "extracted": 5,
+        "mod_output": 6,
+        "mod_ba2": 7,
+        "deployed_ba2": 8,
+    }
+    scans = []
+    panel._disk_usage_cache = (0.0, old_summary)
+    panel._disk_usage_cache_key = old_key
+    panel._disk_space_cache = (old_key, ())
+    monkeypatch.setattr(panel, "build_paths", lambda: new_paths)
+    monkeypatch.setattr(
+        panel,
+        "_compute_disk_usage_summary",
+        lambda paths=None: scans.append(paths) or new_summary,
+    )
+    monkeypatch.setattr(
+        "bacup_ui.conversion.panels.regen_panel._project_disk_space",
+        lambda **_kwargs: (),
+    )
+
+    assert panel.disk_usage_summary() == {
+        "extracted": 0,
+        "mod_output": 0,
+        "mod_ba2": 0,
+        "deployed_ba2": 0,
+    }
+    assert panel._disk_usage_thread is not None
+    panel._disk_usage_thread.join(timeout=2.0)
+
+    assert scans == [new_paths]
+    assert panel._disk_usage_cache_key == new_key
+    assert panel.disk_usage_summary() == new_summary
+
+
+def test_projection_reads_drive_capacity_only_in_background(monkeypatch):
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    paths = panel.build_paths()
+    panel._disk_usage_cache = (
+        0.0,
+        {"extracted": 0, "mod_output": 0, "mod_ba2": 0, "deployed_ba2": 0},
+    )
+    panel._disk_usage_cache_key = panel._disk_space_target(paths)[0]
+    started = threading.Event()
+    release = threading.Event()
+    ui_thread = threading.get_ident()
+
+    def slow_disk_usage(_path):
+        assert threading.get_ident() != ui_thread
+        started.set()
+        release.wait(2.0)
+        return SimpleNamespace(total=500 * 1024**3, used=50 * 1024**3, free=450 * 1024**3)
+
+    monkeypatch.setattr(
+        "bacup_ui.conversion.panels.regen_panel._disk_usage_for_target",
+        slow_disk_usage,
+    )
+
+    assert panel._disk_space_projection() is None
+    assert started.wait(1.0)
+    assert panel._disk_space_projection() is None
+
+    release.set()
+    assert panel._disk_usage_thread is not None
+    panel._disk_usage_thread.join(timeout=2.0)
+    projection = panel._disk_space_projection()
+
+    assert projection is not None
+    assert len(projection) == 2
+
+
+def test_request_conversion_never_blocks_on_drive_capacity(monkeypatch):
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    paths = panel.build_paths()
+    space_key = panel._disk_space_target(paths)[0]
+    summary = {
+        "extracted": 0,
+        "mod_output": 0,
+        "mod_ba2": 0,
+        "deployed_ba2": 0,
+    }
+    old_projection = _project_disk_space(
+        output_root=paths.output_root,
+        archive_root=paths.target_data_dir,
+        disk_usage=lambda _path: SimpleNamespace(
+            total=500 * 1024**3,
+            used=50 * 1024**3,
+            free=450 * 1024**3,
+        ),
+    )
+    panel._disk_usage_cache = (0.0, summary)
+    panel._disk_usage_cache_key = space_key
+    panel._disk_space_cache = (space_key, old_projection)
+    started = threading.Event()
+    release = threading.Event()
+    ui_thread = threading.get_ident()
+    starts = []
+    capacity_reads = []
+
+    def slow_disk_usage(_path):
+        assert threading.get_ident() != ui_thread
+        capacity_reads.append(_path)
+        started.set()
+        release.wait(2.0)
+        return SimpleNamespace(
+            total=500 * 1024**3,
+            used=50 * 1024**3,
+            free=450 * 1024**3,
+        )
+
+    monkeypatch.setattr(
+        panel,
+        "_compute_disk_usage_summary",
+        lambda _paths=None: (_ for _ in ()).throw(
+            AssertionError("fresh capacity check must reuse the size summary")
+        ),
+    )
+    monkeypatch.setattr(
+        "bacup_ui.conversion.panels.regen_panel._disk_usage_for_target",
+        slow_disk_usage,
+    )
+    monkeypatch.setattr(panel, "start_conversion", lambda: starts.append(True))
+
+    panel._request_conversion()
+
+    assert panel._waiting_for_space_check is True
+    assert starts == []
+    assert started.wait(1.0)
+    assert panel._disk_space_cache is None
+
+    release.set()
+    assert panel._disk_usage_thread is not None
+    panel._disk_usage_thread.join(timeout=2.0)
+    panel._resolve_pending_space_check()
+
+    assert capacity_reads
+    assert panel._disk_space_cache is not None
+    assert panel._disk_space_cache[1] is not old_projection
+    assert starts == [True]
+
+
+def test_request_conversion_waits_for_background_space_measurement(monkeypatch):
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    starts = []
+    monkeypatch.setattr(panel, "_start_disk_usage_worker", lambda **_kwargs: None)
+    monkeypatch.setattr(panel, "_disk_space_projection", lambda: ())
+    monkeypatch.setattr(panel, "start_conversion", lambda: starts.append(True))
+
+    panel._request_conversion()
+
+    assert panel._waiting_for_space_check is True
+    assert starts == []
+
+    panel._resolve_pending_space_check()
+
+    assert panel._waiting_for_space_check is False
+    assert starts == [True]
+
+
+def test_request_conversion_warns_before_start_and_can_continue(monkeypatch):
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    low_volume = _project_disk_space(
+        output_root=Path("C:/BACUP/mods/SeventySix"),
+        archive_root=Path("C:/Fallout4/Data"),
+        volume_key=lambda _path: "c:",
+        disk_usage=lambda _path: SimpleNamespace(total=200 * 1024**3, used=190 * 1024**3, free=10 * 1024**3),
+    )[0]
+    starts = []
+    monkeypatch.setattr(panel, "_start_disk_usage_worker", lambda **_kwargs: None)
+    monkeypatch.setattr(panel, "_disk_space_projection", lambda: (low_volume,))
+    monkeypatch.setattr(panel, "start_conversion", lambda: starts.append(True))
+
+    panel._request_conversion()
+
+    assert panel._waiting_for_space_check is True
+    assert starts == []
+
+    panel._resolve_pending_space_check()
+
+    assert panel._low_space_warning == (low_volume,)
+    assert starts == []
+
+    panel._continue_conversion_with_low_space()
+
+    assert panel._low_space_warning is None
+    assert starts == [True]
+
+
+def test_non_fo76_pair_skips_fo76_space_estimate(monkeypatch):
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    panel.pair_id = "skyrimse:fo4"
+    starts = []
+    monkeypatch.setattr(
+        panel,
+        "_disk_space_projection",
+        lambda: (_ for _ in ()).throw(AssertionError("FO76 estimate must not run")),
+    )
+    monkeypatch.setattr(panel, "start_conversion", lambda: starts.append(True))
+
+    panel._request_conversion()
+
+    assert starts == [True]
+
+
+def test_request_conversion_starts_after_fresh_check_with_enough_space(monkeypatch):
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    enough_volume = _project_disk_space(
+        output_root=Path("C:/BACUP/mods/SeventySix"),
+        archive_root=Path("N:/MO2/mods/SeventySix"),
+        volume_key=lambda _path: "c:",
+        disk_usage=lambda _path: SimpleNamespace(total=500 * 1024**3, used=50 * 1024**3, free=450 * 1024**3),
+    )[0]
+    starts = []
+    monkeypatch.setattr(panel, "_start_disk_usage_worker", lambda **_kwargs: None)
+    monkeypatch.setattr(panel, "_disk_space_projection", lambda: (enough_volume,))
+    monkeypatch.setattr(panel, "start_conversion", lambda: starts.append(True))
+
+    panel._request_conversion()
+
+    assert panel._waiting_for_space_check is True
+    assert starts == []
+
+    panel._resolve_pending_space_check()
+
+    assert panel._low_space_warning is None
+    assert starts == [True]
 
 
 def test_cleanup_removes_only_app_owned_default_paths(tmp_path, monkeypatch):

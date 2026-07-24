@@ -61,7 +61,8 @@ fn classify_items(
                     .entry(record.signature.clone())
                     .or_default();
                 let editor_id = editor_id_from_effective_subrecords(&record.subrecords);
-                if !editor_id.is_empty()
+                if !matches!(record.signature.as_str(), "CELL" | "PACK")
+                    && !editor_id.is_empty()
                     && let Some(&primary_id) =
                         eid_index.get(&(editor_id.to_lowercase(), record.signature.clone()))
                 {
@@ -136,6 +137,32 @@ mod tests {
         let result = classify_grafted(&items, &HashMap::new(), &mut used);
         assert_eq!(result.remap[&0x9900], 0x9900);
         assert!(result.dropped.is_empty());
+    }
+
+    #[test]
+    fn cell_editor_id_is_not_global_identity() {
+        let items = vec![ParsedItem::Record(rec("CELL", 0x162A, "Wilderness"))];
+        let index = HashMap::from([(("wilderness".to_string(), "CELL".into()), 0xDDCAB)]);
+        let mut used = HashSet::from([0x162A, 0xDDCAB]);
+
+        let result = classify_grafted(&items, &index, &mut used);
+
+        assert_ne!(result.remap[&0x162A], 0xDDCAB);
+        assert!(!result.dropped.contains(&0x162A));
+    }
+
+    #[test]
+    fn pack_editor_id_is_not_cross_game_identity() {
+        let items = vec![ParsedItem::Record(rec("PACK", 0x162A, "FollowPlayer"))];
+        let index = HashMap::from([(("followplayer".to_string(), "PACK".into()), 0xDDCAB)]);
+        let mut used = HashSet::from([0x162A, 0xDDCAB]);
+
+        let result = classify_grafted(&items, &index, &mut used);
+
+        assert_ne!(result.remap[&0x162A], 0xDDCAB);
+        assert!(!result.dropped.contains(&0x162A));
+        assert_eq!(result.by_signature["PACK"].deduped, 0);
+        assert_eq!(result.by_signature["PACK"].copied, 1);
     }
 
     #[test]

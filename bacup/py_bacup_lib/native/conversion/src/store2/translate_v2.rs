@@ -6,8 +6,10 @@
 //!   F (parallel): post hooks → class-A → normalizer → namespacing → snapshot
 //!   E (serial):   add_record_in_slot (encode + insert; lstring ids in order)
 //! Serial passes preserve legacy determinism (FormKey + lstring allocation
-//! order and partial-map forward-ref semantics). Tail (structured dialogue +
-//! worldspace rebuild) reuses the legacy methods. No Python contact.
+//! order). FNV/FO3→FO4 first preallocates every eligible translated FormKey so
+//! raw legacy magic references are independent of signature order. Tail
+//! (structured dialogue + worldspace rebuild) reuses the legacy methods. No
+//! Python contact.
 
 use std::path::Path;
 
@@ -22,9 +24,10 @@ use crate::phase::progress::ProgressReporter;
 use crate::phase::{LogLevel, PhaseEvent};
 use crate::record::Record;
 use crate::run::{
-    ConversionRun, FnvScriLink, RunError, TranslateStats, base_asset_namespace,
-    capture_target_master_context, is_target_master_remap, namespace_base_asset_model_paths,
-    normalized_eid_opt, rename_fo76_target_editor_id_collision,
+    ConversionRun, FnvScriLink, LegacyFormKeyAllocationIntent, LegacyFormKeyPreallocationCoverage,
+    RunError, TranslateStats, base_asset_namespace, capture_target_master_context,
+    is_target_master_remap, namespace_base_asset_model_paths, normalized_eid_opt,
+    rename_fo76_target_editor_id_collision, target_collision_donor_form_key,
 };
 use crate::source_read::decode_record_from_parsed_relayout;
 use crate::store2::source::SourceEsm;
@@ -72,6 +75,7 @@ struct Candidate {
     /// The working record as it flows P → A → F → E (None once dropped/failed).
     record: Option<Record>,
     fnv_scri_target: Option<String>,
+    collision_donor: Option<FormKey>,
     /// Final disposition for the stat merge.
     disposition: Disposition,
     /// Warnings in intra-record order (P, then A, then F, then E).
@@ -84,6 +88,13 @@ struct Candidate {
     fnv_scri_links: Vec<FnvScriLink>,
     /// Full-plugin snapshot built in Pass F (whole-plugin runs only).
     full_plugin_snapshot: Option<Record>,
+    /// Exact source FormKeys left unresolved by Pass A's mapper rewrite.
+    unresolved_source_refs: FxHashSet<FormKey>,
+    creature_race_event:
+        Option<crate::translator::pair_hooks::fnv_creature_race::CreatureRaceGateEvent>,
+    creature_race_failure_decision:
+        Option<crate::translator::pair_hooks::fnv_creature_race::CreatureRaceDecision>,
+    creature_race_fatal_error: Option<String>,
 }
 
 struct SkyrimNavmeshSet {
@@ -99,12 +110,17 @@ impl Candidate {
             seen: false,
             record: None,
             fnv_scri_target: None,
+            collision_donor: None,
             disposition: Disposition::Failed,
             warnings: Vec::new(),
             decisions: Vec::new(),
             deferred: Vec::new(),
             fnv_scri_links: Vec::new(),
             full_plugin_snapshot: None,
+            unresolved_source_refs: FxHashSet::default(),
+            creature_race_event: None,
+            creature_race_failure_decision: None,
+            creature_race_fatal_error: None,
         };
         match outcome {
             PassPOutcome::Translated {
@@ -189,13 +205,56 @@ pub fn translate_all_v2(
     run: &mut ConversionRun,
     source_esm_path: &Path,
 ) -> Result<TranslateStats, RunError> {
+    log_translate_v2(run, "translate_v2: opening source esm");
+    let esm = SourceEsm::open(source_esm_path).map_err(|e| {
+        RunError::InvalidConfig(format!("store2 source open {source_esm_path:?}: {e}"))
+    })?;
+    log_translate_v2(run, "translate_v2: source esm opened");
+    log_translate_v2(run, "translate_v2: capture source context start");
+    let source_ctx = capture_source_ctx(run.source_handle_id)?;
+    log_translate_v2(run, "translate_v2: capture source context done");
+    if let Some(mut preflight) = run.begin_legacy_pack_preflight(&source_ctx.plugin_name) {
+        for position in esm.positions_of_sig(*b"PACK") {
+            let Some(view) = esm.view_at(position) else {
+                continue;
+            };
+            let form_key = form_key_for_raw(
+                view.form_id(),
+                &source_ctx.plugin_name,
+                &source_ctx.masters,
+                &run.interner,
+            );
+            let decoded = view
+                .to_parsed_record()
+                .map_err(|error| error.to_string())
+                .and_then(|raw_record| {
+                    decode_record_from_parsed_relayout(
+                        &raw_record,
+                        &form_key,
+                        &run.schema_source,
+                        &source_ctx.masters,
+                        &source_ctx.plugin_name,
+                        source_ctx.strings.as_ref(),
+                        source_ctx.plugin_is_localized,
+                        &run.interner,
+                        None,
+                    )
+                    .map_err(|error| error.to_string())
+                });
+            match decoded {
+                Ok(record) => preflight.observe_decoded(&record, &run.interner),
+                Err(error) => preflight.observe_decode_error(form_key, error, &run.interner),
+            }
+        }
+        run.finish_legacy_pack_preflight(preflight)?;
+    }
     log_translate_v2(run, "translate_v2: init mapper state start");
     run.init_mapper_state()?;
     log_translate_v2(run, "translate_v2: init mapper state done");
-
     if run.config.records_limit == Some(0) {
         // Nothing to translate; still run the tail exactly like translate_all.
         let mut stats = TranslateStats::default();
+        run.finalize_legacy_creature_race_coverage()?;
         if run.should_emit_fo76_quest_scenes() {
             stats.absorb(run.emit_quest_child_scenes()?);
         }
@@ -206,15 +265,6 @@ pub fn translate_all_v2(
         run.rebuild_full_plugin_worldspace_groups()?;
         return Ok(stats);
     }
-
-    log_translate_v2(run, "translate_v2: opening source esm");
-    let esm = SourceEsm::open(source_esm_path).map_err(|e| {
-        RunError::InvalidConfig(format!("store2 source open {source_esm_path:?}: {e}"))
-    })?;
-    log_translate_v2(run, "translate_v2: source esm opened");
-    log_translate_v2(run, "translate_v2: capture source context start");
-    let source_ctx = capture_source_ctx(run.source_handle_id)?;
-    log_translate_v2(run, "translate_v2: capture source context done");
     let skyrim_navmeshes = if run.source == Game::SkyrimSe && run.target == Game::Fo4 {
         log_translate_v2(run, "translate_v2: prepare Skyrim NAVM set start");
         let prepared = crate::skyrim_navmesh::prepare_skyrim_navmeshes(&esm);
@@ -303,6 +353,16 @@ pub fn translate_all_v2(
         &run.interner,
     );
 
+    if matches!(run.source, Game::Fnv | Game::Fo3) && run.target == Game::Fo4 {
+        preallocate_legacy_form_keys(
+            run,
+            &esm,
+            &source_ctx,
+            &excluded_source_formkeys,
+            &enumeration,
+        )?;
+    }
+
     let reporter = ProgressReporter::new("translate_v2", total, run.event_tx.clone());
     let mut stats = TranslateStats::default();
 
@@ -312,6 +372,7 @@ pub fn translate_all_v2(
         }
 
         let mut candidates = run_pass_p(run, &esm, &source_ctx, &excluded_source_formkeys, chunk);
+        enforce_creature_race_gate(run, &candidates, true)?;
         run_pass_a(
             run,
             &target_master_syms,
@@ -319,6 +380,7 @@ pub fn translate_all_v2(
             &mut candidates,
         );
         run_pass_f(run, &mut candidates);
+        validate_creature_race_targets(run, &candidates)?;
         run_pass_e(
             run,
             &target_master_syms,
@@ -330,6 +392,7 @@ pub fn translate_all_v2(
         reporter.inc(chunk.len() as u32);
     }
     log_translate_v2(run, "translate_v2: per-record chunks done");
+    run.finalize_legacy_creature_race_coverage()?;
     log_translate_v2(run, "translate_v2: reporter finish start");
     reporter.finish();
     log_translate_v2(run, "translate_v2: reporter finish done");
@@ -392,6 +455,70 @@ fn log_translate_v2(run: &ConversionRun, message: impl Into<String>) {
     });
 }
 
+fn preallocate_translated_candidates(
+    candidates: &[Candidate],
+    run: &mut ConversionRun,
+) -> LegacyFormKeyPreallocationCoverage {
+    let intents = candidates.iter().filter_map(|candidate| {
+        if !matches!(candidate.disposition, Disposition::Translated) {
+            return None;
+        }
+        let record = candidate.record.as_ref()?;
+        Some(LegacyFormKeyAllocationIntent {
+            source_fk: candidate.source_fk,
+            editor_id: record.eid,
+            target_sig: record.sig,
+        })
+    });
+    run.preallocate_legacy_form_key_intents(intents)
+}
+
+fn preallocate_legacy_form_keys(
+    run: &mut ConversionRun,
+    esm: &SourceEsm,
+    source_ctx: &SourceCtx,
+    excluded_source_formkeys: &FxHashSet<FormKey>,
+    enumeration: &[(SigCode, usize)],
+) -> Result<(), RunError> {
+    log_translate_v2(
+        run,
+        format!(
+            "translate_v2: legacy forward-reference preallocation start records={}",
+            enumeration.len()
+        ),
+    );
+    run.prepare_legacy_output_allocation_domain(enumeration.iter().filter_map(|(_, position)| {
+        esm.view_at(*position)
+            .map(|record| record.form_id() & 0x00FF_FFFF)
+    }))?;
+    let mut total = LegacyFormKeyPreallocationCoverage::default();
+    for chunk in enumeration.chunks(CHUNK) {
+        if run.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(RunError::Cancelled);
+        }
+        let candidates = run_pass_p(run, esm, source_ctx, excluded_source_formkeys, chunk);
+        enforce_creature_race_gate(run, &candidates, false)?;
+        let coverage = preallocate_translated_candidates(&candidates, run);
+        total.eligible += coverage.eligible;
+        total.mapped += coverage.mapped;
+        total.missing += coverage.missing;
+    }
+    log_translate_v2(
+        run,
+        format!(
+            "translate_v2: legacy forward-reference preallocation done eligible={} mapped={} missing={}",
+            total.eligible, total.mapped, total.missing
+        ),
+    );
+    if total.missing != 0 || total.mapped != total.eligible {
+        return Err(RunError::InvalidConfig(format!(
+            "legacy forward-reference preallocation incomplete: eligible={} mapped={} missing={}",
+            total.eligible, total.mapped, total.missing
+        )));
+    }
+    Ok(())
+}
+
 /// Pass P — parallel: mmap read → decode → pre_translate → translate → rename.
 fn run_pass_p(
     run: &ConversionRun,
@@ -409,14 +536,17 @@ fn run_pass_p(
     let mapper_state = run.mapper_state.as_ref();
     let strings = source_ctx.strings.as_ref();
 
-    // FO76→FO4 struct relayout context.
-    let relayout_target_schema =
-        (source == Game::Fo76 && target == Game::Fo4).then(|| run.schema_target.clone());
+    // Legacy Fallout is restricted to BPTD.BPND; FO76 retains generic relayout.
+    let legacy_bptd_only = matches!(source, Game::Fnv | Game::Fo3);
+    let relayout_target_schema = (target == Game::Fo4
+        && (source == Game::Fo76 || legacy_bptd_only))
+        .then(|| run.schema_target.clone());
     let relayout_ctx = relayout_target_schema.as_deref().map(|target_schema| {
         crate::struct_relayout::StructRelayoutCtx {
             target_schema,
             target_form_version:
                 crate::fixups::remap_struct_internal_formids::FO4_TARGET_FORM_VERSION,
+            legacy_bptd_only,
         }
     });
 
@@ -497,13 +627,42 @@ fn run_pass_p(
             } else {
                 None
             };
-
+            let creature_race_event = if run.should_apply_legacy_creature_race_policy() {
+                match crate::translator::pair_hooks::fnv_creature_race::apply_legacy_creature_race_policy(
+                    source,
+                    target,
+                    &mut src_record,
+                    interner,
+                ) {
+                    Ok(event) => event,
+                    Err(error) => {
+                        let message = error.to_string();
+                        let mut c = Candidate::from_pass_p(
+                            source_fk,
+                            source_sig,
+                            PassPOutcome::DroppedUnsupported,
+                        );
+                        c.creature_race_failure_decision = Some(error.decision);
+                        c.creature_race_fatal_error = Some(message);
+                        return c;
+                    }
+                }
+            } else {
+                None
+            };
             // pre_translate (errors → warning, record continues).
             {
+                let warning_start = src_record.warnings.len();
                 let mut ctx = crate::translator::pair_hook::PairCtx { interner };
                 if let Err(e) = translator.pre_translate(&mut ctx, &mut src_record) {
                     pass_p_warnings.push(format!("pre_translate:{e}"));
                 }
+                pass_p_warnings.extend(
+                    src_record.warnings[warning_start..]
+                        .iter()
+                        .filter_map(|warning| interner.resolve(*warning))
+                        .map(str::to_owned),
+                );
             }
 
             // translate (TopLevel mode — no forced-skip-signature mutation).
@@ -542,6 +701,7 @@ fn run_pass_p(
             // FO76→FO4 EDID-collision rename. Gated on mapper_state present
             // (it is — init happens before Pass P).
             let mut translated = translated;
+            let mut collision_donor = None;
             if source == Game::Fo76 && target == Game::Fo4 {
                 if let Some(state) = mapper_state {
                     let translated_sig = translated.sig;
@@ -556,6 +716,12 @@ fn run_pass_p(
                         ),
                     );
                     if let Some((old, new)) = renamed {
+                        collision_donor = target_collision_donor_form_key(
+                            &state.target_eid_index,
+                            interner,
+                            &old,
+                            translated.sig,
+                        );
                         pass_p_warnings
                             .push(format!("fo76_target_edid_collision_renamed:{old}->{new}"));
                     }
@@ -570,10 +736,62 @@ fn run_pass_p(
                     fnv_scri_target,
                 },
             );
+            c.collision_donor = collision_donor;
+            c.creature_race_event = creature_race_event;
             c.warnings = pass_p_warnings;
             c
         })
         .collect()
+}
+
+fn enforce_creature_race_gate(
+    run: &mut ConversionRun,
+    candidates: &[Candidate],
+    observe_coverage: bool,
+) -> Result<(), RunError> {
+    let mut first_error = None;
+    for candidate in candidates {
+        if observe_coverage {
+            if let Some(event) = candidate.creature_race_event.as_ref() {
+                run.observe_legacy_creature_race_decision(&event.decision);
+            }
+            if let Some(decision) = candidate.creature_race_failure_decision.as_ref() {
+                run.observe_legacy_creature_race_decision(decision);
+            }
+        }
+        if first_error.is_none() {
+            first_error = candidate.creature_race_fatal_error.clone();
+        }
+    }
+    if let Some(error) = first_error {
+        return Err(run.fail_legacy_creature_race(error));
+    }
+    Ok(())
+}
+
+fn validate_creature_race_targets(
+    run: &mut ConversionRun,
+    candidates: &[Candidate],
+) -> Result<(), RunError> {
+    for candidate in candidates {
+        if !matches!(candidate.disposition, Disposition::Translated) {
+            continue;
+        }
+        let Some(record) = candidate.record.as_ref() else {
+            continue;
+        };
+        if let Err(error) =
+            crate::translator::pair_hooks::fnv_creature_race::validate_crea_derived_npc_race(
+                record,
+                candidate.creature_race_event.as_ref(),
+                &run.interner,
+                |race| run.target_form_key_resolves_to_race(race),
+            )
+        {
+            return Err(run.fail_legacy_creature_race(error.to_string()));
+        }
+    }
+    Ok(())
 }
 
 fn collect_excluded_source_formkeys(
@@ -604,9 +822,9 @@ fn placed_record_has_excluded_base(
     })
 }
 
-/// Pass A — serial, position order: allocate FormKeys + NVNM + rewrite refs.
-/// The mapper is touched ONLY here and only in position order (deterministic
-/// FK pre-allocation; partial-map forward-ref semantics match legacy).
+/// Pass A — serial, position order: resolve FormKeys + serial normalizers +
+/// NVNM + generic reference rewrite. Legacy Fallout records were preallocated
+/// before this pass, so their raw references can resolve across signatures.
 fn run_pass_a(
     run: &mut ConversionRun,
     target_master_syms: &FxHashSet<Sym>,
@@ -618,6 +836,9 @@ fn run_pass_a(
     let source_handle_id = run.source_handle_id;
     let target_handle_id = run.target_handle_id;
     let interner = &run.interner;
+    let translator = &run.translator;
+    let event_tx = run.event_tx.clone();
+    let serial_normalization = &mut run.legacy_serial_normalization;
     let state = run
         .mapper_state
         .as_mut()
@@ -635,6 +856,52 @@ fn run_pass_a(
         let normalized_eid = normalized_eid_opt(record.eid, mapper.interner);
         let target_fk = mapper.allocate_or_resolve(c.source_fk, normalized_eid, record.sig);
         record.form_key = target_fk;
+        if let Some(race) = c
+            .creature_race_event
+            .as_ref()
+            .and_then(|event| event.decision.audited_race().ok().flatten())
+        {
+            mapper.add_mapping(race, race);
+        }
+
+        let mut serial_drop = false;
+        if let Some(outcome) = translator.normalize_serial_mapper_record_once(
+            c.source_fk,
+            record,
+            &mut mapper,
+            serial_normalization,
+        ) {
+            let diagnostics = match outcome {
+                Ok(report) => {
+                    report.register_target_identities(&mut mapper);
+                    report.diagnostics(record)
+                }
+                Err(diagnostic) => {
+                    serial_drop = true;
+                    vec![diagnostic]
+                }
+            };
+            for diagnostic in diagnostics {
+                let level = if diagnostic.warning {
+                    LogLevel::Warn
+                } else {
+                    LogLevel::Info
+                };
+                let _ = event_tx.try_send(PhaseEvent::Log {
+                    phase: "translate_v2",
+                    level,
+                    message: diagnostic.message.clone(),
+                });
+                if diagnostic.warning {
+                    c.warnings.push(diagnostic.message);
+                }
+            }
+        }
+        if serial_drop {
+            c.disposition = Disposition::Dropped;
+            c.record = None;
+            continue;
+        }
 
         if source == Game::SkyrimSe && target == Game::Fo4 && record.sig.as_str() == "NAVM" {
             let install_result = skyrim_navmeshes
@@ -677,8 +944,9 @@ fn run_pass_a(
                 c.warnings.push(format!("{}_navm:{e}", source.as_str()));
             }
         }
-        if let Err(e) = mapper.rewrite_record(record) {
-            c.warnings.push(format!("rewrite_record:{e}"));
+        match mapper.rewrite_record_with_report(record) {
+            Ok(report) => c.unresolved_source_refs = report.unresolved_form_keys,
+            Err(e) => c.warnings.push(format!("rewrite_record:{e}")),
         }
 
         if is_target_master_remap(target_fk, target_master_syms) {
@@ -695,6 +963,23 @@ fn run_pass_a(
                     source_scpt_form_key,
                 });
             }
+        }
+    }
+    drop(mapper);
+
+    for candidate in candidates.iter_mut() {
+        if !matches!(candidate.disposition, Disposition::Translated) {
+            continue;
+        }
+        let (Some(record), Some(donor_form_key)) =
+            (candidate.record.as_mut(), candidate.collision_donor)
+        else {
+            continue;
+        };
+        if let Err(error) = run.merge_target_collision_donor(record, donor_form_key) {
+            candidate
+                .warnings
+                .push(format!("collision_donor_merge:{error}"));
         }
     }
 }
@@ -858,6 +1143,7 @@ fn run_pass_e(
                     &snapshot,
                     target_master_syms,
                     first_target_master_sym,
+                    Some(&c.unresolved_source_refs),
                 );
             }
         }
@@ -915,14 +1201,19 @@ fn merge_chunk(run: &mut ConversionRun, stats: &mut TranslateStats, candidates: 
 #[cfg(test)]
 mod equivalence_tests {
     use super::*;
+    use crate::legacy_pack_preflight::{
+        LegacyPackExpectedCounts, LegacyPackOriginRow, LegacyPackPreflightReport,
+    };
     use crate::record::{FieldEntry, FieldValue, Record};
     use crate::run::{RunConfig, RunParams, create_run, drop_run, with_run};
+    use crate::source_read::plugin_name_for_handle;
     use crate::store2::source::COMPRESSED_RECORD_FLAG;
     use crate::store2::source::test_fixture::*;
     use crate::store2::test_util::{assert_handles_equal, handle_records};
+    use crate::translator::pair_hooks::fnv_pack::{LegacyPackSourceFamily, LegacyPackType};
     use esp_authoring_core::plugin_runtime::{
-        ParsedItem, parse_plugin_file, plugin_handle_add_master_native, plugin_handle_close_native,
-        plugin_handle_new_native, plugin_handle_store_ref,
+        ParsedItem, ParsedRecord, parse_plugin_file, plugin_handle_add_master_native,
+        plugin_handle_close_native, plugin_handle_new_native, plugin_handle_store_ref,
     };
 
     #[test]
@@ -997,7 +1288,233 @@ mod equivalence_tests {
         )
     }
 
+    fn legacy_effect_payload(base_effect: u32) -> Vec<u8> {
+        let mut payload = subrecord(b"EFID", &base_effect.to_le_bytes());
+        let mut efit = vec![0_u8; 20];
+        efit[0..4].copy_from_slice(&7_u32.to_le_bytes());
+        efit[4..8].copy_from_slice(&3_u32.to_le_bytes());
+        efit[8..12].copy_from_slice(&11_u32.to_le_bytes());
+        payload.extend_from_slice(&subrecord(b"EFIT", &efit));
+        payload
+    }
+
+    fn legacy_condition(function: u16, parameter_1: u32) -> Vec<u8> {
+        let mut condition = vec![0_u8; 28];
+        condition[8..10].copy_from_slice(&function.to_le_bytes());
+        condition[12..16].copy_from_slice(&parameter_1.to_le_bytes());
+        condition
+    }
+
+    fn legacy_mgef_data(
+        assoc_item: u32,
+        casting_light: u32,
+        shader: u32,
+        archetype: u32,
+        actor_value: i32,
+    ) -> Vec<u8> {
+        let mut data = vec![0_u8; 72];
+        data[8..12].copy_from_slice(&assoc_item.to_le_bytes());
+        data[16..20].copy_from_slice(&(-1_i32).to_le_bytes());
+        data[24..28].copy_from_slice(&casting_light.to_le_bytes());
+        data[32..36].copy_from_slice(&shader.to_le_bytes());
+        data[36..40].copy_from_slice(&shader.to_le_bytes());
+        data[64..68].copy_from_slice(&archetype.to_le_bytes());
+        data[68..72].copy_from_slice(&actor_value.to_le_bytes());
+        data
+    }
+
+    fn legacy_magic_fixture() -> Vec<u8> {
+        const ALCH_ID: u32 = 0x0000_1000;
+        const ENCH_ID: u32 = 0x0000_1001;
+        const SPEL_ID: u32 = 0x0000_1002;
+        const PRIMARY_MGEF_ID: u32 = 0x0000_1100;
+        const ASSOC_MGEF_ID: u32 = 0x0000_1101;
+        const LIGH_ID: u32 = 0x0000_1200;
+        const EFSH_ID: u32 = 0x0000_1300;
+        const PERK_ID: u32 = 0x0000_1400;
+        const WRLD_ID: u32 = 0x0000_1500;
+
+        let mut alch_payload = subrecord(b"EDID", b"ForwardPotion\0");
+        alch_payload.extend_from_slice(&subrecord(b"ENIT", &[0_u8; 20]));
+        alch_payload.extend_from_slice(&legacy_effect_payload(PRIMARY_MGEF_ID));
+        let alch = record(b"ALCH", ALCH_ID, 0, &alch_payload);
+
+        let mut ench_enit = vec![0_u8; 16];
+        ench_enit[0..4].copy_from_slice(&3_u32.to_le_bytes());
+        ench_enit[12] = 1;
+        let mut ench_payload = subrecord(b"EDID", b"ForwardEnchant\0");
+        ench_payload.extend_from_slice(&subrecord(b"ENIT", &ench_enit));
+        ench_payload.extend_from_slice(&legacy_effect_payload(PRIMARY_MGEF_ID));
+        let ench = record(b"ENCH", ENCH_ID, 0, &ench_payload);
+
+        let mut spit = vec![0_u8; 16];
+        spit[0..4].copy_from_slice(&2_u32.to_le_bytes());
+        spit[4..8].copy_from_slice(&25_u32.to_le_bytes());
+        spit[12] = 0x15;
+        let mut spel_payload = subrecord(b"EDID", b"ForwardSpell\0");
+        spel_payload.extend_from_slice(&subrecord(b"SPIT", &spit));
+        spel_payload.extend_from_slice(&legacy_effect_payload(PRIMARY_MGEF_ID));
+        let spel = record(b"SPEL", SPEL_ID, 0, &spel_payload);
+
+        let mut primary_payload = subrecord(b"EDID", b"ForwardPrimaryEffect\0");
+        primary_payload.extend_from_slice(&subrecord(
+            b"DATA",
+            &legacy_mgef_data(ASSOC_MGEF_ID, LIGH_ID, EFSH_ID, 18, 0),
+        ));
+        let primary_mgef = record(b"MGEF", PRIMARY_MGEF_ID, 0, &primary_payload);
+
+        let mut assoc_payload = subrecord(b"EDID", b"ForwardAssocEffect\0");
+        assoc_payload.extend_from_slice(&subrecord(b"DATA", &legacy_mgef_data(0, 0, 0, 0, -1)));
+        let assoc_mgef = record(b"MGEF", ASSOC_MGEF_ID, 0, &assoc_payload);
+
+        let light = record(b"LIGH", LIGH_ID, 0, &subrecord(b"EDID", b"ForwardLight\0"));
+        let shader = record(b"EFSH", EFSH_ID, 0, &subrecord(b"EDID", b"ForwardShader\0"));
+
+        let mut perk_payload = subrecord(b"EDID", b"ForwardPerk\0");
+        perk_payload.extend_from_slice(&subrecord(b"CTDA", &legacy_condition(495, 0)));
+        perk_payload.extend_from_slice(&subrecord(b"CIS1", b"top\0"));
+        perk_payload.extend_from_slice(&subrecord(b"DATA", &[0, 12, 1, 1, 0]));
+        perk_payload.extend_from_slice(&subrecord(b"PRKE", &[2, 0, 0]));
+        perk_payload.extend_from_slice(&subrecord(b"DATA", &[72, 3, 2]));
+        perk_payload.extend_from_slice(&subrecord(b"PRKC", &[0]));
+        perk_payload.extend_from_slice(&subrecord(b"CTDA", &legacy_condition(1, SPEL_ID)));
+        perk_payload.extend_from_slice(&subrecord(b"CIS1", b"nested\0"));
+        perk_payload.extend_from_slice(&subrecord(b"EPFT", &[1]));
+        perk_payload.extend_from_slice(&subrecord(b"EPFD", &1.25_f32.to_le_bytes()));
+        perk_payload.extend_from_slice(&subrecord(b"PRKF", &[]));
+        perk_payload.extend_from_slice(&subrecord(b"PRKE", &[1, 0, 0]));
+        perk_payload.extend_from_slice(&subrecord(b"DATA", &SPEL_ID.to_le_bytes()));
+        perk_payload.extend_from_slice(&subrecord(b"PRKF", &[]));
+        let perk = record(b"PERK", PERK_ID, 0, &perk_payload);
+
+        let mut wrld_payload = subrecord(b"EDID", b"WastelandNV\0");
+        wrld_payload.extend_from_slice(&subrecord(b"INAM", &SPEL_ID.to_le_bytes()));
+        wrld_payload.extend_from_slice(&subrecord(b"DATA", &[0x80, 0xFF, 0xFF, 0xFF]));
+        let world = record(b"WRLD", WRLD_ID, 0, &wrld_payload);
+
+        plugin(
+            &[],
+            &[
+                group(b"ALCH", 0, &[alch]),
+                group(b"ENCH", 0, &[ench]),
+                group(b"SPEL", 0, &[spel]),
+                group(b"MGEF", 0, &[primary_mgef, assoc_mgef]),
+                group(b"LIGH", 0, &[light]),
+                group(b"EFSH", 0, &[shader]),
+                group(b"PERK", 0, &[perk]),
+                group(b"WRLD", 0, &[world]),
+            ],
+        )
+    }
+
+    fn legacy_unsupported_creature_fixture() -> Vec<u8> {
+        let mut payload = subrecord(b"EDID", b"CazadorFixture\0");
+        payload.extend_from_slice(&subrecord(b"MODL", b"Creatures\\Cazador\\cazador.nif\0"));
+        payload.extend_from_slice(&subrecord(b"RNAM", &[0x4A]));
+        let creature = record(b"CREA", 0x0000_1A01, 0, &payload);
+        plugin(&[], &[group(b"CREA", 0, &[creature])])
+    }
+
+    fn legacy_humanoid_creature_fixture() -> Vec<u8> {
+        let mut payload = subrecord(b"EDID", b"LegionCreature\0");
+        payload.extend_from_slice(&subrecord(b"MODL", b"characters\\_male\\skeleton.nif\0"));
+        payload.extend_from_slice(&subrecord(b"RNAM", &[0x60]));
+        let creature = record(b"CREA", 0x0014_0D4B, 0, &payload);
+        plugin(&[], &[group(b"CREA", 0, &[creature])])
+    }
+
+    fn legacy_unused_ingredient_sentinel_fixture() -> Vec<u8> {
+        let mut payload = subrecord(
+            b"EDID",
+            b"DoNotCreateNewIngredientsWeArentUsingThemInFallout\0",
+        );
+        payload.extend_from_slice(&subrecord(b"ETYP", &0_u32.to_le_bytes()));
+        payload.extend_from_slice(&subrecord(b"DATA", &0_f32.to_le_bytes()));
+        payload.extend_from_slice(&subrecord(b"ENIT", &[0, 0, 0, 0, 0, 0xCD, 0xCD, 0xCD]));
+        payload.extend_from_slice(&subrecord(b"EFID", &0x0000_014E_u32.to_le_bytes()));
+        let mut efit = [0_u8; 20];
+        efit[0..4].copy_from_slice(&1_u32.to_le_bytes());
+        payload.extend_from_slice(&subrecord(b"EFIT", &efit));
+        let ingredient = record(b"INGR", 0x0003_135B, 0, &payload);
+        plugin(&[], &[group(b"INGR", 0, &[ingredient])])
+    }
+
+    fn legacy_duplicate_wrld_fixture() -> Vec<u8> {
+        let mut payload = subrecord(b"EDID", b"DuplicateLegacyWorld\0");
+        payload.extend_from_slice(&subrecord(b"DATA", &[0x10]));
+        payload.extend_from_slice(&subrecord(b"DATA", &[0x20]));
+        plugin(
+            &[],
+            &[group(b"WRLD", 0, &[record(b"WRLD", 0x1600, 0, &payload)])],
+        )
+    }
+
+    fn legacy_same_name_identity_collision_fixture() -> Vec<u8> {
+        const LOW_MGEF_ID: u32 = 0x0000_0100;
+        const FLOOR_MGEF_ID: u32 = 0x0000_0800;
+        const ALCH_ID: u32 = 0x0000_0900;
+
+        let mut potion_payload = subrecord(b"EDID", b"LowEffectPotion\0");
+        potion_payload.extend_from_slice(&subrecord(b"ENIT", &[0_u8; 20]));
+        potion_payload.extend_from_slice(&legacy_effect_payload(LOW_MGEF_ID));
+        let potion = record(b"ALCH", ALCH_ID, 0, &potion_payload);
+
+        let mut low_payload = subrecord(b"EDID", b"LowGeneratedEffect\0");
+        low_payload.extend_from_slice(&subrecord(b"DATA", &legacy_mgef_data(0, 0, 0, 0, -1)));
+        let low = record(b"MGEF", LOW_MGEF_ID, 0, &low_payload);
+
+        let mut floor_payload = subrecord(b"EDID", b"PreservedFloorEffect\0");
+        floor_payload.extend_from_slice(&subrecord(b"DATA", &legacy_mgef_data(0, 0, 0, 0, -1)));
+        let floor = record(b"MGEF", FLOOR_MGEF_ID, 0, &floor_payload);
+
+        plugin(
+            &[],
+            &[
+                group(b"ALCH", 0, &[potion]),
+                group(b"MGEF", 0, &[low, floor]),
+            ],
+        )
+    }
+
+    const SAME_NAME_CLIMATE_SOURCE_ID: u32 = 0x0000_0812;
+    const SAME_NAME_COLLIDING_PATH_SOURCE_ID: u32 = 0x0000_08E1;
+    const SAME_NAME_WORLD_SOURCE_ID: u32 = 0x0000_003C;
+
+    fn skyrim_same_name_reference_collision_fixture() -> Vec<u8> {
+        let climate = record(
+            b"CLMT",
+            SAME_NAME_CLIMATE_SOURCE_ID,
+            0,
+            &subrecord(b"EDID", b"SameNameClimate\0"),
+        );
+        let path = record(
+            b"CPTH",
+            SAME_NAME_COLLIDING_PATH_SOURCE_ID,
+            0,
+            &subrecord(b"EDID", b"SameNamePath\0"),
+        );
+        let mut world_payload = subrecord(b"EDID", b"SameNameWorld\0");
+        world_payload.extend_from_slice(&subrecord(
+            b"CNAM",
+            &SAME_NAME_CLIMATE_SOURCE_ID.to_le_bytes(),
+        ));
+        let world = record(b"WRLD", SAME_NAME_WORLD_SOURCE_ID, 0, &world_payload);
+
+        plugin(
+            &[],
+            &[
+                group(b"CLMT", 0, &[climate]),
+                group(b"CPTH", 0, &[path]),
+                group(b"WRLD", 0, &[world]),
+            ],
+        )
+    }
+
     fn story_manager_fixture() -> Vec<u8> {
+        story_manager_fixture_with_event(b"SCPT")
+    }
+
+    fn story_manager_fixture_with_event(event_type: &[u8; 4]) -> Vec<u8> {
         let root_id = 0x0000_0200u32;
         let branch_id = 0x0000_0201u32;
         let smqn_id = 0x0000_0202u32;
@@ -1009,7 +1526,9 @@ mod equivalence_tests {
         quest_payload.extend_from_slice(&subrecord(b"DATA", &qust_data));
         let quest = record(b"QUST", quest_id, 0, &quest_payload);
 
-        let root = record(b"SMEN", root_id, 0, &subrecord(b"ENAM", b"SCPT"));
+        let mut root_payload = subrecord(b"EDID", b"SyntheticEventRoot\0");
+        root_payload.extend_from_slice(&subrecord(b"ENAM", event_type));
+        let root = record(b"SMEN", root_id, 0, &root_payload);
 
         let mut branch_payload = subrecord(b"EDID", b"SyntheticRadioBranch\0");
         branch_payload.extend_from_slice(&subrecord(b"PNAM", &root_id.to_le_bytes()));
@@ -1051,6 +1570,116 @@ mod equivalence_tests {
         let quest_children = group(&quest_id.to_le_bytes(), 10, &[scene]);
 
         plugin(&[], &[group(b"QUST", 0, &[quest, quest_children])])
+    }
+
+    fn legacy_pack_payload(editor_id: &str, package_type: LegacyPackType) -> Vec<u8> {
+        let mut payload = subrecord(b"EDID", format!("{editor_id}\0").as_bytes());
+        let mut pkdt = [0_u8; 12];
+        pkdt[4] = package_type.code();
+        payload.extend_from_slice(&subrecord(b"PKDT", &pkdt));
+        payload.extend_from_slice(&subrecord(b"PSDT", &[0_u8; 8]));
+        match package_type {
+            LegacyPackType::Travel => {
+                let mut location = [0_u8; 12];
+                location[..4].copy_from_slice(&3_u32.to_le_bytes());
+                payload.extend_from_slice(&subrecord(b"PLDT", &location));
+            }
+            LegacyPackType::Patrol => {
+                let mut location = [0_u8; 12];
+                location[..4].copy_from_slice(&6_u32.to_le_bytes());
+                payload.extend_from_slice(&subrecord(b"PLDT", &location));
+                payload.extend_from_slice(&subrecord(b"PKPT", &[1, 0]));
+            }
+            LegacyPackType::Follow => {
+                let mut target = [0_u8; 16];
+                target[..4].copy_from_slice(&3_u32.to_le_bytes());
+                target[12..16].copy_from_slice(&128_i32.to_le_bytes());
+                payload.extend_from_slice(&subrecord(b"PTDT", &target));
+                payload.extend_from_slice(&subrecord(b"PKFD", &0_f32.to_le_bytes()));
+            }
+            LegacyPackType::Sandbox => {
+                let mut near = [0_u8; 12];
+                near[..4].copy_from_slice(&3_u32.to_le_bytes());
+                near[8..12].copy_from_slice(&1024_i32.to_le_bytes());
+                payload.extend_from_slice(&subrecord(b"PLDT", &near));
+                let mut far = [0_u8; 12];
+                far[..4].copy_from_slice(&7_u32.to_le_bytes());
+                far[8..12].copy_from_slice(&256_i32.to_le_bytes());
+                payload.extend_from_slice(&subrecord(b"PLD2", &far));
+            }
+            LegacyPackType::UseWeapon => {
+                let mut target = [0_u8; 16];
+                target[..4].copy_from_slice(&2_u32.to_le_bytes());
+                target[4..8].copy_from_slice(&23_u32.to_le_bytes());
+                target[12..16].copy_from_slice(&1_i32.to_le_bytes());
+                payload.extend_from_slice(&subrecord(b"PTDT", &target));
+                payload.extend_from_slice(&subrecord(b"PKW3", &[0_u8; 24]));
+                let mut secondary = [0_u8; 16];
+                secondary[4..8].copy_from_slice(&0x0012_3456_u32.to_le_bytes());
+                payload.extend_from_slice(&subrecord(b"PTD2", &secondary));
+            }
+            _ => unreachable!("fixture covers the five audited PACK archetypes"),
+        }
+        payload
+    }
+
+    fn merged_legacy_pack_fixture() -> (Vec<u8>, Vec<(u32, LegacyPackSourceFamily)>) {
+        let archetypes = [
+            LegacyPackType::Travel,
+            LegacyPackType::Patrol,
+            LegacyPackType::Follow,
+            LegacyPackType::Sandbox,
+            LegacyPackType::UseWeapon,
+        ];
+        let mut records = Vec::new();
+        let mut origins = Vec::new();
+        for (family, family_name, base_id) in [
+            (LegacyPackSourceFamily::Fnv, "FNV", 0x2000_u32),
+            (LegacyPackSourceFamily::Fo3, "FO3", 0x3000_u32),
+        ] {
+            for (offset, package_type) in archetypes.into_iter().enumerate() {
+                let form_id = base_id + offset as u32;
+                let editor_id = format!("{family_name}{package_type:?}");
+                let mut payload = legacy_pack_payload(&editor_id, package_type);
+                if family == LegacyPackSourceFamily::Fnv && package_type == LegacyPackType::Travel {
+                    payload.extend_from_slice(&subrecord(b"CTDA", &[0_u8; 28]));
+                }
+                if family == LegacyPackSourceFamily::Fo3 && package_type == LegacyPackType::Travel {
+                    payload.extend_from_slice(&subrecord(b"POBA", &[]));
+                    payload.extend_from_slice(&subrecord(b"SCHR", &[0_u8; 20]));
+                }
+                records.push(record(b"PACK", form_id, 0, &payload));
+                origins.push((form_id, family));
+            }
+        }
+        let malformed_id = 0x2005;
+        let mut malformed = legacy_pack_payload("FNVMalformed", LegacyPackType::Travel);
+        malformed.extend_from_slice(&subrecord(b"CTDA", &[0_u8; 19]));
+        records.push(record(b"PACK", malformed_id, 0, &malformed));
+        origins.push((malformed_id, LegacyPackSourceFamily::Fnv));
+        (plugin(&[], &[group(b"PACK", 0, &records)]), origins)
+    }
+
+    fn explicit_pack_origins(
+        merged_plugin: &str,
+        origins: &[(u32, LegacyPackSourceFamily)],
+    ) -> Vec<LegacyPackOriginRow> {
+        origins
+            .iter()
+            .map(|&(form_id, family)| {
+                let (source_game, source_plugin) = match family {
+                    LegacyPackSourceFamily::Fnv => ("fnv", "FalloutNV.esm"),
+                    LegacyPackSourceFamily::Fo3 => ("fo3", "Fallout3.esm"),
+                    _ => unreachable!(),
+                };
+                LegacyPackOriginRow {
+                    merged_form_key: format!("{form_id:06X}@{merged_plugin}"),
+                    source_game: source_game.to_string(),
+                    source_plugin: source_plugin.to_string(),
+                    source_form_key: format!("{form_id:08X}@{source_plugin}"),
+                }
+            })
+            .collect()
     }
 
     fn assert_scene_is_nested_under_quest(handle: u64) {
@@ -1162,6 +1791,232 @@ mod equivalence_tests {
         (target_handle, stats)
     }
 
+    fn run_legacy_magic_one(
+        use_v2: bool,
+        source_path: &std::path::Path,
+    ) -> (u64, TranslateStats, Vec<String>) {
+        run_legacy_magic_with_output(use_v2, source_path, "Out.esm", false, 0x800)
+    }
+
+    fn run_legacy_magic_with_output(
+        use_v2: bool,
+        source_path: &std::path::Path,
+        output_plugin_name: &str,
+        preserve_source_ids: bool,
+        generated_object_id_floor: u32,
+    ) -> (u64, TranslateStats, Vec<String>) {
+        let source_handle = load_source_handle(source_path, "fnv");
+        let target_handle = plugin_handle_new_native(output_plugin_name, Some("fo4")).unwrap();
+        let id = create_run(RunParams {
+            source: Game::Fnv,
+            target: Game::Fo4,
+            source_handle_id: source_handle,
+            target_handle_id: target_handle,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: output_plugin_name.into(),
+                is_whole_plugin: false,
+                strict_mapper: true,
+                preserve_source_ids,
+                generated_object_id_floor,
+                legacy_pack_expected_counts: Some(LegacyPackExpectedCounts { fnv: 0, fo3: 0 }),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let stats = with_run(id, |run| {
+            if use_v2 {
+                run.translate_all_v2(source_path)
+            } else {
+                run.translate_all()
+            }
+        })
+        .unwrap();
+        let legacy_magic_events = with_run(id, |run| {
+            Ok::<_, RunError>(
+                run.event_rx
+                    .try_iter()
+                    .filter_map(|event| match event {
+                        PhaseEvent::Log { message, .. }
+                            if message.starts_with("legacy_serial:") =>
+                        {
+                            Some(message)
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap();
+        drop_run(id).unwrap();
+        plugin_handle_close_native(source_handle);
+        (target_handle, stats, legacy_magic_events)
+    }
+
+    fn run_legacy_unsupported_creature(
+        use_v2: bool,
+    ) -> (Result<TranslateStats, RunError>, Vec<String>, usize) {
+        run_legacy_unsupported_creature_fixture(use_v2, &legacy_unsupported_creature_fixture())
+    }
+
+    fn run_legacy_unsupported_creature_fixture(
+        use_v2: bool,
+        fixture_bytes: &[u8],
+    ) -> (Result<TranslateStats, RunError>, Vec<String>, usize) {
+        run_legacy_single_record_fixture(use_v2, fixture_bytes)
+    }
+
+    fn run_legacy_single_record_fixture(
+        use_v2: bool,
+        fixture_bytes: &[u8],
+    ) -> (Result<TranslateStats, RunError>, Vec<String>, usize) {
+        run_legacy_single_record_fixture_with_skips(use_v2, fixture_bytes, Vec::new())
+    }
+
+    fn run_legacy_single_record_fixture_with_skips(
+        use_v2: bool,
+        fixture_bytes: &[u8],
+        skip_record_signatures: Vec<String>,
+    ) -> (Result<TranslateStats, RunError>, Vec<String>, usize) {
+        let fixture = write_temp_plugin(fixture_bytes);
+        let source_handle = load_source_handle(fixture.path(), "fnv");
+        let target_handle = fresh_target_handle();
+        let id = create_run(RunParams {
+            source: Game::Fnv,
+            target: Game::Fo4,
+            source_handle_id: source_handle,
+            target_handle_id: target_handle,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "Out.esm".into(),
+                is_whole_plugin: false,
+                records_limit: Some(1),
+                skip_record_signatures,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let result = with_run(id, |run| {
+            if use_v2 {
+                run.translate_all_v2(fixture.path())
+            } else {
+                run.translate_all()
+            }
+        });
+        let (decision_kinds, output_records) = with_run(id, |run| {
+            Ok::<_, RunError>((
+                run.decisions
+                    .iter()
+                    .filter_map(|decision| run.interner.resolve(decision.kind))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+                handle_records(target_handle).len(),
+            ))
+        })
+        .unwrap();
+        drop_run(id).unwrap();
+        plugin_handle_close_native(source_handle);
+        plugin_handle_close_native(target_handle);
+        (result, decision_kinds, output_records)
+    }
+
+    fn run_legacy_pack_preflight_case(
+        use_v2: bool,
+        source_path: &std::path::Path,
+        origins: &[(u32, LegacyPackSourceFamily)],
+        expected: LegacyPackExpectedCounts,
+    ) -> (
+        Result<TranslateStats, RunError>,
+        LegacyPackPreflightReport,
+        Vec<String>,
+        usize,
+    ) {
+        let source_handle = load_source_handle(source_path, "fnv");
+        let source_plugin = parse_plugin_file(
+            &source_path.to_string_lossy(),
+            Some("fnv".to_string()),
+            true,
+        )
+        .unwrap()
+        .plugin_name;
+        let target_handle = fresh_target_handle();
+        assert!(handle_records(target_handle).is_empty());
+        let id = create_run(RunParams {
+            source: Game::Fnv,
+            target: Game::Fo4,
+            source_handle_id: source_handle,
+            target_handle_id: target_handle,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "Out.esm".into(),
+                is_whole_plugin: true,
+                records_limit: Some(0),
+                legacy_pack_origins: explicit_pack_origins(&source_plugin, origins),
+                legacy_pack_expected_counts: Some(expected),
+                legacy_pack_provenance_required: true,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let result = with_run(id, |run| {
+            if use_v2 {
+                run.translate_all_v2(source_path)
+            } else {
+                run.translate_all()
+            }
+        });
+        let (report, events) = with_run(id, |run| {
+            Ok::<_, RunError>((
+                run.legacy_pack_preflight_report
+                    .clone()
+                    .expect("fatal PACK preflight report"),
+                run.event_rx
+                    .try_iter()
+                    .filter_map(|event| match event {
+                        PhaseEvent::Log { message, .. }
+                            if message.starts_with("legacy_pack_preflight:") =>
+                        {
+                            Some(message)
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            ))
+        })
+        .unwrap();
+        let target_record_count = handle_records(target_handle).len();
+        drop_run(id).unwrap();
+        plugin_handle_close_native(source_handle);
+        plugin_handle_close_native(target_handle);
+        (result, report, events, target_record_count)
+    }
+
+    fn record_with_edid<'a>(records: &'a [ParsedRecord], editor_id: &str) -> &'a ParsedRecord {
+        records
+            .iter()
+            .find(|record| {
+                record.subrecords.iter().any(|subrecord| {
+                    subrecord.signature.as_str() == "EDID"
+                        && subrecord.data.strip_suffix(&[0]).unwrap_or(&subrecord.data)
+                            == editor_id.as_bytes()
+                })
+            })
+            .unwrap_or_else(|| panic!("missing target record {editor_id}"))
+    }
+
+    fn subrecord_data<'a>(record: &'a ParsedRecord, signature: &str) -> &'a [u8] {
+        record
+            .subrecords
+            .iter()
+            .find(|subrecord| subrecord.signature.as_str() == signature)
+            .map(|subrecord| subrecord.data.as_ref())
+            .unwrap_or_else(|| panic!("{} missing {signature}", record.signature.as_str()))
+    }
+
+    fn raw_u32(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
     #[test]
     fn v2_target_handle_state_is_byte_identical_to_legacy() {
         let f = write_temp_plugin(&gate_fixture());
@@ -1181,6 +2036,568 @@ mod equivalence_tests {
 
         plugin_handle_close_native(h_old);
         plugin_handle_close_native(h_new);
+    }
+
+    #[test]
+    fn merged_legacy_pack_preflight_blocks_before_mutation_with_legacy_v2_parity() {
+        let (fixture, origins) = merged_legacy_pack_fixture();
+        let fixture = write_temp_plugin(&fixture);
+        let expected = LegacyPackExpectedCounts { fnv: 6, fo3: 5 };
+        let (legacy_result, legacy_report, legacy_events, legacy_target_records) =
+            run_legacy_pack_preflight_case(false, fixture.path(), &origins, expected);
+        let (v2_result, v2_report, v2_events, v2_target_records) =
+            run_legacy_pack_preflight_case(true, fixture.path(), &origins, expected);
+
+        for (result, report) in [(legacy_result, &legacy_report), (v2_result, &v2_report)] {
+            match result {
+                Err(RunError::LegacyPackPreflight(error_report)) => {
+                    assert_eq!(*error_report, *report)
+                }
+                _ => panic!("expected fatal legacy PACK preflight"),
+            }
+        }
+        assert_eq!(legacy_report, v2_report);
+        assert_eq!(legacy_events, v2_events);
+        assert_eq!(legacy_events.len(), 2);
+        assert!(legacy_events[0].starts_with("legacy_pack_preflight:start:"));
+        assert!(legacy_events[1].starts_with("legacy_pack_preflight:blocked:"));
+        assert_eq!(legacy_target_records, 0);
+        assert_eq!(v2_target_records, 0);
+
+        assert_eq!(legacy_report.expected, expected);
+        assert_eq!(legacy_report.observed_pack_records, 11);
+        assert!(legacy_report.exact_expected_coverage);
+        assert_eq!(legacy_report.classified.fnv_records, 6);
+        assert_eq!(legacy_report.classified.fo3_records, 5);
+        assert_eq!(legacy_report.classified.accepted_records, 10);
+        assert_eq!(legacy_report.classified.rejected_records, 1);
+        assert_eq!(legacy_report.blocked_records.len(), 11);
+        assert_eq!(
+            legacy_report
+                .blocker_counts
+                .get("no_verified_fo4_procedure_blueprint"),
+            Some(&10)
+        );
+        assert_eq!(
+            legacy_report
+                .blocker_counts
+                .get("legacy_conditions_require_semantic_lowering"),
+            Some(&1)
+        );
+        assert_eq!(
+            legacy_report
+                .blocker_counts
+                .get("legacy_event_scripts_require_port"),
+            Some(&1)
+        );
+        assert_eq!(
+            legacy_report.blocker_counts.get("malformed_subrecord"),
+            Some(&1)
+        );
+        for type_code in [
+            LegacyPackType::Travel.code(),
+            LegacyPackType::Patrol.code(),
+            LegacyPackType::Follow.code(),
+            LegacyPackType::Sandbox.code(),
+            LegacyPackType::UseWeapon.code(),
+        ] {
+            assert_eq!(legacy_report.classified.by_type.get(&type_code), Some(&2));
+        }
+
+        let fnv_travel = legacy_report
+            .blocked_records
+            .iter()
+            .find(|record| record.editor_id.as_deref() == Some("FNVTravel"))
+            .unwrap();
+        assert_eq!(fnv_travel.source_family, Some(LegacyPackSourceFamily::Fnv));
+        assert_eq!(fnv_travel.source_plugin.as_deref(), Some("FalloutNV.esm"));
+        assert_eq!(
+            fnv_travel.source_form_key.as_deref(),
+            Some("00002000@FalloutNV.esm")
+        );
+        assert_eq!(fnv_travel.package_type, Some(LegacyPackType::Travel));
+        assert!(
+            fnv_travel
+                .blockers
+                .iter()
+                .any(|blocker| blocker == "legacy_conditions_require_semantic_lowering")
+        );
+        let fo3_travel = legacy_report
+            .blocked_records
+            .iter()
+            .find(|record| record.editor_id.as_deref() == Some("FO3Travel"))
+            .unwrap();
+        assert_eq!(fo3_travel.source_family, Some(LegacyPackSourceFamily::Fo3));
+        assert_eq!(fo3_travel.source_plugin.as_deref(), Some("Fallout3.esm"));
+        assert!(
+            fo3_travel
+                .blockers
+                .iter()
+                .any(|blocker| blocker == "legacy_event_scripts_require_port")
+        );
+        let malformed = legacy_report
+            .blocked_records
+            .iter()
+            .find(|record| record.editor_id.as_deref() == Some("FNVMalformed"))
+            .unwrap();
+        assert!(
+            malformed
+                .blockers
+                .iter()
+                .any(|blocker| blocker == "malformed_subrecord")
+        );
+    }
+
+    #[test]
+    fn merged_legacy_pack_preflight_reports_explicit_family_count_drift() {
+        let (fixture, origins) = merged_legacy_pack_fixture();
+        let fixture = write_temp_plugin(&fixture);
+        let (_, report, _, target_records) = run_legacy_pack_preflight_case(
+            true,
+            fixture.path(),
+            &origins,
+            LegacyPackExpectedCounts { fnv: 5, fo3: 5 },
+        );
+
+        assert!(!report.exact_expected_coverage);
+        assert_eq!(report.classified.fnv_records, 6);
+        assert_eq!(report.classified.fo3_records, 5);
+        assert_eq!(
+            report.blocker_counts.get("expected_fnv_count_mismatch"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.blocker_counts.get("expected_total_count_mismatch"),
+            Some(&1)
+        );
+        assert_eq!(target_records, 0);
+    }
+
+    #[test]
+    fn legacy_pack_preflight_is_inactive_for_fo76_partial_and_non_fo4_runs() {
+        for (source, target, is_whole_plugin) in [
+            (Game::Fo76, Game::Fo4, true),
+            (Game::Fnv, Game::Fo4, false),
+            (Game::Fnv, Game::Fo76, true),
+        ] {
+            let source_handle = plugin_handle_new_native(
+                "FNV_FO3_Merged.esm",
+                Some(match source {
+                    Game::Fo76 => "fo76",
+                    Game::Fnv => "fnv",
+                    _ => unreachable!(),
+                }),
+            )
+            .unwrap();
+            let target_handle = plugin_handle_new_native(
+                "Out.esm",
+                Some(if target == Game::Fo4 { "fo4" } else { "fo76" }),
+            )
+            .unwrap();
+            let id = create_run(RunParams {
+                source,
+                target,
+                source_handle_id: source_handle,
+                target_handle_id: target_handle,
+                master_handle_ids: vec![],
+                config: RunConfig {
+                    output_plugin_name: "Out.esm".into(),
+                    is_whole_plugin,
+                    legacy_pack_provenance_required: true,
+                    legacy_pack_expected_counts: Some(LegacyPackExpectedCounts {
+                        fnv: 4_888,
+                        fo3: 4_567,
+                    }),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+
+            with_run(id, |run| {
+                assert!(!run.legacy_pack_gate_active());
+                assert!(
+                    run.begin_legacy_pack_preflight("FNV_FO3_Merged.esm")
+                        .is_none()
+                );
+                assert!(run.legacy_pack_preflight_report.is_none());
+                Ok::<_, RunError>(())
+            })
+            .unwrap();
+            drop_run(id).unwrap();
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+        }
+    }
+
+    #[test]
+    fn legacy_serial_records_are_order_independent_and_paths_match() {
+        let fixture = write_temp_plugin(&legacy_magic_fixture());
+        let (legacy_handle, legacy_stats, legacy_events) =
+            run_legacy_magic_one(false, fixture.path());
+        let (v2_handle, v2_stats, v2_events) = run_legacy_magic_one(true, fixture.path());
+
+        assert_eq!(legacy_stats.records_failed, 0);
+        assert_eq!(v2_stats.records_failed, 0);
+        assert_eq!(legacy_stats.records_translated, 9);
+        assert_eq!(v2_stats.records_translated, 9);
+        assert_handles_equal(legacy_handle, v2_handle);
+        for events in [&legacy_events, &v2_events] {
+            for decision in [
+                "reference:assoc_item:",
+                "reference:casting_light:",
+                "reference:hit_shader:",
+                "PreservedHardcoded",
+                "legacy_serial:ALCH:",
+                "legacy_serial:ENCH:",
+                "legacy_serial:SPEL:",
+                ":perk_summary:",
+                ":perk_reference:",
+                ":wrld_data:",
+            ] {
+                assert!(
+                    events.iter().any(|event| event.contains(decision)),
+                    "missing serial-normalizer event containing {decision}"
+                );
+            }
+        }
+
+        let records = handle_records(v2_handle);
+        let primary = record_with_edid(&records, "ForwardPrimaryEffect");
+        let assoc = record_with_edid(&records, "ForwardAssocEffect");
+        let light = record_with_edid(&records, "ForwardLight");
+        let shader = record_with_edid(&records, "ForwardShader");
+        let data = subrecord_data(primary, "DATA");
+        assert_eq!(data.len(), 152);
+        assert_eq!(raw_u32(data, 8) & 0x00FF_FFFF, assoc.form_id & 0x00FF_FFFF);
+        assert_eq!(raw_u32(data, 24) & 0x00FF_FFFF, light.form_id & 0x00FF_FFFF);
+        assert_eq!(
+            raw_u32(data, 32) & 0x00FF_FFFF,
+            shader.form_id & 0x00FF_FFFF
+        );
+        assert_eq!(
+            raw_u32(data, 36) & 0x00FF_FFFF,
+            shader.form_id & 0x00FF_FFFF
+        );
+        assert_eq!(raw_u32(data, 68), 0xF400_02BC);
+
+        for (editor_id, metadata_sig, metadata_len) in [
+            ("ForwardPotion", "ENIT", 20),
+            ("ForwardEnchant", "ENIT", 36),
+            ("ForwardSpell", "SPIT", 36),
+        ] {
+            let record = record_with_edid(&records, editor_id);
+            assert_eq!(subrecord_data(record, metadata_sig).len(), metadata_len);
+            assert_eq!(
+                record
+                    .subrecords
+                    .iter()
+                    .filter(|subrecord| subrecord.signature.as_str() == "EFID")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                record
+                    .subrecords
+                    .iter()
+                    .filter(|subrecord| subrecord.signature.as_str() == "EFIT")
+                    .count(),
+                1
+            );
+            assert_eq!(subrecord_data(record, "EFIT").len(), 12);
+            assert_eq!(
+                raw_u32(subrecord_data(record, "EFID"), 0) & 0x00FF_FFFF,
+                primary.form_id & 0x00FF_FFFF
+            );
+        }
+
+        let spell = record_with_edid(&records, "ForwardSpell");
+        let perk = record_with_edid(&records, "ForwardPerk");
+        assert_eq!(
+            perk.subrecords
+                .iter()
+                .filter(|subrecord| subrecord.signature.as_str() == "PRKE")
+                .count(),
+            2,
+            "PERK entry conversion must run exactly once"
+        );
+        assert_eq!(
+            perk.subrecords
+                .iter()
+                .filter(|subrecord| subrecord.signature.as_str() == "PRKF")
+                .count(),
+            2
+        );
+        let perk_data = perk
+            .subrecords
+            .iter()
+            .filter(|subrecord| subrecord.signature.as_str() == "DATA")
+            .map(|subrecord| subrecord.data.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            perk_data
+                .iter()
+                .find(|data| data.starts_with(&[100, 3, 1]))
+                .map(|data| data.len()),
+            Some(3),
+            "entry-point PERK DATA must use the three-byte FO4 union variant: {perk_data:?}"
+        );
+        assert!(perk_data.iter().any(|data| {
+            data.len() >= 4 && raw_u32(data, 0) & 0x00FF_FFFF == spell.form_id & 0x00FF_FFFF
+        }));
+        let perk_conditions = perk
+            .subrecords
+            .iter()
+            .filter(|subrecord| subrecord.signature.as_str() == "CTDA")
+            .map(|subrecord| subrecord.data.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(perk_conditions.len(), 2);
+        assert!(
+            perk_conditions
+                .iter()
+                .all(|condition| condition.len() == 32)
+        );
+        assert_eq!(
+            u16::from_le_bytes(perk_conditions[0][8..10].try_into().unwrap()),
+            494
+        );
+        assert_eq!(
+            raw_u32(perk_conditions[1], 12) & 0x00FF_FFFF,
+            spell.form_id & 0x00FF_FFFF
+        );
+        assert_eq!(
+            perk.subrecords
+                .iter()
+                .filter(|subrecord| subrecord.signature.as_str() == "CIS1")
+                .count(),
+            2
+        );
+        assert_eq!(
+            perk.subrecords
+                .iter()
+                .map(|subrecord| subrecord.signature.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "EDID", "CTDA", "CIS1", "DATA", "PRKE", "DATA", "PRKC", "CTDA", "CIS1", "EPFT",
+                "EPFD", "PRKF", "PRKE", "DATA", "PRKF",
+            ]
+        );
+
+        let world = record_with_edid(&records, "WastelandNV");
+        assert_eq!(subrecord_data(world, "DATA"), &[0]);
+        assert!(
+            !world
+                .subrecords
+                .iter()
+                .any(|subrecord| subrecord.signature.as_str() == "INAM")
+        );
+
+        plugin_handle_close_native(legacy_handle);
+        plugin_handle_close_native(v2_handle);
+    }
+
+    #[test]
+    fn unsupported_legacy_creatures_are_fail_closed() {
+        for use_v2 in [false, true] {
+            let (blocked, blocked_decisions, blocked_records) =
+                run_legacy_unsupported_creature(use_v2);
+            let error = blocked.expect_err("creature policy must fail closed");
+            assert!(
+                error.to_string().contains("legacy_creature_race_gate:"),
+                "{error}"
+            );
+            assert!(blocked_decisions.is_empty());
+            assert_eq!(blocked_records, 0);
+        }
+    }
+
+    #[test]
+    fn explicitly_skipped_legacy_creatures_bypass_the_strict_race_gate() {
+        let fixture = legacy_unsupported_creature_fixture();
+        for use_v2 in [false, true] {
+            let (result, decision_kinds, output_records) =
+                run_legacy_single_record_fixture_with_skips(
+                    use_v2,
+                    &fixture,
+                    vec!["CREA".to_string()],
+                );
+            let stats = result.expect("excluded CREA records must not enter the race gate");
+            assert_eq!(stats.records_translated, 0);
+            assert_eq!(stats.records_dropped, 1);
+            assert_eq!(decision_kinds, vec!["skip_records".to_string()]);
+            assert_eq!(output_records, 0);
+        }
+    }
+
+    #[test]
+    fn humanoid_creature_failure_is_identical_in_legacy_and_v2_paths() {
+        let fixture = legacy_humanoid_creature_fixture();
+        for use_v2 in [false, true] {
+            let (blocked, blocked_decisions, blocked_records) =
+                run_legacy_unsupported_creature_fixture(use_v2, &fixture);
+            let error = blocked.expect_err("creature policy must fail closed");
+            let diagnostic = error.to_string();
+            assert!(diagnostic.contains("LegionCreature"), "{diagnostic}");
+            assert!(
+                diagnostic.contains("humanoid_creature_has_no_audited_fo4_race_donor"),
+                "{diagnostic}"
+            );
+            assert!(blocked_decisions.is_empty());
+            assert_eq!(blocked_records, 0);
+        }
+    }
+
+    #[test]
+    fn unused_ingredient_sentinel_drop_is_identical_in_legacy_and_v2_paths() {
+        let fixture = legacy_unused_ingredient_sentinel_fixture();
+        for use_v2 in [false, true] {
+            let (result, decision_kinds, output_records) =
+                run_legacy_single_record_fixture(use_v2, &fixture);
+            let stats = result.expect("unused ingredient sentinel must drop safely");
+            assert_eq!(stats.records_translated, 0);
+            assert_eq!(stats.records_dropped, 1);
+            assert_eq!(output_records, 0);
+            assert_eq!(
+                decision_kinds,
+                vec!["unused_legacy_ingredient_sentinel".to_string()]
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_legacy_wrld_drops_atomically_with_legacy_v2_parity() {
+        let fixture = write_temp_plugin(&legacy_duplicate_wrld_fixture());
+        let (legacy_handle, legacy_stats, legacy_events) =
+            run_legacy_magic_one(false, fixture.path());
+        let (v2_handle, v2_stats, v2_events) = run_legacy_magic_one(true, fixture.path());
+
+        assert_eq!(legacy_stats.records_translated, 0);
+        assert_eq!(v2_stats.records_translated, 0);
+        assert_eq!(legacy_stats.records_dropped, 1);
+        assert_eq!(v2_stats.records_dropped, 1);
+        assert_handles_equal(legacy_handle, v2_handle);
+        assert!(handle_records(legacy_handle).is_empty());
+        for events in [&legacy_events, &v2_events] {
+            assert!(events.iter().any(|event| {
+                event.contains("wrld_drop") && event.contains("DuplicateDataFields")
+            }));
+        }
+
+        plugin_handle_close_native(legacy_handle);
+        plugin_handle_close_native(v2_handle);
+    }
+
+    #[test]
+    fn same_name_legacy_output_uses_disjoint_ids_with_path_parity() {
+        let fixture = write_temp_plugin(&legacy_same_name_identity_collision_fixture());
+        let source_name = parse_plugin_file(
+            &fixture.path().to_string_lossy(),
+            Some("fnv".to_string()),
+            true,
+        )
+        .unwrap()
+        .plugin_name;
+        let (legacy_handle, legacy_stats, _) =
+            run_legacy_magic_with_output(false, fixture.path(), &source_name, true, 0);
+        let (v2_handle, v2_stats, _) =
+            run_legacy_magic_with_output(true, fixture.path(), &source_name, true, 0);
+
+        assert_eq!(legacy_stats.records_translated, 3);
+        assert_eq!(v2_stats.records_translated, 3);
+        assert_eq!(legacy_stats.records_failed, 0);
+        assert_eq!(v2_stats.records_failed, 0);
+        assert_handles_equal(legacy_handle, v2_handle);
+
+        let records = handle_records(v2_handle);
+        let generated = record_with_edid(&records, "LowGeneratedEffect");
+        let preserved = record_with_edid(&records, "PreservedFloorEffect");
+        let potion = record_with_edid(&records, "LowEffectPotion");
+        assert_eq!(preserved.form_id & 0x00FF_FFFF, 0x800);
+        assert_eq!(generated.form_id & 0x00FF_FFFF, 0x901);
+        assert_eq!(
+            raw_u32(subrecord_data(potion, "EFID"), 0) & 0x00FF_FFFF,
+            generated.form_id & 0x00FF_FFFF
+        );
+
+        plugin_handle_close_native(legacy_handle);
+        plugin_handle_close_native(v2_handle);
+    }
+
+    #[test]
+    fn same_name_mapped_climate_is_not_remapped_again_by_late_sweep() {
+        let fixture = write_temp_plugin(&skyrim_same_name_reference_collision_fixture());
+        let source_name = parse_plugin_file(
+            &fixture.path().to_string_lossy(),
+            Some("skyrimse".to_string()),
+            true,
+        )
+        .unwrap()
+        .plugin_name;
+        let source_handle = load_source_handle(fixture.path(), "skyrimse");
+        let target_handle = plugin_handle_new_native(&source_name, Some("fo4")).unwrap();
+        let id = create_run(RunParams {
+            source: Game::SkyrimSe,
+            target: Game::Fo4,
+            source_handle_id: source_handle,
+            target_handle_id: target_handle,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: source_name.clone(),
+                is_whole_plugin: true,
+                preserve_source_ids: false,
+                generated_object_id_floor: SAME_NAME_COLLIDING_PATH_SOURCE_ID,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+
+        let (stats, climate_target, colliding_path_target, unresolved_count) =
+            with_run(id, |run| {
+                let stats = run.translate_all_v2(fixture.path())?;
+                let same_name_plugin = run.interner.intern(&source_name);
+                let climate_source = FormKey {
+                    local: SAME_NAME_CLIMATE_SOURCE_ID,
+                    plugin: same_name_plugin,
+                };
+                let colliding_path_source = FormKey {
+                    local: SAME_NAME_COLLIDING_PATH_SOURCE_ID,
+                    plugin: same_name_plugin,
+                };
+                let mapper_state = run.mapper_state.as_ref().expect("mapper state");
+                let climate_target = mapper_state.source_to_target[&climate_source];
+                let colliding_path_target = mapper_state.source_to_target[&colliding_path_source];
+                run.apply_fixups_v2().map_err(RunError::from)?;
+                Ok::<_, RunError>((
+                    stats,
+                    climate_target,
+                    colliding_path_target,
+                    run.full_plugin_state.unresolved_ref_count(),
+                ))
+            })
+            .unwrap();
+
+        assert_eq!(stats.records_translated, 3);
+        assert_eq!(stats.records_failed, 0);
+        assert_eq!(
+            climate_target.local, SAME_NAME_COLLIDING_PATH_SOURCE_ID,
+            "fixture must make mapper.lookup(A) collide with source B"
+        );
+        assert_ne!(climate_target, colliding_path_target);
+        assert_eq!(unresolved_count, 0);
+
+        let records = handle_records(target_handle);
+        let world = record_with_edid(&records, "SameNameWorld");
+        let climate_ref = raw_u32(subrecord_data(world, "CNAM"), 0) & 0x00FF_FFFF;
+        assert_eq!(climate_ref, climate_target.local);
+        assert_ne!(climate_ref, colliding_path_target.local);
+        let resolved = records
+            .iter()
+            .find(|record| record.form_id & 0x00FF_FFFF == climate_ref)
+            .expect("WRLD CNAM target record");
+        assert_eq!(resolved.signature.as_str(), "CLMT");
+
+        drop_run(id).unwrap();
+        plugin_handle_close_native(source_handle);
+        plugin_handle_close_native(target_handle);
     }
 
     #[test]
@@ -1294,6 +2711,120 @@ mod equivalence_tests {
         assert!(!after_emit.iter().any(|sig| sig == "SMEN"));
         assert!(after_emit.iter().any(|sig| sig == "SMBN"));
         assert!(after_emit.iter().any(|sig| sig == "SMQN"));
+
+        drop_run(id).unwrap();
+        plugin_handle_close_native(source_handle);
+        plugin_handle_close_native(target_handle);
+    }
+
+    #[test]
+    fn story_manager_subset_lowers_incompatible_event_to_isolated_script_branch() {
+        let f = write_temp_plugin(&story_manager_fixture_with_event(b"PCON"));
+        let source_handle = load_source_handle(f.path(), "fo76");
+        let target_handle = fresh_target_handle();
+        plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
+        let id = create_run(RunParams {
+            source: Game::Fo76,
+            target: Game::Fo4,
+            source_handle_id: source_handle,
+            target_handle_id: target_handle,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "Out.esm".into(),
+                target_master_names: vec!["Fallout4.esm".into()],
+                is_whole_plugin: true,
+                preserve_source_ids: false,
+                generated_object_id_floor: 0x800,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+
+        with_run(id, |run| run.translate_all_v2(f.path())).unwrap();
+        let emit_stats = with_run(id, |run| run.emit_story_manager_subset()).unwrap();
+
+        assert_eq!(emit_stats.selected_nodes, 3);
+        assert_eq!(
+            emit_stats.translate.records_translated, 4,
+            "{emit_stats:#?}"
+        );
+        assert_eq!(emit_stats.translate.records_vanilla_remapped, 0);
+        let records = handle_records(target_handle);
+        assert!(!records.iter().any(|record| record.signature == "SMEN"));
+        let keyword = record_with_edid(&records, "B21_SMEvent_PCON");
+        assert_eq!(keyword.signature.as_str(), "KYWD");
+        assert_eq!(keyword.form_id & 0x00FF_FFFF, 0x000200);
+
+        let bridge = record_with_edid(&records, "SyntheticEventRoot");
+        assert_eq!(bridge.signature.as_str(), "SMBN");
+        assert_eq!(
+            raw_u32(subrecord_data(bridge, "PNAM"), 0) & 0x00FF_FFFF,
+            crate::phase::story_manager::FO4_SCRIPT_EVENT_ROOT_LOCAL
+        );
+        let gate = subrecord_data(bridge, "CTDA");
+        assert_eq!(
+            raw_u32(gate, 16) & 0x00FF_FFFF,
+            keyword.form_id & 0x00FF_FFFF
+        );
+        assert_eq!(raw_u32(subrecord_data(bridge, "CITC"), 0), 1);
+
+        let child = record_with_edid(&records, "SyntheticRadioBranch");
+        assert_eq!(
+            raw_u32(subrecord_data(child, "PNAM"), 0) & 0x00FF_FFFF,
+            bridge.form_id & 0x00FF_FFFF
+        );
+
+        drop_run(id).unwrap();
+        plugin_handle_close_native(source_handle);
+        plugin_handle_close_native(target_handle);
+    }
+
+    #[test]
+    fn story_manager_same_name_bridge_parent_survives_fixup_sweep() {
+        let f = write_temp_plugin(&story_manager_fixture_with_event(b"PCON"));
+        let source_handle = load_source_handle(f.path(), "fo76");
+        let output_plugin_name = plugin_name_for_handle(source_handle).unwrap();
+        let target_handle = plugin_handle_new_native(&output_plugin_name, Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
+        let id = create_run(RunParams {
+            source: Game::Fo76,
+            target: Game::Fo4,
+            source_handle_id: source_handle,
+            target_handle_id: target_handle,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name,
+                target_master_names: vec!["Fallout4.esm".into()],
+                is_whole_plugin: true,
+                preserve_source_ids: true,
+                generated_object_id_floor: 0x800,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+
+        with_run(id, |run| run.translate_all_v2(f.path())).unwrap();
+        with_run(id, |run| run.emit_story_manager_subset()).unwrap();
+
+        let records = handle_records(target_handle);
+        let bridge_local = record_with_edid(&records, "SyntheticEventRoot").form_id & 0x00FF_FFFF;
+        let child = record_with_edid(&records, "SyntheticRadioBranch");
+        assert_eq!(
+            raw_u32(subrecord_data(child, "PNAM"), 0) & 0x00FF_FFFF,
+            bridge_local
+        );
+
+        with_run(id, |run| {
+            run.apply_fixups_v2().map_err(crate::run::RunError::from)
+        })
+        .unwrap();
+
+        let records = handle_records(target_handle);
+        let child = record_with_edid(&records, "SyntheticRadioBranch");
+        assert_eq!(
+            raw_u32(subrecord_data(child, "PNAM"), 0) & 0x00FF_FFFF,
+            bridge_local
+        );
 
         drop_run(id).unwrap();
         plugin_handle_close_native(source_handle);

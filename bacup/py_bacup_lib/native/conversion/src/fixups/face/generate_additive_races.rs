@@ -86,6 +86,8 @@ const RACE_EID_NORMALIZE: &[(&str, &str)] = &[
 ];
 
 const SYNTHETIC_ADDITIVE_RACE_PLUGIN: &str = "__fo76_to_fo4_additive_race__";
+const ANIMATION_KEYWORD_OWNER_SIGNATURES: [&str; 6] =
+    ["WEAP", "ARMO", "FURN", "TERM", "ALCH", "NPC_"];
 
 // ---------------------------------------------------------------------------
 // Public fixup struct
@@ -377,7 +379,10 @@ fn collect_source_animation_keyword_uses(
     mapper: &mut FormKeyMapper,
 ) -> Result<Vec<AnimationKeywordUse>, FixupError> {
     let mut by_keyword: FxHashMap<FormKey, String> = FxHashMap::default();
-    for sig_name in ["WEAP", "ARMO"] {
+    // FURN/TERM/ALCH/NPC_ carry `AnimFurn*` keywords (furniture/terminal
+    // interaction subgraphs, inhaler consumables, ghoul-ambush poses); the
+    // Anims/Anim EID-prefix filter below keeps every other keyword out.
+    for sig_name in ANIMATION_KEYWORD_OWNER_SIGNATURES {
         let sig =
             SigCode::from_str(sig_name).map_err(|e| FixupError::SchemaError(e.to_string()))?;
         let fks = match session.source_form_keys_of_sig(sig, mapper.interner) {
@@ -459,7 +464,14 @@ fn collect_omod_formid_property_keywords(
     interner: &StringInterner,
 ) -> Vec<FormKey> {
     let mut out = Vec::new();
+    let data_sig = SubrecordSig(*b"DATA");
     for entry in &record.fields {
+        if entry.sig == data_sig
+            && let FieldValue::Bytes(bytes) = &entry.value
+        {
+            collect_omod_raw_data_property_keywords(bytes, record.form_key.plugin, &mut out);
+            continue;
+        }
         collect_omod_formid_property_keywords_from_value(
             &entry.value,
             record.form_key.plugin,
@@ -468,6 +480,73 @@ fn collect_omod_formid_property_keywords(
         );
     }
     out
+}
+
+/// Extract `Keywords` (property 31) FormID values from a raw OMOD `DATA`
+/// payload. The production decode carries OMOD DATA as opaque bytes, so the
+/// struct walker below never sees property rows for real records. Layout
+/// mirrors `rewrite_omod_data_bytes` (rewrite_raw_object_template_formids.rs):
+/// 20-byte header (include_count u32 @0, property_count u32 @4), attach-parent
+/// slot count u32 @20 + 4-byte slots, one 4-byte item row, 7-byte include
+/// rows, then 24-byte property rows (value_type u8 @0, property u16 @8,
+/// Value1 u32 @12). Value1 is a FormID only for value_type 4/6; only
+/// source-local ids (master byte 0) are keyword candidates.
+fn collect_omod_raw_data_property_keywords(
+    bytes: &[u8],
+    owner_plugin: Sym,
+    out: &mut Vec<FormKey>,
+) {
+    const HEADER_LEN: usize = 20;
+    const ATTACH_PARENT_SLOT_COUNT_LEN: usize = 4;
+    const ITEM_ROW_LEN: usize = 4;
+    const INCLUDE_ROW_LEN: usize = 7;
+    const PROPERTY_ROW_LEN: usize = 24;
+    const KEYWORDS_PROPERTY: u16 = 31;
+
+    if bytes.len() < HEADER_LEN + ATTACH_PARENT_SLOT_COUNT_LEN {
+        return;
+    }
+    let include_count = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    let property_count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let attach_parent_slot_count =
+        u32::from_le_bytes(bytes[HEADER_LEN..HEADER_LEN + 4].try_into().unwrap()) as usize;
+    let attach_parent_slots_start = HEADER_LEN + ATTACH_PARENT_SLOT_COUNT_LEN;
+    let Some(properties_start) = attach_parent_slot_count
+        .checked_mul(4)
+        .and_then(|len| attach_parent_slots_start.checked_add(len))
+        .and_then(|pos| pos.checked_add(ITEM_ROW_LEN))
+        .and_then(|pos| {
+            include_count
+                .checked_mul(INCLUDE_ROW_LEN)
+                .and_then(|len| pos.checked_add(len))
+        })
+    else {
+        return;
+    };
+    let Some(properties_end) = property_count
+        .checked_mul(PROPERTY_ROW_LEN)
+        .and_then(|len| properties_start.checked_add(len))
+    else {
+        return;
+    };
+    if properties_end > bytes.len() {
+        return;
+    }
+    for index in 0..property_count {
+        let row = &bytes[properties_start + index * PROPERTY_ROW_LEN..][..PROPERTY_ROW_LEN];
+        let value_type = row[0];
+        let property = u16::from_le_bytes([row[8], row[9]]);
+        if property != KEYWORDS_PROPERTY || !matches!(value_type, 4 | 6) {
+            continue;
+        }
+        let raw = u32::from_le_bytes([row[12], row[13], row[14], row[15]]);
+        if raw != 0 && raw >> 24 == 0 {
+            out.push(FormKey {
+                local: raw,
+                plugin: owner_plugin,
+            });
+        }
+    }
 }
 
 fn collect_omod_formid_property_keywords_from_value(
@@ -1099,6 +1178,25 @@ mod tests {
     }
 
     #[test]
+    fn furniture_workbench_animation_keywords_are_collected_for_additive_races() {
+        assert!(ANIMATION_KEYWORD_OWNER_SIGNATURES.contains(&"FURN"));
+        assert_eq!(
+            derive_weapon_name_from_animation_keyword(
+                "AnimFurnWorkbenchTinkersA",
+                "WorkbenchTinkersA"
+            ),
+            Some("FurnWorkbenchTinkersA".to_string())
+        );
+        assert_eq!(
+            derive_weapon_name_from_animation_keyword(
+                "AnimFurnWorkbenchBrewing",
+                "WorkbenchBrewing"
+            ),
+            Some("FurnWorkbenchBrewing".to_string())
+        );
+    }
+
+    #[test]
     fn omod_formid_keyword_properties_supply_animation_keywords() {
         let interner = StringInterner::new();
         let plugin = interner.intern("SeventySix.esm");
@@ -1132,6 +1230,58 @@ mod tests {
             collect_omod_formid_property_keywords(&record, &interner),
             vec![FormKey {
                 local: 0x85780d,
+                plugin,
+            }]
+        );
+    }
+
+    /// The production fo76 decode carries OMOD DATA as opaque bytes (the
+    /// typed-Struct shape above never occurs on real records); keyword
+    /// properties must be extracted from the raw 24-byte property rows.
+    /// Mirrors mod_Nitro_Grip_Base (8445E2): a non-keyword property-73 row
+    /// ahead of the AnimsGripNitroPistol keyword row.
+    #[test]
+    fn omod_raw_data_bytes_supply_animation_keywords() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+
+        fn property_row(value_type: u8, property: u16, value1: u32) -> Vec<u8> {
+            let mut row = vec![0u8; 24];
+            row[0] = value_type;
+            row[8..10].copy_from_slice(&property.to_le_bytes());
+            row[12..16].copy_from_slice(&value1.to_le_bytes());
+            row
+        }
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // include_count
+        data.extend_from_slice(&4u32.to_le_bytes()); // property_count
+        data.extend_from_slice(&[0u8; 8]); // format/flags
+        data.extend_from_slice(&0x02249Fu32.to_le_bytes()); // attach point
+        data.extend_from_slice(&1u32.to_le_bytes()); // attach parent slot count
+        data.extend_from_slice(&0x03477Eu32.to_le_bytes()); // slot
+        data.extend_from_slice(&[0u8; 4]); // item row
+        data.extend(property_row(4, 73, 0x04334D)); // non-keyword FormID property
+        data.extend(property_row(4, 31, 0x85780D)); // AnimsGripNitroPistol
+        data.extend(property_row(1, 31, 0x123456)); // keyword property, Int value
+        data.extend(property_row(4, 31, 0x0685780C)); // non-source master byte
+
+        let mut record = Record::new(
+            SigCode::from_str("OMOD").unwrap(),
+            FormKey {
+                local: 0x8445e2,
+                plugin,
+            },
+        );
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("DATA").unwrap(),
+            value: FieldValue::Bytes(data.into_iter().collect()),
+        });
+
+        assert_eq!(
+            collect_omod_formid_property_keywords(&record, &interner),
+            vec![FormKey {
+                local: 0x85780D,
                 plugin,
             }]
         );

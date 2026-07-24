@@ -44,7 +44,8 @@ mod tests {
     use esp_authoring_core::plugin_runtime::{
         ParsedGroup, ParsedItem, ParsedRecord, ParsedSubrecord, clone_plugin_handle_state_no_py,
         ensure_interior_cell_and_child_group, insert_placed_child_into_cell_group,
-        plugin_handle_new_native, plugin_handle_replace_authoring_record_value,
+        plugin_handle_add_master_native, plugin_handle_new_native,
+        plugin_handle_replace_authoring_record_value,
     };
     use smol_str::SmolStr;
     use std::sync::atomic::AtomicBool;
@@ -348,6 +349,69 @@ mod tests {
             interior_block_contains(&plugin.root_items, 0, 9, 0x275EDE),
             "cell lands in interior block 0 / subblock 9"
         );
+        drop_run(run_id).unwrap();
+    }
+
+    #[test]
+    fn target_master_cell_collision_stays_source_owned_with_children() {
+        const CELL_ID: u32 = 0x0008_C08C;
+        const CHILD_ID: u32 = 0x002F_749F;
+
+        let source = new_fo76_source();
+        let target = new_fo4_target();
+        let master =
+            plugin_handle_new_native("Fallout4.esm", Some("fo4")).expect("Fallout4 master handle");
+        ensure_interior_cell_and_child_group(source, interior_cell_record(CELL_ID, "COPY0274"))
+            .expect("source interior cell");
+        insert_placed_child_into_cell_group(
+            source,
+            CELL_ID,
+            TEMPORARY_GROUP,
+            refr_record(CHILD_ID, 0x0001_0000),
+        )
+        .expect("source child");
+        ensure_interior_cell_and_child_group(master, interior_cell_record(CELL_ID, "COPY0274"))
+            .expect("master interior cell");
+        plugin_handle_add_master_native(target, "Fallout4.esm", None).expect("target master");
+
+        let run_id = create_run(RunParams {
+            source: Game::Fo76,
+            target: Game::Fo4,
+            source_handle_id: source,
+            target_handle_id: target,
+            master_handle_ids: vec![master],
+            config: RunConfig {
+                output_plugin_name: "SeventySix.esm".into(),
+                target_master_names: vec!["Fallout4.esm".into()],
+                is_whole_plugin: true,
+                use_base_game_assets: true,
+                preserve_source_ids: true,
+                ..RunConfig::default()
+            },
+        })
+        .expect("conversion run");
+
+        let stats =
+            with_run(run_id, |run| run.emit_interior_cells(false)).expect("emit interior cells");
+        let (plugin, _) = clone_plugin_handle_state_no_py(target).expect("target snapshot");
+        let cell = find_record(&plugin.root_items, "CELL", CELL_ID).expect("converted cell");
+        let editor_id = cell
+            .subrecords
+            .iter()
+            .find(|subrecord| subrecord.signature.as_str() == "EDID")
+            .expect("converted cell EDID");
+
+        assert_eq!(
+            cell.form_id >> 24,
+            1,
+            "CELL must be owned by SeventySix.esm"
+        );
+        assert_eq!(editor_id.data.as_ref(), b"COPY0274fo76\0");
+        let child = cell_section_record(&plugin.root_items, CELL_ID, TEMPORARY_GROUP, CHILD_ID)
+            .expect("converted child");
+        assert_eq!(child.form_id >> 24, 1, "child must remain source-owned");
+        assert_eq!(stats.records_translated, 2);
+
         drop_run(run_id).unwrap();
     }
 

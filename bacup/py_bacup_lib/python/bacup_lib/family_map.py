@@ -3,8 +3,22 @@ from dataclasses import dataclass
 
 from bacup_lib.models import PhaseSelection
 
+# Experimental precombine gate (see models.PhaseSelection.generate_precombines).
+# While the PhaseSelection default is False the phase is wired but DORMANT: it is
+# neither a Meshes feeder nor force-enabled on upgrade, so `resolve_upgrade_plan`
+# leaves it off in every family set unless a caller sets the flag explicitly.
+# Flipping the default to True flips this constant, which in turn makes it a
+# Meshes feeder (Bucket A) AND restamp-always in `_phases_off()` (Bucket B,
+# mirroring `regenerate_modt`) — the correct end state with no other edits.
+_PRECOMBINES_ENABLED = PhaseSelection.generate_precombines
+
 FAMILY_FEEDERS: dict[str, tuple[str, ...]] = {
-    "Meshes":     ("convert_nifs", "convert_npc_faces", "generate_anim_text_data"),
+    "NIFs":       ("convert_nifs",),
+    "Havok":      ("convert_havok", "synthesize_drivers", "generate_anim_text_data"),
+    "Meshes": (
+        ("convert_nifs", "convert_npc_faces", "generate_anim_text_data")
+        + (("generate_precombines",) if _PRECOMBINES_ENABLED else ())
+    ),
     "Materials":  ("convert_materials",),
     "Textures":   ("convert_textures", "convert_npc_faces"),
     "Terrain":    ("convert_terrain",),
@@ -18,6 +32,8 @@ FAMILY_FEEDERS: dict[str, tuple[str, ...]] = {
 # Meshes into Meshes/MeshesExtra and renames Scripts' archive to Misc
 # (mod_pack.rs family_label_aliases; verified against the deployed shard names).
 FAMILY_BA2_LABEL: dict[str, tuple[str, ...]] = {
+    "NIFs":       ("Meshes", "MeshesExtra"),
+    "Havok":      ("Animations",),
     "Meshes":     ("Meshes", "MeshesExtra"),
     "Materials":  ("Materials",),
     "Textures":   ("Textures",),
@@ -51,6 +67,12 @@ def _phases_off() -> PhaseSelection:
     ps.translate_records = True
     ps.convert_placed_records = True
     ps.regenerate_modt = True     # Bucket B: ESM-record mutation (MODT), always re-populated on the rebuilt ESM
+    if _PRECOMBINES_ENABLED:
+        # Bucket B when the gate is lifted: the rebuilt ESM drops CELL/REFR
+        # precombine stamps, so restamp always runs — exactly like regenerate_modt.
+        # Runs before rebuild_cell_offsets so CELL sizes are final before OFST/CLSZ rebuild.
+        ps.generate_precombines = True
+    ps.rebuild_cell_offsets = True  # Bucket B: OFST/CLSZ encode file layout; always rebuilt on the rebuilt ESM (must stay last)
     return ps
 
 

@@ -30,12 +30,28 @@ use crate::sym::{StringInterner, Sym};
 /// substituting Character animation paths with PA equivalents.
 ///
 /// Only blocks containing at least one PA-relevant path are emitted.
+/// `RACE.SRAF.role` value for furniture blocks (SRAF = role u16, perspective
+/// u16). Furniture subgraphs have no PowerArmor equivalent — the engine exits
+/// PA for furniture — so they must not be derived onto the PA carrier.
+const SRAF_ROLE_FURNITURE: u16 = 2;
+
+fn is_furniture_role(block: &SubgraphBlock) -> bool {
+    block
+        .flags_bytes
+        .as_ref()
+        .and_then(|bytes| bytes.get(0..2))
+        .is_some_and(|role| u16::from_le_bytes([role[0], role[1]]) == SRAF_ROLE_FURNITURE)
+}
+
 pub fn derive_pa_subgraph_blocks(
     human_blocks: &[SubgraphBlock],
     interner: &StringInterner,
 ) -> Vec<SubgraphBlock> {
     let mut out: Vec<SubgraphBlock> = Vec::new();
     for block in human_blocks {
+        if is_furniture_role(block) {
+            continue;
+        }
         let mut new_paths: Vec<Sym> = Vec::with_capacity(block.paths.len());
         let mut has_specific = false;
         let heavy_weapon_block = block
@@ -404,5 +420,46 @@ mod tests {
     fn empty_input_returns_empty() {
         let mut interner = StringInterner::new();
         assert!(derive_pa_subgraph_blocks(&[], &mut interner).is_empty());
+    }
+
+    /// a Furniture-role (SRAF role=2) block is never derived onto the PA
+    /// carrier, even when a 1st-person path would otherwise qualify it.
+    #[test]
+    fn skips_furniture_role_blocks() {
+        let mut interner = StringInterner::new();
+        let block = SubgraphBlock {
+            behaviour_graph: sym(
+                "Actors\\Character\\_1stPerson\\Behaviors\\1stPFurnitureIdleBehavior.hkx",
+                &mut interner,
+            ),
+            paths: vec![sym(
+                "Actors\\Character\\_1stPerson\\animations\\Furniture\\Inhaler",
+                &mut interner,
+            )],
+            subgraph_keywords: vec![],
+            target_keywords: vec![],
+            // SRAF: role=2 (Furniture), perspective=1 (1st).
+            flags_bytes: Some(smallvec::smallvec![2u8, 0, 1, 0]),
+        };
+        let weapon_block = SubgraphBlock {
+            behaviour_graph: sym(
+                "Actors\\Character\\_1stPerson\\Behaviors\\GunBehavior.hkx",
+                &mut interner,
+            ),
+            paths: vec![sym(
+                "Actors\\Character\\_1stPerson\\animations\\MyGun",
+                &mut interner,
+            )],
+            subgraph_keywords: vec![],
+            target_keywords: vec![],
+            // SRAF: role=1 (Weapon), perspective=1 (1st).
+            flags_bytes: Some(smallvec::smallvec![1u8, 0, 1, 0]),
+        };
+        let out = derive_pa_subgraph_blocks(&[block, weapon_block], &mut interner);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            interner.resolve(out[0].behaviour_graph).unwrap(),
+            "Actors\\Character\\_1stPerson\\Behaviors\\GunBehavior.hkx"
+        );
     }
 }

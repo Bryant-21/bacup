@@ -475,13 +475,13 @@ fn synthesize_record_with_visible_components(
     let ref_visible = source_hints.ref_visible_distant.contains(&record_object_id);
     let is_tree = record.signature.as_str() == "TREE";
     let is_scol = record.signature.as_str() == "SCOL";
-    let tree_uses_fo76_policy = is_tree && source_game != Game::SkyrimSe;
+    let tree_uses_tree_policy = is_tree;
     let can_emit_lod = !source_hints.has_source
-        || tree_uses_fo76_policy
+        || tree_uses_tree_policy
         || base_visible
         || ref_visible
         || visible_scol_components.contains(&record_object_id);
-    let can_set_base_flag = !source_hints.has_source || tree_uses_fo76_policy || base_visible;
+    let can_set_base_flag = !source_hints.has_source || tree_uses_tree_policy || base_visible;
 
     if record_has_non_empty_mnam(record) {
         if record_has_generated_proxy_mnam(record) {
@@ -626,16 +626,16 @@ fn collect_virtual_lod_base(
     let ref_visible = source_hints.ref_visible_distant.contains(&object_id);
     let is_tree = record.signature.as_str() == "TREE";
     let is_scol = record.signature.as_str() == "SCOL";
-    let tree_uses_fo76_policy = is_tree && source_game != Game::SkyrimSe;
+    let tree_uses_tree_policy = is_tree;
     let can_emit_lod = !source_hints.has_source
-        || tree_uses_fo76_policy
+        || tree_uses_tree_policy
         || base_visible
         || ref_visible
         || visible_scol_components.contains(&object_id);
     if !can_emit_lod {
         return;
     }
-    let force_base_visible = !source_hints.has_source || tree_uses_fo76_policy || base_visible;
+    let force_base_visible = !source_hints.has_source || tree_uses_tree_policy || base_visible;
     let key = (record.signature.to_string(), object_id);
     if let Some(slots) = source_hints.mnams.get(&key) {
         ready.push(GeneratedProxyMnam {
@@ -2732,7 +2732,7 @@ mod tests {
     }
 
     #[test]
-    fn unflagged_skyrim_tree_does_not_generate_object_lod_proxy() {
+    fn unflagged_skyrim_tree_generates_object_lod_proxy() {
         let tmp = tempfile::tempdir().unwrap();
         let model = r"Landscape\Trees\TreePineForest01.nif";
         let form_id = 0x0001_3000;
@@ -2751,7 +2751,10 @@ mod tests {
         );
 
         assert!(!changed);
-        assert!(pending.is_empty());
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].signature, "TREE");
+        assert_eq!(pending[0].form_id, form_id);
+        assert!(pending[0].set_base_flag);
     }
 
     fn write_mnam_source_file(source_dir: &Path, mnam: &str) {

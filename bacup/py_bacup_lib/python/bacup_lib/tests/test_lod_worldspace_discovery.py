@@ -84,6 +84,36 @@ def test_explicit_lod_worldspaces_override_discovery():
     assert uses_fo76_bto is False
 
 
+def test_pair_profile_selects_tamriel_without_discovering_every_worldspace():
+    settings = _fo76_settings()
+    settings["_pair_id"] = "skyrimse:fo4"
+    settings["global"]["worldspaces"] = ["Tamriel"]
+    settings["global"]["stride"] = None
+    settings["global"]["southwest_cell"] = None
+    settings["global"]["bounds"] = None
+    settings["grass"] = {
+        "enabled": True,
+        "spacings": [768.0, 1536.0, 3072.0, 0.0],
+        "min_alpha": 0.25,
+    }
+
+    prepared = regen_pipeline._prepare_lod_generation_settings(
+        RegenOptions(lod_mode="generate"),
+        settings,
+        None,
+        8,
+        pair_id="skyrimse:fo4",
+    )
+
+    assert prepared is not None
+    worldspaces, prepared_settings, uses_fo76_bto, discover = prepared
+    assert worldspaces == ["Tamriel"]
+    assert prepared_settings["global"]["worldspaces"] == ["Tamriel"]
+    assert prepared_settings["grass"]["enabled"] is True
+    assert uses_fo76_bto is False
+    assert discover is False
+
+
 def test_discovery_expands_all_eligible_worldspaces(monkeypatch, tmp_path):
     plugin = tmp_path / "Skyrim_Merged.esm"
     logs = []

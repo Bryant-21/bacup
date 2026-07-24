@@ -1,4 +1,4 @@
-current: alpha2
+current: alpha3
 versions:
   - id: alpha1
     families_by_conversion:
@@ -45,3 +45,37 @@ versions:
         - Added to ui
       "fnvfo3:fo4":
         - Added to ui
+  - id: alpha3
+    families_by_conversion:
+      "fo76:fo4": [NIFs, Havok, Scripts, Textures, Materials]
+      "fnvfo3:fo4": [NONE]
+      "skyrimse:fo4": [NONE]
+    notes_by_conversion:
+      "fo76:fo4":
+        - Added error logging to the converter
+        - Added a better free space checker
+        - Added the ability to remove fo76 files we dont need (tome, enlightend)
+        - Fixed empty containers
+        - Cell Offsets Generated
+        - Missing Large Refs Re-Added
+        - Fixed Missing Own Emit flags (this missing caused a 10 fps drop for some reason)
+        - Tons of collisions fixes
+        - Please, no more collision fixes
+        - Missing Texture fixes
+        - No more flying skeletons
+        - Beavers should no longer crash the game when killed
+        - 1000+ objects added to the workshop
+        - Weapons should no longer have negative range
+        - Weapons should no longer have 0 damage, we read the CURV tables now
+        - Creatures also now read the curve table, you can no longer kill the queen being level 1 sorry
+        - More texture conversion speed changes, even faster
+        - Some BA2 packing changes, hopefully faster
+        - Added missing furniture subgraphs
+        - Dom Pedro
+        - Z-Fighting Fixes
+        - Workshops can be captured, built in (but not scrapped yet, future fix)
+        - Dialogue Trees Converted, XDI required
+        - More texture fixes
+        - Quests Enabled
+        - StoryManager Enabled, Nodes Converted
+        - Tons of other changes I am not gonna even list here. You gotta go talk to people ;)

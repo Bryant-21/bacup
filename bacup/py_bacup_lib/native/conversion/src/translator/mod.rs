@@ -20,6 +20,7 @@ pub mod target_hooks;
 pub mod transforms;
 
 use super::errors::ConfigError;
+use super::formkey_mapper::FormKeyMapper;
 use super::ids::SubrecordSig;
 use super::record::Record;
 use super::sym::{StringInterner, Sym};
@@ -91,7 +92,7 @@ impl Game {
 }
 
 /// A deferred-translation reason — records that need a separate pipeline pass.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeferredKind {
     /// FNV legacy Papyrus scripting requires a separate script-port pass.
     FnvLegacyScripting,
@@ -178,6 +179,28 @@ impl Translator {
         self.target_hook.run(ctx, record)
     }
 
+    pub(crate) fn normalize_serial_mapper_record_once(
+        &self,
+        source_fk: crate::ids::FormKey,
+        record: &mut Record,
+        mapper: &mut FormKeyMapper<'_>,
+        state: &mut pair_hooks::fnv_fo4::LegacySerialNormalizationState,
+    ) -> Option<
+        Result<
+            pair_hooks::fnv_fo4::LegacySerialNormalizeReport,
+            pair_hooks::fnv_fo4::LegacySerialDiagnostic,
+        >,
+    > {
+        pair_hooks::fnv_fo4::normalize_legacy_serial_record_once(
+            self.source,
+            self.target,
+            source_fk,
+            record,
+            mapper,
+            state,
+        )
+    }
+
     /// Translate one record.
     ///
     /// Applies map-driven field rewrites and named transforms. Returns:
@@ -209,6 +232,23 @@ impl Translator {
     ) -> TranslateResult {
         let sig = record.sig.as_str();
 
+        if self.source == Game::Fnv
+            && self.target == Game::Fo4
+            && pair_hooks::fnv_fo4::FnvFo4Hook::is_unused_ingredient_sentinel(record, interner)
+        {
+            let kind = interner.intern("unused_legacy_ingredient_sentinel");
+            return TranslateResult::Dropped {
+                reason: kind,
+                decision: Decision {
+                    kind,
+                    message: format!(
+                        "INGR {:06X} dropped: source placeholder is not a creatable ingredient",
+                        record.form_key.local
+                    ),
+                },
+            };
+        }
+
         // Skip list.
         if ignored_signature != Some(sig) && self.maps.skip_records.contains(sig) {
             let kind = interner.intern("skip_records");
@@ -223,12 +263,20 @@ impl Translator {
         }
 
         let mut out = record.clone();
+        if matches!(self.source, Game::Fnv | Game::Fo3) && self.target == Game::Fo4 && sig == "CREA"
+        {
+            out.sig = super::ids::SigCode(*b"NPC_");
+        }
 
         // Look up the per-sig record map.
         let map = match self.maps.record_map(sig) {
             Some(m) => m,
             None => return TranslateResult::Translated(out),
         };
+
+        if let Some(delegate) = map.delegate {
+            return TranslateResult::Deferred(delegate);
+        }
 
         // Apply target sig override.
         if let Some(ref tgt_sig) = map.target_sig {
@@ -379,6 +427,95 @@ mod tests {
                 assert_eq!(t.eid, record.eid);
             }
             _ => panic!("expected Translated"),
+        }
+    }
+
+    #[test]
+    fn fnv_legacy_scripting_records_are_deferred() {
+        let interner = StringInterner::new();
+        let translator = Translator::new(Game::Fnv, Game::Fo4).unwrap();
+        for (index, signature) in ["SCPT", "QUST", "DIAL", "INFO", "SCEN"]
+            .into_iter()
+            .enumerate()
+        {
+            let fk =
+                FormKey::parse(&format!("{:06X}@FalloutNV.esm", 0x800 + index), &interner).unwrap();
+            let record = Record::new(SigCode::from_str(signature).unwrap(), fk);
+            assert!(matches!(
+                translator.translate(&record, &interner),
+                TranslateResult::Deferred(DeferredKind::FnvLegacyScripting)
+            ));
+        }
+    }
+
+    #[test]
+    fn fnv_unused_ingredient_sentinel_drops_only_the_exact_source_placeholder() {
+        let interner = StringInterner::new();
+        let translator = Translator::new(Game::Fnv, Game::Fo4).unwrap();
+        let plugin = interner.intern("FalloutNV.esm");
+        let sentinel_editor_id =
+            interner.intern("DoNotCreateNewIngredientsWeArentUsingThemInFallout");
+
+        let mut sentinel = Record::new(
+            SigCode::from_str("INGR").unwrap(),
+            FormKey {
+                local: 0x03_135B,
+                plugin,
+            },
+        );
+        sentinel.eid = Some(sentinel_editor_id);
+        let dropped = translator.translate(&sentinel, &interner);
+        let TranslateResult::Dropped { decision, .. } = dropped else {
+            panic!("expected the exact FNV ingredient sentinel to be dropped");
+        };
+        assert_eq!(
+            interner.resolve(decision.kind),
+            Some("unused_legacy_ingredient_sentinel")
+        );
+
+        let mut different_local = sentinel.clone();
+        different_local.form_key.local += 1;
+        assert!(matches!(
+            translator.translate(&different_local, &interner),
+            TranslateResult::Translated(_)
+        ));
+
+        let mut different_editor_id = sentinel.clone();
+        different_editor_id.eid = Some(interner.intern("UsableIngredient"));
+        assert!(matches!(
+            translator.translate(&different_editor_id, &interner),
+            TranslateResult::Translated(_)
+        ));
+
+        let fo3_translator = Translator::new(Game::Fo3, Game::Fo4).unwrap();
+        assert!(matches!(
+            fo3_translator.translate(&sentinel, &interner),
+            TranslateResult::Translated(_)
+        ));
+    }
+
+    #[test]
+    fn repaired_legacy_maps_preserve_weapon_idle_and_misc_payload_signatures() {
+        for (source, plugin, record_signature, field_signature) in [
+            (Game::Fnv, "FalloutNV.esm", "WEAP", "DATA"),
+            (Game::Fnv, "FalloutNV.esm", "IDLE", "DATA"),
+            (Game::Fo3, "Fallout3.esm", "MISC", "FULL"),
+        ] {
+            let interner = StringInterner::new();
+            let translator = Translator::new(source, Game::Fo4).unwrap();
+            let fk = FormKey::parse(&format!("000800@{plugin}"), &interner).unwrap();
+            let mut record = Record::new(SigCode::from_str(record_signature).unwrap(), fk);
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str(field_signature).unwrap(),
+                value: FieldValue::Bytes(SmallVec::from_slice(&[1, 2, 3, 4])),
+            });
+
+            let translated = match translator.translate(&record, &interner) {
+                TranslateResult::Translated(record) => record,
+                other => panic!("expected translated {record_signature}, got {other:?}"),
+            };
+            assert_eq!(translated.fields.len(), 1);
+            assert_eq!(translated.fields[0].sig.as_str(), field_signature);
         }
     }
 
@@ -962,6 +1099,115 @@ mod tests {
     }
 
     #[test]
+    fn fo76_vending_machine_facts_get_fo4_barter_rules() {
+        let mut interner = StringInterner::new();
+        let translator = Translator::new(Game::Fo76, Game::Fo4).unwrap();
+        let legacy_venv: [u8; 12] = [0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+        for (form_key, merchant_container_key) in [
+            ("175087@SeventySix.esm", "4E0FE7@SeventySix.esm"),
+            ("1750A5@SeventySix.esm", "4E0FE6@SeventySix.esm"),
+        ] {
+            let fk = FormKey::parse(form_key, &mut interner).unwrap();
+            let merchant_container_fk =
+                FormKey::parse(merchant_container_key, &mut interner).unwrap();
+            let mut record = Record::new(SigCode::from_str("FACT").unwrap(), fk);
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("VENC").unwrap(),
+                value: FieldValue::FormKey(merchant_container_fk),
+            });
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("VENV").unwrap(),
+                value: FieldValue::Bytes(SmallVec::from_slice(&legacy_venv)),
+            });
+
+            let mut translated = match translator.translate(&record, &mut interner) {
+                TranslateResult::Translated(record) => record,
+                other => panic!("expected translated FACT, got {other:?}"),
+            };
+            translator
+                .post_translate(
+                    &mut crate::translator::pair_hook::PairCtx {
+                        interner: &interner,
+                    },
+                    &mut translated,
+                )
+                .unwrap();
+
+            let venv = translated
+                .fields
+                .iter()
+                .find(|f| f.sig.as_str() == "VENV")
+                .expect("legacy FO76 VENV must survive FACT translation");
+            let FieldValue::Bytes(bytes) = &venv.value else {
+                panic!("VENV must remain raw FO4-layout bytes");
+            };
+            assert_eq!(
+                bytes.as_slice(),
+                &[0, 0, 24, 0, 0xF4, 0x01, 0, 0, 1, 1, 1, 0]
+            );
+
+            let plvd = translated
+                .fields
+                .iter()
+                .find(|f| f.sig.as_str() == "PLVD")
+                .expect("vending-machine FACT must use a NearSelf vendor location");
+            let FieldValue::Bytes(bytes) = &plvd.value else {
+                panic!("PLVD must use raw FO4 location bytes");
+            };
+            assert_eq!(
+                bytes.as_slice(),
+                &[12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            );
+            assert_eq!(
+                translated
+                    .fields
+                    .iter()
+                    .find(|field| field.sig.as_str() == "VENC")
+                    .map(|field| &field.value),
+                Some(&FieldValue::FormKey(merchant_container_fk))
+            );
+        }
+    }
+
+    #[test]
+    fn fo76_other_legacy_vendor_fact_is_not_rewritten_as_a_vending_machine() {
+        let mut interner = StringInterner::new();
+        let translator = Translator::new(Game::Fo76, Game::Fo4).unwrap();
+        let fk = FormKey::parse("175086@SeventySix.esm", &mut interner).unwrap();
+        let mut record = Record::new(SigCode::from_str("FACT").unwrap(), fk);
+        let legacy_venv: [u8; 12] = [0, 0, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("VENV").unwrap(),
+            value: FieldValue::Bytes(SmallVec::from_slice(&legacy_venv)),
+        });
+
+        translator
+            .post_translate(
+                &mut crate::translator::pair_hook::PairCtx {
+                    interner: &interner,
+                },
+                &mut record,
+            )
+            .unwrap();
+
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .find(|field| field.sig.as_str() == "VENV")
+                .map(|field| &field.value),
+            Some(&FieldValue::Bytes(SmallVec::from_slice(&legacy_venv)))
+        );
+        assert!(
+            record
+                .fields
+                .iter()
+                .all(|field| field.sig.as_str() != "PLVD")
+        );
+    }
+
+    #[test]
     fn fo76_cobj_dnam_is_renamed_and_relaid_to_fo4_intv() {
         // FO4 COBJ carries the crafting "created object count" in INTV; the FO76
         // source carries it (plus a UI sort priority) in DNAM under a different
@@ -1032,6 +1278,26 @@ mod tests {
     #[test]
     fn translator_loads_fo3_to_fo4() {
         Translator::new(Game::Fo3, Game::Fo4).expect("fo3→fo4 should load");
+    }
+
+    #[test]
+    fn legacy_crea_always_targets_fo4_npc_for_fnv_and_fo3() {
+        let interner = StringInterner::new();
+        for (source, plugin) in [(Game::Fnv, "FalloutNV.esm"), (Game::Fo3, "Fallout3.esm")] {
+            let translator = Translator::new(source, Game::Fo4).unwrap();
+            let record = Record::new(
+                SigCode(*b"CREA"),
+                FormKey {
+                    local: 0x800,
+                    plugin: interner.intern(plugin),
+                },
+            );
+            let TranslateResult::Translated(translated) = translator.translate(&record, &interner)
+            else {
+                panic!("legacy CREA must translate");
+            };
+            assert_eq!(translated.sig.as_str(), "NPC_");
+        }
     }
 
     #[test]

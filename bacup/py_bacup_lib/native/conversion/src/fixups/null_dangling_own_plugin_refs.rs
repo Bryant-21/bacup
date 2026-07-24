@@ -63,6 +63,9 @@ use crate::record::{FieldValue, Record};
 use crate::session::PluginSession;
 use crate::sym::StringInterner;
 
+const FO4_MASTER_NAME: &str = "Fallout4.esm";
+const FO4_PLAYER_REF_FORM_ID: u32 = 0x000014;
+
 /// `(record sig, subrecord sig)` whose FormKey leaves are checked. Each subrecord
 /// here decodes to a typed `FieldValue::FormKey` (codec `formid`) or, for
 /// LCEP/LCUN/ACEP, a `List<Struct>` of FormKey leaves (see `source_read.rs`
@@ -285,12 +288,12 @@ fn is_drop_on_null(record_sig: &str, sub_sig: &str) -> bool {
         .any(|(r, s)| *r == record_sig && *s == sub_sig)
 }
 
-/// FO76 NPC_ `CNTO` Item rows are `struct:I,i` (item FormID @ offset 0, count) and
-/// decode to opaque `Bytes` (the generic struct codec is byte-copied). The FO76
+/// `CNTO` Item rows are `struct:I,i` (item FormID @ offset 0, count) and decode
+/// to opaque `Bytes` after a plugin round trip. The FO76
 /// `CNCY Caps001` currency (`0700000F`) has no FO4 record, so the item FormID
 /// dangles. FO4 rejects a NULL/unresolvable CNTO item, so the whole CNTO
 /// subrecord is dropped (count travels with it — inherently lockstep).
-const NPC_CNTO_ITEM_OFFSET: usize = 0;
+const CNTO_ITEM_OFFSET: usize = 0;
 
 fn touched_record_sigs() -> Vec<&'static str> {
     let mut v: Vec<&'static str> = TOUCHED_SUBRECORDS.iter().map(|(r, _)| *r).collect();
@@ -710,9 +713,17 @@ impl LeafResolver {
     }
 
     fn exists_in_master(&self, plugin_name: &str, object_id: u32) -> bool {
-        self.master_names
+        let master_index = self
+            .master_names
             .iter()
-            .position(|m| m.eq_ignore_ascii_case(plugin_name))
+            .position(|m| m.eq_ignore_ascii_case(plugin_name));
+        // PlayerRef is engine-defined and may be absent from the flat master
+        // record index used to build `master_objids`.
+        if plugin_name.eq_ignore_ascii_case(FO4_MASTER_NAME) && object_id == FO4_PLAYER_REF_FORM_ID
+        {
+            return master_index.is_some();
+        }
+        master_index
             .and_then(|idx| self.master_objids.get(idx))
             .is_some_and(|set| set.contains(&object_id))
     }
@@ -1031,6 +1042,21 @@ fn apply_to_record(
             return true;
         }
         if record_sig == "CONT" && sub_sig == "CNTO" {
+            if let FieldValue::Bytes(bytes) = &mut entry.value {
+                if read_cnto_item(bytes.as_slice()).is_none_or(|raw| raw & 0x00FF_FFFF == 0) {
+                    changed = true;
+                    return false;
+                }
+                match repair_or_drop_cnto_item(bytes.as_mut_slice(), resolver) {
+                    CntoItemDecision::Keep => {}
+                    CntoItemDecision::Changed => changed = true,
+                    CntoItemDecision::Drop => {
+                        changed = true;
+                        return false;
+                    }
+                }
+                return true;
+            }
             let Some(item) = first_formkey(&entry.value) else {
                 changed = true;
                 return false;
@@ -1199,20 +1225,20 @@ fn repair_or_drop_cnto_item(bytes: &mut [u8], resolver: &LeafResolver) -> CntoIt
 }
 
 fn read_cnto_item(bytes: &[u8]) -> Option<u32> {
-    if bytes.len() < NPC_CNTO_ITEM_OFFSET + 4 {
+    if bytes.len() < CNTO_ITEM_OFFSET + 4 {
         return None;
     }
     Some(u32::from_le_bytes([
-        bytes[NPC_CNTO_ITEM_OFFSET],
-        bytes[NPC_CNTO_ITEM_OFFSET + 1],
-        bytes[NPC_CNTO_ITEM_OFFSET + 2],
-        bytes[NPC_CNTO_ITEM_OFFSET + 3],
+        bytes[CNTO_ITEM_OFFSET],
+        bytes[CNTO_ITEM_OFFSET + 1],
+        bytes[CNTO_ITEM_OFFSET + 2],
+        bytes[CNTO_ITEM_OFFSET + 3],
     ]))
 }
 
 fn write_cnto_item(bytes: &mut [u8], raw: u32) {
-    if bytes.len() >= NPC_CNTO_ITEM_OFFSET + 4 {
-        bytes[NPC_CNTO_ITEM_OFFSET..NPC_CNTO_ITEM_OFFSET + 4].copy_from_slice(&raw.to_le_bytes());
+    if bytes.len() >= CNTO_ITEM_OFFSET + 4 {
+        bytes[CNTO_ITEM_OFFSET..CNTO_ITEM_OFFSET + 4].copy_from_slice(&raw.to_le_bytes());
     }
 }
 
@@ -1719,6 +1745,28 @@ mod tests {
         let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
         assert!(!changed, "present target → kept");
         assert_eq!(alfr_local(&rec), Some(0x343DB5));
+    }
+
+    #[test]
+    fn post_copy_repair_keeps_builtin_player_ref_qust_alfr() {
+        let interner = StringInterner::new();
+        let r = resolver(&[], &[("Fallout4.esm", &[])], "SeventySix.esm");
+        let mut rec = qust_alfr_record(0x000014, "Fallout4.esm", &interner);
+
+        let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
+
+        assert!(
+            !changed,
+            "engine-defined PlayerRef must survive post-copy repair"
+        );
+        assert_eq!(alfr_local(&rec), Some(0x000014));
+
+        let missing_master = resolver(&[], &[], "SeventySix.esm");
+        assert_eq!(
+            missing_master.resolve(&fk(0x000014, "Fallout4.esm", &interner), &interner),
+            LeafResolution::Null,
+            "PlayerRef is valid only when Fallout4.esm is a target master"
+        );
     }
 
     #[test]
@@ -3038,6 +3086,33 @@ mod tests {
         }
         fields.push((interner.intern("Count"), FieldValue::Int(1)));
         FieldValue::Struct(fields)
+    }
+
+    #[test]
+    fn keeps_valid_raw_cont_cnto_row() {
+        let interner = StringInterner::new();
+        let mut cnto = smallvec::SmallVec::<[u8; 32]>::new();
+        cnto.extend_from_slice(&(0x013D_7F48u32).to_le_bytes());
+        cnto.extend_from_slice(&1u32.to_le_bytes());
+        let mut rec = record(
+            "CONT",
+            vec![
+                ("COCT", FieldValue::Uint(1)),
+                ("CNTO", FieldValue::Bytes(cnto)),
+            ],
+            &interner,
+        );
+        let r = resolver(&[0x3D7F48], &[("Fallout4.esm", &[])], "SeventySix.esm");
+
+        assert!(!apply_to_record(&mut rec, &r, &interner, PRE_COPY));
+        assert!(rec.fields.iter().any(|entry| entry.sig.as_str() == "CNTO"));
+        assert!(matches!(
+            rec.fields
+                .iter()
+                .find(|entry| entry.sig.as_str() == "COCT")
+                .map(|entry| &entry.value),
+            Some(FieldValue::Uint(1))
+        ));
     }
 
     #[test]

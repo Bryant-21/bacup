@@ -119,7 +119,7 @@ dependencies = [
     { name = "pyglm" },
     { name = "pyogg" },
     { name = "pyte" },
-    { name = "pywinpty" },
+    { name = "pywinpty", marker = "sys_platform == 'win32'" },
     { name = "pyyaml" },
     { name = "ruamel-yaml" },
     { name = "setuptools" },
@@ -167,7 +167,7 @@ requires-dist = [
     { name = "pyglm", specifier = ">=2.7" },
     { name = "pyogg" },
     { name = "pyte", specifier = ">=0.8" },
-    { name = "pywinpty", specifier = ">=2.0" },
+    { name = "pywinpty", marker = "sys_platform == 'win32'", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
     { name = "setuptools" },
@@ -1699,7 +1699,7 @@ wheels = [
 
 [[package]]
 name = "py-creation-lib"
-version = "0.1.0"
+version = "1.3.0"
 source = { editable = "py_creation_lib" }
 dependencies = [
     { name = "beautifulsoup4" },

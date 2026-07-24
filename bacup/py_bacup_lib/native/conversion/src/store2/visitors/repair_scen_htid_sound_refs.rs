@@ -59,12 +59,26 @@ impl RecordVisitor for RepairScenHtidSoundRefsVisitor {
             .expect("htid resolver index");
         let mut patches = Vec::new();
         let mut occurrence = 0usize;
+        let mut saw_topic = false;
+        let mut saw_looping_max = false;
         for (sig, data) in subrecords {
+            match *sig {
+                "ANAM" => {
+                    saw_topic = false;
+                    saw_looping_max = false;
+                }
+                "DATA" => saw_topic = true,
+                "DMAX" => saw_looping_max = true,
+                _ => {}
+            }
             if *sig != "HTID" {
                 continue;
             }
             let this = occurrence;
             occurrence += 1;
+            if !saw_topic || saw_looping_max {
+                continue;
+            }
             let mut buf = data.to_vec();
             if resolver.repair_htid_bytes(&mut buf) {
                 patches.push(SubrecordPatch {
@@ -148,11 +162,19 @@ mod tests {
                 sig: SubrecordSig::from_str("ANAM").unwrap(),
                 value: FieldValue::Bytes(SmallVec::from_slice(&4u16.to_le_bytes())),
             };
+            let data = FieldEntry {
+                sig: SubrecordSig::from_str("DATA").unwrap(),
+                value: FieldValue::Bytes(SmallVec::from_slice(&0u32.to_le_bytes())),
+            };
+            let dmax = FieldEntry {
+                sig: SubrecordSig::from_str("DMAX").unwrap(),
+                value: FieldValue::Bytes(SmallVec::from_slice(&10f32.to_le_bytes())),
+            };
             let scen = rec(
                 "SCEN",
                 0x801,
                 "Scene",
-                vec![anam, htid(0x0000_0900), htid(0x0100_0900)],
+                vec![anam, data, htid(0x0000_0900), htid(0x0100_0900), dmax],
                 &interner,
             );
             for r in [sndr, scen] {
@@ -178,5 +200,63 @@ mod tests {
 
         assert_changed_parity(&legacy, &reports);
         assert_handles_equal(h_old, h_new);
+    }
+
+    #[test]
+    fn visitor_skips_headtracking_htid_after_dmax() {
+        let master = plugin_handle_new_native("MasterA.esm", Some("fo4")).expect("master");
+        let mut handles = [0u64; 2];
+        for handle in &mut handles {
+            *handle = plugin_handle_new_native("HtidScen.esp", Some("fo4")).expect("handle");
+            plugin_handle_add_master_native(*handle, "MasterA.esm", None).expect("add master");
+            let interner = StringInterner::new();
+            let mut session = open_session(*handle, None).expect("session");
+            let schema = session.schema().expect("schema");
+            let sndr = rec("SNDR", 0x900, "OutSndr", vec![], &interner);
+            let scen = rec(
+                "SCEN",
+                0x801,
+                "Scene",
+                vec![
+                    FieldEntry {
+                        sig: SubrecordSig::from_str("ANAM").unwrap(),
+                        value: FieldValue::Bytes(SmallVec::from_slice(&4u16.to_le_bytes())),
+                    },
+                    FieldEntry {
+                        sig: SubrecordSig::from_str("DATA").unwrap(),
+                        value: FieldValue::Bytes(SmallVec::from_slice(&0u32.to_le_bytes())),
+                    },
+                    FieldEntry {
+                        sig: SubrecordSig::from_str("DMAX").unwrap(),
+                        value: FieldValue::Bytes(SmallVec::from_slice(&10f32.to_le_bytes())),
+                    },
+                    htid(0x0000_0900),
+                ],
+                &interner,
+            );
+            for record in [sndr, scen] {
+                session
+                    .add_record(record, schema.as_ref(), &interner)
+                    .unwrap();
+            }
+        }
+
+        let mut config = config_for(handles[1]);
+        config.target_master_handle_ids = vec![master];
+        let reports = run_visitor_sweep(
+            handles[1],
+            "htid",
+            vec![Box::new(RepairScenHtidSoundRefsVisitor)],
+            &config,
+        );
+
+        assert_eq!(
+            reports
+                .iter()
+                .map(|(_, report)| report.records_changed)
+                .sum::<u32>(),
+            0
+        );
+        assert_handles_equal(handles[0], handles[1]);
     }
 }

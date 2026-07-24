@@ -76,6 +76,7 @@ Event OnAnimationEvent(ObjectReference akSource, String asEventName)
 			If DisappearExplosion != None
 				selfRef.PlaceAtMe(DisappearExplosion)
 			EndIf
+			selfRef.Disable()
 		ElseIf EnterTeleportExplosion != None
 			selfRef.PlaceAtMe(EnterTeleportExplosion)
 		EndIf

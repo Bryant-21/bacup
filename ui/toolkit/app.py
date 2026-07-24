@@ -929,6 +929,12 @@ class ToolkitApp:
             )
 
     def _post_init(self):
+        initial_display_size = getattr(self, "_initial_display_size", None)
+        if initial_display_size is not None:
+            io = imgui.get_io()
+            if io.display_size.x < 0.0 or io.display_size.y < 0.0:
+                width, height = initial_display_size
+                io.display_size = (float(width), float(height))
         set_window_icon(self._app_variant)
         set_native_dark_title_bar()
         apply_theme(self._current_theme)
@@ -946,6 +952,9 @@ class ToolkitApp:
         """Launch the toolkit."""
         params = hello_imgui.RunnerParams()
         _configure_app_window_params(params, self._settings, self._app_variant)
+        self._initial_display_size = tuple(
+            params.app_window_params.window_geometry.size
+        )
         params.callbacks.show_gui = self._gui
         params.callbacks.before_exit = self._on_exit
         params.callbacks.load_additional_fonts = self._load_fonts

@@ -7,6 +7,7 @@ plus human-readable detail lines for tooltip display.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 _log = logging.getLogger("nif_editor.collision_info")
 
@@ -19,8 +20,25 @@ except Exception:  # pragma: no cover - editor can run before creation_lib is in
     collision_material_type_name = None
     format_collision_material = None
 
-# Cache for parsed packfile summaries: (block_id, blob_len) -> dict | None
-_packfile_cache: dict[tuple[int, int], dict | None] = {}
+# Cache for parsed packfile summaries: (block_id, blob_len, blob_hash) -> dict | None
+_packfile_cache: dict[tuple[int, int, int], dict | None] = {}
+_preview_cache: dict[tuple[int, int, int, int], list[dict]] = {}
+
+
+@dataclass(frozen=True)
+class HavokShapeInfo:
+    """One selectable shape decoded from a bhkPhysicsSystem packfile."""
+
+    body_id: int
+    shape_index: int | None
+    class_name: str
+    display_type: str
+    layer: str | None
+    materials: tuple[str, ...]
+    material_types: tuple[str, ...]
+    vertex_count: int | None = None
+    triangle_count: int | None = None
+    sub_shapes: tuple["HavokShapeInfo", ...] = ()
 
 
 def _parse_packfile_summary(blob: bytes, block_id: int = -1) -> dict | None:
@@ -34,7 +52,7 @@ def _parse_packfile_summary(blob: bytes, block_id: int = -1) -> dict | None:
         n_subshapes: int | None
         blob_size: int
     """
-    cache_key = (block_id, len(blob))
+    cache_key = (block_id, len(blob), hash(blob))
     if cache_key in _packfile_cache:
         return _packfile_cache[cache_key]
 
@@ -316,6 +334,247 @@ def _body_label_from_summary(summary: dict | None, body_id: int | None) -> str |
     body_material = _body_material_from_summary(summary, body_id)
     parts = [part for part in (body_shape, body_layer, body_material) if part]
     return ", ".join(parts) if parts else None
+
+
+def _physics_system_blob(block) -> bytes | None:
+    binary = _get(block, "Binary Data")
+    raw = binary.get("Data") if isinstance(binary, dict) else None
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw)
+    if isinstance(raw, list) and raw:
+        try:
+            return bytes(raw)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _parse_packfile_previews(
+    blob: bytes,
+    block_id: int,
+    body_id: int,
+) -> list[dict]:
+    cache_key = (block_id, len(blob), hash(blob), body_id)
+    cached = _preview_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    previews: list[dict] = []
+    try:
+        from creation_lib.havok.collision_preview import (
+            extract_preview_meshes_from_blob,
+        )
+
+        previews = extract_preview_meshes_from_blob(
+            blob, havok_scale=1.0, body_id=body_id
+        )
+    except Exception:
+        _log.debug("Failed to decode bhkPhysicsSystem preview shapes", exc_info=True)
+    _preview_cache[cache_key] = previews
+    return previews
+
+
+_PREVIEW_CLASS_NAMES = {
+    "box": "hknpBoxShape",
+    "capsule": "hknpCapsuleShape",
+    "compressed_mesh": "hknpCompressedMeshShape",
+    "convex_hull": "hknpConvexPolytopeShape",
+    "sphere": "hknpSphereShape",
+}
+
+
+def _display_shape_type(class_name: str | None) -> str:
+    labels = {
+        "hknpBoxShape": "Box",
+        "hknpCapsuleShape": "Capsule",
+        "hknpCompressedMeshShape": "Compressed Mesh",
+        "hknpCompoundShape": "Compound",
+        "hknpConvexPolytopeShape": "Convex Polytope",
+        "hknpDynamicCompoundShape": "Dynamic Compound",
+        "hknpSphereShape": "Sphere",
+        "hknpStaticCompoundShape": "Static Compound",
+    }
+    if not class_name:
+        return "Unknown Shape"
+    return labels.get(class_name, class_name)
+
+
+def _body_material_labels(body: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    values = []
+    primary = _as_int(body.get("material_crc"))
+    if primary is not None:
+        values.append(primary)
+    for material in body.get("bs_materials") or []:
+        if not isinstance(material, dict):
+            continue
+        material_crc = _as_int(material.get("material_crc"))
+        if material_crc is not None:
+            values.append(material_crc)
+
+    labels: list[str] = []
+    type_labels: list[str] = []
+    for value in dict.fromkeys(values):
+        label = _material_label(value)
+        if label:
+            labels.append(label)
+        type_label = _material_type_label(value)
+        if type_label:
+            type_labels.append(type_label)
+    return tuple(labels), tuple(dict.fromkeys(type_labels))
+
+
+def _shape_object_candidates(summary: dict, class_name: str) -> list[dict]:
+    return [
+        obj
+        for obj in summary.get("objects") or []
+        if obj.get("class_name") == class_name
+    ]
+
+
+def inspect_physics_system_shapes(block) -> tuple[HavokShapeInfo, ...]:
+    """Decode virtual body/shape rows stored inside a bhkPhysicsSystem blob."""
+    if block is None or getattr(block, "type_name", "") != "bhkPhysicsSystem":
+        return ()
+    blob = _physics_system_blob(block)
+    if blob is None:
+        return ()
+    block_id = getattr(block, "block_id", -1)
+    summary = _parse_packfile_summary(blob, block_id)
+    if not summary:
+        return ()
+
+    bodies = list(summary.get("bodies") or [])
+    if not bodies:
+        kind = summary.get("shape_kind")
+        class_name = {
+            "compressed_mesh": "hknpCompressedMeshShape",
+            "compound_mesh": "hknpDynamicCompoundShape",
+            "compound_polytope": "hknpDynamicCompoundShape",
+            "convex_polytope": "hknpConvexPolytopeShape",
+        }.get(kind)
+        if class_name:
+            bodies = [{"body_id": 0, "shape_class": class_name}]
+
+    result: list[HavokShapeInfo] = []
+    for body in bodies:
+        body_id = _as_int(body.get("body_id"), default=len(result))
+        if body_id is None:
+            continue
+        outer_class = body.get("shape_class") or ""
+        previews = _parse_packfile_previews(blob, block_id, body_id)
+        materials, material_types = _body_material_labels(body)
+        layer = _layer_label(body.get("layer"))
+        is_compound = "CompoundShape" in outer_class or len(previews) > 1
+
+        children: list[HavokShapeInfo] = []
+        class_offsets: dict[str, int] = {}
+        for shape_index, preview in enumerate(previews):
+            preview_type = str(preview.get("shape_type") or "")
+            class_name = _PREVIEW_CLASS_NAMES.get(
+                preview_type, preview_type or "Unknown"
+            )
+            candidates = _shape_object_candidates(summary, class_name)
+            candidate_index = class_offsets.get(class_name, 0)
+            source = (
+                candidates[candidate_index] if candidate_index < len(candidates) else {}
+            )
+            class_offsets[class_name] = candidate_index + 1
+            mesh = preview.get("mesh") if isinstance(preview, dict) else None
+            mesh = mesh if isinstance(mesh, dict) else {}
+            vertex_count = _as_int(source.get("n_vertices"))
+            if vertex_count is None:
+                vertex_count = len(mesh.get("vertices") or []) or None
+            triangle_count = _as_int(source.get("n_faces"))
+            if triangle_count is None:
+                triangle_count = len(mesh.get("triangles") or []) or None
+            children.append(
+                HavokShapeInfo(
+                    body_id=body_id,
+                    shape_index=shape_index,
+                    class_name=class_name,
+                    display_type=_display_shape_type(class_name),
+                    layer=layer,
+                    materials=materials,
+                    material_types=material_types,
+                    vertex_count=vertex_count,
+                    triangle_count=triangle_count,
+                )
+            )
+
+        if is_compound:
+            result.append(
+                HavokShapeInfo(
+                    body_id=body_id,
+                    shape_index=None,
+                    class_name=outer_class or "hknpCompoundShape",
+                    display_type=_display_shape_type(
+                        outer_class or "hknpCompoundShape"
+                    ),
+                    layer=layer,
+                    materials=materials,
+                    material_types=material_types,
+                    sub_shapes=tuple(children),
+                )
+            )
+            continue
+
+        child = children[0] if children else None
+        class_name = outer_class or (child.class_name if child else "Unknown")
+        candidates = _shape_object_candidates(summary, class_name)
+        source = candidates[0] if candidates else {}
+        result.append(
+            HavokShapeInfo(
+                body_id=body_id,
+                shape_index=None,
+                class_name=class_name,
+                display_type=_display_shape_type(class_name),
+                layer=layer,
+                materials=materials,
+                material_types=material_types,
+                vertex_count=(
+                    child.vertex_count if child else _as_int(source.get("n_vertices"))
+                ),
+                triangle_count=(
+                    child.triangle_count if child else _as_int(source.get("n_faces"))
+                ),
+            )
+        )
+    return tuple(result)
+
+
+def find_physics_system_shape(
+    block,
+    body_id: int,
+    shape_index: int | None,
+) -> HavokShapeInfo | None:
+    for body in inspect_physics_system_shapes(block):
+        if body.body_id != body_id:
+            continue
+        if shape_index is None:
+            return body
+        for shape in body.sub_shapes:
+            if shape.shape_index == shape_index:
+                return shape
+    return None
+
+
+def havok_shape_detail_lines(shape: HavokShapeInfo) -> list[str]:
+    lines = [f"Type: {shape.display_type}", f"Havok Class: {shape.class_name}"]
+    lines.append(f"Body ID: {shape.body_id}")
+    if shape.shape_index is not None:
+        lines.append(f"Sub-shape Index: {shape.shape_index}")
+    if shape.layer:
+        lines.append(f"Layer: {shape.layer}")
+    for material in shape.materials:
+        lines.append(f"Material: {material}")
+    for material_type in shape.material_types:
+        lines.append(f"Material Type: {material_type}")
+    if shape.vertex_count is not None:
+        lines.append(f"Vertices: {shape.vertex_count}")
+    if shape.triangle_count is not None:
+        lines.append(f"Triangles: {shape.triangle_count}")
+    if shape.sub_shapes:
+        lines.append(f"Sub-shapes: {len(shape.sub_shapes)}")
+    return lines
 
 
 def summarize_np_body_shape(nif, coll_obj) -> str | None:

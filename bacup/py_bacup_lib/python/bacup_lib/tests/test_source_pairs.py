@@ -5,7 +5,10 @@ import pytest
 from bacup_lib.regen_pipeline import FO76_PLUGINS, OUTPUT_MOD_NAME
 from bacup_lib.source_pairs import (
     DEFAULT_PAIR_ID,
+    FNV_MVP_EXCLUDE_SIGNATURES,
+    MVP_EXCLUDE_SIGNATURES_BY_PAIR,
     SOURCE_PAIRS,
+    SKYRIM_MVP_EXCLUDE_SIGNATURES,
     get_pair,
 )
 from creation_lib.core.game_profiles import get_profile
@@ -63,6 +66,7 @@ def test_merged_pair_lineages_include_official_plugins() -> None:
     )
     assert fnvfo3.merge.grafted_data_env == "FO3_DATA_DIR"
     assert fnvfo3.merge.grafted_dir_env == "FO3_DIR"
+    assert fnvfo3.output_mod_name == "FNV_FO3_Merged"
     assert fnvfo3.output_plugin_name == "FNV_FO3_Merged.esm"
 
     skyrim = get_pair("skyrimse:fo4")
@@ -76,6 +80,7 @@ def test_merged_pair_lineages_include_official_plugins() -> None:
     assert skyrim.merge is not None
     assert skyrim.merge.grafted_game == "skyrimse"
     assert skyrim.merge.grafted_plugins == ()
+    assert skyrim.output_mod_name == "Skyrim_Merged"
     assert skyrim.output_plugin_name == "Skyrim_Merged.esm"
 
 
@@ -87,3 +92,13 @@ def test_unknown_pair_lists_available_pair_ids() -> None:
     assert "nope" in message
     for pair_id in sorted(SOURCE_PAIRS):
         assert pair_id in message
+
+
+def test_world_only_mvp_exclusions_are_pair_specific() -> None:
+    assert MVP_EXCLUDE_SIGNATURES_BY_PAIR == {
+        "fnvfo3:fo4": FNV_MVP_EXCLUDE_SIGNATURES,
+        "skyrimse:fo4": SKYRIM_MVP_EXCLUDE_SIGNATURES,
+    }
+    assert {"QUST", "NPC_", "CREA", "RACE", "WEAP", "ARMO", "ARMA"} <= (
+        FNV_MVP_EXCLUDE_SIGNATURES
+    )

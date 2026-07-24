@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 from creation_lib.audio.voice_reference import VoiceLine, VoiceReferenceIndex
 from creation_lib.ui.workspaces.voice_browser import VoiceBrowserWorkspace
 from creation_lib.ui.workspaces.voice_browser.workspace import (
@@ -17,10 +19,15 @@ def test_voice_browser_workspace_defaults() -> None:
     assert "language" not in workspace.get_settings_defaults()
 
 
-def test_voice_browser_ignores_saved_language_setting() -> None:
+def test_voice_browser_ignores_saved_language_setting(monkeypatch) -> None:
+    from creation_lib.ui.shell import base_workspace
+
     workspace = VoiceBrowserWorkspace()
 
     workspace.apply_settings({"language": "French"})
+    # initialize() binds panels via hello_imgui.get_runner_params(), which
+    # raises against the real imgui_bundle without a live ImGui runner.
+    monkeypatch.setattr(base_workspace, "hello_imgui", MagicMock())
     workspace.initialize()
 
     assert workspace._language == "English"

@@ -15,6 +15,10 @@ if not getattr(sys, "frozen", False):
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
+from creation_lib.havok.native_runtime import configure_native_resources
+
+configure_native_resources()
+
 from ui.core.logging_utils import setup_logging
 
 log = setup_logging("toolkit")

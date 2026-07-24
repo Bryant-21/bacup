@@ -1,6 +1,7 @@
 skip_records:
   - COLL
   - NAVI
+  - PACK
 
 WEAP:
   fields:

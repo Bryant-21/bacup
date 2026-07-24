@@ -422,8 +422,33 @@ fn run_convert_nifs(
         });
     }
 
-    let assets_written: u32 = skipped_existing + agg.assets_written;
-    let warnings: u32 = agg.warnings;
+    let ssf = mirror_all_source_ssf_files(relocation_source_dir, &data_root, |path| {
+        register_with_sink(path)
+    });
+    if ssf.files_found > 0 || ssf.failures > 0 {
+        let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+            phase: phase_name,
+            level: LogLevel::Info,
+            message: format!(
+                "{phase_name}: SSF sidecars found={} copied={} reused={} failed={} sink_failed={}",
+                ssf.files_found,
+                ssf.files_copied,
+                ssf.files_reused,
+                ssf.failures,
+                ssf.sink_failures,
+            ),
+        });
+    }
+    for message in &ssf.warning_messages {
+        let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+            phase: phase_name,
+            level: LogLevel::Warn,
+            message: message.clone(),
+        });
+    }
+
+    let assets_written: u32 = skipped_existing + agg.assets_written + ssf.files_copied;
+    let warnings: u32 = agg.warnings + ssf.failures + ssf.sink_failures;
     for msg in agg.error_messages {
         let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
             phase: phase_name,
@@ -477,7 +502,11 @@ fn run_convert_nifs(
     Ok(PhaseReport {
         assets_written,
         warnings,
-        items_failed: agg.warnings + agg.sink_failures + sink_failures,
+        items_failed: agg.warnings
+            + agg.sink_failures
+            + sink_failures
+            + ssf.failures
+            + ssf.sink_failures,
         ..Default::default()
     })
 }
@@ -1910,6 +1939,138 @@ fn is_known_asset_prefix(value: &str) -> bool {
     )
 }
 
+#[derive(Default)]
+struct SsfMirrorSummary {
+    files_found: u32,
+    files_copied: u32,
+    files_reused: u32,
+    failures: u32,
+    sink_failures: u32,
+    warning_messages: Vec<String>,
+}
+
+fn mirror_all_source_ssf_files(
+    source_extracted_dir: &Path,
+    data_root: &Path,
+    mut register: impl FnMut(&Path) -> bool,
+) -> SsfMirrorSummary {
+    let mut summary = SsfMirrorSummary::default();
+    let Some(source_meshes) = find_child_ci(source_extracted_dir, "meshes") else {
+        return summary;
+    };
+    let output_meshes =
+        find_child_ci(data_root, "meshes").unwrap_or_else(|| data_root.join("Meshes"));
+    let mut pending = vec![source_meshes.clone()];
+
+    while let Some(directory) = pending.pop() {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) => {
+                summary.failures += 1;
+                summary.warning_messages.push(format!(
+                    "read SSF source directory {}: {error}",
+                    directory.display()
+                ));
+                continue;
+            }
+        };
+        let mut sorted_entries = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) => sorted_entries.push(entry),
+                Err(error) => {
+                    summary.failures += 1;
+                    summary.warning_messages.push(format!(
+                        "read SSF source entry in {}: {error}",
+                        directory.display()
+                    ));
+                }
+            }
+        }
+        let mut entries = sorted_entries;
+        entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
+
+        for entry in entries {
+            let source = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    summary.failures += 1;
+                    summary
+                        .warning_messages
+                        .push(format!("inspect SSF source {}: {error}", source.display()));
+                    continue;
+                }
+            };
+            if file_type.is_dir() {
+                pending.push(source);
+                continue;
+            }
+            if !file_type.is_file()
+                || !source
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("ssf"))
+            {
+                continue;
+            }
+
+            summary.files_found += 1;
+            let relative = source
+                .strip_prefix(&source_meshes)
+                .expect("walked SSF must remain under source Meshes");
+            let destination = join_relative_ci(&output_meshes, relative);
+            if destination.is_file() {
+                summary.files_reused += 1;
+            } else {
+                let copy_result = destination
+                    .parent()
+                    .ok_or_else(|| "SSF destination has no parent".to_string())
+                    .and_then(|parent| {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|error| format!("create SSF output directory: {error}"))
+                    })
+                    .and_then(|_| {
+                        std::fs::copy(&source, &destination)
+                            .map(|_| ())
+                            .map_err(|error| format!("copy SSF: {error}"))
+                    });
+                if let Err(error) = copy_result {
+                    summary.failures += 1;
+                    summary.warning_messages.push(format!(
+                        "{} -> {}: {error}",
+                        source.display(),
+                        destination.display()
+                    ));
+                    continue;
+                }
+                summary.files_copied += 1;
+            }
+
+            if !register(&destination) {
+                summary.sink_failures += 1;
+                summary.warning_messages.push(format!(
+                    "register SSF output with sink: {}",
+                    destination.display()
+                ));
+            }
+        }
+    }
+
+    summary
+}
+
+fn join_relative_ci(root: &Path, relative: &Path) -> PathBuf {
+    let mut path = root.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            continue;
+        };
+        let name = name.to_string_lossy();
+        path = find_child_ci(&path, &name).unwrap_or_else(|| path.join(name.as_ref()));
+    }
+    path
+}
+
 // ---------------------------------------------------------------------------
 // Creature skeleton.nif repose (FO4 inverse-bind rest pose)
 // ---------------------------------------------------------------------------
@@ -2052,6 +2213,93 @@ mod tests {
                 .map(|path| (windows_destination_key(path), owner))
                 .collect(),
         }
+    }
+
+    #[test]
+    fn mirrors_all_ssf_files_across_the_source_mesh_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let data_root = tmp.path().join("output/data");
+        let clothing = source.join("Meshes/Clothes/Raiders/Outfit.ssf");
+        let creature = source.join("Meshes/Actors/Mothman/CharacterAssets/Mothman.SSF");
+        let ignored = source.join("Meshes/Clothes/Raiders/Outfit.txt");
+        for (path, bytes) in [
+            (&clothing, b"clothing".as_slice()),
+            (&creature, b"creature".as_slice()),
+            (&ignored, b"ignored".as_slice()),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let mut registered = Vec::new();
+
+        let summary = mirror_all_source_ssf_files(&source, &data_root, |path| {
+            registered.push(path.to_path_buf());
+            true
+        });
+
+        assert_eq!(summary.files_found, 2);
+        assert_eq!(summary.files_copied, 2);
+        assert_eq!(summary.files_reused, 0);
+        assert_eq!(summary.failures, 0);
+        assert_eq!(summary.sink_failures, 0);
+        assert_eq!(registered.len(), 2);
+        assert_eq!(
+            std::fs::read(data_root.join("Meshes/Clothes/Raiders/Outfit.ssf")).unwrap(),
+            b"clothing"
+        );
+        assert_eq!(
+            std::fs::read(data_root.join("Meshes/Actors/Mothman/CharacterAssets/Mothman.SSF"))
+                .unwrap(),
+            b"creature"
+        );
+        assert!(!data_root.join("Meshes/Clothes/Raiders/Outfit.txt").exists());
+    }
+
+    #[test]
+    fn preserves_and_registers_an_existing_ssf_case_insensitively() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let data_root = tmp.path().join("output/data");
+        let source_ssf = source.join("Meshes/Clothes/Raiders/Outfit.ssf");
+        let existing_ssf = data_root.join("meshes/clothes/raiders/OUTFIT.SSF");
+        std::fs::create_dir_all(source_ssf.parent().unwrap()).unwrap();
+        std::fs::write(&source_ssf, b"source").unwrap();
+        std::fs::create_dir_all(existing_ssf.parent().unwrap()).unwrap();
+        std::fs::write(&existing_ssf, b"existing").unwrap();
+        let mut registered = Vec::new();
+
+        let summary = mirror_all_source_ssf_files(&source, &data_root, |path| {
+            registered.push(path.to_path_buf());
+            true
+        });
+
+        assert_eq!(summary.files_found, 1);
+        assert_eq!(summary.files_copied, 0);
+        assert_eq!(summary.files_reused, 1);
+        assert_eq!(summary.failures, 0);
+        assert_eq!(std::fs::read(&existing_ssf).unwrap(), b"existing");
+        assert_eq!(registered, vec![existing_ssf]);
+    }
+
+    #[test]
+    fn missing_source_meshes_is_an_ssf_no_op() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut registered = Vec::new();
+
+        let summary = mirror_all_source_ssf_files(
+            &tmp.path().join("source"),
+            &tmp.path().join("output/data"),
+            |path| {
+                registered.push(path.to_path_buf());
+                true
+            },
+        );
+
+        assert_eq!(summary.files_found, 0);
+        assert_eq!(summary.files_copied, 0);
+        assert_eq!(summary.failures, 0);
+        assert!(registered.is_empty());
     }
 
     #[test]

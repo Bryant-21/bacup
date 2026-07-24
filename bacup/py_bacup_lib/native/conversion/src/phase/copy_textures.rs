@@ -179,6 +179,37 @@ impl Phase for CopyTexturesPhase {
     }
 }
 
+/// Texture files a source NIF names but no record points at.
+///
+/// Gamebryo source trees lean on this heavily: FNV/FO3 and Skyrim NIFs carry
+/// texture sets the record graph never mentions. `convert_textures_v2` needs
+/// the same discovery this phase does, so it shares the implementation.
+pub(crate) struct NifTextureDiscovery {
+    /// `(game-relative source path, absolute resolved path)`.
+    pub textures: Vec<(String, String)>,
+    pub failures: u32,
+    pub warnings: Vec<String>,
+}
+
+pub(crate) fn discover_nif_texture_dependencies_with_progress(
+    params: &JsonValue,
+    reporter: &ProgressReporter,
+) -> Result<NifTextureDiscovery, PhaseError> {
+    let NifDiscovery {
+        textures,
+        failures,
+        warning_messages,
+    } = discover_nif_textures_with_progress(parse_nif_entries(params)?, Some(reporter));
+    Ok(NifTextureDiscovery {
+        textures: textures
+            .into_iter()
+            .map(|entry| (entry.source_path, entry.resolved_path))
+            .collect(),
+        failures,
+        warnings: warning_messages,
+    })
+}
+
 fn parse_texture_entries(params: &JsonValue) -> Result<Vec<TextureEntry>, PhaseError> {
     let entries = params
         .get("texture_paths")
@@ -244,37 +275,46 @@ fn parse_nif_entries(params: &JsonValue) -> Result<Vec<NifEntry>, PhaseError> {
 }
 
 fn discover_nif_textures(nif_entries: Vec<NifEntry>) -> NifDiscovery {
+    discover_nif_textures_with_progress(nif_entries, None)
+}
+
+fn discover_nif_textures_with_progress(
+    nif_entries: Vec<NifEntry>,
+    reporter: Option<&ProgressReporter>,
+) -> NifDiscovery {
     let mut discovery = NifDiscovery::default();
     for entry in nif_entries {
+        if let Some(reporter) = reporter {
+            reporter.set_item(format!("Scanning NIF textures: {}", entry.source_path));
+        }
         let nif_path = Path::new(&entry.resolved_path);
-        let nif = match NifFile::load(nif_path.to_path_buf()) {
-            Ok(nif) => nif,
+        match NifFile::load(nif_path.to_path_buf()) {
+            Ok(nif) => match extracted_root_from_nif(nif_path) {
+                Ok(source_root) => {
+                    for texture_ref in nif.referenced_asset_paths().textures {
+                        match texture_entry_from_ref(&source_root, &texture_ref) {
+                            Ok(texture) => discovery.textures.push(texture),
+                            Err(error) => discovery.fail(format!(
+                                "copy_textures: NIF texture ref rejected {} ({texture_ref}): {error}",
+                                entry.source_path
+                            )),
+                        }
+                    }
+                }
+                Err(error) => discovery.fail(format!(
+                    "copy_textures: NIF dependency root failed {}: {error}",
+                    entry.source_path
+                )),
+            },
             Err(error) => {
                 discovery.fail(format!(
                     "copy_textures: NIF dependency scan failed {}: {error}",
                     entry.source_path
                 ));
-                continue;
             }
-        };
-        let source_root = match extracted_root_from_nif(nif_path) {
-            Ok(root) => root,
-            Err(error) => {
-                discovery.fail(format!(
-                    "copy_textures: NIF dependency root failed {}: {error}",
-                    entry.source_path
-                ));
-                continue;
-            }
-        };
-        for texture_ref in nif.referenced_asset_paths().textures {
-            match texture_entry_from_ref(&source_root, &texture_ref) {
-                Ok(texture) => discovery.textures.push(texture),
-                Err(error) => discovery.fail(format!(
-                    "copy_textures: NIF texture ref rejected {} ({texture_ref}): {error}",
-                    entry.source_path
-                )),
-            }
+        }
+        if let Some(reporter) = reporter {
+            reporter.inc(1);
         }
     }
     discovery
@@ -590,6 +630,50 @@ mod tests {
             texture_entry_from_ref(Path::new("C:/extracted/fnv"), "textures/../escape.dds")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn nif_dependency_scan_reports_native_progress() {
+        let temp = temp_dir("nif_progress");
+        let params = serde_json::json!({
+            "nif_paths": [
+                {
+                    "source_path": "Meshes/fnv/missing_a.nif",
+                    "resolved_path": temp.join("extracted/fnv/Meshes/missing_a.nif").to_string_lossy(),
+                },
+                {
+                    "source_path": "Meshes/fnv/missing_b.nif",
+                    "resolved_path": temp.join("extracted/fnv/Meshes/missing_b.nif").to_string_lossy(),
+                }
+            ]
+        });
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let reporter = ProgressReporter::new("convert_textures_v2", 2, tx);
+
+        let discovery =
+            discover_nif_texture_dependencies_with_progress(&params, &reporter).unwrap();
+        reporter.finish();
+        let events: Vec<_> = rx.try_iter().collect();
+
+        assert_eq!(discovery.failures, 2);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PhaseEvent::Progress {
+                current: 1,
+                total: 2,
+                item: Some(item),
+                ..
+            } if item.ends_with("Meshes/fnv/missing_a.nif")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PhaseEvent::Progress {
+                current: 2,
+                total: 2,
+                item: Some(item),
+                ..
+            } if item.ends_with("Meshes/fnv/missing_b.nif")
+        )));
     }
 
     #[test]

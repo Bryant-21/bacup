@@ -76,8 +76,11 @@ Event OnTimer(Int aiTimerID)
 EndEvent
 
 Event OnAnimationEvent(ObjectReference akSource, String asEventName)
-	If selfActorRef != None && !selfActorRef.IsDead() && akSource == selfActorRef && asEventName == animEventTeleportStart && disappearExplosion != None
-		selfActorRef.PlaceAtMe(disappearExplosion)
+	If selfActorRef != None && !selfActorRef.IsDead() && akSource == selfActorRef && asEventName == animEventTeleportStart
+		If disappearExplosion != None
+			selfActorRef.PlaceAtMe(disappearExplosion)
+		EndIf
+		selfActorRef.Disable()
 	EndIf
 EndEvent
 

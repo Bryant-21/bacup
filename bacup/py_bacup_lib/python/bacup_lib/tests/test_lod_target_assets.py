@@ -4,53 +4,54 @@ from bacup_lib import regen_pipeline
 from bacup_lib.regen_pipeline import RegenOptions
 
 
-def test_lod_discovery_materializes_only_catalog_owned_dependency_closure(
+def test_lod_discovery_uses_extracted_fo4_without_opening_ba2s(tmp_path, monkeypatch):
+    overlay = tmp_path / "extracted" / "fo4"
+    overlay.mkdir(parents=True)
+    monkeypatch.setattr(
+        "bacup_lib.target_assets.build_target_asset_store",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("extracted FO4 assets must suppress the BA2 fallback")
+        ),
+    )
+    paths = SimpleNamespace(target_extracted_dir=overlay)
+
+    result = regen_pipeline._target_lod_asset_dirs(
+        paths,
+        "hybrid-atlas",
+        working_esm=tmp_path / "SeventySix.esm",
+    )
+
+    assert result == [overlay]
+
+
+def test_lod_discovery_uses_ba2s_without_materializing_when_extracted_fo4_is_missing(
     tmp_path, monkeypatch
 ):
     class FakeStore:
-        cache_data_root = tmp_path / "cache" / "Data"
+        archive_paths = (
+            tmp_path / "Data" / "Fallout4 - Main.ba2",
+            tmp_path / "Data" / "DLCCoast - Main.ba2",
+        )
 
-        def __init__(self):
-            self.materialized = []
-            self.owned = {
-                "meshes/base/tree_lod.nif",
-                "materials/base/tree.bgsm",
-                "textures/base/tree_d.dds",
-            }
-
-        def has_asset(self, path):
-            return path in self.owned
-
-        def dependency_closure(self, roots):
-            assert set(roots) == {"meshes/base/tree_lod.nif"}
-            return sorted(self.owned)
-
-        def materialize_many(self, paths):
-            self.materialized = list(paths)
-
-    class FakePlugin:
-        def collect_assets(self):
-            return [
-                {"source_path": r"Meshes\Base\Tree_LOD.nif"},
-                {"source_path": r"Meshes\Converted\OnlyInMod.nif"},
-            ]
-
-        def close(self):
-            pass
+        def materialize_many(self, _paths):
+            raise AssertionError("LOD must read target assets directly from BA2s")
 
     store = FakeStore()
+    build_kwargs = {}
+
+    def build_store(**kwargs):
+        build_kwargs.update(kwargs)
+        return store
+
     monkeypatch.setattr(
         "bacup_lib.target_assets.build_target_asset_store",
-        lambda **_kwargs: store,
-    )
-    monkeypatch.setattr(
-        "creation_lib.esp.plugin.Plugin.load", lambda *_args, **_kwargs: FakePlugin()
+        build_store,
     )
     paths = SimpleNamespace(
         target_data_dir=tmp_path / "Data",
         target_asset_catalog_path=tmp_path / "catalog.sqlite3",
         target_asset_cache_dir=tmp_path / "cache",
-        target_extracted_dir=None,
+        target_extracted_dir=tmp_path / "missing" / "fo4",
     )
 
     result = regen_pipeline._target_lod_asset_dirs(
@@ -59,8 +60,8 @@ def test_lod_discovery_materializes_only_catalog_owned_dependency_closure(
         working_esm=tmp_path / "SeventySix.esm",
     )
 
-    assert result == [store.cache_data_root]
-    assert store.materialized == sorted(store.owned)
+    assert result == [*store.archive_paths]
+    assert build_kwargs["overlay_dir"] is None
 
 
 def test_cross_game_lod_discovers_worldspaces_instead_of_using_appalachia():

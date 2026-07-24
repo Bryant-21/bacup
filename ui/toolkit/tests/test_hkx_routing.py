@@ -42,12 +42,7 @@ def test_hkx_viewer_tool_open_file_unpacks_to_xml(tmp_path):
     hkx_path = tmp_path / "idle.hkx"
     hkx_path.write_bytes(b"hkx")
 
-    unpack_dir = tmp_path / "unpacked"
-    unpack_dir.mkdir()
-    xml_path = unpack_dir / "idle.xml"
-    xml_path.write_text("<hkpackfile />", encoding="utf-8")
-
-    with patch("creation_lib.hkxpack.unpack_hkx_to_xml", return_value=str(xml_path)):
+    with patch("creation_lib._native.havok_native.hkx_to_xml", return_value="<hkpackfile />"):
         tool.open_file(str(hkx_path))
 
     assert tool._input_path == str(hkx_path)
@@ -77,18 +72,11 @@ def test_hkx_viewer_tool_save_file_packs_hkx(tmp_path):
     tool._xml_text = "<hkpackfile />"
     tool._dirty = True
     out_path = tmp_path / "idle.hkx"
-    captured = {}
 
-    def _capture_pack(xml_arg, hkx_arg):
-        captured["xml_arg"] = xml_arg
-        captured["hkx_arg"] = hkx_arg
-        captured["xml_text"] = Path(xml_arg).read_text(encoding="utf-8")
-
-    with patch("creation_lib.hkxpack.pack_xml_to_hkx", side_effect=_capture_pack) as mock_pack:
+    with patch("creation_lib._native.havok_native.xml_to_hkx", return_value=b"HKXBYTES") as mock_pack:
         tool.save_file(str(out_path))
 
-    mock_pack.assert_called_once()
-    assert captured["hkx_arg"] == str(out_path)
-    assert captured["xml_text"] == "<hkpackfile />"
+    mock_pack.assert_called_once_with("<hkpackfile />")
+    assert out_path.read_bytes() == b"HKXBYTES"
     assert tool._result_msg == "Saved HKX: idle.hkx"
     assert tool._dirty is False

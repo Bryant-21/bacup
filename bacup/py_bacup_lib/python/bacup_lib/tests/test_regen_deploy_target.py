@@ -268,6 +268,30 @@ def test_deploy_output_mods_reuses_built_outputs_without_validation(monkeypatch,
     ]
 
 
+def test_deploy_output_mods_plugin_only_skips_loose_payload(monkeypatch, tmp_path):
+    project_root = tmp_path
+    (project_root / "mods" / "SeventySix").mkdir(parents=True)
+    calls: list[dict] = []
+
+    monkeypatch.setattr(
+        "creation_lib.build.deployer.deploy_mod",
+        lambda _mod_name, **kwargs: calls.append(kwargs),
+    )
+
+    regen_pipeline._deploy_output_mods(
+        "SeventySix",
+        plugin_names=["SeventySix.esm"],
+        project_root=project_root,
+        game_data_dir=tmp_path / "Fallout4" / "Data",
+        resource_dir=tmp_path / "resource",
+        deploy_archives=False,
+        plugin_only=True,
+    )
+
+    assert calls[0]["esp_only"] is True
+    assert calls[0]["deploy_archives"] is False
+
+
 def test_deploy_output_mods_supports_distinct_mod_and_plugin_names(
     monkeypatch, tmp_path
 ):

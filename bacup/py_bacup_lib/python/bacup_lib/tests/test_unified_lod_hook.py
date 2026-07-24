@@ -194,6 +194,8 @@ def test_lod_hook_fires_after_assets_before_pack(monkeypatch, tmp_path):
     assert runner.phase_events == [
         ("start", "Regenerate MODT", "running"),
         ("complete", "Regenerate MODT", "completed"),
+        ("start", "Rebuild Cell Offsets", "running"),
+        ("complete", "Rebuild Cell Offsets", "completed"),
         ("start", "Generate LOD", "running"),
         ("complete", "Generate LOD", "completed"),
         ("start", "Pack BA2", "running"),

@@ -69,7 +69,7 @@ def _make_minimal_mesh(
 
 
 def test_parse_basic_triangle():
-    from ui.editor.sf_mesh_loader import parse_sf_mesh
+    from creation_lib.renderer.sf_mesh_loader import parse_sf_mesh
     data = _make_minimal_mesh(num_verts=3, num_tris=1, scale=2.0)
     result = parse_sf_mesh(data)
     assert result is not None
@@ -83,7 +83,7 @@ def test_parse_basic_triangle():
 
 
 def test_parse_no_uvs():
-    from ui.editor.sf_mesh_loader import parse_sf_mesh
+    from creation_lib.renderer.sf_mesh_loader import parse_sf_mesh
     data = _make_minimal_mesh(num_verts=3, has_uvs=False)
     result = parse_sf_mesh(data)
     assert result.uvs.shape == (3, 2)  # should get zeros
@@ -91,7 +91,7 @@ def test_parse_no_uvs():
 
 
 def test_parse_no_normals():
-    from ui.editor.sf_mesh_loader import parse_sf_mesh
+    from creation_lib.renderer.sf_mesh_loader import parse_sf_mesh
     data = _make_minimal_mesh(num_verts=3, has_normals=False)
     result = parse_sf_mesh(data)
     # Should auto-compute normals
@@ -99,7 +99,7 @@ def test_parse_no_normals():
 
 
 def test_parse_with_colors():
-    from ui.editor.sf_mesh_loader import parse_sf_mesh
+    from creation_lib.renderer.sf_mesh_loader import parse_sf_mesh
     data = _make_minimal_mesh(num_verts=3, has_colors=True)
     result = parse_sf_mesh(data)
     assert result.colors is not None
@@ -107,14 +107,14 @@ def test_parse_with_colors():
 
 
 def test_invalid_version_returns_none():
-    from ui.editor.sf_mesh_loader import parse_sf_mesh
+    from creation_lib.renderer.sf_mesh_loader import parse_sf_mesh
     data = struct.pack("<I", 99)  # invalid version
     result = parse_sf_mesh(data)
     assert result is None
 
 
 def test_zero_scale_returns_none():
-    from ui.editor.sf_mesh_loader import parse_sf_mesh
+    from creation_lib.renderer.sf_mesh_loader import parse_sf_mesh
     data = _make_minimal_mesh(scale=0.0)
     result = parse_sf_mesh(data)
     assert result is None
@@ -153,7 +153,7 @@ def test_real_novablast_mesh():
     mesh_path = starfield_extracted_dir / "meshes/geometries/5cf8552e4c1fee905eb8/ee008e8a733347785ea6.mesh"
     if not mesh_path.exists():
         pytest.skip("Starfield mesh file not available (set STARFIELD_EXTRACTED_DIR)")
-    from ui.editor.sf_mesh_loader import parse_sf_mesh
+    from creation_lib.renderer.sf_mesh_loader import parse_sf_mesh
     data = mesh_path.read_bytes()
     result = parse_sf_mesh(data)
     assert result is not None

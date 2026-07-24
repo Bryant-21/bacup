@@ -2,14 +2,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use esp_authoring_core::plugin_runtime::{
-    LocalizedStringsState, ParsedItem, ParsedPlugin, clone_plugin_handle_state_no_py,
-    compiled_schema_for_game_str, ensure_core_section, plugin_handle_close_native,
-    plugin_handle_load_no_py, plugin_handle_new_native, plugin_handle_save_no_py,
-    plugin_handle_store_ref,
+    LocalizedStringsState, ParsedItem, ParsedPlugin, compiled_schema_for_game_str,
+    ensure_core_section, plugin_handle_close_native, plugin_handle_load_no_py,
+    plugin_handle_new_native, plugin_handle_save_no_py, plugin_handle_store_ref,
 };
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use thiserror::Error;
+
+use crate::legacy_pack_preflight::{LegacyPackExpectedCounts, LegacyPackOriginRow};
 
 mod classify;
 mod flatten;
@@ -24,12 +25,40 @@ pub struct MergeOptions {
     pub output_path: PathBuf,
     pub report_path: Option<PathBuf>,
     pub game: String,
+    #[serde(default)]
+    pub source_strings_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 pub struct SigCounts {
     pub deduped: u64,
     pub copied: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct LegacyPackMergeAccounting {
+    pub raw_source: LegacyPackExpectedCounts,
+    pub override_winners: LegacyPackExpectedCounts,
+    pub override_losers: LegacyPackExpectedCounts,
+    pub editor_id_deduped: LegacyPackExpectedCounts,
+    pub sanitization_drops: LegacyPackExpectedCounts,
+    pub final_survivors: LegacyPackExpectedCounts,
+    pub form_key_remaps: LegacyPackExpectedCounts,
+}
+
+impl LegacyPackMergeAccounting {
+    fn is_conserved(&self) -> bool {
+        self.raw_source.fnv
+            == self.override_losers.fnv
+                + self.editor_id_deduped.fnv
+                + self.sanitization_drops.fnv
+                + self.final_survivors.fnv
+            && self.raw_source.fo3
+                == self.override_losers.fo3
+                    + self.editor_id_deduped.fo3
+                    + self.sanitization_drops.fo3
+                    + self.final_survivors.fo3
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -45,6 +74,8 @@ pub struct MergeReport {
     pub dropped_owners: BTreeMap<String, u64>,
     pub dangling: Vec<String>,
     pub by_signature: BTreeMap<String, SigCounts>,
+    pub pack_origins: Vec<LegacyPackOriginRow>,
+    pub pack_accounting: LegacyPackMergeAccounting,
 }
 
 #[derive(Debug, Error)]
@@ -59,10 +90,29 @@ pub enum MergeError {
     Dangling(usize),
     #[error("record count mismatch: expected {expected}, got {actual}")]
     CountMismatch { expected: u64, actual: u64 },
+    #[error("PACK provenance mismatch: expected {expected}, got {actual}")]
+    PackProvenanceMismatch { expected: usize, actual: usize },
+    #[error("PACK accounting does not conserve raw source records")]
+    PackAccountingMismatch,
 }
 
 pub(crate) fn load_no_py(path: &str, game: Option<&str>) -> Result<u64, MergeError> {
-    plugin_handle_load_no_py(path, game, None, None, true).map_err(MergeError::Load)
+    load_no_py_with_strings(path, game, None)
+}
+
+fn load_no_py_with_strings(
+    path: &str,
+    game: Option<&str>,
+    strings_dir: Option<&std::path::Path>,
+) -> Result<u64, MergeError> {
+    plugin_handle_load_no_py(
+        path,
+        game,
+        strings_dir.map(|path| path.to_string_lossy()).as_deref(),
+        None,
+        true,
+    )
+    .map_err(MergeError::Load)
 }
 
 pub(crate) fn build_primary_eid_index(
@@ -103,6 +153,14 @@ pub(crate) fn collect_used_ids(handle_id: u64) -> Result<HashSet<u32>, MergeErro
         .collect())
 }
 
+fn add_pack_count(counts: &mut LegacyPackExpectedCounts, source_game: &str, amount: usize) {
+    match source_game.trim().to_ascii_lowercase().as_str() {
+        "fnv" => counts.fnv += amount,
+        "fo3" => counts.fo3 += amount,
+        _ => {}
+    }
+}
+
 fn validate_master_chain(handles: &[u64]) -> Result<(), MergeError> {
     let store = plugin_handle_store_ref()
         .lock()
@@ -131,7 +189,11 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
     let result = (|| {
         let mut primary = Vec::new();
         for path in &opts.primary_paths {
-            let handle = load_no_py(&path.to_string_lossy(), Some(&opts.game))?;
+            let handle = load_no_py_with_strings(
+                &path.to_string_lossy(),
+                Some(&opts.game),
+                opts.source_strings_dir.as_deref(),
+            )?;
             handles.push(handle);
             primary.push(handle);
         }
@@ -142,7 +204,11 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
             opts.game.as_str()
         };
         for path in &opts.grafted_paths {
-            let handle = load_no_py(&path.to_string_lossy(), Some(grafted_game))?;
+            let handle = load_no_py_with_strings(
+                &path.to_string_lossy(),
+                Some(grafted_game),
+                opts.source_strings_dir.as_deref(),
+            )?;
             handles.push(handle);
             grafted.push(handle);
         }
@@ -151,16 +217,25 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
             compiled_schema_for_game_str(grafted_game).map_err(MergeError::Load)?;
         validate_master_chain(&primary)?;
         validate_master_chain(&grafted)?;
-        let first_primary = primary
-            .first()
-            .copied()
-            .ok_or_else(|| MergeError::Load("primary lineage has no plugins".to_string()))?;
-        let primary_strings = clone_plugin_handle_state_no_py(first_primary)
-            .map_err(MergeError::Load)?
-            .1;
         let mut primary = flatten::flatten_lineage(&primary)?;
         let primary_records = count_records(&primary.tree);
         let primary_ids = primary.used_ids.clone();
+        let mut pack_accounting = LegacyPackMergeAccounting::default();
+        add_pack_count(
+            &mut pack_accounting.raw_source,
+            &opts.game,
+            primary.raw_pack_records as usize,
+        );
+        add_pack_count(
+            &mut pack_accounting.override_winners,
+            &opts.game,
+            primary.pack_origins.len(),
+        );
+        add_pack_count(
+            &mut pack_accounting.override_losers,
+            &opts.game,
+            primary.raw_pack_records as usize - primary.pack_origins.len(),
+        );
 
         let (grafted_records, classification, mut stats, grafted_record_ids) = if grafted.is_empty()
         {
@@ -177,11 +252,27 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
         } else {
             let grafted = flatten::flatten_lineage(&grafted)?;
             let grafted_records = count_records(&grafted.tree);
+            add_pack_count(
+                &mut pack_accounting.raw_source,
+                grafted_game,
+                grafted.raw_pack_records as usize,
+            );
+            add_pack_count(
+                &mut pack_accounting.override_winners,
+                grafted_game,
+                grafted.pack_origins.len(),
+            );
+            add_pack_count(
+                &mut pack_accounting.override_losers,
+                grafted_game,
+                grafted.raw_pack_records as usize - grafted.pack_origins.len(),
+            );
             let classification = classify::classify_grafted(
                 &grafted.tree,
                 &primary.eid_index,
                 &mut primary.used_ids,
             );
+            let grafted_pack_origins = grafted.pack_origins;
             let mut stats = repoint::RepointStats::default();
             graft::graft_lineage(
                 &mut primary.tree,
@@ -192,6 +283,20 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
                 primary.template.header_size,
                 Some(grafted_schema.as_ref()),
             );
+            for (grafted_form_id, mut origin) in grafted_pack_origins {
+                if classification.dropped.contains(&grafted_form_id) {
+                    add_pack_count(
+                        &mut pack_accounting.editor_id_deduped,
+                        &origin.source_game,
+                        1,
+                    );
+                    continue;
+                }
+                if let Some(&merged_form_id) = classification.remap.get(&grafted_form_id) {
+                    origin.form_id_remapped |= merged_form_id != grafted_form_id;
+                    primary.pack_origins.insert(merged_form_id, origin);
+                }
+            }
             let grafted_record_ids = classification
                 .remap
                 .iter()
@@ -215,6 +320,51 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
             )
         };
         let dropped_owner_records = sanitization.dropped_owner_count();
+        let output_name = opts
+            .output_path
+            .file_name()
+            .ok_or_else(|| MergeError::Io("output path has no file name".to_string()))?
+            .to_string_lossy()
+            .into_owned();
+        let final_pack_ids = collect_record_ids_of_sig(&primary.tree, "PACK");
+        for (&form_id, origin) in &primary.pack_origins {
+            if !final_pack_ids.contains(&form_id) {
+                add_pack_count(
+                    &mut pack_accounting.sanitization_drops,
+                    &origin.source_game,
+                    1,
+                );
+            }
+        }
+        primary
+            .pack_origins
+            .retain(|form_id, _| final_pack_ids.contains(form_id));
+        if primary.pack_origins.len() != final_pack_ids.len() {
+            return Err(MergeError::PackProvenanceMismatch {
+                expected: final_pack_ids.len(),
+                actual: primary.pack_origins.len(),
+            });
+        }
+        for origin in primary.pack_origins.values() {
+            add_pack_count(&mut pack_accounting.final_survivors, &origin.source_game, 1);
+            if origin.form_id_remapped {
+                add_pack_count(&mut pack_accounting.form_key_remaps, &origin.source_game, 1);
+            }
+        }
+        if !pack_accounting.is_conserved() {
+            return Err(MergeError::PackAccountingMismatch);
+        }
+        let mut pack_origins = primary
+            .pack_origins
+            .iter()
+            .map(|(&merged_form_id, origin)| LegacyPackOriginRow {
+                merged_form_key: format!("{merged_form_id:06X}@{output_name}"),
+                source_game: origin.source_game.clone(),
+                source_plugin: origin.source_plugin.clone(),
+                source_form_key: format!("{:08X}@{}", origin.source_form_id, origin.source_plugin),
+            })
+            .collect::<Vec<_>>();
+        pack_origins.sort_by(|left, right| left.merged_form_key.cmp(&right.merged_form_key));
         let report = MergeReport {
             primary_records,
             grafted_records,
@@ -239,6 +389,8 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
                 .into_iter()
                 .map(|(signature, counts)| (signature.to_string(), counts))
                 .collect(),
+            pack_origins,
+            pack_accounting,
         };
 
         if let Some(report_path) = &opts.report_path {
@@ -255,13 +407,6 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
             return Err(MergeError::CountMismatch { expected, actual });
         }
 
-        let output_name = opts
-            .output_path
-            .file_name()
-            .ok_or_else(|| MergeError::Io("output path has no file name".to_string()))?
-            .to_string_lossy()
-            .into_owned();
-
         let final_used_ids = collect_record_ids(&primary.tree);
         prepare_output_plugin(
             &mut primary.template,
@@ -273,7 +418,7 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
         let handle = plugin_handle_new_native(&output_name, Some(&opts.game))
             .map_err(|error| MergeError::Load(error.to_string()))?;
         output_handle = Some(handle);
-        install_output_state(handle, primary.template, primary_strings)?;
+        install_output_state(handle, primary.template, primary.strings)?;
         if let Some(parent) = opts.output_path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| MergeError::Io(error.to_string()))?;
         }
@@ -363,6 +508,26 @@ fn collect_record_ids_into(items: &[ParsedItem], ids: &mut HashSet<u32>) {
                 ids.insert(record.form_id);
             }
             ParsedItem::Group(group) => collect_record_ids_into(&group.children, ids),
+        }
+    }
+}
+
+fn collect_record_ids_of_sig(items: &[ParsedItem], signature: &str) -> HashSet<u32> {
+    let mut ids = HashSet::new();
+    collect_record_ids_of_sig_into(items, signature, &mut ids);
+    ids
+}
+
+fn collect_record_ids_of_sig_into(items: &[ParsedItem], signature: &str, ids: &mut HashSet<u32>) {
+    for item in items {
+        match item {
+            ParsedItem::Record(record) if record.signature.as_str() == signature => {
+                ids.insert(record.form_id);
+            }
+            ParsedItem::Group(group) => {
+                collect_record_ids_of_sig_into(&group.children, signature, ids)
+            }
+            ParsedItem::Record(_) => {}
         }
     }
 }
@@ -477,6 +642,7 @@ mod tests {
             output_path: output.clone(),
             report_path: Some(report_path.clone()),
             game: "fnv".to_string(),
+            source_strings_dir: None,
         })
         .unwrap();
         assert_eq!(report.primary_records, 2);
@@ -503,6 +669,87 @@ mod tests {
         let fact = find_record(&plugin.root_items, "FO3Fact").unwrap();
         assert_ne!(fact.form_id, 0x1300);
         plugin_handle_close_native(handle);
+    }
+
+    #[test]
+    fn merge_report_preserves_pack_override_winners_and_grafted_origins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = write_test_plugin(
+            tmp.path(),
+            "FalloutNV.esm",
+            "fnv",
+            vec![rec("PACK", 0x001200, "BasePackage")],
+        );
+        let override_record = rec("PACK", 0x001200, "WinningPackageOverride");
+        let dlc = write_test_plugin_with_masters(
+            tmp.path(),
+            "DeadMoney.esm",
+            "fnv",
+            vec!["FalloutNV.esm".to_string()],
+            vec![override_record],
+        );
+        let grafted = write_test_plugin(
+            tmp.path(),
+            "Fallout3.esm",
+            "fo3",
+            vec![rec("PACK", 0x001300, "WinningPackageOverride")],
+        );
+        let output = tmp.path().join("FNV_FO3_Merged.esm");
+        let report_path = tmp.path().join("merge_report.json");
+
+        let report = run(&MergeOptions {
+            primary_paths: vec![base, dlc],
+            grafted_paths: vec![grafted],
+            output_path: output,
+            report_path: Some(report_path.clone()),
+            game: "fnv".to_string(),
+            source_strings_dir: None,
+        })
+        .unwrap();
+
+        assert_eq!(
+            report.pack_origins,
+            vec![
+                LegacyPackOriginRow {
+                    merged_form_key: "001200@FNV_FO3_Merged.esm".to_string(),
+                    source_game: "fnv".to_string(),
+                    source_plugin: "DeadMoney.esm".to_string(),
+                    source_form_key: "00001200@DeadMoney.esm".to_string(),
+                },
+                LegacyPackOriginRow {
+                    merged_form_key: "001300@FNV_FO3_Merged.esm".to_string(),
+                    source_game: "fo3".to_string(),
+                    source_plugin: "Fallout3.esm".to_string(),
+                    source_form_key: "00001300@Fallout3.esm".to_string(),
+                },
+            ]
+        );
+        let serialized: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+        let roundtrip: Vec<LegacyPackOriginRow> =
+            serde_json::from_value(serialized["pack_origins"].clone()).unwrap();
+        assert_eq!(roundtrip, report.pack_origins);
+        assert_eq!(
+            report.by_signature["PACK"],
+            SigCounts {
+                deduped: 0,
+                copied: 1
+            }
+        );
+        assert_eq!(
+            report.pack_accounting,
+            LegacyPackMergeAccounting {
+                raw_source: LegacyPackExpectedCounts { fnv: 2, fo3: 1 },
+                override_winners: LegacyPackExpectedCounts { fnv: 1, fo3: 1 },
+                override_losers: LegacyPackExpectedCounts { fnv: 1, fo3: 0 },
+                editor_id_deduped: LegacyPackExpectedCounts::default(),
+                sanitization_drops: LegacyPackExpectedCounts::default(),
+                final_survivors: LegacyPackExpectedCounts { fnv: 1, fo3: 1 },
+                form_key_remaps: LegacyPackExpectedCounts::default(),
+            }
+        );
+        assert_eq!(serialized["pack_accounting"]["raw_source"]["fnv"], 2);
+        assert_eq!(serialized["pack_accounting"]["final_survivors"]["fo3"], 1);
     }
 
     #[test]
@@ -545,6 +792,7 @@ mod tests {
             output_path: output.clone(),
             report_path: None,
             game: "fnv".to_string(),
+            source_strings_dir: None,
         })
         .unwrap();
 
@@ -614,6 +862,7 @@ mod tests {
             output_path: output.clone(),
             report_path: None,
             game: "fnv".to_string(),
+            source_strings_dir: None,
         })
         .unwrap();
 
@@ -671,6 +920,7 @@ mod tests {
             output_path: output.clone(),
             report_path: None,
             game: "fnv".to_string(),
+            source_strings_dir: None,
         })
         .unwrap();
         assert_eq!(report.sanitized_occurrences, 2);
@@ -746,6 +996,7 @@ mod tests {
             output_path: output.clone(),
             report_path: None,
             game: "fnv".to_string(),
+            source_strings_dir: None,
         })
         .unwrap();
         assert_eq!(report.deduped, 1);
@@ -758,6 +1009,222 @@ mod tests {
         collect_signature(&plugin.root_items, "INFO", &mut infos);
         assert_eq!(dialogues.len(), 1);
         assert_eq!(infos.len(), 2);
+        plugin_handle_close_native(handle);
+    }
+
+    #[test]
+    fn wilderness_cell_collision_preserves_fo3_coordinate_and_children() {
+        fn exterior_cell(
+            form_id: u32,
+            coordinates: (i32, i32),
+            land_form_id: Option<u32>,
+        ) -> Vec<ParsedItem> {
+            let mut cell = rec("CELL", form_id, "Wilderness");
+            let mut xclc = Vec::new();
+            xclc.extend_from_slice(&coordinates.0.to_le_bytes());
+            xclc.extend_from_slice(&coordinates.1.to_le_bytes());
+            cell.subrecords.push(ParsedSubrecord {
+                signature: "XCLC".into(),
+                data: Bytes::from(xclc),
+                semantic_type: None,
+            });
+            let children = land_form_id
+                .map(|land| {
+                    vec![ParsedItem::Group(ParsedGroup {
+                        label: form_id.to_le_bytes(),
+                        group_type: 9,
+                        tail: Bytes::new(),
+                        children: vec![ParsedItem::Record(rec("LAND", land, ""))],
+                    })]
+                })
+                .unwrap_or_default();
+            vec![
+                ParsedItem::Record(cell),
+                ParsedItem::Group(ParsedGroup {
+                    label: form_id.to_le_bytes(),
+                    group_type: 6,
+                    tail: Bytes::new(),
+                    children,
+                }),
+            ]
+        }
+
+        fn world(form_id: u32, editor_id: &str, cell_items: Vec<ParsedItem>) -> Vec<ParsedItem> {
+            vec![
+                ParsedItem::Record(rec("WRLD", form_id, editor_id)),
+                ParsedItem::Group(ParsedGroup {
+                    label: form_id.to_le_bytes(),
+                    group_type: 1,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Group(ParsedGroup {
+                        label: 0u32.to_le_bytes(),
+                        group_type: 4,
+                        tail: Bytes::new(),
+                        children: vec![ParsedItem::Group(ParsedGroup {
+                            label: 0u32.to_le_bytes(),
+                            group_type: 5,
+                            tail: Bytes::new(),
+                            children: cell_items,
+                        })],
+                    })],
+                }),
+            ]
+        }
+
+        fn coordinates(record: &ParsedRecord) -> Option<(i32, i32)> {
+            let bytes = &record
+                .subrecords
+                .iter()
+                .find(|subrecord| subrecord.signature.as_str() == "XCLC")?
+                .data;
+            Some((
+                i32::from_le_bytes(bytes.get(0..4)?.try_into().ok()?),
+                i32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?),
+            ))
+        }
+
+        fn find_cell_group<'a>(
+            items: &'a [ParsedItem],
+            world_editor_id: &str,
+            wanted_coordinates: (i32, i32),
+        ) -> Option<(&'a ParsedRecord, &'a ParsedGroup)> {
+            let top = items.iter().find_map(|item| match item {
+                ParsedItem::Group(group) if group.group_type == 0 && group.label == *b"WRLD" => {
+                    Some(group)
+                }
+                _ => None,
+            })?;
+            let mut world_children = None;
+            for (index, item) in top.children.iter().enumerate() {
+                let ParsedItem::Record(record) = item else {
+                    continue;
+                };
+                if record.signature.as_str() != "WRLD"
+                    || editor_id_from_effective_subrecords(&record.subrecords) != world_editor_id
+                {
+                    continue;
+                }
+                world_children =
+                    top.children[index + 1..]
+                        .iter()
+                        .find_map(|candidate| match candidate {
+                            ParsedItem::Group(group)
+                                if group.group_type == 1
+                                    && u32::from_le_bytes(group.label) == record.form_id =>
+                            {
+                                Some(group)
+                            }
+                            _ => None,
+                        });
+                break;
+            }
+            fn find<'a>(
+                items: &'a [ParsedItem],
+                wanted_coordinates: (i32, i32),
+            ) -> Option<(&'a ParsedRecord, &'a ParsedGroup)> {
+                for (index, item) in items.iter().enumerate() {
+                    match item {
+                        ParsedItem::Record(record)
+                            if record.signature.as_str() == "CELL"
+                                && coordinates(record) == Some(wanted_coordinates) =>
+                        {
+                            let child_group =
+                                items[index + 1..].iter().find_map(
+                                    |candidate| match candidate {
+                                        ParsedItem::Group(group)
+                                            if group.group_type == 6
+                                                && u32::from_le_bytes(group.label)
+                                                    == record.form_id =>
+                                        {
+                                            Some(group)
+                                        }
+                                        _ => None,
+                                    },
+                                )?;
+                            return Some((record, child_group));
+                        }
+                        ParsedItem::Group(group) => {
+                            if let Some(found) = find(&group.children, wanted_coordinates) {
+                                return Some(found);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+            find(&world_children?.children, wanted_coordinates)
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut primary_worlds = world(
+            0x1000,
+            "NVDLC03BigMT",
+            exterior_cell(0x162A, (-8, 16), None),
+        );
+        primary_worlds.extend(world(
+            0xDA726,
+            "WastelandNV",
+            exterior_cell(0xDDCAB, (16, 22), Some(0xDE20C)),
+        ));
+        let primary = write_test_plugin_items(
+            tmp.path(),
+            "FalloutNV.esm",
+            "fnv",
+            Vec::new(),
+            vec![ParsedItem::Group(ParsedGroup {
+                label: *b"WRLD",
+                group_type: 0,
+                tail: Bytes::new(),
+                children: primary_worlds,
+            })],
+        );
+        let grafted = write_test_plugin_items(
+            tmp.path(),
+            "Fallout3.esm",
+            "fo3",
+            Vec::new(),
+            vec![ParsedItem::Group(ParsedGroup {
+                label: *b"WRLD",
+                group_type: 0,
+                tail: Bytes::new(),
+                children: world(
+                    0x003C,
+                    "Wasteland",
+                    exterior_cell(0x162A, (18, 18), Some(0x1FD7)),
+                ),
+            })],
+        );
+        let output = tmp.path().join("FNV_FO3_Merged.esm");
+
+        run(&MergeOptions {
+            primary_paths: vec![primary],
+            grafted_paths: vec![grafted],
+            output_path: output.clone(),
+            report_path: None,
+            game: "fnv".to_string(),
+            source_strings_dir: None,
+        })
+        .unwrap();
+
+        let handle = load_no_py(output.to_str().unwrap(), Some("fnv")).unwrap();
+        let (plugin, _) = clone_plugin_handle_state_no_py(handle).unwrap();
+        let (fo3_cell, child_group) =
+            find_cell_group(&plugin.root_items, "Wasteland", (18, 18)).unwrap();
+        assert_ne!(fo3_cell.form_id, 0x162A);
+        assert!(child_group.children.iter().any(|item| matches!(
+            item,
+            ParsedItem::Group(group)
+                if group.group_type == 9
+                    && u32::from_le_bytes(group.label) == fo3_cell.form_id
+                    && group.children.iter().any(|child| matches!(
+                        child,
+                        ParsedItem::Record(record)
+                            if record.signature.as_str() == "LAND" && record.form_id == 0x1FD7
+                    ))
+        )));
+        let (fnv_cell, _) = find_cell_group(&plugin.root_items, "WastelandNV", (16, 22)).unwrap();
+        assert_eq!(fnv_cell.form_id, 0xDDCAB);
         plugin_handle_close_native(handle);
     }
 
@@ -780,6 +1247,7 @@ mod tests {
             output_path: tmp.path().join("FNV_FO3_Merged.esm"),
             report_path: Some(report_path.clone()),
             game: "fnv".to_string(),
+            source_strings_dir: None,
         })
         .unwrap_err();
         assert!(matches!(error, MergeError::Dangling(1)));
@@ -807,6 +1275,7 @@ mod tests {
             output_path: tmp.path().join("FNV_FO3_Merged.esm"),
             report_path: Some(report_path.clone()),
             game: "fnv".to_string(),
+            source_strings_dir: None,
         })
         .unwrap_err();
         assert!(matches!(error, MergeError::Dangling(1)));
@@ -841,6 +1310,7 @@ mod tests {
             output_path: output.clone(),
             report_path: Some(report_path.clone()),
             game: "fnv".to_string(),
+            source_strings_dir: None,
         })
         .unwrap();
         assert_eq!(report.sanitized_occurrences, 1);

@@ -255,6 +255,7 @@ fn convert_entry_staged(
             report.errors.join("; ")
         });
     }
+    let source_root = source_data_root(source);
     synthesize_materials(
         staged.as_ref(),
         mod_path,
@@ -262,6 +263,7 @@ fn convert_entry_staged(
         written_materials,
         sink,
         data_root,
+        source_root.as_deref(),
     )?;
     staged
         .persist(output)
@@ -273,6 +275,287 @@ fn convert_entry_staged(
     Ok(report)
 }
 
+// Shader flag bits, mirroring nif_core's Skyrim/FO4 BSLightingShaderProperty.
+pub(crate) const SLSF1_SPECULAR: u64 = 1 << 0;
+pub(crate) const SLSF1_ENVIRONMENT_MAPPING: u64 = 1 << 7;
+pub(crate) const SLSF1_OWN_EMIT: u64 = 1 << 22;
+pub(crate) const SLSF2_DOUBLE_SIDED: u64 = 1 << 4;
+pub(crate) const SLSF2_GLOW_MAP: u64 = 1 << 6;
+pub(crate) const SLSF2_TREE_ANIM: u64 = 1 << 29;
+
+/// Everything about one BSLightingShaderProperty that affects the FO4 material.
+/// Two shapes sharing a texture set but differing in flags or scalars are
+/// distinct materials and must hash differently.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GamebryoMaterialSpec {
+    pub(crate) textures: Vec<String>,
+    pub(crate) flags_1: u64,
+    pub(crate) flags_2: u64,
+    pub(crate) specular_strength: f32,
+    pub(crate) smoothness: f32,
+    pub(crate) environment_map_scale: f32,
+    pub(crate) texture_clamp_mode: u64,
+    pub(crate) alpha_test_ref: u8,
+    pub(crate) alpha_test: bool,
+    pub(crate) two_sided: bool,
+    pub(crate) tree: bool,
+}
+
+pub(crate) fn material_spec_hash(spec: &GamebryoMaterialSpec) -> u64 {
+    let mut hash = texture_set_hash(&spec.textures);
+    for value in [
+        spec.flags_1,
+        spec.flags_2,
+        u64::from(spec.specular_strength.to_bits()),
+        u64::from(spec.smoothness.to_bits()),
+        u64::from(spec.environment_map_scale.to_bits()),
+        spec.texture_clamp_mode,
+        u64::from(spec.alpha_test_ref),
+        spec.alpha_test as u64,
+        spec.two_sided as u64,
+        spec.tree as u64,
+    ] {
+        for byte in value.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    hash
+}
+
+fn slot(spec: &GamebryoMaterialSpec, index: usize) -> String {
+    spec.textures
+        .get(index)
+        .map(|path| normalize_texture_slot(path))
+        .unwrap_or_default()
+}
+
+fn nonempty(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+/// Derive the FO4 `_s` path from the normal's path.
+///
+/// The texture engine keys the `_s` output off the `_n` in the normal's stem
+/// (`path_with_role_suffix`), so a normal without `_n` yields no `_s` and the
+/// slot must stay empty rather than naming a file nothing writes.
+fn smooth_spec_path(normal: &str) -> String {
+    if normal.is_empty() {
+        return String::new();
+    }
+    let Some(stem_end) = normal.rfind('.') else {
+        return String::new();
+    };
+    let (stem, ext) = normal.split_at(stem_end);
+    let Some(index) = stem.to_ascii_lowercase().rfind("_n") else {
+        return String::new();
+    };
+    format!("{}_s{ext}", &stem[..index])
+}
+
+/// Replace a non-cube environment map with a vanilla FO4 cubemap.
+///
+/// FNV ships 29 flat 2D images in the env-map slot and Skyrim 4; FO4 binds that
+/// slot as a cube, so the source cannot be used. Returns true when a
+/// substitution was made.
+pub(crate) fn substitute_non_cube_envmap(
+    spec: &mut GamebryoMaterialSpec,
+    source_root: Option<&Path>,
+    material_source_path: &str,
+) -> bool {
+    if has_flag_information(spec) && spec.flags_1 & SLSF1_ENVIRONMENT_MAPPING == 0 {
+        return false;
+    }
+    let slot_four = slot(spec, 4);
+    if slot_four.is_empty() {
+        return false;
+    }
+    // Without a resolvable source root we cannot tell a cube from a 2D image;
+    // leave the authored slot alone rather than substituting blind.
+    let Some(source_root) = source_root else {
+        return false;
+    };
+
+    let on_disk = source_root.join("textures").join(&slot_four);
+    let is_cube = directxtex_native::read_dds_probe(&on_disk)
+        .map(|probe| probe.is_cubemap)
+        .unwrap_or(false);
+    if is_cube {
+        return false;
+    }
+
+    while spec.textures.len() < 5 {
+        spec.textures.push(String::new());
+    }
+    match materials_native::convert::select_fo4_cubemap(material_source_path) {
+        Some((cubemap, scale)) => {
+            spec.textures[4] = cubemap.to_string();
+            spec.environment_map_scale = scale;
+        }
+        None => {
+            spec.flags_1 &= !SLSF1_ENVIRONMENT_MAPPING;
+            spec.textures[4] = String::new();
+        }
+    }
+    true
+}
+
+/// FNV/FO3 `BSShaderPPLightingProperty` carries no FO4-style SLSF1 bits, so the
+/// converted block arrives with `Shader Flags 1 == 0`. That means "no flag
+/// information", not "every feature off" — deriving booleans straight from the
+/// bits would disable specular and env-mapping on every FNV material. When the
+/// word is empty we fall back to evidence from the texture slots instead.
+fn has_flag_information(spec: &GamebryoMaterialSpec) -> bool {
+    spec.flags_1 != 0
+}
+
+pub(crate) fn fo4_bgsm_from_spec(spec: &GamebryoMaterialSpec) -> bgsm::BgsmData {
+    let diffuse = slot(spec, 0);
+    let normal = slot(spec, 1);
+    let flags_known = has_flag_information(spec);
+    let mut material = fo4_bgsm_v2(diffuse, normal.clone());
+
+    material.header.tile_u = spec.texture_clamp_mode & 0x02 != 0;
+    material.header.tile_v = spec.texture_clamp_mode & 0x01 != 0;
+    material.header.alpha_test = spec.alpha_test;
+    if spec.alpha_test {
+        material.header.alpha_test_ref = spec.alpha_test_ref;
+    }
+    material.header.two_sided = spec.two_sided;
+    material.SmoothSpecTexture = smooth_spec_path(&normal);
+    material.SpecularEnabled = if flags_known {
+        spec.flags_1 & SLSF1_SPECULAR != 0
+    } else {
+        // Matches the pre-existing unconditional default for Gamebryo sources;
+        // per-texel strength now comes from the synthesized `_s` map.
+        true
+    };
+    material.SpecularMult = spec.specular_strength;
+    material.Smoothness = spec.smoothness;
+    material.Glowmap = spec.flags_2 & SLSF2_GLOW_MAP != 0;
+    material.EmitEnabled =
+        spec.flags_2 & SLSF2_GLOW_MAP != 0 || (!spec.tree && spec.flags_1 & SLSF1_OWN_EMIT != 0);
+    material.Tree = spec.tree;
+    if material.Glowmap || material.EmitEnabled {
+        material.GlowTexture = nonempty(slot(spec, 2));
+    }
+
+    let env_mapped = if flags_known {
+        spec.flags_1 & SLSF1_ENVIRONMENT_MAPPING != 0
+    } else {
+        // No flag word: an authored slot-4 env map is the only evidence.
+        !slot(spec, 4).is_empty()
+    };
+    if env_mapped {
+        material.header.env_mapping = Some(true);
+        material.header.env_mapping_mask_scale = Some(spec.environment_map_scale);
+        material.EnvmapTexture = nonempty(slot(spec, 4));
+    } else {
+        material.header.env_mapping = Some(false);
+        // Vanilla FO4 writes 1.0 here even when env mapping is off; 0.0 means
+        // "fully masked out" and is wrong shader behaviour.
+        material.header.env_mapping_mask_scale = Some(1.0);
+    }
+
+    // Slot 5 is the environment mask. It has no FO4 BGSM slot — the texture
+    // engine already folded it into `_s.R`.
+    material
+}
+
+/// Derive the extracted-data root from a source NIF path by walking up past the
+/// `meshes/` component, so env-map slots can be probed on disk.
+pub(crate) fn source_data_root(nif_source: &Path) -> Option<PathBuf> {
+    let mut current = nif_source.parent()?;
+    loop {
+        if current
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("meshes"))
+        {
+            return current.parent().map(Path::to_path_buf);
+        }
+        current = current.parent()?;
+    }
+}
+
+/// Read a shader-flag word. `convert_file` writes both `Shader Flags 1` and the
+/// `Shader Flags 1:FO4` alias; the alias wins when present, mirroring the
+/// precedence in `convert_file::flag_names_to_bits`.
+fn shader_u64(block: &nif_core_native::model::NifBlock, field: &str) -> u64 {
+    let alias = format!("{field}:FO4");
+    block
+        .fields
+        .get(alias.as_str())
+        .or_else(|| block.get_field(field))
+        .map(NifValue::as_i64)
+        .filter(|value| *value >= 0)
+        .map(|value| value as u64)
+        .unwrap_or(0)
+}
+
+fn shader_f32(block: &nif_core_native::model::NifBlock, field: &str, default: f32) -> f32 {
+    match block.get_field(field) {
+        Some(NifValue::Float(value)) => *value as f32,
+        _ => default,
+    }
+}
+
+fn shader_clamp_mode(block: &nif_core_native::model::NifBlock) -> u64 {
+    match block.get_field("Texture Clamp Mode") {
+        Some(NifValue::UInt(value)) => *value,
+        Some(NifValue::Int(value)) if *value >= 0 => *value as u64,
+        Some(NifValue::String(value)) => match value.as_str() {
+            "CLAMP_S_WRAP_T" => 1,
+            "WRAP_S_CLAMP_T" => 2,
+            "WRAP_S_WRAP_T" => 3,
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
+
+fn alpha_settings_by_shader(nif: &NifFile) -> HashMap<usize, (bool, u8)> {
+    let mut settings = HashMap::new();
+    for shape in nif.blocks.iter().filter(|block| {
+        matches!(
+            block.type_name.as_str(),
+            "BSTriShape" | "BSSubIndexTriShape"
+        )
+    }) {
+        let Some(shader_id) = shape
+            .get_field("Shader Property")
+            .map(NifValue::as_i64)
+            .filter(|id| *id >= 0)
+            .map(|id| id as usize)
+        else {
+            continue;
+        };
+        let Some(alpha) = shape
+            .get_field("Alpha Property")
+            .map(NifValue::as_i64)
+            .filter(|id| *id >= 0)
+            .and_then(|id| nif.get_block(id as usize))
+            .filter(|block| block.type_name == "NiAlphaProperty")
+        else {
+            continue;
+        };
+        let alpha_test = alpha
+            .get_field("Flags")
+            .map(NifValue::as_i64)
+            .is_some_and(|flags| flags >= 0 && flags as u64 & (1 << 9) != 0);
+        let threshold = alpha
+            .get_field("Threshold")
+            .map(NifValue::as_i64)
+            .filter(|value| *value >= 0)
+            .map(|value| value.min(u8::MAX as i64) as u8)
+            .unwrap_or(128);
+        if alpha_test || !settings.contains_key(&shader_id) {
+            settings.insert(shader_id, (alpha_test, threshold));
+        }
+    }
+    settings
+}
+
 fn synthesize_materials(
     nif_path: &Path,
     mod_path: &Path,
@@ -280,6 +563,7 @@ fn synthesize_materials(
     written_materials: &Mutex<HashSet<PathBuf>>,
     sink: Option<&crate::sinks::SinkSet>,
     data_root: &Path,
+    source_root: Option<&Path>,
 ) -> Result<(), String> {
     let mut nif = NifFile::load(nif_path.to_path_buf()).map_err(|error| error.to_string())?;
     let texture_sets = nif
@@ -299,21 +583,56 @@ fn synthesize_materials(
                 .collect::<Vec<_>>();
             Some((block.block_id, textures))
         })
-        .collect::<Vec<_>>();
+        .collect::<HashMap<_, _>>();
+    let alpha_settings = alpha_settings_by_shader(&nif);
+
+    let mut specs: HashMap<usize, GamebryoMaterialSpec> = HashMap::new();
+    for block in nif.blocks.iter() {
+        if block.type_name != "BSLightingShaderProperty" {
+            continue;
+        }
+        let Some(texture_set_id) = block
+            .get_field("Texture Set")
+            .map(NifValue::as_i64)
+            .filter(|id| *id >= 0)
+            .map(|id| id as usize)
+        else {
+            continue;
+        };
+        let Some(textures) = texture_sets.get(&texture_set_id) else {
+            continue;
+        };
+        let flags_2 = shader_u64(block, "Shader Flags 2");
+        let (alpha_test, alpha_test_ref) = alpha_settings
+            .get(&block.block_id)
+            .copied()
+            .unwrap_or((false, 128));
+        let mut spec = GamebryoMaterialSpec {
+            textures: textures.clone(),
+            flags_1: shader_u64(block, "Shader Flags 1"),
+            flags_2,
+            specular_strength: shader_f32(block, "Specular Strength", 1.0),
+            smoothness: shader_f32(block, "Smoothness", 0.5),
+            environment_map_scale: shader_f32(block, "Environment Map Scale", 1.0),
+            texture_clamp_mode: shader_clamp_mode(block),
+            alpha_test_ref,
+            alpha_test,
+            two_sided: flags_2 & SLSF2_DOUBLE_SIDED != 0,
+            tree: flags_2 & SLSF2_TREE_ANIM != 0,
+        };
+        // Must run before the hash so substituted materials do not collide with
+        // unsubstituted ones sharing the same texture set.
+        substitute_non_cube_envmap(&mut spec, source_root, material_root);
+        specs.insert(texture_set_id, spec);
+    }
 
     let mut material_by_texture_set = HashMap::new();
-    for (texture_set_id, textures) in texture_sets {
-        let filename = format!("gamebryo_{:016x}.bgsm", texture_set_hash(&textures));
+    for (texture_set_id, spec) in &specs {
+        let filename = format!("gamebryo_{:016x}.bgsm", material_spec_hash(spec));
         let material_ref = format!("{}\\{filename}", material_root.replace('/', "\\"));
         let material_path = mod_path.join("data").join(material_root).join(&filename);
-        write_material_once(
-            &material_path,
-            &textures,
-            written_materials,
-            sink,
-            data_root,
-        )?;
-        material_by_texture_set.insert(texture_set_id, material_ref);
+        write_material_once(&material_path, spec, written_materials, sink, data_root)?;
+        material_by_texture_set.insert(*texture_set_id, material_ref);
     }
 
     for block in nif.blocks.iter_mut() {
@@ -338,7 +657,7 @@ fn synthesize_materials(
 
 fn write_material_once(
     path: &Path,
-    textures: &[String],
+    spec: &GamebryoMaterialSpec,
     written_materials: &Mutex<HashSet<PathBuf>>,
     sink: Option<&crate::sinks::SinkSet>,
     data_root: &Path,
@@ -353,13 +672,7 @@ fn write_material_once(
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("create {}: {error}", parent.display()))?;
     }
-    let diffuse = textures
-        .first()
-        .map_or_else(String::new, |path| normalize_texture_slot(path));
-    let normal = textures
-        .get(1)
-        .map_or_else(String::new, |path| normalize_texture_slot(path));
-    let material = fo4_bgsm_v2(diffuse, normal);
+    let material = fo4_bgsm_from_spec(spec);
     write_bytes_atomic(path, &bgsm::write(&material))
         .map_err(|error| format!("write {}: {error}", path.display()))?;
     if let Err(error) = register_output(sink, data_root, path) {
@@ -699,18 +1012,341 @@ mod tests {
         std::fs::create_dir_all(blocked_parent.parent().unwrap()).unwrap();
         std::fs::write(&blocked_parent, b"not a directory").unwrap();
         let material_path = blocked_parent.join("retry.bgsm");
-        let textures = vec!["Textures/Test/d.dds".to_string()];
+        let spec = GamebryoMaterialSpec {
+            textures: vec!["Textures/Test/d.dds".to_string()],
+            ..GamebryoMaterialSpec::default()
+        };
         let written = Mutex::new(HashSet::new());
 
-        assert!(
-            write_material_once(&material_path, &textures, &written, None, &data_root).is_err()
-        );
+        assert!(write_material_once(&material_path, &spec, &written, None, &data_root).is_err());
         std::fs::remove_file(&blocked_parent).unwrap();
-        write_material_once(&material_path, &textures, &written, None, &data_root).unwrap();
+        write_material_once(&material_path, &spec, &written, None, &data_root).unwrap();
         assert!(material_path.is_file());
         assert_eq!(written.lock().unwrap().len(), 1);
 
         let _ = std::fs::remove_dir_all(temp);
+    }
+
+    fn write_flat_2d_dds(path: &Path) {
+        let mut image = directxtex_native::ScratchImage::default();
+        image
+            .initialize_2d(
+                directxtex_native::DXGI_FORMAT_R8G8B8A8_UNORM,
+                8,
+                8,
+                1,
+                1,
+                directxtex_native::CP_FLAGS_NONE,
+            )
+            .unwrap();
+        let bytes = image
+            .save_dds(directxtex_native::DDS_FLAGS_NONE)
+            .unwrap()
+            .buffer()
+            .to_vec();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn material_spec_carries_slots_flags_and_scalars() {
+        let spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Clutter/Crate/CrateLarge01.dds".to_string(),
+                "Textures/Clutter/Crate/CrateLarge01_n.dds".to_string(),
+                String::new(),
+                String::new(),
+                "Textures/Cubemaps/MetalChrome01Cube_e.dds".to_string(),
+                "Textures/Clutter/Crate/CrateLarge01_m.dds".to_string(),
+            ],
+            flags_1: SLSF1_SPECULAR | SLSF1_ENVIRONMENT_MAPPING,
+            flags_2: 0,
+            specular_strength: 0.75,
+            smoothness: 0.42,
+            environment_map_scale: 0.30,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let material = fo4_bgsm_from_spec(&spec);
+
+        assert_eq!(material.DiffuseTexture, "Clutter/Crate/CrateLarge01.dds");
+        assert_eq!(material.NormalTexture, "Clutter/Crate/CrateLarge01_n.dds");
+        assert_eq!(
+            material.SmoothSpecTexture, "Clutter/Crate/CrateLarge01_s.dds",
+            "the _s map synthesized by the texture engine"
+        );
+        assert_eq!(
+            material.EnvmapTexture.as_deref(),
+            Some("Cubemaps/MetalChrome01Cube_e.dds")
+        );
+        assert!(material.SpecularEnabled);
+        assert!((material.SpecularMult - 0.75).abs() < 1e-6);
+        assert!((material.Smoothness - 0.42).abs() < 1e-6);
+        assert_eq!(material.header.env_mapping, Some(true));
+        assert!((material.header.env_mapping_mask_scale.unwrap() - 0.30).abs() < 1e-6);
+        assert!(
+            material.GlowTexture.is_none(),
+            "slot 5 is the env mask, not glow"
+        );
+    }
+
+    #[test]
+    fn material_spec_without_env_mapping_flag_leaves_cubemap_empty() {
+        let spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Landscape/Rocks/Rock01.dds".to_string(),
+                "Textures/Landscape/Rocks/Rock01_n.dds".to_string(),
+            ],
+            flags_1: SLSF1_SPECULAR,
+            flags_2: 0,
+            specular_strength: 1.0,
+            smoothness: 0.1,
+            environment_map_scale: 1.0,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let material = fo4_bgsm_from_spec(&spec);
+
+        assert_eq!(material.header.env_mapping, Some(false));
+        assert!(material.EnvmapTexture.is_none());
+        assert_eq!(
+            material.header.env_mapping_mask_scale,
+            Some(1.0),
+            "vanilla FO4 writes 1.0 even when env mapping is off"
+        );
+    }
+
+    #[test]
+    fn material_spec_maps_slot_two_to_glow_when_glow_mapped() {
+        let spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Signs/NeonSign.dds".to_string(),
+                "Textures/Signs/NeonSign_n.dds".to_string(),
+                "Textures/Signs/NeonSign_g.dds".to_string(),
+            ],
+            flags_1: 0,
+            flags_2: SLSF2_GLOW_MAP,
+            specular_strength: 1.0,
+            smoothness: 0.1,
+            environment_map_scale: 1.0,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let material = fo4_bgsm_from_spec(&spec);
+
+        assert_eq!(
+            material.GlowTexture.as_deref(),
+            Some("Signs/NeonSign_g.dds")
+        );
+        assert!(material.Glowmap);
+    }
+
+    #[test]
+    fn tall_grass_material_preserves_fo4_render_state() {
+        let spec = GamebryoMaterialSpec {
+            textures: vec!["Textures/Landscape/Grass/GrassWastelandComp01.dds".to_string()],
+            flags_1: SLSF1_OWN_EMIT,
+            flags_2: SLSF2_DOUBLE_SIDED | SLSF2_TREE_ANIM,
+            smoothness: 0.282,
+            texture_clamp_mode: 3,
+            alpha_test_ref: 100,
+            alpha_test: true,
+            two_sided: true,
+            tree: true,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let material = fo4_bgsm_from_spec(&spec);
+
+        assert!(material.header.tile_u);
+        assert!(material.header.tile_v);
+        assert!(material.header.alpha_test);
+        assert_eq!(material.header.alpha_test_ref, 100);
+        assert!(material.header.two_sided);
+        assert!(material.Tree);
+        assert!(!material.EmitEnabled);
+        assert!((material.Smoothness - 0.282).abs() < 1e-6);
+    }
+
+    #[test]
+    fn alpha_property_drives_synthesized_material_threshold() {
+        let mut nif = NifFile::new("fo4");
+        let shader_id = nif.add_block("BSLightingShaderProperty", None);
+        let alpha_id = nif.add_block(
+            "NiAlphaProperty",
+            Some(indexmap::IndexMap::from([
+                ("Flags".to_string(), NifValue::UInt(4844)),
+                ("Threshold".to_string(), NifValue::UInt(100)),
+            ])),
+        );
+        nif.add_block(
+            "BSTriShape",
+            Some(indexmap::IndexMap::from([
+                (
+                    "Shader Property".to_string(),
+                    NifValue::Ref(shader_id as i32),
+                ),
+                ("Alpha Property".to_string(), NifValue::Ref(alpha_id as i32)),
+            ])),
+        );
+
+        assert_eq!(
+            alpha_settings_by_shader(&nif).get(&shader_id),
+            Some(&(true, 100))
+        );
+    }
+
+    #[test]
+    fn material_hash_separates_identical_textures_with_different_flags() {
+        let base = GamebryoMaterialSpec {
+            textures: vec!["Textures/A.dds".to_string(), "Textures/A_n.dds".to_string()],
+            flags_1: 0,
+            flags_2: 0,
+            specular_strength: 1.0,
+            smoothness: 0.5,
+            environment_map_scale: 1.0,
+            ..GamebryoMaterialSpec::default()
+        };
+        let mut env_mapped = base.clone();
+        env_mapped.flags_1 = SLSF1_ENVIRONMENT_MAPPING;
+
+        assert_ne!(
+            material_spec_hash(&base),
+            material_spec_hash(&env_mapped),
+            "two materials sharing a texture set but differing in flags must not collide"
+        );
+    }
+
+    #[test]
+    fn non_cube_envmap_slot_is_substituted_with_a_vanilla_cubemap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source_root = tmp.path();
+        let envmap_dir = source_root.join("textures/architecture/novac");
+        std::fs::create_dir_all(&envmap_dir).unwrap();
+        write_flat_2d_dds(&envmap_dir.join("motel_window_e.dds"));
+
+        let mut spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Architecture/Novac/motel_window.dds".to_string(),
+                "Textures/Architecture/Novac/motel_window_n.dds".to_string(),
+                String::new(),
+                String::new(),
+                "Textures/Architecture/Novac/motel_window_e.dds".to_string(),
+            ],
+            flags_1: SLSF1_ENVIRONMENT_MAPPING,
+            flags_2: 0,
+            specular_strength: 1.0,
+            smoothness: 0.1,
+            environment_map_scale: 1.0,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let substituted = substitute_non_cube_envmap(
+            &mut spec,
+            Some(source_root),
+            "Materials/Weapons/Novac/motel.bgsm",
+        );
+
+        assert!(substituted, "a 2D source must be reported as substituted");
+        assert!(
+            spec.textures[4].starts_with("Shared/Cubemaps/"),
+            "slot 4 must now name a vanilla FO4 cubemap, got {:?}",
+            spec.textures[4]
+        );
+    }
+
+    #[test]
+    fn unresolvable_source_root_leaves_the_authored_envmap_alone() {
+        let mut spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Gone/thing.dds".to_string(),
+                "Textures/Gone/thing_n.dds".to_string(),
+                String::new(),
+                String::new(),
+                "Textures/Gone/thing_e.dds".to_string(),
+            ],
+            flags_1: SLSF1_ENVIRONMENT_MAPPING,
+            flags_2: 0,
+            specular_strength: 1.0,
+            smoothness: 0.1,
+            environment_map_scale: 1.0,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        assert!(!substitute_non_cube_envmap(
+            &mut spec,
+            None,
+            "Materials/Gone/thing.bgsm"
+        ));
+        assert_eq!(spec.textures[4], "Textures/Gone/thing_e.dds");
+    }
+
+    #[test]
+    fn empty_flag_word_means_unknown_not_everything_off() {
+        // Real FNV statics convert with Shader Flags 1 == 0 (verified against
+        // the CrateLarge01 fixture). Deriving booleans straight from the bits
+        // would disable specular on every FNV material.
+        let spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Clutter/Crate/CrateLarge01.dds".to_string(),
+                "Textures/Clutter/Crate/CrateLarge01_n.dds".to_string(),
+            ],
+            flags_1: 0,
+            flags_2: 0,
+            specular_strength: 1.0,
+            smoothness: 0.5,
+            environment_map_scale: 1.0,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let material = fo4_bgsm_from_spec(&spec);
+
+        assert!(
+            material.SpecularEnabled,
+            "specular must not silently vanish"
+        );
+        assert_eq!(
+            material.SmoothSpecTexture,
+            "Clutter/Crate/CrateLarge01_s.dds"
+        );
+        assert_eq!(
+            material.header.env_mapping,
+            Some(false),
+            "no slot-4 evidence means no env mapping"
+        );
+    }
+
+    #[test]
+    fn empty_flag_word_still_honours_an_authored_env_map_slot() {
+        let spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Strip/Metal01.dds".to_string(),
+                "Textures/Strip/Metal01_n.dds".to_string(),
+                String::new(),
+                String::new(),
+                "Shared/Cubemaps/MetalChrome01Cube_e.dds".to_string(),
+            ],
+            flags_1: 0,
+            flags_2: 0,
+            specular_strength: 1.0,
+            smoothness: 0.5,
+            environment_map_scale: 0.5,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let material = fo4_bgsm_from_spec(&spec);
+
+        assert_eq!(material.header.env_mapping, Some(true));
+        assert_eq!(
+            material.EnvmapTexture.as_deref(),
+            Some("Shared/Cubemaps/MetalChrome01Cube_e.dds")
+        );
+    }
+
+    #[test]
+    fn source_data_root_walks_up_past_meshes() {
+        let root = source_data_root(Path::new("X:/extracted/fnv/meshes/clutter/crate.nif"));
+        assert_eq!(root, Some(PathBuf::from("X:/extracted/fnv")));
+        assert_eq!(source_data_root(Path::new("crate.nif")), None);
     }
 
     #[test]

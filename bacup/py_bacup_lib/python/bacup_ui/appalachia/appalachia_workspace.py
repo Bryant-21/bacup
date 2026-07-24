@@ -9,6 +9,7 @@ from imgui_bundle import hello_imgui, imgui
 
 from creation_lib.ui.shell import BaseWorkspace, make_window
 from bacup_ui.appalachia.window_title import appalachia_window_title
+from bacup_ui.setup import get_active_project, set_active_project
 
 _log = logging.getLogger("toolkit.appalachia")
 _NS = "##appalachia"
@@ -25,11 +26,10 @@ APP_EXPANSION = "Bethesda Asset Converter Universal Platform"
 _PROJECTS = (
     ("appalachia", "Tales From Appalachia", "fo76:fo4"),
     ("wasteland", "Legends of the Wasteland", "fnvfo3:fo4"),
-    ("north", "Fables of the North", "skyrimse:fo4"),
+    ("north", "Northern Lands", "skyrimse:fo4"),
 )
 
-# The FNV/FO3 and Skyrim workflows remain registered but are not ready for UI use.
-_ENABLED_PROJECTS = (_PROJECTS[0],)
+_ENABLED_PROJECTS = _PROJECTS
 
 
 class AppalachiaWorkspace(BaseWorkspace):
@@ -45,12 +45,24 @@ class AppalachiaWorkspace(BaseWorkspace):
         self._log_panels = {}
         self._runner = None
         self._runner_owner = None
-        self._active_project_id = "appalachia"
+        self._active_project_id = (
+            get_active_project(toolkit_settings) if toolkit_settings is not None
+            else "appalachia"
+        )
+        self._initial_project_tab_pending = True
         self._changelog_pending = False
         self._setup_confirm_pending = False
 
     def get_dockable_windows(self):
-        return [make_window(f"{APP_NAME}{_NS}", "MainDockSpace")]
+        return [
+            make_window(
+                f"{APP_NAME}{_NS}",
+                "MainDockSpace",
+                is_visible=True,
+                can_be_closed=False,
+                remember_is_visible=False,
+            )
+        ]
 
     def initialize(self) -> None:
         from bacup_ui.conversion.panels.conversion_log import ConversionLogPanel
@@ -68,8 +80,8 @@ class AppalachiaWorkspace(BaseWorkspace):
             self._log_panels[project_id] = log_panel
             self._regen_panels[project_id] = panel
 
-        self._regen_panel = self._regen_panels["appalachia"]
-        self._log_panel = self._log_panels["appalachia"]
+        self._regen_panel = self._regen_panels[self._active_project_id]
+        self._log_panel = self._log_panels[self._active_project_id]
         self._bind_panels({f"{APP_NAME}{_NS}": self._draw_projects})
         self._initialized = True
         _log.info("B.A.C.U.P. workspace initialized")
@@ -83,14 +95,25 @@ class AppalachiaWorkspace(BaseWorkspace):
         imgui.separator()
         if imgui.begin_tab_bar(f"{_NS}_projects"):
             for project_id, label, _pair_id in _ENABLED_PROJECTS:
-                opened = imgui.begin_tab_item(label)
+                flags = (
+                    imgui.TabItemFlags_.set_selected
+                    if self._initial_project_tab_pending
+                    and project_id == self._active_project_id
+                    else imgui.TabItemFlags_.none
+                )
+                opened = imgui.begin_tab_item(label, flags=flags)
                 if isinstance(opened, tuple):
                     opened = opened[0]
                 if opened:
-                    self._active_project_id = project_id
+                    if self._active_project_id != project_id:
+                        self._active_project_id = project_id
+                        set_active_project(self._toolkit_settings, project_id)
+                    self._regen_panel = self._regen_panels[project_id]
+                    self._log_panel = self._log_panels[project_id]
                     self._regen_panels[project_id].draw_project()
                     imgui.end_tab_item()
             imgui.end_tab_bar()
+            self._initial_project_tab_pending = False
         imgui.end()
 
     def start_conversion_runner(self, owner, runner) -> None:

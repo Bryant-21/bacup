@@ -52,7 +52,10 @@ pub fn copy_character_support_files_in_mod_path(
 
 fn actor_roots_for_mod_path(mod_path: &Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    for meshes in [mod_path.join("data").join("Meshes"), mod_path.join("meshes")] {
+    for meshes in [
+        mod_path.join("data").join("Meshes"),
+        mod_path.join("meshes"),
+    ] {
         if let Some(actors) = child_dir_ci(&meshes, "actors") {
             roots.push(actors);
         }
@@ -178,8 +181,7 @@ mod tests {
         // No floater/overgrown output dir — the variant ssf must still ship.
         // No wendigo output creature dir at all — wendigo must be skipped.
 
-        let report =
-            copy_character_support_files_in_mod_path(&mod_path, &source).unwrap();
+        let report = copy_character_support_files_in_mod_path(&mod_path, &source).unwrap();
         assert_eq!(report.records_changed, 4);
         assert!(out_snally.join("snallygaster.ssf").is_file());
         assert!(out_snally.join("bonelodsetting.txt").is_file());
@@ -213,8 +215,7 @@ mod tests {
         let out_ca = mod_path.join("data/Meshes/actors/mothman/characterassets");
         write(&out_ca.join("Mothman.ssf"), b"already-there");
 
-        let report =
-            copy_character_support_files_in_mod_path(&mod_path, &source).unwrap();
+        let report = copy_character_support_files_in_mod_path(&mod_path, &source).unwrap();
         assert_eq!(report.records_changed, 0);
         assert_eq!(
             std::fs::read(out_ca.join("Mothman.ssf")).unwrap(),

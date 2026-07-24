@@ -37,8 +37,9 @@
 //! # Not implemented at the raw-record level
 //! - **TPTA remap** (FO76→FO4 slot drop + presence backfill): needs typed-struct
 //!   decode to map slot index → field name.
-//! - **PRPS curve-table flatten**: FO4 PRPS is `array_struct:I,f` with no
-//!   CurveTable column; a no-op on pure FO4 input.
+//! - **PRPS curve-table flatten**: handled by the whole-plugin-safe
+//!   `flatten_npc_property_curves` fixup because non-creature NPCs use the same
+//!   FO76 curve column.
 //! - **RACE `NoKnockdowns` / `ActorTypeAnimal`**: needs RACE `DATA` flag-bit
 //!   identification.
 
@@ -256,6 +257,7 @@ fn apply_to_record_with_lvln_templates(
 
     changed |= resolve_lvln_template_slots(record, lvln_templates);
     changed |= clear_lvln_model_animation_template_slot(record, &lvln_templates.all_lvln_raw);
+    changed |= clear_dummy_model_animation_template_slot(record, lvln_templates);
     changed |= sync_acbs_template_flags_from_tpta(record);
     changed |= apply_aidt_defaults(record);
 
@@ -277,6 +279,8 @@ fn apply_to_record_with_lvln_templates(
 #[derive(Default)]
 struct LvlnTemplateResolution {
     all_lvln_raw: FxHashSet<u32>,
+    dummy_races: FxHashSet<FormKey>,
+    dummy_model_animation_npc_raw: FxHashSet<u32>,
     raw_to_lvln_fk: FxHashMap<u32, FormKey>,
     raw_by_fk: FxHashMap<FormKey, u32>,
     lvln_entries: FxHashMap<FormKey, Vec<LvlnTemplateEntry>>,
@@ -349,7 +353,25 @@ fn build_lvln_template_resolution(
                 if let Some(raw) = encode_target_form_id(fk, interner, target_masters) {
                     resolution.raw_by_fk.insert(fk, raw);
                 }
+                let Ok(record) = session.record_decoded(&fk, target_schema, interner) else {
+                    continue;
+                };
+                if record_editor_id_contains(&record, interner, "dummyactorrace") {
+                    resolution.dummy_races.insert(fk);
+                }
             }
+        }
+    }
+
+    for (npc_fk, info) in &resolution.npc_infos {
+        if !info
+            .race
+            .is_some_and(|race| resolution.dummy_races.contains(&race))
+        {
+            continue;
+        }
+        if let Some(raw) = resolution.raw_by_fk.get(npc_fk) {
+            resolution.dummy_model_animation_npc_raw.insert(*raw);
         }
     }
 
@@ -807,6 +829,23 @@ fn clear_lvln_model_animation_template_slot(
         changed = true;
     }
     changed
+}
+
+fn clear_dummy_model_animation_template_slot(
+    record: &mut Record,
+    resolution: &LvlnTemplateResolution,
+) -> bool {
+    if resolution.dummy_model_animation_npc_raw.is_empty() || !record_has_subrecord(record, "WNAM")
+    {
+        return false;
+    }
+    let Some(race) = npc_race_from_record(record, resolution) else {
+        return false;
+    };
+    if resolution.dummy_races.contains(&race) {
+        return false;
+    }
+    clear_lvln_model_animation_template_slot(record, &resolution.dummy_model_animation_npc_raw)
 }
 
 // ---------------------------------------------------------------------------
@@ -1413,6 +1452,48 @@ mod tests {
             model_animation_npc
         );
         assert_eq!(acbs_template_flags(&r), TEMPLATE_MODEL_ANIMATION);
+    }
+
+    #[test]
+    fn liberator_drops_dummy_actor_model_animation_template() {
+        let interner = StringInterner::new();
+        let plugin = "Out.esp";
+        let liberator_race = fk(0x002ECF, plugin, &interner);
+        let dummy_race = fk(0x797814, plugin, &interner);
+        let dummy_template = fk(0x85A3CF, plugin, &interner);
+        let liberator_race_raw: u32 = 0x0100_2ECF;
+        let dummy_template_raw: u32 = 0x0185_A3CF;
+        let mut record = npc(0x85B676, plugin, &interner);
+        push_bytes(
+            &mut record,
+            "ACBS",
+            make_acbs_with_template_flags(0, TEMPLATE_MODEL_ANIMATION),
+        );
+        push_bytes(
+            &mut record,
+            "RNAM",
+            liberator_race_raw.to_le_bytes().to_vec(),
+        );
+        push_bytes(&mut record, "WNAM", 0x0100_2ED0_u32.to_le_bytes().to_vec());
+        let mut slots = [0u32; 13];
+        slots[TPTA_MODEL_ANIMATION_SLOT_INDEX] = dummy_template_raw;
+        push_bytes(&mut record, "TPTA", make_tpta(slots));
+
+        let mut resolution = LvlnTemplateResolution::default();
+        resolution
+            .raw_by_fk
+            .insert(liberator_race, liberator_race_raw);
+        resolution.dummy_races.insert(dummy_race);
+        resolution
+            .dummy_model_animation_npc_raw
+            .insert(dummy_template_raw);
+
+        assert!(apply_to_record_with_lvln_templates(
+            &mut record,
+            &resolution
+        ));
+        assert_eq!(first_tpta_slot(&record, TPTA_MODEL_ANIMATION_SLOT_INDEX), 0);
+        assert_eq!(acbs_template_flags(&record), 0);
     }
 
     #[test]

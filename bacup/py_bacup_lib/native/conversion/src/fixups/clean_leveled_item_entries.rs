@@ -146,7 +146,7 @@ impl Fixup for CleanLeveledItemEntriesFixup {
                             }
                             Err(message) => {
                                 sig_warnings.push(mapper.interner.intern(&message));
-                                drop_lvlg(record.sig, &mut record)
+                                false
                             }
                         };
                         changed |= ensure_leveled_list_defaults(&mut record);
@@ -557,7 +557,7 @@ fn sync_llct_count(fields: &mut smallvec::SmallVec<[FieldEntry; 8]>) {
 /// Raw LVLO payloads store a 32-bit FormID at offset 4. That FormID is resolved
 /// against the target plugin's master table so the same invalid-reference
 /// predicate can validate both decoded and raw entries.
-fn extract_entry_reference(
+pub(crate) fn extract_entry_reference(
     value: &FieldValue,
     sym: Sym,
     target_master_names: &[String],
@@ -672,12 +672,7 @@ fn source_chance_none_from_lvlg(
 }
 
 fn apply_source_chance_none_global(record: &mut Record, chance_none: Option<u8>) -> bool {
-    let mut changed = false;
-    if let Some(chance_none) = chance_none {
-        changed |= set_lvld(record, chance_none);
-    }
-    changed |= drop_lvlg(record.sig, record);
-    changed
+    chance_none.is_some_and(|chance_none| set_lvld(record, chance_none))
 }
 
 fn set_lvld(record: &mut Record, chance_none: u8) -> bool {
@@ -711,18 +706,6 @@ fn set_lvld(record: &mut Record, chance_none: u8) -> bool {
         },
     );
     true
-}
-
-fn drop_lvlg(sig: SigCode, record: &mut Record) -> bool {
-    if !matches!(sig.as_str(), "LVLI" | "LVLN") {
-        return false;
-    }
-    let Some(lvlg_sig) = subrecord_sig("LVLG") else {
-        return false;
-    };
-    let before = record.fields.len();
-    record.fields.retain(|entry| entry.sig != lvlg_sig);
-    record.fields.len() != before
 }
 
 fn source_lvlg_reference(
@@ -1162,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn source_chance_none_global_sets_lvld_and_drops_lvlg() {
+    fn source_chance_none_global_sets_lvld_and_keeps_lvlg() {
         let interner = StringInterner::new();
         let record_fk = make_fk("4510AF", "SeventySix.esm", &interner);
         let global_fk = make_fk("4510B1", "SeventySix.esm", &interner);
@@ -1191,7 +1174,7 @@ mod tests {
             record
                 .fields
                 .iter()
-                .all(|entry| entry.sig.as_str() != "LVLG")
+                .any(|entry| entry.sig.as_str() == "LVLG")
         );
     }
 
@@ -1213,7 +1196,7 @@ mod tests {
             .iter()
             .map(|entry| entry.sig.as_str())
             .collect();
-        assert_eq!(sigs, vec!["LVLD", "LVLF"]);
+        assert_eq!(sigs, vec!["LVLD", "LVLG", "LVLF"]);
         assert_eq!(record.fields[0].value, FieldValue::Uint(25));
     }
 

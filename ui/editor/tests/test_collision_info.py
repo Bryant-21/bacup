@@ -132,3 +132,93 @@ def test_physics_system_summary_labels_empty_polytope_as_unsupported(monkeypatch
 
     assert suffix == "(Unsupported/empty polytope)"
     assert "Shape: hknpConvexPolytopeShape (no decoded geometry)" in lines
+
+
+def test_physics_system_shapes_expose_selectable_compound_children(monkeypatch):
+    monkeypatch.setattr(
+        collision_info,
+        "_parse_packfile_summary",
+        lambda _blob, _block_id=-1: {
+            "shape_kind": "compound_polytope",
+            "objects": [
+                {"class_name": "hknpDynamicCompoundShape"},
+                {
+                    "class_name": "hknpConvexPolytopeShape",
+                    "n_vertices": 12,
+                    "n_faces": 8,
+                },
+                {"class_name": "hknpCapsuleShape"},
+            ],
+            "bodies": [
+                {
+                    "body_id": 3,
+                    "shape_class": "hknpDynamicCompoundShape",
+                    "layer": 4,
+                    "material_crc": 4146539321,
+                    "bs_materials": [],
+                }
+            ],
+            "n_subshapes": 2,
+        },
+    )
+    monkeypatch.setattr(
+        collision_info,
+        "_parse_packfile_previews",
+        lambda _blob, _block_id, _body_id: [
+            {
+                "shape_type": "convex_hull",
+                "mesh": {"vertices": [{}] * 20, "triangles": [{}] * 16},
+            },
+            {
+                "shape_type": "capsule",
+                "mesh": {"vertices": [{}] * 24, "triangles": [{}] * 32},
+            },
+        ],
+    )
+    block = _Block(31, "bhkPhysicsSystem", {"Binary Data": {"Data": [0, 1]}})
+
+    bodies = collision_info.inspect_physics_system_shapes(block)
+
+    assert len(bodies) == 1
+    body = bodies[0]
+    assert body.display_type == "Dynamic Compound"
+    assert body.layer == "CLUTTER (4)"
+    assert body.materials == ("WeaponPistol (4146539321)",)
+    assert [shape.display_type for shape in body.sub_shapes] == [
+        "Convex Polytope",
+        "Capsule",
+    ]
+    assert body.sub_shapes[0].vertex_count == 12
+    assert body.sub_shapes[0].triangle_count == 8
+    assert body.sub_shapes[1].vertex_count == 24
+    assert body.sub_shapes[1].triangle_count == 32
+
+
+def test_find_physics_system_shape_returns_body_or_sub_shape(monkeypatch):
+    child = collision_info.HavokShapeInfo(
+        body_id=2,
+        shape_index=0,
+        class_name="hknpCompressedMeshShape",
+        display_type="Compressed Mesh",
+        layer=None,
+        materials=(),
+        material_types=(),
+    )
+    body = collision_info.HavokShapeInfo(
+        body_id=2,
+        shape_index=None,
+        class_name="hknpDynamicCompoundShape",
+        display_type="Dynamic Compound",
+        layer=None,
+        materials=(),
+        material_types=(),
+        sub_shapes=(child,),
+    )
+    monkeypatch.setattr(
+        collision_info,
+        "inspect_physics_system_shapes",
+        lambda _block: (body,),
+    )
+
+    assert collision_info.find_physics_system_shape(object(), 2, None) is body
+    assert collision_info.find_physics_system_shape(object(), 2, 0) is child

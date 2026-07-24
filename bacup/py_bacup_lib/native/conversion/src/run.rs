@@ -27,12 +27,17 @@ use crate::fnv_legacy_scripting::{
     translate_all_qust, translate_all_scen,
 };
 use crate::formkey_mapper::{
-    FormKeyMapper, MapperOptions, MapperState, allows_editor_id_vanilla_remap,
-    is_static_marker_editor_id, mapper_allows_editor_id_vanilla_remap,
+    FIRST_ALLOCATION_ID, FormKeyMapper, MapperOptions, MapperState, ResolutionMode,
+    allows_editor_id_vanilla_remap, is_static_marker_editor_id,
+    mapper_allows_editor_id_vanilla_remap,
 };
 use crate::full_plugin::{AssetPhaseFlags, FullPluginRunState, WarningPolicy, intern_plugin_names};
 use crate::ids::{FormKey, SigCode, SubrecordSig};
 use crate::legacy_fallout_navmesh::{LegacyFalloutNavmeshBatch, prepare_legacy_fallout_navmeshes};
+use crate::legacy_pack_preflight::{
+    DirectLegacyPackOrigin, LegacyPackExpectedCounts, LegacyPackOriginRow,
+    LegacyPackPreflightAccumulator, LegacyPackPreflightReport,
+};
 use crate::record::{FieldEntry, FieldValue, Record};
 use crate::schema::AuthoringSchema;
 use crate::source_read::{
@@ -46,14 +51,127 @@ use crate::sym::Sym;
 use crate::target_normalize::{TargetRecordNormalization, TargetRecordNormalizer};
 use crate::target_write::{
     add_projected_navmeshes_chunk_native, add_quest_child_record_native, add_record_native,
-    add_topic_child_record_native, rebuild_projected_navi_from_source_native,
-    rebuild_projected_navi_from_source_with_nver_native, rebuild_projected_navi_native,
-    rebuild_worldspace_groups_from_source_native, replace_record_native,
+    add_topic_child_record_native, encode_form_key_for_handle,
+    rebuild_projected_navi_from_source_native, rebuild_projected_navi_from_source_with_nver_native,
+    rebuild_projected_navi_native, rebuild_worldspace_groups_from_source_native,
+    replace_record_contents_native,
 };
 use crate::translator::TranslateResult;
 use crate::translator::pair_hook::PairCtx;
 use crate::translator::target_hook::TargetCtx;
 use crate::translator::{Decision, DeferredKind, Game, Translator};
+use esp_authoring_core::plugin_runtime::FO4_CANONICAL_NAVI_FORM_ID;
+
+const FIXUP_WARNING_LOG_LIMIT: usize = 32;
+const FIXUP_DIAGNOSTIC_LOG_LIMIT: usize = 64;
+
+fn fixup_warning_log_messages(
+    phase: &str,
+    name: &str,
+    iteration: u32,
+    report: &FixupReport,
+    interner: &StringInterner,
+) -> Vec<String> {
+    let mut messages = report
+        .warnings
+        .iter()
+        .take(FIXUP_WARNING_LOG_LIMIT)
+        .map(|warning| {
+            let detail = interner.resolve(*warning).unwrap_or("<unresolved>");
+            format!("[{phase}] diagnostic {name} iter={iteration} {detail}")
+        })
+        .collect::<Vec<_>>();
+    if report.warnings.len() > FIXUP_WARNING_LOG_LIMIT {
+        messages.push(format!(
+            "[{phase}] diagnostic {name} iter={iteration} truncated={} total={}",
+            report.warnings.len() - FIXUP_WARNING_LOG_LIMIT,
+            report.warnings.len()
+        ));
+    }
+    messages
+}
+
+fn emit_fixup_warning_logs(
+    event_tx: &crossbeam_channel::Sender<crate::phase::PhaseEvent>,
+    phase: &'static str,
+    name: &str,
+    iteration: u32,
+    report: &FixupReport,
+    interner: &StringInterner,
+) {
+    for message in fixup_warning_log_messages(phase, name, iteration, report, interner) {
+        eprintln!("{message}");
+        let _ = event_tx.try_send(crate::phase::PhaseEvent::Log {
+            phase,
+            level: crate::phase::LogLevel::Warn,
+            message,
+        });
+    }
+}
+
+fn emit_fixup_diagnostic_logs(
+    event_tx: &crossbeam_channel::Sender<crate::phase::PhaseEvent>,
+    phase: &'static str,
+    name: &str,
+    iteration: u32,
+    report: &FixupReport,
+    interner: &StringInterner,
+) {
+    let total = report.diagnostics.len();
+    for diagnostic in report.diagnostics.iter().take(FIXUP_DIAGNOSTIC_LOG_LIMIT) {
+        let detail = interner.resolve(*diagnostic).unwrap_or("<unresolved>");
+        let message = format!("[{phase}] decision {name} iter={iteration} {detail}");
+        eprintln!("{message}");
+        let _ = event_tx.try_send(crate::phase::PhaseEvent::Log {
+            phase,
+            level: crate::phase::LogLevel::Info,
+            message,
+        });
+    }
+    if total > FIXUP_DIAGNOSTIC_LOG_LIMIT {
+        let message = format!(
+            "[{phase}] decision {name} iter={iteration} truncated={} total={total}",
+            total - FIXUP_DIAGNOSTIC_LOG_LIMIT
+        );
+        eprintln!("{message}");
+        let _ = event_tx.try_send(crate::phase::PhaseEvent::Log {
+            phase,
+            level: crate::phase::LogLevel::Info,
+            message,
+        });
+    }
+}
+
+fn emit_fixup_report_log(
+    event_tx: &crossbeam_channel::Sender<crate::phase::PhaseEvent>,
+    phase: &'static str,
+    name: &str,
+    report: &FixupReport,
+    interner: &StringInterner,
+) {
+    let detail = report
+        .message
+        .and_then(|message| interner.resolve(message))
+        .map(|message| format!(" message={message}"))
+        .unwrap_or_default();
+    let message = format!(
+        "[{phase}] finished {name} changed={} dropped={} added={} warnings={} diagnostics={}{}",
+        report.records_changed,
+        report.records_dropped,
+        report.records_added,
+        report.warnings.len(),
+        report.diagnostics.len(),
+        detail
+    );
+    eprintln!("{message}");
+    let _ = event_tx.try_send(crate::phase::PhaseEvent::Log {
+        phase,
+        level: crate::phase::LogLevel::Info,
+        message,
+    });
+    emit_fixup_warning_logs(event_tx, phase, name, 1, report, interner);
+    emit_fixup_diagnostic_logs(event_tx, phase, name, 1, report, interner);
+}
 
 // ---------------------------------------------------------------------------
 // RunConfig — options that drive mapper + translator behaviour
@@ -115,6 +233,10 @@ pub struct RunConfig {
     /// null-dangling pass DEFERS the LCTN LCUN/LCEP/ACEP class; the authoritative
     /// resolution runs post-copy via `repair_placed_child_refs`.
     pub defer_placed_child_ref_class: bool,
+    pub legacy_pack_origins: Vec<LegacyPackOriginRow>,
+    pub legacy_pack_raw_source_counts: Option<LegacyPackExpectedCounts>,
+    pub legacy_pack_expected_counts: Option<LegacyPackExpectedCounts>,
+    pub legacy_pack_provenance_required: bool,
 }
 
 impl RunConfig {
@@ -135,10 +257,70 @@ pub struct TargetRecordPreflightRow {
     pub form_key: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct TargetMasterRecordContext {
+    handle_id: u64,
+    plugin_name: String,
+    master_names: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnvScriLink {
     pub target_form_key: String,
     pub source_scpt_form_key: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LegacyFormKeyAllocationIntent {
+    pub source_fk: FormKey,
+    pub editor_id: Option<Sym>,
+    pub target_sig: SigCode,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LegacyFormKeyPreallocationCoverage {
+    pub eligible: usize,
+    pub mapped: usize,
+    pub missing: usize,
+}
+
+fn legacy_output_allocation_floor(
+    source: Game,
+    target: Game,
+    source_plugin_name: &str,
+    output_plugin_name: &str,
+    preserve_source_ids: bool,
+    current_floor: u32,
+    source_locals: impl IntoIterator<Item = u32>,
+) -> Result<Option<u32>, &'static str> {
+    if !matches!(source, Game::Fnv | Game::Fo3)
+        || target != Game::Fo4
+        || !source_plugin_name.eq_ignore_ascii_case(output_plugin_name)
+    {
+        return Ok(None);
+    }
+
+    let mut max_source_local = None;
+    let mut needs_generated_id = !preserve_source_ids;
+    for local in source_locals {
+        max_source_local = Some(max_source_local.map_or(local, |current: u32| current.max(local)));
+        needs_generated_id |= local < FIRST_ALLOCATION_ID;
+    }
+    if !needs_generated_id {
+        return Ok(None);
+    }
+    let Some(max_source_local) = max_source_local else {
+        return Ok(None);
+    };
+    let next = max_source_local
+        .checked_add(1)
+        .ok_or("legacy source/output plugin identity leaves no disjoint FormID allocation space")?;
+    if next > 0x00FF_FFFF {
+        return Err(
+            "legacy source/output plugin identity leaves no disjoint FormID allocation space",
+        );
+    }
+    Ok(Some(current_floor.max(next)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +368,7 @@ pub struct ConversionRun {
     pub source_handle_id: u64,
     pub target_handle_id: u64,
     pub master_handle_ids: Vec<u64>,
+    pub(crate) target_master_record_contexts: Vec<TargetMasterRecordContext>,
     pub interner: StringInterner,
     pub schema_source: Arc<AuthoringSchema>,
     pub schema_target: Arc<AuthoringSchema>,
@@ -194,6 +377,12 @@ pub struct ConversionRun {
     /// Long-lived mapper state: persists from translate_all through fixups.
     /// None before translate_all is first called.
     pub mapper_state: Option<MapperState>,
+    generated_object_id_reservations: FxHashSet<u32>,
+    pub(crate) legacy_serial_normalization:
+        crate::translator::pair_hooks::fnv_fo4::LegacySerialNormalizationState,
+    pub legacy_pack_preflight_report: Option<LegacyPackPreflightReport>,
+    pub(crate) legacy_creature_race_coverage:
+        crate::translator::pair_hooks::fnv_creature_race::CreatureRaceCoverageReport,
     /// Decisions accumulated during translation (drained by PyO3 / Python).
     pub decisions: Vec<Decision>,
     /// Warning message symbols (drained by PyO3 / Python).
@@ -353,6 +542,7 @@ pub enum RunError {
     LockPoisoned,
     /// Translation was cancelled by the progress callback (or by Ctrl-C).
     Cancelled,
+    LegacyPackPreflight(Box<LegacyPackPreflightReport>),
 }
 
 impl std::fmt::Display for RunError {
@@ -362,6 +552,11 @@ impl std::fmt::Display for RunError {
             Self::InvalidConfig(msg) => write!(f, "invalid run config: {msg}"),
             Self::LockPoisoned => write!(f, "conversion run registry lock is poisoned"),
             Self::Cancelled => write!(f, "translation cancelled"),
+            Self::LegacyPackPreflight(report) => write!(
+                f,
+                "legacy PACK preflight blocked conversion: {}",
+                report.error_summary_json()
+            ),
         }
     }
 }
@@ -582,6 +777,21 @@ fn target_editor_id_has_same_signature(
     })
 }
 
+pub(crate) fn target_collision_donor_form_key(
+    target_eid_index: &FxHashMap<Sym, Vec<(FormKey, crate::ids::SigCode)>>,
+    interner: &StringInterner,
+    editor_id: &str,
+    sig: crate::ids::SigCode,
+) -> Option<FormKey> {
+    let normalized = interner.intern(&normalized_editor_id(editor_id));
+    target_eid_index.get(&normalized).and_then(|matches| {
+        matches
+            .iter()
+            .find(|(_, candidate_sig)| *candidate_sig == sig)
+            .map(|(form_key, _)| *form_key)
+    })
+}
+
 fn set_record_editor_id(record: &mut Record, interner: &StringInterner, editor_id: &str) {
     let eid_sym = interner.intern(editor_id);
     record.eid = Some(eid_sym);
@@ -656,13 +866,18 @@ const FO76_FO4_VANILLA_REMAP_BLOCKED_SIGS: &[&str] = &["STAT", "SCOL", "MSTT"];
 const FO76_FO4_FORCE_COLLISION_RENAME_SIGS: &[&str] = &["STAT", "SCOL", "MSTT", "ARMO", "ARMA"];
 
 fn editor_id_vanilla_remap_blocked_sigs(source: Game, target: Game) -> Vec<String> {
+    let mut blocked = Vec::new();
     if source == Game::Fo76 && target == Game::Fo4 {
-        return FO76_FO4_VANILLA_REMAP_BLOCKED_SIGS
-            .iter()
-            .map(|sig| (*sig).to_owned())
-            .collect();
+        blocked.extend(
+            FO76_FO4_VANILLA_REMAP_BLOCKED_SIGS
+                .iter()
+                .map(|sig| (*sig).to_owned()),
+        );
     }
-    Vec::new()
+    if source != target && target == Game::Fo4 {
+        blocked.push("CELL".to_owned());
+    }
+    blocked
 }
 
 pub(crate) fn is_editor_id_collision_rename_forced(
@@ -957,6 +1172,7 @@ const FO76_FO4_FORCED_KEYWORD_SUBSTITUTIONS: &[(u32, &str, u32)] = &[
 /// FO4 Fallout4.esm object-id)`.
 const FO76_FO4_FORCED_RACE_SUBSTITUTIONS: &[(u32, u32)] = &[
     (0x0079_CCE7, 0x000E_AFB6), // GHL_PlayerGhoulRace -> GhoulRace
+    (0x0077_2F32, 0x000D_FB33), // ProtectronFastRace -> ProtectronRace
 ];
 
 const FO4_HUMAN_RACE_LOCAL: u32 = 0x0001_3746;
@@ -1085,6 +1301,40 @@ fn fnv_fo3_fo4_humanoid_race_substitution_mappings(
             ))
         })
         .collect()
+}
+
+pub(crate) fn seed_fnv_fo3_fo4_ammo_substitutions(
+    mapper_state: &mut MapperState,
+    source_entries: &[(Sym, FormKey, crate::ids::SigCode)],
+    interner: &StringInterner,
+    source: Game,
+    target: Game,
+) -> Result<usize, String> {
+    if !matches!(source, Game::Fnv | Game::Fo3) || target != Game::Fo4 {
+        return Ok(0);
+    }
+    let ammo_sig = SigCode::from_str("AMMO")?;
+    let table = crate::translator::ammo_substitute::AmmoSubstituteTable::from_yaml(
+        crate::embedded::AMMO_FNV_TO_FO4,
+    )?;
+    let mut seeded = 0;
+    for (editor_id, source_form_key, signature) in source_entries {
+        if *signature != ammo_sig {
+            continue;
+        }
+        let Some(editor_id) = interner.resolve(*editor_id) else {
+            continue;
+        };
+        let Some(target_form_key) = table.lookup(editor_id) else {
+            continue;
+        };
+        let target_form_key = FormKey::parse(&target_form_key, interner)?;
+        mapper_state
+            .source_to_target
+            .insert(*source_form_key, target_form_key);
+        seeded += 1;
+    }
+    Ok(seeded)
 }
 
 fn fo76_fo4_forced_base_object_substitution_mappings(
@@ -1551,18 +1801,37 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
         crate::relocation::RelocationBuildResult::default()
     };
 
+    let target_master_record_contexts = params
+        .master_handle_ids
+        .iter()
+        .filter_map(|handle_id| {
+            plugin_context_for_handle(*handle_id)
+                .ok()
+                .map(|(plugin_name, master_names)| TargetMasterRecordContext {
+                    handle_id: *handle_id,
+                    plugin_name,
+                    master_names,
+                })
+        })
+        .collect();
+
     let run = ConversionRun {
         source: params.source,
         target: params.target,
         source_handle_id: params.source_handle_id,
         target_handle_id: params.target_handle_id,
         master_handle_ids: params.master_handle_ids,
+        target_master_record_contexts,
         interner: StringInterner::new(),
         schema_source,
         schema_target,
         translator,
         config,
         mapper_state: None,
+        generated_object_id_reservations: FxHashSet::default(),
+        legacy_serial_normalization: Default::default(),
+        legacy_pack_preflight_report: None,
+        legacy_creature_race_coverage: Default::default(),
         decisions: Vec::new(),
         warnings: Vec::new(),
         deferred: Vec::new(),
@@ -1695,7 +1964,58 @@ impl ConversionRun {
         }
         handles.masters.clear();
         self.master_handle_ids.clear();
+        self.target_master_record_contexts.clear();
         released
+    }
+
+    pub(crate) fn merge_target_collision_donor(
+        &self,
+        record: &mut Record,
+        donor_form_key: FormKey,
+    ) -> Result<(), String> {
+        let donor_plugin = self
+            .interner
+            .resolve(donor_form_key.plugin)
+            .ok_or_else(|| "collision donor plugin is not interned".to_string())?;
+        let context = self
+            .target_master_record_contexts
+            .iter()
+            .find(|context| context.plugin_name.eq_ignore_ascii_case(donor_plugin))
+            .ok_or_else(|| format!("collision donor master is not loaded: {donor_plugin}"))?;
+        let mut donor = read_record_relayout_by_form_key(
+            context.handle_id,
+            &donor_form_key,
+            &self.schema_target,
+            &self.interner,
+            None,
+        )
+        .map_err(|error| format!("collision donor read failed: {error}"))?;
+
+        let target_master_names = if self.config.target_master_names.is_empty() {
+            self.target_master_record_contexts
+                .iter()
+                .map(|context| context.plugin_name.clone())
+                .collect()
+        } else {
+            self.config.target_master_names.clone()
+        };
+        let mut donor_state = MapperState::new(
+            [],
+            MapperOptions {
+                output_plugin_name: self.config.output_plugin_name.clone(),
+                source_plugin_name: context.plugin_name.clone(),
+                source_master_names: context.master_names.clone(),
+                target_master_names,
+                resolution_mode: ResolutionMode::DeferAndFixup,
+                ..Default::default()
+            },
+        );
+        let mut donor_mapper = FormKeyMapper::from_state(&mut donor_state, &self.interner);
+        donor_mapper
+            .rewrite_record(&mut donor)
+            .map_err(|error| format!("collision donor VMAD reindex failed: {error}"))?;
+        crate::collision_donor::merge_target_collision_donor(record, &donor, &self.interner);
+        Ok(())
     }
 
     /// Translate every record in the source plugin into the target plugin.
@@ -1726,9 +2046,268 @@ impl ConversionRun {
         });
     }
 
+    pub(crate) fn preallocate_legacy_form_key_intents(
+        &mut self,
+        intents: impl IntoIterator<Item = LegacyFormKeyAllocationIntent>,
+    ) -> LegacyFormKeyPreallocationCoverage {
+        let mut coverage = LegacyFormKeyPreallocationCoverage::default();
+        let state = self
+            .mapper_state
+            .as_mut()
+            .expect("mapper_state initialized before legacy preallocation");
+        let mut mapper = FormKeyMapper::from_state(state, &self.interner);
+        for intent in intents {
+            coverage.eligible += 1;
+            let normalized_eid = normalized_eid_opt(intent.editor_id, mapper.interner);
+            mapper.allocate_or_resolve(intent.source_fk, normalized_eid, intent.target_sig);
+            if mapper.lookup(intent.source_fk).is_some() {
+                coverage.mapped += 1;
+            } else {
+                coverage.missing += 1;
+            }
+        }
+        coverage
+    }
+
+    pub(crate) fn legacy_pack_gate_active(&self) -> bool {
+        self.config.is_whole_plugin
+            && matches!(self.source, Game::Fnv | Game::Fo3)
+            && self.target == Game::Fo4
+    }
+
+    pub(crate) fn begin_legacy_pack_preflight(
+        &mut self,
+        source_plugin_name: &str,
+    ) -> Option<LegacyPackPreflightAccumulator> {
+        if !self.legacy_pack_gate_active() {
+            return None;
+        }
+        self.legacy_pack_preflight_report = None;
+        let source_family = match self.source {
+            Game::Fnv => crate::translator::pair_hooks::fnv_pack::LegacyPackSourceFamily::Fnv,
+            Game::Fo3 => crate::translator::pair_hooks::fnv_pack::LegacyPackSourceFamily::Fo3,
+            _ => return None,
+        };
+        let require_explicit_origins = self.config.legacy_pack_provenance_required
+            || source_plugin_name.eq_ignore_ascii_case("FNV_FO3_Merged.esm");
+        let raw_expected = if require_explicit_origins {
+            LegacyPackExpectedCounts::audited_merged()
+        } else {
+            LegacyPackExpectedCounts::audited_for(source_family)
+        };
+        let expected = self.config.legacy_pack_expected_counts.unwrap_or_else(|| {
+            if require_explicit_origins {
+                LegacyPackExpectedCounts::audited_merged()
+            } else {
+                LegacyPackExpectedCounts::audited_for(source_family)
+            }
+        });
+        let direct_origin = (!require_explicit_origins
+            && self.config.legacy_pack_origins.is_empty())
+        .then(|| DirectLegacyPackOrigin {
+            family: source_family,
+            source_plugin: source_plugin_name.to_string(),
+        });
+        let explicitly_excluded = self
+            .config
+            .skip_record_signatures
+            .iter()
+            .any(|sig| sig.trim().eq_ignore_ascii_case("PACK"));
+        let _ = self.event_tx.try_send(crate::phase::PhaseEvent::Log {
+            phase: "preflight",
+            level: crate::phase::LogLevel::Info,
+            message: format!(
+                "legacy_pack_preflight:start:raw_expected_fnv={}:raw_expected_fo3={}:expected_fnv={}:expected_fo3={}:explicit_origins={}:explicitly_excluded={}",
+                raw_expected.fnv,
+                raw_expected.fo3,
+                expected.fnv,
+                expected.fo3,
+                self.config.legacy_pack_origins.len(),
+                explicitly_excluded,
+            ),
+        });
+        Some(LegacyPackPreflightAccumulator::new(
+            &self.config.legacy_pack_origins,
+            raw_expected,
+            self.config.legacy_pack_raw_source_counts,
+            expected,
+            direct_origin,
+            require_explicit_origins,
+            explicitly_excluded,
+        ))
+    }
+
+    pub(crate) fn finish_legacy_pack_preflight(
+        &mut self,
+        accumulator: LegacyPackPreflightAccumulator,
+    ) -> Result<(), RunError> {
+        let report = accumulator.finish();
+        let blocked = report.is_blocked();
+        let message = format!(
+            "legacy_pack_preflight:{}:{}",
+            if blocked { "blocked" } else { "passed" },
+            report.error_summary_json()
+        );
+        let _ = self.event_tx.try_send(crate::phase::PhaseEvent::Log {
+            phase: "preflight",
+            level: if blocked {
+                crate::phase::LogLevel::Error
+            } else {
+                crate::phase::LogLevel::Info
+            },
+            message,
+        });
+        self.legacy_pack_preflight_report = Some(report.clone());
+        if blocked {
+            return Err(RunError::LegacyPackPreflight(Box::new(report)));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn preflight_legacy_packs_from_handle(&mut self) -> Result<(), RunError> {
+        if !self.legacy_pack_gate_active() {
+            return Ok(());
+        }
+        let source_plugin_name = plugin_name_for_handle(self.source_handle_id)?;
+        let Some(mut accumulator) = self.begin_legacy_pack_preflight(&source_plugin_name) else {
+            return Ok(());
+        };
+        let pack_sig = SigCode::from_str("PACK")
+            .map_err(|error| RunError::InvalidConfig(format!("PACK signature: {error}")))?;
+        let form_keys = iter_form_keys_of_sig(self.source_handle_id, pack_sig, &mut self.interner)?;
+        for form_key in form_keys {
+            match read_record_relayout_by_form_key(
+                self.source_handle_id,
+                &form_key,
+                &self.schema_source,
+                &self.interner,
+                None,
+            ) {
+                Ok(record) => accumulator.observe_decoded(&record, &self.interner),
+                Err(error) => {
+                    accumulator.observe_decode_error(form_key, error.to_string(), &self.interner)
+                }
+            }
+        }
+        self.finish_legacy_pack_preflight(accumulator)
+    }
+
+    pub(crate) fn prepare_legacy_output_allocation_domain(
+        &mut self,
+        source_locals: impl IntoIterator<Item = u32>,
+    ) -> Result<(), RunError> {
+        if !matches!(self.source, Game::Fnv | Game::Fo3) || self.target != Game::Fo4 {
+            return Ok(());
+        }
+        let state = self
+            .mapper_state
+            .as_mut()
+            .expect("mapper_state initialized before legacy preallocation");
+        if let Some(floor) = legacy_output_allocation_floor(
+            self.source,
+            self.target,
+            &state.options.source_plugin_name,
+            &state.options.output_plugin_name,
+            state.options.preserve_source_ids,
+            state.next_object_id,
+            source_locals,
+        )
+        .map_err(|message| RunError::InvalidConfig(message.to_string()))?
+        {
+            state.next_object_id = floor;
+        }
+        Ok(())
+    }
+
+    fn preallocate_legacy_translate_all_records(
+        &mut self,
+        form_keys: &[FormKey],
+    ) -> Result<(), RunError> {
+        if !matches!(self.source, Game::Fnv | Game::Fo3) || self.target != Game::Fo4 {
+            return Ok(());
+        }
+        self.emit_phase_status(format!(
+            "translate: legacy forward-reference preallocation start records={}",
+            form_keys.len()
+        ));
+        self.prepare_legacy_output_allocation_domain(
+            form_keys.iter().map(|form_key| form_key.local),
+        )?;
+        let relayout_target_schema = self.schema_target.clone();
+        let relayout_ctx = crate::struct_relayout::StructRelayoutCtx {
+            target_schema: &relayout_target_schema,
+            target_form_version:
+                crate::fixups::remap_struct_internal_formids::FO4_TARGET_FORM_VERSION,
+            legacy_bptd_only: true,
+        };
+        let mut total = LegacyFormKeyPreallocationCoverage::default();
+        let mut intents = Vec::with_capacity(crate::store2::translate_v2::CHUNK);
+        for &source_fk in form_keys {
+            if self.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(RunError::Cancelled);
+            }
+            let Ok(mut source_record) = read_record_relayout_by_form_key(
+                self.source_handle_id,
+                &source_fk,
+                &*self.schema_source,
+                &self.interner,
+                Some(&relayout_ctx),
+            ) else {
+                continue;
+            };
+            {
+                let mut ctx = PairCtx {
+                    interner: &self.interner,
+                };
+                let _ = self.translator.pre_translate(&mut ctx, &mut source_record);
+            }
+            let TranslateResult::Translated(translated) =
+                self.translator.translate(&source_record, &self.interner)
+            else {
+                continue;
+            };
+            if self
+                .schema_target
+                .record_def(translated.sig.as_str())
+                .is_none()
+            {
+                continue;
+            }
+            intents.push(LegacyFormKeyAllocationIntent {
+                source_fk,
+                editor_id: translated.eid,
+                target_sig: translated.sig,
+            });
+            if intents.len() == crate::store2::translate_v2::CHUNK {
+                let coverage = self.preallocate_legacy_form_key_intents(intents.drain(..));
+                total.eligible += coverage.eligible;
+                total.mapped += coverage.mapped;
+                total.missing += coverage.missing;
+            }
+        }
+        if !intents.is_empty() {
+            let coverage = self.preallocate_legacy_form_key_intents(intents.drain(..));
+            total.eligible += coverage.eligible;
+            total.mapped += coverage.mapped;
+            total.missing += coverage.missing;
+        }
+        self.emit_phase_status(format!(
+            "translate: legacy forward-reference preallocation done eligible={} mapped={} missing={}",
+            total.eligible, total.mapped, total.missing
+        ));
+        if total.mapped != total.eligible || total.missing != 0 {
+            return Err(RunError::InvalidConfig(format!(
+                "legacy forward-reference preallocation incomplete: eligible={} mapped={} missing={}",
+                total.eligible, total.mapped, total.missing
+            )));
+        }
+        Ok(())
+    }
+
     pub fn translate_all(&mut self) -> Result<TranslateStats, RunError> {
         self.require_source_handle()?;
         let translate_all_started = std::time::Instant::now();
+        self.preflight_legacy_packs_from_handle()?;
         self.emit_status("translate_all: building mapper state…");
         self.init_mapper_state()?;
         self.emit_status(&format!(
@@ -1737,7 +2316,9 @@ impl ConversionRun {
         ));
 
         if self.config.records_limit == Some(0) {
-            return self.translate_fks(&[]);
+            let stats = self.translate_fks(&[])?;
+            self.finalize_legacy_creature_race_coverage()?;
+            return Ok(stats);
         }
 
         let enumerate_started = std::time::Instant::now();
@@ -1776,7 +2357,9 @@ impl ConversionRun {
             all_fks.len(),
             enumerate_started.elapsed().as_secs_f64()
         ));
+        self.preallocate_legacy_translate_all_records(&all_fks)?;
         let mut stats = self.translate_fks(&all_fks)?;
+        self.finalize_legacy_creature_race_coverage()?;
         if emit_structured_scenes {
             stats.absorb(self.emit_quest_child_scenes()?);
         }
@@ -1846,16 +2429,134 @@ impl ConversionRun {
             .count() as u32;
         self.record_story_manager_diagnostics(&selection.diagnostics);
 
-        emit_stats.quests_changed =
-            self.force_story_manager_dialogue_quests(&selection.selected_dialogue_quests)?;
+        emit_stats.quests_changed = self.restore_passive_dialogue_controllers()?;
+        emit_stats.quests_changed +=
+            self.force_story_manager_dialogue_quests(&selection.fallback_dialogue_quests)?;
+        let event_bridges = self.prepare_story_manager_event_bridges(&selection, &graph)?;
         self.map_story_manager_event_roots(&selection.selected_nodes, &graph);
         self.preallocate_story_manager_nodes(&selection.ordered_nodes, &graph);
+        let mut emitted_nodes = FxHashSet::default();
         emit_stats.translate = self.translate_story_manager_nodes(
             &selection.ordered_nodes,
             &selection.selected_nodes,
+            &selection.selected_quests_by_node,
+            &event_bridges,
             &graph,
+            &mut emitted_nodes,
         )?;
+        let quest_event_plan = crate::phase::story_manager::plan_story_manager_quest_events(
+            &selection,
+            &graph,
+            &event_bridges,
+            &emitted_nodes,
+        );
+        for (quest, final_events) in &quest_event_plan.unresolved {
+            let event_names = final_events
+                .iter()
+                .map(|event| String::from_utf8_lossy(&event.to_le_bytes()).into_owned())
+                .collect::<Vec<_>>()
+                .join(",");
+            let kind = self.interner.intern("story_manager_quest_event_unresolved");
+            self.decisions.push(Decision {
+                kind,
+                message: format!("{:06X}:final_events={event_names}", quest.local),
+            });
+        }
+        emit_stats.quests_changed +=
+            self.rewrite_story_manager_quest_events(&quest_event_plan.rewrites)?;
+        emit_stats.translate.records_translated += event_bridges.len() as u32;
         Ok(emit_stats)
+    }
+
+    fn prepare_story_manager_event_bridges(
+        &mut self,
+        selection: &crate::phase::story_manager::StoryManagerSelection,
+        graph: &crate::phase::story_manager::StoryManagerSourceGraph,
+    ) -> Result<FxHashMap<FormKey, u32>, RunError> {
+        let roots = crate::phase::story_manager::incompatible_story_manager_event_roots(
+            &selection.selected_nodes,
+            graph,
+        );
+        if roots.is_empty() {
+            return Ok(FxHashMap::default());
+        }
+
+        let output_plugin = self.interner.intern(&self.config.output_plugin_name);
+        let allocations = {
+            let state = self
+                .mapper_state
+                .as_mut()
+                .expect("mapper_state initialized before Story Manager emit");
+            if let Some((source_root, target)) = roots.iter().find_map(|(source_root, _)| {
+                state
+                    .source_to_target
+                    .get(source_root)
+                    .copied()
+                    .map(|target| (*source_root, target))
+            }) {
+                return Err(RunError::InvalidConfig(format!(
+                    "story_manager_event_bridge_mapping_exists:{:06X}->{:06X}",
+                    source_root.local, target.local
+                )));
+            }
+            let mut mapper = FormKeyMapper::from_state(state, &self.interner);
+            mapper.reserve_object_ids(roots.iter().map(|(source_root, _)| source_root.local));
+            roots
+                .iter()
+                .map(|(source_root, event_type)| {
+                    let keyword = FormKey {
+                        local: source_root.local,
+                        plugin: output_plugin,
+                    };
+                    let branch = mapper.allocate_generated();
+                    mapper.add_mapping(*source_root, branch);
+                    (*source_root, *event_type, keyword, branch)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut bridges = FxHashMap::default();
+        for (source_root, event_type, keyword, branch) in allocations {
+            let keyword_raw =
+                encode_form_key_for_handle(self.target_handle_id, keyword, &self.interner)
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!(
+                            "story_manager_event_keyword_formid:{:06X}:{error}",
+                            source_root.local
+                        ))
+                    })?;
+            let event_name = String::from_utf8_lossy(&event_type.to_le_bytes()).into_owned();
+            let editor_id = self.interner.intern(&format!("B21_SMEvent_{event_name}"));
+            let mut keyword_record =
+                Record::new(SigCode::from_str("KYWD").expect("literal sig"), keyword);
+            keyword_record.eid = Some(editor_id);
+            keyword_record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("EDID").expect("literal sig"),
+                value: FieldValue::String(editor_id),
+            });
+            add_record_native(
+                self.target_handle_id,
+                keyword_record,
+                &self.schema_target,
+                &self.interner,
+            )
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "story_manager_event_keyword_add:{:06X}:{error}",
+                    source_root.local
+                ))
+            })?;
+            let kind = self.interner.intern("story_manager_event_bridge");
+            self.decisions.push(Decision {
+                kind,
+                message: format!(
+                    "{:06X}:{event_name}:keyword={:06X}:branch={:06X}",
+                    source_root.local, keyword.local, branch.local
+                ),
+            });
+            bridges.insert(source_root, keyword_raw);
+        }
+        Ok(bridges)
     }
 
     fn map_story_manager_event_roots(
@@ -1877,6 +2578,11 @@ impl ConversionRun {
             return;
         };
         let mut mapper = FormKeyMapper::from_state(state, &self.interner);
+        let script_event_root = FormKey {
+            local: crate::phase::story_manager::FO4_SCRIPT_EVENT_ROOT_LOCAL,
+            plugin: fallout4,
+        };
+        mapper.add_mapping(script_event_root, script_event_root);
         for source_fk in selected_nodes {
             let Some(record) = graph.nodes.get(source_fk) else {
                 continue;
@@ -1930,15 +2636,30 @@ impl ConversionRun {
     ) -> Result<u32, RunError> {
         let mut changed = 0u32;
         for source_fk in quest_fks {
-            let target_fk = self
+            if self.force_target_quest_autostart(*source_fk, "story_manager_quest_autostart")? {
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
+
+    fn rewrite_story_manager_quest_events(
+        &mut self,
+        rewrites: &FxHashMap<FormKey, u32>,
+    ) -> Result<u32, RunError> {
+        let mut rewrites = rewrites.iter().collect::<Vec<_>>();
+        rewrites.sort_by_key(|(source_fk, _)| source_fk.local);
+        let mut changed = 0u32;
+        for (source_fk, event_type) in rewrites {
+            let Some(target_fk) = self
                 .mapper_state
                 .as_ref()
                 .and_then(|state| state.source_to_target.get(source_fk))
-                .copied();
-            let Some(target_fk) = target_fk else {
+                .copied()
+            else {
                 let kind = self
                     .interner
-                    .intern("story_manager_quest_autostart_skipped");
+                    .intern("story_manager_quest_event_rewrite_skipped");
                 self.decisions.push(Decision {
                     kind,
                     message: format!("{:06X}:quest_not_translated", source_fk.local),
@@ -1955,30 +2676,147 @@ impl ConversionRun {
                 Ok(record) => record,
                 Err(e) => {
                     let warning = self.interner.intern(&format!(
-                        "story_manager_target_quest_read:{:06X}:{e}",
+                        "story_manager_target_quest_event_read:{:06X}:{e}",
                         target_fk.local
                     ));
                     self.warnings.push(warning);
                     continue;
                 }
             };
-            if crate::phase::story_manager::force_qust_autostart(&mut record, &self.interner) {
-                replace_record_native(
-                    self.target_handle_id,
-                    record,
-                    &self.schema_target,
-                    &self.interner,
-                )
-                .map_err(|e| RunError::InvalidConfig(format!("story_manager_quest_replace:{e}")))?;
+            if !crate::phase::story_manager::set_qust_event_type(&mut record, *event_type) {
+                continue;
+            }
+            let replaced = replace_record_contents_native(
+                self.target_handle_id,
+                record,
+                &self.schema_target,
+                &self.interner,
+            )
+            .map_err(|e| {
+                RunError::InvalidConfig(format!("story_manager_quest_event_replace:{e}"))
+            })?;
+            if !replaced {
+                return Err(RunError::InvalidConfig(format!(
+                    "story_manager_quest_event_replace_missing:{:06X}",
+                    target_fk.local
+                )));
+            }
+            let event_name = String::from_utf8_lossy(&event_type.to_le_bytes()).into_owned();
+            let kind = self.interner.intern("story_manager_quest_event_rewritten");
+            self.decisions.push(Decision {
+                kind,
+                message: format!(
+                    "{:06X}->{:06X}:{event_name}",
+                    source_fk.local, target_fk.local
+                ),
+            });
+            changed += 1;
+        }
+        Ok(changed)
+    }
+
+    fn restore_passive_dialogue_controllers(&mut self) -> Result<u32, RunError> {
+        let npc_quests =
+            crate::phase::story_manager::npc_referenced_quest_local_ids(self.source_handle_id)?;
+        if npc_quests.is_empty() {
+            return Ok(0);
+        }
+        let quest_sig = SigCode::from_str("QUST")
+            .map_err(|e| RunError::InvalidConfig(format!("QUST signature: {e}")))?;
+        let quest_fks = iter_form_keys_of_sig(self.source_handle_id, quest_sig, &self.interner)?;
+        let mut changed = 0;
+        for source_fk in quest_fks {
+            if !npc_quests.contains(&source_fk.local) {
+                continue;
+            }
+            let source_record = match read_record_relayout_by_form_key(
+                self.source_handle_id,
+                &source_fk,
+                &self.schema_source,
+                &self.interner,
+                None,
+            ) {
+                Ok(record) => record,
+                Err(e) => {
+                    let warning = self.interner.intern(&format!(
+                        "passive_dialogue_controller_read:{:06X}:{e}",
+                        source_fk.local
+                    ));
+                    self.warnings.push(warning);
+                    continue;
+                }
+            };
+            if !crate::phase::story_manager::is_passive_dialogue_controller(
+                &source_record,
+                true,
+                &self.interner,
+            ) {
+                continue;
+            }
+            if self.force_target_quest_autostart(source_fk, "quest_startup_passive_controller")? {
                 changed += 1;
-                let kind = self.interner.intern("story_manager_quest_autostart");
-                self.decisions.push(Decision {
-                    kind,
-                    message: format!("{:06X}->{:06X}", source_fk.local, target_fk.local),
-                });
             }
         }
         Ok(changed)
+    }
+
+    fn force_target_quest_autostart(
+        &mut self,
+        source_fk: FormKey,
+        decision_kind: &str,
+    ) -> Result<bool, RunError> {
+        let target_fk = self
+            .mapper_state
+            .as_ref()
+            .and_then(|state| state.source_to_target.get(&source_fk))
+            .copied();
+        let Some(target_fk) = target_fk else {
+            let kind = self.interner.intern(&format!("{decision_kind}_skipped"));
+            self.decisions.push(Decision {
+                kind,
+                message: format!("{:06X}:quest_not_translated", source_fk.local),
+            });
+            return Ok(false);
+        };
+        let mut record = match read_record_relayout_by_form_key(
+            self.target_handle_id,
+            &target_fk,
+            &self.schema_target,
+            &self.interner,
+            None,
+        ) {
+            Ok(record) => record,
+            Err(e) => {
+                let warning = self.interner.intern(&format!(
+                    "story_manager_target_quest_read:{:06X}:{e}",
+                    target_fk.local
+                ));
+                self.warnings.push(warning);
+                return Ok(false);
+            }
+        };
+        if !crate::phase::story_manager::force_qust_autostart(&mut record, &self.interner) {
+            return Ok(false);
+        }
+        let replaced = replace_record_contents_native(
+            self.target_handle_id,
+            record,
+            &self.schema_target,
+            &self.interner,
+        )
+        .map_err(|e| RunError::InvalidConfig(format!("story_manager_quest_replace:{e}")))?;
+        if !replaced {
+            return Err(RunError::InvalidConfig(format!(
+                "story_manager_quest_replace_missing:{:06X}",
+                target_fk.local
+            )));
+        }
+        let kind = self.interner.intern(decision_kind);
+        self.decisions.push(Decision {
+            kind,
+            message: format!("{:06X}->{:06X}", source_fk.local, target_fk.local),
+        });
+        Ok(true)
     }
 
     fn preallocate_story_manager_nodes(
@@ -2003,7 +2841,10 @@ impl ConversionRun {
         &mut self,
         ordered_nodes: &[FormKey],
         selected_nodes: &FxHashSet<FormKey>,
+        selected_quests_by_node: &FxHashMap<FormKey, FxHashSet<FormKey>>,
+        event_bridges: &FxHashMap<FormKey, u32>,
         graph: &crate::phase::story_manager::StoryManagerSourceGraph,
+        emitted_nodes: &mut FxHashSet<FormKey>,
     ) -> Result<TranslateStats, RunError> {
         let mut stats = TranslateStats::default();
         let whole_plugin_names =
@@ -2018,6 +2859,10 @@ impl ConversionRun {
         let first_target_master_sym = target_master_names
             .first()
             .map(|name| self.interner.intern(name));
+        let fallout4 = target_master_names
+            .iter()
+            .find(|name| name.eq_ignore_ascii_case("Fallout4.esm"))
+            .map(|name| self.interner.intern(name));
 
         for fk in ordered_nodes {
             let Some(source_template) = graph.nodes.get(fk) else {
@@ -2026,12 +2871,32 @@ impl ConversionRun {
             let mut src_record = source_template.clone();
             let source_sig = src_record.sig;
             stats.signature_entry(source_sig).seen += 1;
+            if let Some(allowed_quests) = selected_quests_by_node.get(fk) {
+                crate::phase::story_manager::retain_story_manager_quests(
+                    &mut src_record,
+                    allowed_quests,
+                );
+            }
             crate::phase::story_manager::sanitize_story_manager_previous_node(
                 &mut src_record,
                 selected_nodes,
                 &self.interner,
             );
-            crate::phase::story_manager::neutralize_fo76_only_event_type(&mut src_record);
+            if let Some(keyword_raw) = event_bridges.get(fk) {
+                let fallout4 = fallout4.ok_or_else(|| {
+                    RunError::InvalidConfig(
+                        "story_manager_event_bridge_missing_fallout4_master".to_string(),
+                    )
+                })?;
+                crate::phase::story_manager::lower_incompatible_event_root(
+                    &mut src_record,
+                    FormKey {
+                        local: crate::phase::story_manager::FO4_SCRIPT_EVENT_ROOT_LOCAL,
+                        plugin: fallout4,
+                    },
+                    *keyword_raw,
+                );
+            }
 
             {
                 let mut ctx = PairCtx {
@@ -2048,7 +2913,7 @@ impl ConversionRun {
             let mut translated = match self.translator.translate_ignoring_skip(
                 &src_record,
                 &self.interner,
-                source_sig.as_str(),
+                src_record.sig.as_str(),
             ) {
                 TranslateResult::Translated(record) => record,
                 TranslateResult::Dropped { decision, .. } => {
@@ -2080,7 +2945,7 @@ impl ConversionRun {
                 continue;
             }
 
-            let target_fk = {
+            let (target_fk, rewrite_report) = {
                 let state = self
                     .mapper_state
                     .as_mut()
@@ -2089,15 +2954,20 @@ impl ConversionRun {
                 let normalized_eid = normalized_eid_opt(translated.eid, mapper.interner);
                 let target_fk = mapper.allocate_or_resolve(*fk, normalized_eid, translated.sig);
                 translated.form_key = target_fk;
-                if let Err(e) = mapper.rewrite_record(&mut translated) {
-                    let w = mapper
-                        .interner
-                        .intern(&format!("story_manager_rewrite_record:{e}"));
-                    self.warnings.push(w);
-                }
-                target_fk
+                let rewrite_report = match mapper.rewrite_record_with_report(&mut translated) {
+                    Ok(report) => Some(report),
+                    Err(e) => {
+                        let w = mapper
+                            .interner
+                            .intern(&format!("story_manager_rewrite_record:{e}"));
+                        self.warnings.push(w);
+                        None
+                    }
+                };
+                (target_fk, rewrite_report)
             };
             if is_target_master_remap(target_fk, &target_master_syms) {
+                emitted_nodes.insert(*fk);
                 stats.records_vanilla_remapped += 1;
                 stats.signature_entry(source_sig).vanilla_remapped += 1;
                 continue;
@@ -2183,8 +3053,12 @@ impl ConversionRun {
                     snapshot,
                     &target_master_syms,
                     first_target_master_sym,
+                    rewrite_report
+                        .as_ref()
+                        .map(|report| &report.unresolved_form_keys),
                 );
             }
+            emitted_nodes.insert(*fk);
             stats.records_translated += 1;
             stats.signature_entry(source_sig).translated += 1;
         }
@@ -2201,7 +3075,9 @@ impl ConversionRun {
     pub fn translate_records(&mut self, fks: &[FormKey]) -> Result<TranslateStats, RunError> {
         self.require_source_handle()?;
         self.init_mapper_state()?;
-        self.translate_fks(fks)
+        let stats = self.translate_fks(fks)?;
+        self.finalize_legacy_creature_race_coverage()?;
+        Ok(stats)
     }
 
     /// Convert FO76 interior cells (CELL fields + Persistent/Temporary placed
@@ -2470,13 +3346,16 @@ impl ConversionRun {
         let record_snapshot = &snapshot.records[idx];
         let fk = record_snapshot.form_key;
 
-        let relayout_target_schema = (self.source == Game::Fo76 && self.target == Game::Fo4)
+        let legacy_bptd_only = matches!(self.source, Game::Fnv | Game::Fo3);
+        let relayout_target_schema = (self.target == Game::Fo4
+            && (self.source == Game::Fo76 || legacy_bptd_only))
             .then(|| self.schema_target.clone());
         let relayout_ctx = relayout_target_schema.as_deref().map(|target_schema| {
             crate::struct_relayout::StructRelayoutCtx {
                 target_schema,
                 target_form_version:
                     crate::fixups::remap_struct_internal_formids::FO4_TARGET_FORM_VERSION,
+                legacy_bptd_only,
             }
         });
 
@@ -2544,6 +3423,22 @@ impl ConversionRun {
             stats.records_dropped += 1;
             stats.signature_entry(source_sig).dropped += 1;
             return Ok(None);
+        }
+
+        let collision_rename = self.mapper_state.as_ref().and_then(|state| {
+            let translated_sig = translated.sig;
+            rename_fo76_target_editor_id_collision(
+                &mut translated,
+                &state.target_eid_index,
+                &self.interner,
+                is_editor_id_collision_rename_forced(self.source, self.target, translated_sig),
+            )
+        });
+        if let Some((old, new)) = collision_rename {
+            let warning = self
+                .interner
+                .intern(&format!("fo76_target_edid_collision_renamed:{old}->{new}"));
+            self.warnings.push(warning);
         }
 
         // Mapper allocate + internal FK remap (mutates run mapper state).
@@ -2623,6 +3518,30 @@ impl ConversionRun {
             .map_err(|e| RunError::InvalidConfig(format!("NAVM signature: {e}")))?;
         let fks = iter_form_keys_of_sig(self.source_handle_id, navm, &mut self.interner)?;
         self.translate_projected_navmeshes(&fks)
+    }
+
+    pub fn prepare_terrain_navmesh_graft(
+        &mut self,
+        prior_plugin_path: &Path,
+    ) -> Result<usize, RunError> {
+        if self.source != Game::Fo76 || self.target != Game::Fo4 {
+            return Ok(0);
+        }
+
+        let handle = OwnedPluginHandle::load(prior_plugin_path, self.target.as_str(), None)?;
+        let object_ids =
+            esp_authoring_core::plugin_runtime::graft_terrain_navmesh_object_ids_from_handle(
+                handle.id(),
+            )
+            .map_err(|error| RunError::InvalidConfig(format!("graft_terrain:{error}")))?;
+
+        self.generated_object_id_reservations
+            .extend(object_ids.iter().copied());
+        if let Some(state) = self.mapper_state.as_mut() {
+            let mut mapper = FormKeyMapper::from_state(state, &self.interner);
+            mapper.reserve_generated_object_ids(object_ids.iter().copied());
+        }
+        Ok(object_ids.len())
     }
 
     /// Graft reused exterior terrain (CELL shells + LAND), navmesh (NAVM), and
@@ -2747,13 +3666,16 @@ impl ConversionRun {
             .first()
             .map(|name| self.interner.intern(name));
 
-        let relayout_target_schema = (self.source == Game::Fo76 && self.target == Game::Fo4)
+        let legacy_bptd_only = matches!(self.source, Game::Fnv | Game::Fo3);
+        let relayout_target_schema = (self.target == Game::Fo4
+            && (self.source == Game::Fo76 || legacy_bptd_only))
             .then(|| self.schema_target.clone());
         let relayout_ctx = relayout_target_schema.as_deref().map(|target_schema| {
             crate::struct_relayout::StructRelayoutCtx {
                 target_schema,
                 target_form_version:
                     crate::fixups::remap_struct_internal_formids::FO4_TARGET_FORM_VERSION,
+                legacy_bptd_only,
             }
         });
 
@@ -2763,6 +3685,7 @@ impl ConversionRun {
             .mapper_state
             .as_ref()
             .expect("mapper_state initialized before projected NAVM emit");
+        let event_tx = self.event_tx.clone();
         let interner = &self.interner;
         let schema_source = &*self.schema_source;
         let schema_target = &*self.schema_target;
@@ -2847,6 +3770,7 @@ impl ConversionRun {
                                 snapshot,
                                 &target_master_syms,
                                 first_target_master_sym,
+                                None,
                             );
                         }
                         stats.records_translated += 1;
@@ -3156,6 +4080,7 @@ impl ConversionRun {
     pub(crate) fn emit_quest_child_dialogue(&mut self) -> Result<TranslateStats, RunError> {
         let dial = SigCode::from_str("DIAL")
             .map_err(|e| RunError::InvalidConfig(format!("DIAL signature: {e}")))?;
+        let xdi_plan = self.build_fo76_xdi_dialogue_plan()?;
         self.emit_phase_status("translate_v2: DIAL enumerate start");
         let fks = iter_form_keys_of_sig(self.source_handle_id, dial, &mut self.interner)?;
         self.emit_phase_status(format!(
@@ -3163,12 +4088,18 @@ impl ConversionRun {
             fks.len()
         ));
         self.emit_phase_status("translate_v2: DIAL translate_fks start");
-        self.translate_fks_with_mode(&fks, RecordWriteMode::QuestChild)
+        self.translate_fks_with_mode_and_parents(
+            &fks,
+            RecordWriteMode::QuestChild,
+            &HashMap::new(),
+            Some(&xdi_plan),
+        )
     }
 
     pub(crate) fn emit_quest_child_scenes(&mut self) -> Result<TranslateStats, RunError> {
         let scen = SigCode::from_str("SCEN")
             .map_err(|e| RunError::InvalidConfig(format!("SCEN signature: {e}")))?;
+        let xdi_plan = self.build_fo76_xdi_dialogue_plan()?;
         self.emit_phase_status("translate_v2: SCEN enumerate start");
         let fks = iter_form_keys_of_sig(self.source_handle_id, scen, &mut self.interner)?;
         self.emit_phase_status(format!(
@@ -3176,7 +4107,12 @@ impl ConversionRun {
             fks.len()
         ));
         self.emit_phase_status("translate_v2: SCEN translate_fks start");
-        self.translate_fks_with_mode(&fks, RecordWriteMode::QuestChild)
+        self.translate_fks_with_mode_and_parents(
+            &fks,
+            RecordWriteMode::QuestChild,
+            &HashMap::new(),
+            Some(&xdi_plan),
+        )
     }
 
     pub(crate) fn emit_topic_child_infos(&mut self) -> Result<TranslateStats, RunError> {
@@ -3193,9 +4129,13 @@ impl ConversionRun {
         // DIAL subrecord. Build that {source INFO fid -> source DIAL fid} index so
         // each INFO can be placed under its DIAL in the target.
         self.emit_phase_status("translate_v2: INFO parent index start");
-        let info_parent_index =
+        let mut info_parent_index =
             crate::target_write::build_source_info_to_dialogue_index(self.source_handle_id)
                 .map_err(|e| RunError::InvalidConfig(format!("info_parent_index:{e}")))?;
+        let xdi_plan = self.build_fo76_xdi_dialogue_plan_from_index(&info_parent_index)?;
+        for (&info, &parent) in &xdi_plan.info_parent_overrides {
+            info_parent_index.insert(info, parent);
+        }
         self.emit_phase_status(format!(
             "translate_v2: INFO parent index done count={}",
             info_parent_index.len()
@@ -3205,7 +4145,84 @@ impl ConversionRun {
             &fks,
             RecordWriteMode::TopicChildInfo,
             &info_parent_index,
+            Some(&xdi_plan),
         )
+    }
+
+    fn build_fo76_xdi_dialogue_plan(
+        &mut self,
+    ) -> Result<crate::translator::pair_hooks::fo76_fo4::XdiDialoguePlan, RunError> {
+        let info_parent_index =
+            crate::target_write::build_source_info_to_dialogue_index(self.source_handle_id)
+                .map_err(|e| RunError::InvalidConfig(format!("info_parent_index:{e}")))?;
+        self.build_fo76_xdi_dialogue_plan_from_index(&info_parent_index)
+    }
+
+    fn build_fo76_xdi_dialogue_plan_from_index(
+        &mut self,
+        info_parent_index: &HashMap<u32, u32>,
+    ) -> Result<crate::translator::pair_hooks::fo76_fo4::XdiDialoguePlan, RunError> {
+        let scene_sig = SigCode::from_str("SCEN")
+            .map_err(|e| RunError::InvalidConfig(format!("SCEN signature: {e}")))?;
+        let scene_fks =
+            iter_form_keys_of_sig(self.source_handle_id, scene_sig, &mut self.interner)?;
+        let mut scenes = Vec::with_capacity(scene_fks.len());
+        for scene_fk in scene_fks {
+            let scene = read_record_relayout_by_form_key(
+                self.source_handle_id,
+                &scene_fk,
+                &*self.schema_source,
+                &self.interner,
+                None,
+            )
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "XDI SCEN read {}: {error}",
+                    form_key_to_read_str(&scene_fk, &self.interner)
+                ))
+            })?;
+            scenes.push(scene);
+        }
+        let mut candidate_info_ids =
+            crate::translator::pair_hooks::fo76_fo4::combined_player_dialogue_info_candidates(
+                &scenes,
+                info_parent_index,
+            )
+            .into_iter()
+            .collect::<Vec<_>>();
+        candidate_info_ids.sort_unstable();
+        let Some(source_plugin) = scenes.first().map(|scene| scene.form_key.plugin) else {
+            return Ok(Default::default());
+        };
+        let mut prompt_info_ids = std::collections::HashSet::new();
+        for local in candidate_info_ids {
+            let info_fk = FormKey {
+                local,
+                plugin: source_plugin,
+            };
+            let info = read_record_relayout_by_form_key(
+                self.source_handle_id,
+                &info_fk,
+                &*self.schema_source,
+                &self.interner,
+                None,
+            )
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "XDI INFO read {}: {error}",
+                    form_key_to_read_str(&info_fk, &self.interner)
+                ))
+            })?;
+            if info.fields.iter().any(|field| field.sig.0 == *b"RNAM") {
+                prompt_info_ids.insert(local);
+            }
+        }
+        crate::translator::pair_hooks::fo76_fo4::build_xdi_dialogue_plan(
+            &scenes,
+            info_parent_index,
+            &prompt_info_ids,
+        )
+        .map_err(|error| RunError::InvalidConfig(format!("fo76_xdi_dialogue:{error}")))
     }
 
     /// Rebuild the single top-level FO4 NAVI record from the finalized target
@@ -3223,14 +4240,7 @@ impl ConversionRun {
         {
             return Ok(TranslateStats::default());
         }
-        let preferred_navi_form_id = {
-            let navi = SigCode::from_str("NAVI")
-                .map_err(|e| RunError::InvalidConfig(format!("NAVI signature: {e}")))?;
-            iter_form_keys_of_sig(self.source_handle_id, navi, &mut self.interner)?
-                .into_iter()
-                .next()
-                .map(|fk| fk.local)
-        };
+        let preferred_navi_form_id = Some(FO4_CANONICAL_NAVI_FORM_ID);
         let raw_formid_mappings = if matches!(self.source, Game::Fo76 | Game::SkyrimSe) {
             let source_to_target_pairs = self
                 .mapper_state
@@ -3355,6 +4365,8 @@ impl ConversionRun {
     /// Called by `translate_all` and `translate_records` at the start of each
     /// translate pass. Persists into fixups via `self.mapper_state`.
     pub(crate) fn init_mapper_state(&mut self) -> Result<(), RunError> {
+        self.legacy_serial_normalization.clear();
+        self.legacy_creature_race_coverage = Default::default();
         let (source_plugin_name, source_master_names) =
             match plugin_context_for_handle(self.source_handle_id) {
                 Ok(context) => context,
@@ -3434,10 +4446,35 @@ impl ConversionRun {
             }
         }
         let mut mapper_state = MapperState::new(eid_entries, mapper_opts);
-        let needs_legacy_humanoid_race_substitutions =
+        mapper_state
+            .reserved_generated_object_ids
+            .extend(self.generated_object_id_reservations.iter().copied());
+        if self.source == Game::Fo76
+            && self.target == Game::Fo4
+            && mapper_state.options.target_master_names.iter().any(|name| {
+                name.eq_ignore_ascii_case(crate::translator::pair_hooks::fo76_fo4::XDI_MASTER_NAME)
+            })
+        {
+            let xdi_keyword = FormKey {
+                local: crate::translator::pair_hooks::fo76_fo4::XDI_SCENE_KEYWORD_FORM_ID,
+                plugin: self
+                    .interner
+                    .intern(crate::translator::pair_hooks::fo76_fo4::XDI_MASTER_NAME),
+            };
+            mapper_state
+                .source_to_target
+                .insert(xdi_keyword, xdi_keyword);
+        }
+        let needs_legacy_fo4_substitutions =
             matches!(self.source, Game::Fnv | Game::Fo3) && self.target == Game::Fo4;
+        let needs_fo76_fo4_weather_substitutions =
+            self.source == Game::Fo76 && self.target == Game::Fo4;
+        let needs_skyrimse_fo4_weather_substitutions =
+            self.source == Game::SkyrimSe && self.target == Game::Fo4;
         if (self.config.use_base_game_assets && !preflight_eid_entries.is_empty())
-            || needs_legacy_humanoid_race_substitutions
+            || needs_legacy_fo4_substitutions
+            || needs_fo76_fo4_weather_substitutions
+            || needs_skyrimse_fo4_weather_substitutions
         {
             let source_scan_started = std::time::Instant::now();
             self.emit_status(&format!(
@@ -3492,6 +4529,30 @@ impl ConversionRun {
                                 .or_insert(target_form_key);
                         }
                     }
+                    if needs_fo76_fo4_weather_substitutions {
+                        for (source_form_key, target_form_key) in
+                            crate::translator::pair_hooks::fo76_fo4::fo76_fo4_voli_gdry_substitution_mappings(
+                                &source_entries,
+                                &self.interner,
+                            )
+                        {
+                            mapper_state
+                                .source_to_target
+                                .insert(source_form_key, target_form_key);
+                        }
+                    }
+                    if needs_skyrimse_fo4_weather_substitutions {
+                        for (source_form_key, target_form_key) in
+                            crate::translator::pair_hooks::skyrimse_fo4::skyrimse_fo4_voli_gdry_substitution_mappings(
+                                &source_entries,
+                                &self.interner,
+                            )
+                        {
+                            mapper_state
+                                .source_to_target
+                                .insert(source_form_key, target_form_key);
+                        }
+                    }
                     for (source_form_key, target_form_key) in
                         fnv_fo3_fo4_humanoid_race_substitution_mappings(
                             &source_entries,
@@ -3504,6 +4565,16 @@ impl ConversionRun {
                             .source_to_target
                             .insert(source_form_key, target_form_key);
                     }
+                    seed_fnv_fo3_fo4_ammo_substitutions(
+                        &mut mapper_state,
+                        &source_entries,
+                        &self.interner,
+                        self.source,
+                        self.target,
+                    )
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!("embedded ammo substitutions: {error}"))
+                    })?;
                     self.emit_status(&format!(
                         "  mapper: scanned {} source editor-ids in {:.1}s",
                         source_entry_count,
@@ -3557,6 +4628,96 @@ impl ConversionRun {
         Ok(())
     }
 
+    pub(crate) fn observe_legacy_creature_race_decision(
+        &mut self,
+        decision: &crate::translator::pair_hooks::fnv_creature_race::CreatureRaceDecision,
+    ) {
+        self.legacy_creature_race_coverage
+            .observe_decision(decision, "CREA");
+    }
+
+    pub(crate) fn should_apply_legacy_creature_race_policy(&self) -> bool {
+        matches!(self.source, Game::Fnv | Game::Fo3)
+            && self.target == Game::Fo4
+            && !self.translator.maps.skip_records.contains("CREA")
+    }
+
+    pub(crate) fn target_form_key_resolves_to_race(&self, form_key: FormKey) -> bool {
+        let Some(state) = self.mapper_state.as_ref() else {
+            return false;
+        };
+        let plugin = self.interner.resolve(form_key.plugin).unwrap_or("");
+        state
+            .target_eid_index
+            .values()
+            .flatten()
+            .any(|(candidate, sig)| {
+                sig.as_str() == "RACE"
+                    && candidate.local == form_key.local
+                    && self
+                        .interner
+                        .resolve(candidate.plugin)
+                        .is_some_and(|candidate_plugin| {
+                            candidate_plugin.eq_ignore_ascii_case(plugin)
+                        })
+            })
+    }
+
+    fn legacy_creature_race_expected_candidates(&self) -> usize {
+        if !self.should_apply_legacy_creature_race_policy() {
+            return self.legacy_creature_race_coverage.candidates;
+        }
+        let full_merged_audit = self.source == Game::Fnv
+            && self.target == Game::Fo4
+            && self.config.is_whole_plugin
+            && self.config.records_limit.is_none()
+            && self.mapper_state.as_ref().is_some_and(|state| {
+                state
+                    .options
+                    .source_plugin_name
+                    .eq_ignore_ascii_case("FNV_FO3_Merged.esm")
+            });
+        if full_merged_audit {
+            crate::translator::pair_hooks::fnv_creature_race::EXPECTED_FULL_MERGED_CREA_CANDIDATES
+        } else {
+            self.legacy_creature_race_coverage.candidates
+        }
+    }
+
+    pub(crate) fn fail_legacy_creature_race(&mut self, error: String) -> RunError {
+        self.legacy_creature_race_coverage.expected_candidates =
+            self.legacy_creature_race_expected_candidates();
+        let report = serde_json::to_string(&self.legacy_creature_race_coverage)
+            .unwrap_or_else(|json_error| format!("{{\"serialization_error\":{json_error:?}}}"));
+        let _ = self.event_tx.try_send(crate::phase::PhaseEvent::Log {
+            phase: "translate",
+            level: crate::phase::LogLevel::Warn,
+            message: format!("legacy_creature_race_coverage:{report}"),
+        });
+        RunError::InvalidConfig(format!("{error};legacy_creature_race_coverage:{report}"))
+    }
+
+    pub(crate) fn finalize_legacy_creature_race_coverage(&mut self) -> Result<(), RunError> {
+        if !matches!(self.source, Game::Fnv | Game::Fo3) || self.target != Game::Fo4 {
+            return Ok(());
+        }
+        self.legacy_creature_race_coverage.expected_candidates =
+            self.legacy_creature_race_expected_candidates();
+        let report = serde_json::to_string(&self.legacy_creature_race_coverage)
+            .map_err(|error| RunError::InvalidConfig(format!("creature coverage JSON: {error}")))?;
+        let _ = self.event_tx.try_send(crate::phase::PhaseEvent::Log {
+            phase: "translate",
+            level: crate::phase::LogLevel::Info,
+            message: format!("legacy_creature_race_coverage:{report}"),
+        });
+        if !self.legacy_creature_race_coverage.coverage_gate_passes() {
+            return Err(RunError::InvalidConfig(format!(
+                "legacy_creature_race_coverage_gate_failed:{report}"
+            )));
+        }
+        Ok(())
+    }
+
     /// Run the per-record translate pipeline over `fks`.
     ///
     /// Caller must have already called `init_mapper_state`. Yields to Python
@@ -3570,7 +4731,7 @@ impl ConversionRun {
         fks: &[FormKey],
         write_mode: RecordWriteMode,
     ) -> Result<TranslateStats, RunError> {
-        self.translate_fks_with_mode_and_parents(fks, write_mode, &HashMap::new())
+        self.translate_fks_with_mode_and_parents(fks, write_mode, &HashMap::new(), None)
     }
 
     /// `info_parent_index` maps a source INFO form_id to its source parent-DIAL
@@ -3580,6 +4741,7 @@ impl ConversionRun {
         fks: &[FormKey],
         write_mode: RecordWriteMode,
         info_parent_index: &HashMap<u32, u32>,
+        xdi_plan: Option<&crate::translator::pair_hooks::fo76_fo4::XdiDialoguePlan>,
     ) -> Result<TranslateStats, RunError> {
         let log_progress = !matches!(write_mode, RecordWriteMode::TopLevel);
         if log_progress {
@@ -3603,20 +4765,21 @@ impl ConversionRun {
             .first()
             .map(|name| self.interner.intern(name));
 
-        // FO76→FO4 struct relayout context: rewrites divergent `struct:` codec
-        // subrecords from the FO76 source field layout into the FO4 target layout
-        // at decode time (RACE.DATA gore FKs, MGEF.DATA, *.DSTD, *.COED, ...).
-        // `None` for every other source/target pair preserves verbatim bytes.
+        // Source→FO4 struct relayout context. Legacy Fallout is deliberately
+        // restricted to BPTD.BPND; FO76 retains the generic divergent-struct path.
         // Clone the Arc so the ctx borrows this local, not `self` — the loop body
         // later needs `&mut self` (capture_full_plugin_record_state), which would
         // conflict with an immutable borrow of `self.schema_target` held here.
-        let relayout_target_schema = (self.source == Game::Fo76 && self.target == Game::Fo4)
+        let legacy_bptd_only = matches!(self.source, Game::Fnv | Game::Fo3);
+        let relayout_target_schema = (self.target == Game::Fo4
+            && (self.source == Game::Fo76 || legacy_bptd_only))
             .then(|| self.schema_target.clone());
         let relayout_ctx = relayout_target_schema.as_deref().map(|target_schema| {
             crate::struct_relayout::StructRelayoutCtx {
                 target_schema,
                 target_form_version:
                     crate::fixups::remap_struct_internal_formids::FO4_TARGET_FORM_VERSION,
+                legacy_bptd_only,
             }
         });
 
@@ -3652,7 +4815,27 @@ impl ConversionRun {
                 } else {
                     None
                 };
-
+                let creature_race_event = if self.should_apply_legacy_creature_race_policy() {
+                    match crate::translator::pair_hooks::fnv_creature_race::apply_legacy_creature_race_policy(
+                        self.source,
+                        self.target,
+                        &mut src_record,
+                        &self.interner,
+                    ) {
+                        Ok(event) => {
+                            if let Some(event) = event.as_ref() {
+                                self.observe_legacy_creature_race_decision(&event.decision);
+                            }
+                            event
+                        }
+                        Err(error) => {
+                            self.observe_legacy_creature_race_decision(&error.decision);
+                            return Err(self.fail_legacy_creature_race(error.to_string()));
+                        }
+                    }
+                } else {
+                    None
+                };
                 // ── PairHook::pre_translate ────────────────────────────
                 {
                     let mut ctx = PairCtx {
@@ -3663,8 +4846,30 @@ impl ConversionRun {
                         self.warnings.push(w);
                     }
                 }
+                if source_sig.as_str() == "DIAL"
+                    && let Some(count) =
+                        xdi_plan.and_then(|plan| plan.dial_info_count_overrides.get(&fk.local))
+                {
+                    crate::translator::pair_hooks::fo76_fo4::apply_xdi_dial_info_count(
+                        &mut src_record,
+                        *count,
+                    )
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!("fo76_xdi_dialogue:{error}"))
+                    })?;
+                }
 
                 // ── Translate ──────────────────────────────────────────
+                if source_sig.as_str() == "SCEN"
+                    && let Some(filler) =
+                        xdi_plan.and_then(|plan| plan.scene_player_topic_fillers.get(&fk.local))
+                {
+                    crate::translator::pair_hooks::fo76_fo4::apply_xdi_scene_player_padding(
+                        &mut src_record,
+                        *filler,
+                    );
+                }
+
                 let translated = {
                     let forced_skip_signature = match write_mode {
                         RecordWriteMode::QuestChild if source_sig.as_str() == "DIAL" => {
@@ -3741,45 +4946,118 @@ impl ConversionRun {
                 } else {
                     None
                 };
-                if let Some((old, new)) = cell_edid_rename {
+                let collision_donor = cell_edid_rename.as_ref().and_then(|(old, _)| {
+                    self.mapper_state.as_ref().and_then(|state| {
+                        target_collision_donor_form_key(
+                            &state.target_eid_index,
+                            &self.interner,
+                            old,
+                            translated.sig,
+                        )
+                    })
+                });
+                if let Some((old, new)) = cell_edid_rename.as_ref() {
                     let w = self
                         .interner
                         .intern(&format!("fo76_target_edid_collision_renamed:{old}->{new}"));
                     self.warnings.push(w);
                 }
-                let target_fk = {
+                let mut legacy_serial_diagnostics = Vec::new();
+                let mut legacy_serial_drop = false;
+                let planned_info_split = xdi_plan
+                    .and_then(|plan| plan.combined_info_splits.get(&fk.local))
+                    .copied();
+                let (target_fk, generated_player_info_fk) = {
                     let state = self.mapper_state.as_mut().unwrap();
-                    let mut mapper = FormKeyMapper::from_state(state, &mut self.interner);
+                    let mut mapper = FormKeyMapper::from_state(state, &self.interner);
                     let normalized_eid = normalized_eid_opt(translated.eid, mapper.interner);
                     let target_fk = mapper.allocate_or_resolve(fk, normalized_eid, translated.sig);
                     translated.form_key = target_fk;
-                    if self.source == Game::Fo76
-                        && self.target == Game::Fo4
-                        && translated
-                            .fields
-                            .iter()
-                            .any(|field| field.sig.0 == *b"NVNM" || field.sig.0 == *b"MNAM")
+                    if let Some(race) = creature_race_event
+                        .as_ref()
+                        .and_then(|event| event.decision.audited_race().ok().flatten())
                     {
-                        if let Err(e) = crate::fo76_navmesh::rewrite_record_nvnm_for_fo4(
-                            &mut translated,
-                            &mut mapper,
-                            self.source_handle_id,
-                            self.target_handle_id,
-                        ) {
-                            let w = mapper.interner.intern(&format!("fo76_navm:{e}"));
+                        mapper.add_mapping(race, race);
+                    }
+                    if let Some(outcome) = self.translator.normalize_serial_mapper_record_once(
+                        fk,
+                        &mut translated,
+                        &mut mapper,
+                        &mut self.legacy_serial_normalization,
+                    ) {
+                        match outcome {
+                            Ok(report) => {
+                                report.register_target_identities(&mut mapper);
+                                legacy_serial_diagnostics = report.diagnostics(&translated);
+                            }
+                            Err(diagnostic) => {
+                                legacy_serial_drop = true;
+                                legacy_serial_diagnostics.push(diagnostic);
+                            }
+                        }
+                    }
+                    if !legacy_serial_drop {
+                        if self.source == Game::Fo76
+                            && self.target == Game::Fo4
+                            && translated
+                                .fields
+                                .iter()
+                                .any(|field| field.sig.0 == *b"NVNM" || field.sig.0 == *b"MNAM")
+                        {
+                            if let Err(e) = crate::fo76_navmesh::rewrite_record_nvnm_for_fo4(
+                                &mut translated,
+                                &mut mapper,
+                                self.source_handle_id,
+                                self.target_handle_id,
+                            ) {
+                                let w = mapper.interner.intern(&format!("fo76_navm:{e}"));
+                                self.warnings.push(w);
+                            }
+                        }
+                        if let Err(e) = mapper.rewrite_record(&mut translated) {
+                            let w = mapper.interner.intern(&format!("rewrite_record:{e}"));
                             self.warnings.push(w);
                         }
                     }
-                    if let Err(e) = mapper.rewrite_record(&mut translated) {
-                        let w = mapper.interner.intern(&format!("rewrite_record:{e}"));
-                        self.warnings.push(w);
-                    }
-                    target_fk
+                    let generated_player_info_fk =
+                        planned_info_split.map(|_| mapper.allocate_generated());
+                    (target_fk, generated_player_info_fk)
                 };
+                for diagnostic in legacy_serial_diagnostics {
+                    let level = if diagnostic.warning {
+                        crate::phase::LogLevel::Warn
+                    } else {
+                        crate::phase::LogLevel::Info
+                    };
+                    let _ = self.event_tx.try_send(crate::phase::PhaseEvent::Log {
+                        phase: "translate",
+                        level,
+                        message: diagnostic.message.clone(),
+                    });
+                    if diagnostic.warning {
+                        let warning = self.interner.intern(&diagnostic.message);
+                        self.warnings.push(warning);
+                    }
+                }
+                if legacy_serial_drop {
+                    stats.records_dropped += 1;
+                    stats.signature_entry(source_sig).dropped += 1;
+                    break 'record;
+                }
                 if is_target_master_remap(target_fk, &target_master_syms) {
                     stats.records_vanilla_remapped += 1;
                     stats.signature_entry(source_sig).vanilla_remapped += 1;
                     break 'record;
+                }
+                if let Some(donor_form_key) = collision_donor {
+                    if let Err(error) =
+                        self.merge_target_collision_donor(&mut translated, donor_form_key)
+                    {
+                        let warning = self
+                            .interner
+                            .intern(&format!("collision_donor_merge:{error}"));
+                        self.warnings.push(warning);
+                    }
                 }
                 if let Some(source_scpt_form_key) = fnv_scri_target {
                     if let Some(target_form_key) = form_key_to_legacy_str(target_fk, &self.interner)
@@ -3813,6 +5091,16 @@ impl ConversionRun {
                     }
                 }
 
+                // DIAL category 5 is FO76 Miscellaneous but FO4 Detection, so
+                // this semantic remap cannot be idempotent. Apply it once at
+                // the final target boundary, after every reusable pre-pass.
+                if self.source == Game::Fo76 && self.target == Game::Fo4 {
+                    crate::translator::pair_hooks::fo76_fo4::Fo76Fo4Hook::normalize_dial_data_category(
+                        &self.interner,
+                        &mut translated,
+                    );
+                }
+
                 // ── Class A: schema-driven flag/enum normalization ─
                 // FO76→FO4 only. Masks unknown header-flag bits + subrecord
                 // flag bits and clamps out-of-domain enums against the FO4
@@ -3835,32 +5123,81 @@ impl ConversionRun {
                 }
 
                 // ── Write to target ────────────────────────────────────
-                let mut translated = {
-                    let normalizer = TargetRecordNormalizer {
-                        target_schema: &self.schema_target,
-                        source_record_def: self.schema_source.record_def(source_sig.as_str()),
-                        interner: Some(&self.interner),
-                    };
-                    match normalizer.normalize(translated) {
-                        TargetRecordNormalization::Keep(record) => record,
-                        TargetRecordNormalization::DropUnsupportedRecord => {
-                            stats.records_dropped += 1;
-                            stats.signature_entry(source_sig).dropped += 1;
-                            break 'record;
-                        }
+                let synthetic_player_info = if let Some(player_form_key) = generated_player_info_fk
+                {
+                    Some(
+                        crate::translator::pair_hooks::fo76_fo4::split_fo76_combined_player_dialogue_info(
+                            &mut translated,
+                            player_form_key,
+                            &self.interner,
+                        )
+                        .map_err(|error| {
+                            RunError::InvalidConfig(format!("fo76_xdi_dialogue:{error}"))
+                        })?,
+                    )
+                } else {
+                    None
+                };
+                let normalizer = TargetRecordNormalizer {
+                    target_schema: &self.schema_target,
+                    source_record_def: self.schema_source.record_def(source_sig.as_str()),
+                    interner: Some(&self.interner),
+                };
+                let mut translated = match normalizer.normalize(translated) {
+                    TargetRecordNormalization::Keep(record) => record,
+                    TargetRecordNormalization::DropUnsupportedRecord => {
+                        stats.records_dropped += 1;
+                        stats.signature_entry(source_sig).dropped += 1;
+                        break 'record;
                     }
                 };
+                let mut synthetic_player_info = synthetic_player_info
+                    .map(|record| match normalizer.normalize(record) {
+                        TargetRecordNormalization::Keep(record) => Ok(record),
+                        TargetRecordNormalization::DropUnsupportedRecord => Err(
+                            RunError::InvalidConfig(format!(
+                                "fo76_xdi_dialogue:generated player INFO for {:#08X} was rejected by the FO4 schema",
+                                fk.local
+                            )),
+                        ),
+                    })
+                    .transpose()?;
+                if let Err(error) =
+                    crate::translator::pair_hooks::fnv_creature_race::validate_crea_derived_npc_race(
+                        &translated,
+                        creature_race_event.as_ref(),
+                        &self.interner,
+                        |race| self.target_form_key_resolves_to_race(race),
+                    )
+                {
+                    return Err(self.fail_legacy_creature_race(error.to_string()));
+                }
                 namespace_base_asset_model_paths(
                     &mut translated,
                     &self.relocation_members,
                     base_asset_namespace(&self.config, self.source, self.target).unwrap_or(""),
                     &self.interner,
                 );
+                if let Some(player_info) = synthetic_player_info.as_mut() {
+                    namespace_base_asset_model_paths(
+                        player_info,
+                        &self.relocation_members,
+                        base_asset_namespace(&self.config, self.source, self.target).unwrap_or(""),
+                        &self.interner,
+                    );
+                }
                 let full_plugin_snapshot = if self.config.is_whole_plugin {
                     Some(crate::full_plugin::target_schema_record_view(
                         &translated,
                         &self.schema_target,
                     ))
+                } else {
+                    None
+                };
+                let synthetic_player_snapshot = if self.config.is_whole_plugin {
+                    synthetic_player_info.as_ref().map(|record| {
+                        crate::full_plugin::target_schema_record_view(record, &self.schema_target)
+                    })
                 } else {
                     None
                 };
@@ -3911,54 +5248,120 @@ impl ConversionRun {
                     RecordWriteMode::TopicChildInfo => {
                         // Resolve the target parent-DIAL form_id: source INFO ->
                         // source DIAL (group nesting) -> target DIAL (remap).
-                        let target_parent_dialogue_form_id = info_parent_index
-                            .get(&fk.local)
-                            .and_then(|&source_dial_local| {
-                                let source_dial = FormKey {
-                                    local: source_dial_local,
-                                    plugin: fk.plugin,
-                                };
-                                self.mapper_state
-                                    .as_ref()
-                                    .and_then(|state| state.source_to_target.get(&source_dial))
-                                    .map(|target| target.local)
-                            });
-                        let Some(target_parent_dialogue_form_id) = target_parent_dialogue_form_id
-                        else {
-                            let w = self.interner.intern(&format!(
-                                "topic_child_info_no_parent:{}",
-                                form_key_to_read_str(&fk, &self.interner)
-                            ));
-                            self.warnings.push(w);
-                            stats.records_dropped += 1;
-                            stats.signature_entry(source_sig).dropped += 1;
-                            break 'record;
+                        let resolve_target_parent = |source_dial_local| {
+                            let source_dial = FormKey {
+                                local: source_dial_local,
+                                plugin: fk.plugin,
+                            };
+                            self.mapper_state
+                                .as_ref()
+                                .and_then(|state| state.source_to_target.get(&source_dial))
+                                .map(|target| target.local)
                         };
-                        match add_topic_child_record_native(
-                            self.target_handle_id,
-                            translated,
-                            target_parent_dialogue_form_id,
-                            &*self.schema_target,
-                            &self.interner,
-                        ) {
-                            Ok(true) => {}
-                            Ok(false) => {
+                        if let Some(split) = planned_info_split {
+                            let player_parent = resolve_target_parent(split.player_parent)
+                                .ok_or_else(|| {
+                                    RunError::InvalidConfig(format!(
+                                        "fo76_xdi_dialogue:player DIAL {:06X} for INFO {:06X} has no target mapping",
+                                        split.player_parent, fk.local
+                                    ))
+                                })?;
+                            let npc_parent =
+                                resolve_target_parent(split.npc_parent).ok_or_else(|| {
+                                    RunError::InvalidConfig(format!(
+                                        "fo76_xdi_dialogue:NPC DIAL {:06X} for INFO {:06X} has no target mapping",
+                                        split.npc_parent, fk.local
+                                    ))
+                                })?;
+                            let player_info = synthetic_player_info.take().ok_or_else(|| {
+                                RunError::InvalidConfig(format!(
+                                    "fo76_xdi_dialogue:INFO {:06X} split has no generated player record",
+                                    fk.local
+                                ))
+                            })?;
+                            let player_inserted = add_topic_child_record_native(
+                                self.target_handle_id,
+                                player_info,
+                                player_parent,
+                                &*self.schema_target,
+                                &self.interner,
+                            )
+                            .map_err(|error| {
+                                RunError::InvalidConfig(format!(
+                                    "fo76_xdi_dialogue:player INFO {:06X} write: {error}",
+                                    fk.local
+                                ))
+                            })?;
+                            if !player_inserted {
+                                return Err(RunError::InvalidConfig(format!(
+                                    "fo76_xdi_dialogue:player INFO {:06X} was skipped",
+                                    fk.local
+                                )));
+                            }
+                            let npc_inserted = add_topic_child_record_native(
+                                self.target_handle_id,
+                                translated,
+                                npc_parent,
+                                &*self.schema_target,
+                                &self.interner,
+                            )
+                            .map_err(|error| {
+                                RunError::InvalidConfig(format!(
+                                    "fo76_xdi_dialogue:NPC INFO {:06X} write: {error}",
+                                    fk.local
+                                ))
+                            })?;
+                            if !npc_inserted {
+                                return Err(RunError::InvalidConfig(format!(
+                                    "fo76_xdi_dialogue:NPC INFO {:06X} was skipped",
+                                    fk.local
+                                )));
+                            }
+                        } else {
+                            let target_parent_dialogue_form_id = info_parent_index
+                                .get(&fk.local)
+                                .and_then(|&source_dial_local| {
+                                    resolve_target_parent(source_dial_local)
+                                });
+                            let Some(target_parent_dialogue_form_id) =
+                                target_parent_dialogue_form_id
+                            else {
                                 let w = self.interner.intern(&format!(
-                                    "topic_child_info_skipped:{}",
+                                    "topic_child_info_no_parent:{}",
                                     form_key_to_read_str(&fk, &self.interner)
                                 ));
                                 self.warnings.push(w);
                                 stats.records_dropped += 1;
                                 stats.signature_entry(source_sig).dropped += 1;
                                 break 'record;
-                            }
-                            Err(e) => {
-                                let w =
-                                    self.interner.intern(&format!("topic_child_info_write:{e}"));
-                                self.warnings.push(w);
-                                stats.records_failed += 1;
-                                stats.signature_entry(source_sig).failed += 1;
-                                break 'record;
+                            };
+                            match add_topic_child_record_native(
+                                self.target_handle_id,
+                                translated,
+                                target_parent_dialogue_form_id,
+                                &*self.schema_target,
+                                &self.interner,
+                            ) {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    let w = self.interner.intern(&format!(
+                                        "topic_child_info_skipped:{}",
+                                        form_key_to_read_str(&fk, &self.interner)
+                                    ));
+                                    self.warnings.push(w);
+                                    stats.records_dropped += 1;
+                                    stats.signature_entry(source_sig).dropped += 1;
+                                    break 'record;
+                                }
+                                Err(e) => {
+                                    let w = self
+                                        .interner
+                                        .intern(&format!("topic_child_info_write:{e}"));
+                                    self.warnings.push(w);
+                                    stats.records_failed += 1;
+                                    stats.signature_entry(source_sig).failed += 1;
+                                    break 'record;
+                                }
                             }
                         }
                     }
@@ -3969,6 +5372,16 @@ impl ConversionRun {
                         snapshot,
                         &target_master_syms,
                         first_target_master_sym,
+                        None,
+                    );
+                }
+                if let Some(snapshot) = synthetic_player_snapshot.as_ref() {
+                    self.capture_full_plugin_record_state(
+                        fk,
+                        snapshot,
+                        &target_master_syms,
+                        first_target_master_sym,
+                        None,
                     );
                 }
 
@@ -4070,16 +5483,25 @@ impl ConversionRun {
         translated: &crate::record::Record,
         target_master_syms: &FxHashSet<Sym>,
         first_target_master_sym: Option<Sym>,
+        unresolved_source_refs: Option<&FxHashSet<FormKey>>,
     ) {
         if !self.config.is_whole_plugin {
             return;
         }
         self.full_plugin_state.record_translated(translated.sig);
-        self.full_plugin_state.capture_record_refs(
-            translated,
-            source_fk.plugin,
-            target_master_syms,
-        );
+        if let Some(unresolved_source_refs) = unresolved_source_refs {
+            self.full_plugin_state.capture_record_refs_with_unresolved(
+                translated,
+                unresolved_source_refs,
+                target_master_syms,
+            );
+        } else {
+            self.full_plugin_state.capture_record_refs(
+                translated,
+                source_fk.plugin,
+                target_master_syms,
+            );
+        }
         if let Some(first_target_master_sym) = first_target_master_sym {
             self.full_plugin_state
                 .capture_raw_zero_master_refs(translated, first_target_master_sym);
@@ -4185,7 +5607,6 @@ impl ConversionRun {
                     message,
                 });
             };
-
             let mut emit_progress =
                 |name: &'static str,
                  iteration: u32,
@@ -4205,16 +5626,33 @@ impl ConversionRun {
                             .map(|text| format!(" message={text}"))
                             .unwrap_or_default();
                         log_fixups_v2(format!(
-                            "[fixups_v2] {action} {name} iter={iteration} changed={} dropped={} added={} warnings={} elapsed_ms={} status_report={} scope={}{}",
+                            "[fixups_v2] {action} {name} iter={iteration} changed={} dropped={} added={} warnings={} diagnostics={} elapsed_ms={} status_report={} scope={}{}",
                             report.records_changed,
                             report.records_dropped,
                             report.records_added,
                             report.warnings.len(),
+                            report.diagnostics.len(),
                             report.elapsed_ms,
                             report.status.as_str(),
                             report.scope.as_str(),
                             message
                         ));
+                        emit_fixup_warning_logs(
+                            &event_tx,
+                            "fixups_v2",
+                            name,
+                            iteration,
+                            report,
+                            interner,
+                        );
+                        emit_fixup_diagnostic_logs(
+                            &event_tx,
+                            "fixups_v2",
+                            name,
+                            iteration,
+                            report,
+                            interner,
+                        );
                     }
                 };
 
@@ -4275,17 +5713,34 @@ impl ConversionRun {
                                 .map(|text| format!(" message={text}"))
                                 .unwrap_or_default();
                             log_fixups_v2(format!(
-                                "[fixups_v2] finished {name} iter={} changed={} dropped={} added={} warnings={} elapsed_ms={} status_report={} scope={}{}",
+                                "[fixups_v2] finished {name} iter={} changed={} dropped={} added={} warnings={} diagnostics={} elapsed_ms={} status_report={} scope={}{}",
                                 report.iteration,
                                 report.records_changed,
                                 report.records_dropped,
                                 report.records_added,
                                 report.warnings.len(),
+                                report.diagnostics.len(),
                                 report.elapsed_ms,
                                 report.status.as_str(),
                                 report.scope.as_str(),
                                 message
                             ));
+                            emit_fixup_warning_logs(
+                                &event_tx,
+                                "fixups_v2",
+                                name,
+                                report.iteration,
+                                report,
+                                interner,
+                            );
+                            emit_fixup_diagnostic_logs(
+                                &event_tx,
+                                "fixups_v2",
+                                name,
+                                report.iteration,
+                                report,
+                                interner,
+                            );
                         }
                         for name in sweep_names {
                             if !reports.iter().any(|(reported, _)| reported == name) {
@@ -4369,6 +5824,7 @@ impl ConversionRun {
             defer_placed_child_ref_class: self.config.defer_placed_child_ref_class,
         };
 
+        let event_tx = self.event_tx.clone();
         let interner = &self.interner;
         let mut mapper = FormKeyMapper::from_state(
             self.mapper_state
@@ -4411,6 +5867,19 @@ impl ConversionRun {
                 .saturating_add(gated_refs.records_changed);
             report.warnings.extend(gated_refs.warnings);
             log_timing("gate_runtime_controlled_placed_refs", started);
+
+            let started = std::time::Instant::now();
+            let placed_lod =
+                crate::fixups::normalize_placed_records::normalize_placed_lod_header_flags(
+                    &mut session,
+                    &mapper,
+                )
+                .map_err(|err| repair_error("normalize_placed_lod_header_flags", err))?;
+            report.records_changed = report
+                .records_changed
+                .saturating_add(placed_lod.records_changed);
+            report.warnings.extend(placed_lod.warnings);
+            log_timing("normalize_placed_lod_header_flags", started);
         }
         let started = std::time::Instant::now();
         let placed_child = crate::fixups::null_dangling_own_plugin_refs::repair_placed_child_refs(
@@ -4459,6 +5928,20 @@ impl ConversionRun {
             .records_dropped
             .saturating_add(refr_strip.records_dropped);
         log_timing("strip_refr_placed_child_subrecords", started);
+        if self.source == Game::Fo76 && self.target == Game::Fo4 {
+            let started = std::time::Instant::now();
+            let material_swaps =
+                crate::fixups::promote_placed_custom_material_swaps::promote_placed_custom_material_swaps(
+                    &mut session,
+                    &mut mapper,
+                    &config,
+                )
+                .map_err(|err| repair_error("promote_placed_custom_material_swaps", err))?;
+            report.records_changed = report
+                .records_changed
+                .saturating_add(material_swaps.records_changed);
+            log_timing("promote_placed_custom_material_swaps", started);
+        }
         // Resolve placed refs whose base object is a leveled list (LVLI). FO76
         // allows an LVLI as a placed-ref base; FO4 reports "Missing/Invalid base
         // object". The cell-slice copy path resolves this for exterior/projected
@@ -4591,6 +6074,13 @@ impl ConversionRun {
                 mapper.interner,
             )
             .map_err(|err| repair_error("finalize_placed_xezn_targets", err))?;
+            emit_fixup_report_log(
+                &event_tx,
+                "repair_placed_child_refs",
+                "finalize_placed_xezn_targets",
+                &xezn_finalize,
+                mapper.interner,
+            );
             report.records_changed = report
                 .records_changed
                 .saturating_add(xezn_finalize.records_changed);
@@ -4611,6 +6101,13 @@ impl ConversionRun {
                 .map_err(|err| {
                     repair_error("specialize_placed_actor_templates_after_ref_repair", err)
                 })?;
+            emit_fixup_report_log(
+                &event_tx,
+                "repair_placed_child_refs",
+                "specialize_placed_actor_templates",
+                &ess_spawn,
+                mapper.interner,
+            );
             report.records_added = report.records_added.saturating_add(ess_spawn.records_added);
             report.records_changed = report
                 .records_changed
@@ -4693,6 +6190,7 @@ impl ConversionRun {
             defer_placed_child_ref_class: self.config.defer_placed_child_ref_class,
         };
 
+        let event_tx = self.event_tx.clone();
         let interner = &self.interner;
         let mut mapper = FormKeyMapper::from_state(
             self.mapper_state
@@ -4715,6 +6213,13 @@ impl ConversionRun {
             &config,
             identity_resolve,
         )?;
+        emit_fixup_report_log(
+            &event_tx,
+            "synthesize_encounter_zones",
+            "encounter_zones",
+            &report,
+            mapper.interner,
+        );
         let started = std::time::Instant::now();
         session.flush_pending_effects();
         eprintln!(
@@ -5130,6 +6635,81 @@ impl ConversionRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixup_warning_details_are_logged_with_a_bounded_tail() {
+        let interner = StringInterner::new();
+        let mut report = FixupReport::empty();
+        for index in 0..FIXUP_WARNING_LOG_LIMIT + 2 {
+            report.warnings.push(interner.intern(&format!(
+                "ess_spawn: actor={index:06X} branch={:06X}",
+                index + 1
+            )));
+        }
+
+        let messages =
+            fixup_warning_log_messages("fixups_v2", "encounter_zones", 1, &report, &interner);
+
+        assert_eq!(messages.len(), FIXUP_WARNING_LOG_LIMIT + 1);
+        assert_eq!(
+            messages[0],
+            "[fixups_v2] diagnostic encounter_zones iter=1 ess_spawn: actor=000000 branch=000001"
+        );
+        assert_eq!(
+            messages.last().unwrap(),
+            "[fixups_v2] diagnostic encounter_zones iter=1 truncated=2 total=34"
+        );
+    }
+
+    #[test]
+    fn post_copy_fixup_report_emits_summary_warning_and_diagnostic_events() {
+        let interner = StringInterner::new();
+        let mut report = FixupReport::empty();
+        report.records_changed = 3;
+        report.records_added = 1;
+        report
+            .warnings
+            .push(interner.intern("ess_spawn: actor=59BA47 branch=597659"));
+        report
+            .diagnostics
+            .push(interner.intern("source_template_override:actor=0D228A"));
+        let (event_tx, event_rx) = crossbeam_channel::unbounded();
+
+        emit_fixup_report_log(
+            &event_tx,
+            "repair_placed_child_refs",
+            "specialize_placed_actor_templates",
+            &report,
+            &interner,
+        );
+
+        let events = event_rx.try_iter().collect::<Vec<_>>();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            &events[0],
+            crate::phase::PhaseEvent::Log {
+                phase: "repair_placed_child_refs",
+                level: crate::phase::LogLevel::Info,
+                message,
+            } if message.contains("changed=3") && message.contains("added=1")
+        ));
+        assert!(matches!(
+            &events[1],
+            crate::phase::PhaseEvent::Log {
+                phase: "repair_placed_child_refs",
+                level: crate::phase::LogLevel::Warn,
+                message,
+            } if message.contains("actor=59BA47 branch=597659")
+        ));
+        assert!(matches!(
+            &events[2],
+            crate::phase::PhaseEvent::Log {
+                phase: "repair_placed_child_refs",
+                level: crate::phase::LogLevel::Info,
+                message,
+            } if message.contains("source_template_override:actor=0D228A")
+        ));
+    }
 
     #[test]
     fn owned_run_releases_handles_once_and_keeps_target_live_until_drop() {
@@ -5695,6 +7275,41 @@ mod tests {
     }
 
     #[test]
+    fn fnv_fo4_wilderness_cell_stays_source_owned() {
+        let mut interner = StringInterner::new();
+        let cell_sig = SigCode::from_str("CELL").unwrap();
+        let source_cell = FormKey::parse("0DDCAB@FNV_FO3_Merged.esm", &mut interner).unwrap();
+        let target_cell = FormKey::parse("000D8A@DLCCoast.esm", &mut interner).unwrap();
+        let wilderness = interner.intern("wilderness");
+        let mut mapper = FormKeyMapper::new(
+            [(wilderness, target_cell, cell_sig)],
+            MapperOptions {
+                output_plugin_name: "FNV_FO3_Merged.esm".into(),
+                use_base_game_assets: true,
+                vanilla_remap_blocked_signatures: editor_id_vanilla_remap_blocked_sigs(
+                    Game::Fnv,
+                    Game::Fo4,
+                ),
+                preserve_source_ids: true,
+                ..Default::default()
+            },
+            &interner,
+        );
+
+        let mapped = mapper.allocate_or_resolve(source_cell, Some(wilderness), cell_sig);
+
+        assert_eq!(mapped.local, 0x0D_DCAB);
+        assert_eq!(interner.resolve(mapped.plugin), Some("FNV_FO3_Merged.esm"));
+        assert_ne!(mapped, target_cell);
+        assert!(!allows_source_target_preflight_remap(
+            Game::Fnv,
+            Game::Fo4,
+            cell_sig,
+            "Wilderness",
+        ));
+    }
+
+    #[test]
     fn fo76_fo4_cell_editor_id_collision_gets_fo76_suffix() {
         let mut interner = StringInterner::new();
         let cell_sig = SigCode::from_str("CELL").unwrap();
@@ -6084,6 +7699,47 @@ mod tests {
         assert!(!cfg.skips_fo76_quest_dialogue());
     }
 
+    #[test]
+    fn full_merged_creature_coverage_is_zero_when_creatures_are_excluded() {
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_close_native, plugin_handle_new_native,
+        };
+
+        let source_handle = plugin_handle_new_native("FNV_FO3_Merged.esm", Some("fnv")).unwrap();
+        let target_handle = plugin_handle_new_native("Out.esm", Some("fo4")).unwrap();
+        let id = create_run(RunParams {
+            source: Game::Fnv,
+            target: Game::Fo4,
+            source_handle_id: source_handle,
+            target_handle_id: target_handle,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "Out.esm".into(),
+                is_whole_plugin: true,
+                skip_record_signatures: vec!["CREA".to_string()],
+                ..Default::default()
+            },
+        })
+        .unwrap();
+
+        with_run(id, |run| {
+            run.mapper_state = Some(MapperState::new(
+                [],
+                MapperOptions {
+                    source_plugin_name: "FNV_FO3_Merged.esm".to_string(),
+                    ..Default::default()
+                },
+            ));
+            assert_eq!(run.legacy_creature_race_expected_candidates(), 0);
+            run.finalize_legacy_creature_race_coverage()
+        })
+        .unwrap();
+
+        drop_run(id).unwrap();
+        plugin_handle_close_native(source_handle);
+        plugin_handle_close_native(target_handle);
+    }
+
     /// Verify create/lookup/drop lifecycle without needing real plugin handles.
     ///
     /// The registry does not validate that handle IDs point to loaded plugins —
@@ -6431,6 +8087,209 @@ mod tests {
     }
 
     #[test]
+    fn whole_plugin_weap_ammo_substitution_wins_without_replacing_mapper_fallbacks() {
+        for (source_game, source_plugin_name) in
+            [(Game::Fnv, "FalloutNV.esm"), (Game::Fo3, "Fallout3.esm")]
+        {
+            let interner = StringInterner::new();
+            let source_plugin = interner.intern(source_plugin_name);
+            let output_plugin = interner.intern("Converted.esp");
+            let table_ammo = FormKey {
+                local: 0x004241,
+                plugin: source_plugin,
+            };
+            let non_table_ammo = FormKey {
+                local: 0x07EA27,
+                plugin: source_plugin,
+            };
+            let projectile = FormKey {
+                local: 0x02CD5F,
+                plugin: source_plugin,
+            };
+            let normal_ammo_target = FormKey {
+                local: 0x0801,
+                plugin: output_plugin,
+            };
+            let projectile_target = FormKey {
+                local: 0x0802,
+                plugin: output_plugin,
+            };
+            let mut state = MapperState::new(
+                [],
+                MapperOptions {
+                    output_plugin_name: "Converted.esp".into(),
+                    ..Default::default()
+                },
+            );
+            state.source_to_target.insert(
+                table_ammo,
+                FormKey {
+                    local: 0x0800,
+                    plugin: output_plugin,
+                },
+            );
+            state
+                .source_to_target
+                .insert(non_table_ammo, normal_ammo_target);
+            state.source_to_target.insert(projectile, projectile_target);
+            let source_entries = [
+                (
+                    interner.intern("Ammo10mm"),
+                    table_ammo,
+                    SigCode::from_str("AMMO").unwrap(),
+                ),
+                (
+                    interner.intern("Ammo22LR"),
+                    non_table_ammo,
+                    SigCode::from_str("AMMO").unwrap(),
+                ),
+                (
+                    interner.intern("Projectile22LR"),
+                    projectile,
+                    SigCode::from_str("PROJ").unwrap(),
+                ),
+            ];
+
+            let seeded = seed_fnv_fo3_fo4_ammo_substitutions(
+                &mut state,
+                &source_entries,
+                &interner,
+                source_game,
+                Game::Fo4,
+            )
+            .unwrap();
+
+            assert_eq!(seeded, 1);
+            let table_target = state.source_to_target[&table_ammo];
+            assert_eq!(table_target.local, 0x01F276);
+            assert_eq!(interner.resolve(table_target.plugin), Some("Fallout4.esm"));
+            assert_eq!(state.source_to_target[&non_table_ammo], normal_ammo_target);
+            assert_eq!(state.source_to_target[&projectile], projectile_target);
+        }
+    }
+
+    #[test]
+    fn legacy_same_name_output_keeps_generated_targets_outside_the_source_domain() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("FNV_FO3_Merged.esm");
+        let low_source = FormKey {
+            local: 0x100,
+            plugin,
+        };
+        let source_at_default_floor = FormKey {
+            local: FIRST_ALLOCATION_ID,
+            plugin,
+        };
+        let next = legacy_output_allocation_floor(
+            Game::Fnv,
+            Game::Fo4,
+            "FNV_FO3_Merged.esm",
+            "fnv_fo3_merged.ESM",
+            true,
+            FIRST_ALLOCATION_ID,
+            [low_source.local, source_at_default_floor.local],
+        )
+        .unwrap()
+        .expect("same-name legacy output needs a disjoint generated domain");
+        assert_eq!(next, source_at_default_floor.local + 1);
+        assert_eq!(
+            legacy_output_allocation_floor(
+                Game::Fnv,
+                Game::Fo4,
+                "FalloutNV.esm",
+                "Converted.esm",
+                true,
+                FIRST_ALLOCATION_ID,
+                [low_source.local, source_at_default_floor.local],
+            )
+            .unwrap(),
+            None,
+            "distinct source/output plugin namespaces need no raised floor"
+        );
+        assert_eq!(
+            legacy_output_allocation_floor(
+                Game::Fo76,
+                Game::Fo4,
+                "SeventySix.esm",
+                "SeventySix.esm",
+                true,
+                FIRST_ALLOCATION_ID,
+                [low_source.local, source_at_default_floor.local],
+            )
+            .unwrap(),
+            None,
+            "FO76 allocation policy must remain isolated"
+        );
+        assert_eq!(
+            legacy_output_allocation_floor(
+                Game::Fnv,
+                Game::Fo4,
+                "FNV_FO3_Merged.esm",
+                "FNV_FO3_Merged.esm",
+                true,
+                0xA000,
+                [low_source.local, source_at_default_floor.local],
+            )
+            .unwrap(),
+            Some(0xA000),
+            "an existing higher allocation floor must win"
+        );
+        assert!(
+            legacy_output_allocation_floor(
+                Game::Fnv,
+                Game::Fo4,
+                "FNV_FO3_Merged.esm",
+                "FNV_FO3_Merged.esm",
+                true,
+                FIRST_ALLOCATION_ID,
+                [low_source.local, 0x00FF_FFFF],
+            )
+            .is_err(),
+            "fresh legacy IDs require free 24-bit local-ID space"
+        );
+        let mut state = MapperState::new(
+            [],
+            MapperOptions {
+                source_plugin_name: "FNV_FO3_Merged.esm".into(),
+                output_plugin_name: "FNV_FO3_Merged.esm".into(),
+                preserve_source_ids: true,
+                resolution_mode: ResolutionMode::Strict,
+                ..Default::default()
+            },
+        );
+        state.next_object_id = next;
+        let sig = SigCode::from_str("MGEF").unwrap();
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+
+        let generated_target = mapper.allocate_or_resolve(low_source, None, sig);
+        let preserved_target = mapper.allocate_or_resolve(source_at_default_floor, None, sig);
+        mapper.add_mapping(generated_target, generated_target);
+
+        assert_eq!(generated_target.local, next);
+        assert_eq!(preserved_target, source_at_default_floor);
+        assert_eq!(
+            mapper.lookup(source_at_default_floor),
+            Some(preserved_target)
+        );
+
+        let seeded_source = FormKey {
+            local: 0x200,
+            plugin,
+        };
+        let seeded_target = FormKey {
+            local: next + 1,
+            plugin,
+        };
+        mapper.add_mapping(seeded_source, seeded_target);
+        let later_low_source = FormKey {
+            local: 0x300,
+            plugin,
+        };
+        let later_target = mapper.allocate_or_resolve(later_low_source, None, sig);
+        assert_eq!(later_target.local, seeded_target.local + 1);
+    }
+
+    #[test]
     fn seeded_legacy_race_substitutions_rewrite_npc_refs_and_prevent_local_races() {
         use crate::formkey_mapper::{FormKeyMapper, MapperOptions, MapperState};
         use crate::record::{FieldEntry, FieldValue, Record};
@@ -6754,7 +8613,7 @@ mod tests {
     }
 
     #[test]
-    fn seeded_race_substitution_rewrites_npc_rnam_to_fo4_ghoul_race() {
+    fn seeded_race_substitutions_rewrite_npc_rnam_to_fo4_compatible_races() {
         use crate::formkey_mapper::FormKeyMapper;
         use crate::formkey_mapper::{MapperOptions, MapperState};
         use crate::ids::{FormKey, SigCode, SubrecordSig};
@@ -6775,30 +8634,33 @@ mod tests {
                 .insert(source_form_key, target_form_key);
         }
 
-        let source_race = FormKey {
-            local: 0x0079_CCE7,
-            plugin: interner.intern("SeventySix.esm"),
-        };
-        let target_race = FormKey {
-            local: 0x000E_AFB6,
-            plugin: interner.intern("Fallout4.esm"),
-        };
-        let mut npc = Record::new(
-            SigCode::from_str("NPC_").unwrap(),
-            FormKey {
-                local: 0x0083_26DD,
+        for (source_local, target_local) in [(0x0079_CCE7, 0x000E_AFB6), (0x0077_2F32, 0x000D_FB33)]
+        {
+            let source_race = FormKey {
+                local: source_local,
                 plugin: interner.intern("SeventySix.esm"),
-            },
-        );
-        npc.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("RNAM").unwrap(),
-            value: FieldValue::FormKey(source_race),
-        });
+            };
+            let target_race = FormKey {
+                local: target_local,
+                plugin: interner.intern("Fallout4.esm"),
+            };
+            let mut npc = Record::new(
+                SigCode::from_str("NPC_").unwrap(),
+                FormKey {
+                    local: 0x0083_26DD,
+                    plugin: interner.intern("SeventySix.esm"),
+                },
+            );
+            npc.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("RNAM").unwrap(),
+                value: FieldValue::FormKey(source_race),
+            });
 
-        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
-        mapper.rewrite_record(&mut npc).unwrap();
+            let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+            mapper.rewrite_record(&mut npc).unwrap();
 
-        assert_eq!(npc.fields[0].value, FieldValue::FormKey(target_race));
+            assert_eq!(npc.fields[0].value, FieldValue::FormKey(target_race));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -7001,6 +8863,166 @@ mod tests {
         .unwrap();
 
         drop_run(id).unwrap();
+    }
+
+    #[test]
+    fn skyrim_weather_production_pipeline_seeds_and_rewrites_master_god_rays() {
+        use bytes::Bytes;
+        use esp_authoring_core::plugin_runtime::{
+            ParsedGroup, ParsedItem, ParsedRecord, ParsedSubrecord,
+            plugin_handle_add_master_native, plugin_handle_close_native, plugin_handle_new_native,
+            plugin_handle_store_ref,
+        };
+        use smol_str::SmolStr;
+
+        fn record(
+            signature: &'static str,
+            form_id: u32,
+            subrecords: Vec<ParsedSubrecord>,
+        ) -> ParsedItem {
+            ParsedItem::Record(ParsedRecord {
+                signature: SmolStr::new_static(signature),
+                form_id,
+                flags: 0,
+                version_control: 0,
+                form_version: Some(44),
+                version2: None,
+                subrecords,
+                raw_payload: None,
+                parse_error: None,
+            })
+        }
+
+        fn subrecord(signature: &'static str, data: impl Into<Bytes>) -> ParsedSubrecord {
+            ParsedSubrecord {
+                signature: SmolStr::new_static(signature),
+                data: data.into(),
+                semantic_type: None,
+            }
+        }
+
+        let source = plugin_handle_new_native("ConvertedSkyrim.esm", Some("skyrimse")).unwrap();
+        plugin_handle_add_master_native(source, "Skyrim.esm", None).unwrap();
+        plugin_handle_add_master_native(source, "Update.esm", None).unwrap();
+        let target = plugin_handle_new_native("ConvertedSkyrim.esm", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target, "Fallout4.esm", None).unwrap();
+
+        let donor_editor_ids = [
+            (0x0000_0D53, "SkyrimClearSunrise"),
+            (0x0100_0D51, "SkyrimCloudyDay"),
+            (0x0100_0D52, "SkyrimRainSunset"),
+            (0x0100_0D58, "SkyrimFogNight"),
+        ];
+        let voli = donor_editor_ids
+            .into_iter()
+            .map(|(form_id, editor_id)| {
+                record(
+                    "VOLI",
+                    form_id,
+                    vec![subrecord("EDID", Bytes::from(format!("{editor_id}\0")))],
+                )
+            })
+            .collect();
+        let hnam = [0x0000_0D53_u32, 0x0100_0D51, 0x0100_0D52, 0x0100_0D58]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let wthr = record(
+            "WTHR",
+            0x0200_0800,
+            vec![
+                subrecord("EDID", Bytes::from_static(b"ProductionWeather\0")),
+                subrecord("HNAM", Bytes::from(hnam)),
+            ],
+        );
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&source).unwrap();
+            slot.parsed.root_items = vec![
+                ParsedItem::Group(ParsedGroup {
+                    label: *b"VOLI",
+                    group_type: 0,
+                    tail: Bytes::new(),
+                    children: voli,
+                }),
+                ParsedItem::Group(ParsedGroup {
+                    label: *b"WTHR",
+                    group_type: 0,
+                    tail: Bytes::new(),
+                    children: vec![wthr],
+                }),
+            ];
+            slot.invalidate_sections();
+        }
+
+        let run_id = create_run(RunParams {
+            source: Game::SkyrimSe,
+            target: Game::Fo4,
+            source_handle_id: source,
+            target_handle_id: target,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "ConvertedSkyrim.esm".into(),
+                is_whole_plugin: true,
+                preserve_source_ids: true,
+                target_master_names: vec!["Fallout4.esm".into()],
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let reports = with_run(run_id, |run| {
+            run.translate_all()?;
+            run.apply_fixups_v2().map_err(RunError::from)
+        })
+        .unwrap();
+        assert!(
+            reports.iter().any(|(name, report)| {
+                name == "rewrite_raw_object_template_formids" && report.records_changed > 0
+            }),
+            "canonical fixup registry did not rewrite the Skyrim weather"
+        );
+
+        let expected = [
+            0x0021_6A93,
+            0x001C_855D,
+            0x0021_15D1,
+            0x001C_C192,
+            0x001C_C192,
+            0x0021_6A93,
+            0x001C_855D,
+            0x0021_15D1,
+        ];
+        let interner = StringInterner::new();
+        let mut session = crate::session::open_session(target, None).unwrap();
+        let schema = session.schema().unwrap();
+        let weather_key = session
+            .form_keys_of_sig(SigCode::from_str("WTHR").unwrap(), &interner)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("translated WTHR");
+        let weather = session
+            .record_decoded(&weather_key, schema.as_ref(), &interner)
+            .unwrap();
+        let FieldValue::Bytes(wgdr) = &weather
+            .fields
+            .iter()
+            .find(|field| field.sig.as_str() == "WGDR")
+            .expect("translated WGDR")
+            .value
+        else {
+            panic!("WGDR must remain a raw FormID array");
+        };
+        let actual = wgdr
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+
+        drop(session);
+        drop_run(run_id).unwrap();
+        plugin_handle_close_native(source);
+        plugin_handle_close_native(target);
     }
 
     #[test]

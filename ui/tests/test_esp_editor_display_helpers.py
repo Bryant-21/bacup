@@ -33,11 +33,11 @@ def _entry(handle: int, name: str, load_order_index: int, form_id: int) -> Overr
 def test_referenced_by_label_includes_editor_id(monkeypatch) -> None:
     app = EspEditorApp()
 
-    def fake_plugin_handle_call(handle, method, form_id):
-        assert (handle, method, form_id) == (7, "get_record_by_form_id", 0x01001234)
+    def fake_record_summary(handle, form_id):
+        assert (handle, form_id) == (7, 0x01001234)
         return SimpleNamespace(editor_id="B21_SourceRecord")
 
-    monkeypatch.setattr(app_module, "plugin_handle_call", fake_plugin_handle_call)
+    monkeypatch.setattr(app_module, "plugin_handle_record_summary", fake_record_summary)
 
     try:
         app.session._plugins = [_loaded_plugin(7, "Patch.esp", 0)]

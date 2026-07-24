@@ -14,7 +14,9 @@
 //! - **1b** Ranged weapons missing `damage_base` / `accuracy_bonus` /
 //!   `action_point_cost` get FO4 defaults (10 / 100 / 20) written at the
 //!   fixed DNAM offsets.
-//! - **1c** EITM (Effect) pointing at the converter's own mod gets swapped
+//! - **1c** Liberator lasers are marked as embedded weapons and do not consume
+//!   NPC inventory ammo, matching FO4 robot-integrated lasers.
+//! - **1d** EITM (Effect) pointing at the converter's own mod gets swapped
 //!   to vanilla `148D8F:Fallout4.esm` (MirelurkHunterSpitAttackSpell) on
 //!   spit weapons.
 //!
@@ -75,6 +77,7 @@
 //! `RACE.VNAM` codec `uint32 enum_ref=equip_type`. Equipment-type bit
 //! values used:
 //! - upper mask = `0xFFFF8000`
+//! - `hand_to_hand_melee` = 1
 //! - `spell`   = 4096
 //! - `gun`     = 512
 //! - `shield`  = 8192
@@ -107,6 +110,7 @@ use crate::session::PluginSession;
 // ---------------------------------------------------------------------------
 
 const WEAP_DNAM_ATTACK_DELAY_OFFSET: usize = 24;
+const WEAP_DNAM_FLAGS_OFFSET: usize = 48;
 const WEAP_DNAM_ANIM_TYPE_OFFSET: usize = 54;
 const WEAP_DNAM_DAMAGE_BASE_OFFSET: usize = 67;
 const WEAP_DNAM_ACCURACY_BONUS_OFFSET: usize = 105;
@@ -115,6 +119,9 @@ const WEAP_DNAM_MIN_LEN: usize = 116; // need through action_point_cost
 
 const WEAP_ANIM_TYPE_MELEE: u8 = 1;
 const WEAP_ANIM_TYPE_GUN: u8 = 9;
+
+const WEAP_FLAG_NPCS_USE_AMMO: u32 = 0x0000_0002;
+const WEAP_FLAG_EMBEDDED_WEAPON: u32 = 0x0008_0000;
 
 /// Threshold above which `AttackDelay` is treated as FO76-noise on melee.
 const WEAP_MELEE_ATTACK_DELAY_THRESHOLD: f32 = 5.0;
@@ -144,9 +151,9 @@ const EXPL_SPIT_ENCHANTMENT_RAW: u32 = 0x00_115315;
 // ---------------------------------------------------------------------------
 
 /// equip_type bitmask: preserve FO4's upper biped/equipment flags plus common
-/// creature low slots: `spell` (4096), `gun` (512), `shield` (8192), `torch`
-/// (16384).
-const RACE_VNAM_KEEP_MASK: u32 = 0xFFFF_8000 | 512 | 4096 | 8192 | 16384;
+/// creature low slots: `hand_to_hand_melee` (1), `spell` (4096), `gun` (512),
+/// `shield` (8192), `torch` (16384).
+const RACE_VNAM_KEEP_MASK: u32 = 0xFFFF_8000 | 1 | 512 | 4096 | 8192 | 16384;
 
 /// FACT.XNAM payload size: faction(4) + modifier(4) + group_combat_reaction(4).
 const FACT_XNAM_LEN: usize = 12;
@@ -331,9 +338,18 @@ pub fn apply_weap(
             }
         }
         // "DamageTypes" (DAMA) cleanup is form-version-conditional; deferred.
+
+        if eid_lower.contains("liberator") && eid_lower.contains("laser") {
+            if let Some(flags) = read_dnam_u32(record, WEAP_DNAM_FLAGS_OFFSET) {
+                let repaired = (flags | WEAP_FLAG_EMBEDDED_WEAPON) & !WEAP_FLAG_NPCS_USE_AMMO;
+                if repaired != flags && write_dnam_u32(record, WEAP_DNAM_FLAGS_OFFSET, repaired) {
+                    changed = true;
+                }
+            }
+        }
     }
 
-    // 1c — Spit weapon EITM swap: if eid contains "spit" and the current
+    // 1d — Spit weapon EITM swap: if eid contains "spit" and the current
     // EITM FormID points into the converter's own plugin (master byte ==
     // target_own_index), rewrite to vanilla MirelurkHunterSpitAttackSpell.
     if eid_lower.contains("spit") {
@@ -643,6 +659,24 @@ fn read_dnam_u16(record: &Record, offset: usize) -> Option<u16> {
     None
 }
 
+fn read_dnam_u32(record: &Record, offset: usize) -> Option<u32> {
+    let dnam_sig = sig("DNAM")?;
+    for entry in &record.fields {
+        if entry.sig != dnam_sig {
+            continue;
+        }
+        if let FieldValue::Bytes(data) = &entry.value {
+            if data.len() >= offset + 4 {
+                return Some(u32::from_le_bytes(
+                    data[offset..offset + 4].try_into().ok()?,
+                ));
+            }
+        }
+        return None;
+    }
+    None
+}
+
 fn read_dnam_f32(record: &Record, offset: usize) -> Option<f32> {
     let dnam_sig = sig("DNAM")?;
     for entry in &record.fields {
@@ -696,6 +730,26 @@ fn write_dnam_u16(record: &mut Record, offset: usize, value: u16) -> bool {
         if let FieldValue::Bytes(data) = &mut entry.value {
             if data.len() >= offset + 2 {
                 data[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+                return true;
+            }
+        }
+        return false;
+    }
+    false
+}
+
+fn write_dnam_u32(record: &mut Record, offset: usize, value: u32) -> bool {
+    let dnam_sig = match sig("DNAM") {
+        Some(s) => s,
+        None => return false,
+    };
+    for entry in record.fields.iter_mut() {
+        if entry.sig != dnam_sig {
+            continue;
+        }
+        if let FieldValue::Bytes(data) = &mut entry.value {
+            if data.len() >= offset + 4 {
+                data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
                 return true;
             }
         }
@@ -892,6 +946,48 @@ mod tests {
         assert_eq!(read_dnam_u16(&r, WEAP_DNAM_DAMAGE_BASE_OFFSET), Some(42));
     }
 
+    #[test]
+    fn liberator_laser_uses_fo4_embedded_weapon_flags() {
+        let interner = StringInterner::new();
+        let mut record = make_record(
+            "WEAP",
+            0x10D80A,
+            "Output.esp",
+            Some("crLiberatorLaserGun"),
+            &interner,
+        );
+        let mut dnam = make_dnam_bytes(WEAP_ANIM_TYPE_GUN, 0.0, 10, 100, 20.0);
+        dnam[WEAP_DNAM_FLAGS_OFFSET..WEAP_DNAM_FLAGS_OFFSET + 4]
+            .copy_from_slice(&WEAP_FLAG_NPCS_USE_AMMO.to_le_bytes());
+        push_bytes(&mut record, "DNAM", dnam);
+
+        assert!(apply_weap(&mut record, 1, &interner));
+        let flags = read_dnam_u32(&record, WEAP_DNAM_FLAGS_OFFSET).unwrap();
+        assert_eq!(flags & WEAP_FLAG_EMBEDDED_WEAPON, WEAP_FLAG_EMBEDDED_WEAPON);
+        assert_eq!(flags & WEAP_FLAG_NPCS_USE_AMMO, 0);
+    }
+
+    #[test]
+    fn hto_liberator_laser_uses_same_embedded_weapon_repair() {
+        let interner = StringInterner::new();
+        let mut record = make_record(
+            "WEAP",
+            0x85B654,
+            "Output.esp",
+            Some("HTO_crRobot_Liberator_LaserGun"),
+            &interner,
+        );
+        let mut dnam = make_dnam_bytes(WEAP_ANIM_TYPE_GUN, 0.0, 10, 100, 20.0);
+        dnam[WEAP_DNAM_FLAGS_OFFSET..WEAP_DNAM_FLAGS_OFFSET + 4]
+            .copy_from_slice(&WEAP_FLAG_NPCS_USE_AMMO.to_le_bytes());
+        push_bytes(&mut record, "DNAM", dnam);
+
+        assert!(apply_weap(&mut record, 1, &interner));
+        let flags = read_dnam_u32(&record, WEAP_DNAM_FLAGS_OFFSET).unwrap();
+        assert_eq!(flags & WEAP_FLAG_EMBEDDED_WEAPON, WEAP_FLAG_EMBEDDED_WEAPON);
+        assert_eq!(flags & WEAP_FLAG_NPCS_USE_AMMO, 0);
+    }
+
     /// Spit-eid weapon with no DNAM still routes through ranged
     /// path via eid heuristic. (No DNAM → byte reads return None → no-ops;
     /// just verify we don't crash and EITM swap still runs if present.)
@@ -1035,15 +1131,16 @@ mod tests {
 
     // ── RACE.VNAM equipment-flags mask ────────────────────────────────────
 
-    /// RACE.VNAM keeps high FO4 creature bits and creature slots.
+    /// Scorchbeast-style RACE.VNAM keeps melee and high FO4 creature bits while
+    /// unsupported low equipment slots remain filtered.
     #[test]
-    fn race_vnam_preserves_high_creature_bits() {
+    fn race_vnam_preserves_scorchbeast_melee_and_high_creature_bits() {
         let mut interner = StringInterner::new();
         let mut r = make_record("RACE", 0x5678, "Output.esp", None, &mut interner);
-        // Set bits: hand_to_hand_melee(1), spell(4096), gun(512),
-        // shield(8192), torch(16384), plus the high mask vanilla FO4 creatures
-        // carry.
-        let cur: u32 = 1 | 512 | 4096 | 8192 | 16384 | 0xF8FF_8000;
+        // Set bits: hand_to_hand_melee(1), one_hand_sword(2), gun(512),
+        // grenade(1024), spell(4096), shield(8192), torch(16384), plus the high
+        // mask vanilla FO4 creatures carry.
+        let cur: u32 = 1 | 2 | 512 | 1024 | 4096 | 8192 | 16384 | 0xF8FF_8000;
         let mut vnam: Vec<u8> = Vec::new();
         vnam.extend_from_slice(&cur.to_le_bytes());
         push_bytes(&mut r, "VNAM", vnam);
@@ -1054,7 +1151,7 @@ mod tests {
             if entry.sig == vnam_sig {
                 if let FieldValue::Bytes(data) = &entry.value {
                     let new_val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                    assert_eq!(new_val, 512 | 4096 | 8192 | 16384 | 0xF8FF_8000);
+                    assert_eq!(new_val, 1 | 512 | 4096 | 8192 | 16384 | 0xF8FF_8000);
                 }
             }
         }
@@ -1065,7 +1162,7 @@ mod tests {
     fn race_vnam_clean_is_noop() {
         let mut interner = StringInterner::new();
         let mut r = make_record("RACE", 0x5678, "Output.esp", None, &mut interner);
-        let cur: u32 = 512 | 4096 | 8192 | 16384 | 0xF8FF_8000;
+        let cur: u32 = 1 | 512 | 4096 | 8192 | 16384 | 0xF8FF_8000;
         let mut vnam: Vec<u8> = Vec::new();
         vnam.extend_from_slice(&cur.to_le_bytes());
         push_bytes(&mut r, "VNAM", vnam);

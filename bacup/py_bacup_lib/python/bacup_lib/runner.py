@@ -18,6 +18,12 @@ from bacup_lib.models import PhaseProgress
 _log = logging.getLogger("conversion.runner")
 
 
+def emit_runner_status(runner: Any, message: str) -> None:
+    emit_status = getattr(runner, "emit_status", None)
+    if callable(emit_status):
+        emit_status(message)
+
+
 def _ts() -> str:
     """Wall-clock HH:MM:SS for streamed log lines during long headless runs."""
     return datetime.now().strftime("%H:%M:%S")
@@ -81,6 +87,9 @@ class ConversionRunner:
     def emit_log(self, level: str, message: str) -> None:
         self._queue.put({"type": "log", "level": level, "message": message})
 
+    def emit_status(self, message: str) -> None:
+        self._queue.put({"type": "status", "message": message})
+
     def emit_complete(self, mod_path: str, summary: Any) -> None:
         self._queue.put({
             "type": "complete",
@@ -96,6 +105,9 @@ class NullConversionRunner:
         return False
 
     def emit_log(self, level: str, message: str) -> None:
+        pass
+
+    def emit_status(self, message: str) -> None:
         pass
 
     def emit_phase_start(self, progress: PhaseProgress) -> None:
@@ -186,6 +198,9 @@ class StreamingConversionRunner:
 
     def emit_log(self, level: str, message: str) -> None:
         print(f"  [{_ts()}] [{level}] {message}", file=self._stream, flush=True)
+
+    def emit_status(self, message: str) -> None:
+        print(f"  [{_ts()}] [status] {message}", file=self._stream, flush=True)
 
     def emit_phase_start(self, progress: PhaseProgress) -> None:
         print(f"  [{_ts()}] [phase_start] {progress}", file=self._stream, flush=True)

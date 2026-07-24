@@ -78,7 +78,8 @@ import os
 import subprocess
 import pytest
 
-from creation_lib.pex import decompile_pex
+from creation_lib.pex import decompile_pex, parse_pex
+from creation_lib.pex.opcodes import PexOpcode
 
 
 def _fo4_paths():
@@ -196,6 +197,37 @@ def test_native_compile_writes_pex(tmp_path, monkeypatch):
         "game": "fo4",
         "flags": str(flags_path),
     }]
+
+
+def test_native_compile_emits_compound_assignment_bytecode(tmp_path):
+    mod_path = tmp_path / "mod"
+    runtime = _native_orch(tmp_path, mod_path)
+    user_root = mod_path / "Scripts" / "Source" / "User"
+    base_root = tmp_path / "FO4" / "Data" / "Scripts" / "Source" / "Base"
+    (base_root / "Institute_Papyrus_Flags.flg").write_text(
+        "flag data", encoding="utf-8"
+    )
+    (user_root / "B21" / "Compound.psc").write_text(
+        "Scriptname B21:Compound\nFunction F()\n  Int index = 0\n  index += 1\nEndFunction\n",
+        encoding="utf-8",
+    )
+
+    runner = types.SimpleNamespace(emit_log=lambda *a, **k: None)
+    out = runtime._compile_decompiled_scripts_native_for_fo4(
+        ["B21:Compound"],
+        ctx=types.SimpleNamespace(mod_path=str(mod_path)),
+        runner=runner,
+        workers=1,
+    )
+
+    assert out[0][1].status == "compiled"
+    pex = parse_pex(out[0][1].pex_path)
+    instructions = pex.objects[0].states[0].functions[0].instructions
+    assert [instruction.opcode for instruction in instructions] == [
+        PexOpcode.ASSIGN,
+        PexOpcode.IADD,
+        PexOpcode.ASSIGN,
+    ]
 
 
 def test_native_compile_uses_target_data_sources(tmp_path, monkeypatch):

@@ -58,6 +58,12 @@ def _make_renderer_with_collision_overlay():
     renderer._collision_color_vbo = _Releasable()
     renderer._collision_vao = _Releasable()
     renderer._collision_num_verts = 6
+    renderer._collision_shape_meshes = [object()]
+    renderer._collision_solid_vbo = _Releasable()
+    renderer._collision_solid_color_vbo = _Releasable()
+    renderer._collision_solid_vao = _Releasable()
+    renderer._collision_solid_num_verts = 3
+    renderer._collision_solid_selection = ("main", 1)
     renderer.particle_renderer = None
     return renderer
 
@@ -117,16 +123,24 @@ class TestCloseNif:
         old_vbo = app.renderer._collision_vbo
         old_color_vbo = app.renderer._collision_color_vbo
         old_vao = app.renderer._collision_vao
+        old_solid_vbo = app.renderer._collision_solid_vbo
+        old_solid_color_vbo = app.renderer._collision_solid_color_vbo
+        old_solid_vao = app.renderer._collision_solid_vao
 
         NifEditorApp.close_nif(app)
 
         assert old_vbo.released is True
         assert old_color_vbo.released is True
         assert old_vao.released is True
+        assert old_solid_vbo.released is True
+        assert old_solid_color_vbo.released is True
+        assert old_solid_vao.released is True
         assert app.renderer._collision_vbo is None
         assert app.renderer._collision_color_vbo is None
         assert app.renderer._collision_vao is None
         assert app.renderer._collision_num_verts == 0
+        assert app.renderer._collision_shape_meshes == []
+        assert app.renderer._collision_solid_num_verts == 0
 
 
 def test_detach_unwatches_child_session():

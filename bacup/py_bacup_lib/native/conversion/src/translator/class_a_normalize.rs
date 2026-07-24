@@ -265,7 +265,7 @@ fn mask_struct_bytes(
         let cur = read_le(&buf[off..off + width]) as i128;
         let new = if edef.is_flags() {
             cur & edef.valid_flag_mask()
-        } else if edef.contains_value(cur) {
+        } else if edef.contains_value(cur) || is_unset_enum_sentinel(cur, width) {
             cur
         } else {
             edef.fallback_value().unwrap_or(0)
@@ -278,6 +278,30 @@ fn mask_struct_bytes(
                 if edef.is_flags() { "flags" } else { "enum" },
             ));
         }
+    }
+}
+
+/// `-1` / `0xFF..` (all bits set for the field width) is the universal Bethesda
+/// "Any / None / unset" sentinel. It is deliberately not a named enum entry, yet
+/// the game reads it as a first-class value — e.g. a PACK PSDT schedule with
+/// DayOfWeek/Hour/Minute = -1 means "Any". Class A must preserve it rather than
+/// clamp it to the enum fallback (entry 0), which would silently rewrite "Any" to
+/// a concrete value (Sunday / hour 0 / minute 0).
+///
+/// `width` is the field's byte width when known (raw-struct byte path, where the
+/// value was read UNSIGNED so `-1` appears as `0xFF`/`0xFFFF`/…). Pass `0` for
+/// decoded values, where `-1` arrives signed and only the unambiguous unsigned
+/// all-ones widths are additionally matched.
+fn is_unset_enum_sentinel(value: i128, width: usize) -> bool {
+    if value == -1 {
+        return true;
+    }
+    match width {
+        1 => value == 0xFF,
+        2 => value == 0xFFFF,
+        4 => value == 0xFFFF_FFFF,
+        8 => value == u64::MAX as i128,
+        _ => matches!(value, 0xFF | 0xFFFF | 0xFFFF_FFFF) || value == u64::MAX as i128,
     }
 }
 
@@ -395,7 +419,7 @@ fn normalize_scalar_value(
                 "class_a:{rec_sig}.{path}:flags {cur:#x}->{masked:#x}"
             ));
         }
-    } else if !edef.contains_value(cur) {
+    } else if !edef.contains_value(cur) && !is_unset_enum_sentinel(cur, 0) {
         // TODO(remap table): when a per-enum FO76->FO4 remap map is available,
         // look it up here before clamping. For now: clamp to the FO4 fallback.
         let fb = edef.fallback_value().unwrap_or(0);
@@ -588,5 +612,74 @@ mod tests {
             7,
             "valid z_test_function@8 untouched"
         );
+    }
+
+    /// PACK PSDT schedule DayOfWeek/Hour/Minute = -1 ("Any") is the universal
+    /// Bethesda unset sentinel — not a named enum entry (the FO4 schedule enums
+    /// list 0..=10 / hours / minutes only), yet the game reads -1 as "Any". Class
+    /// A must preserve it rather than clamp the 0xFF int8 to the fallback (0),
+    /// which silently rewrote a whole quest package's schedule to Sunday/00:00.
+    #[test]
+    fn pack_psdt_any_schedule_sentinel_survives_class_a() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        // month, DayOfWeek(-1), date, Hour(-1), Minute(-1), unk×3, duration.
+        let psdt = vec![0x00u8, 0xff, 0x00, 0xff, 0xff, 0xab, 0xab, 0xab, 0, 0, 0, 0];
+        let mut record = Record {
+            sig: SigCode::from_str("PACK").unwrap(),
+            form_key: FormKey::parse("6C2DAF@SeventySix.esm", &interner).unwrap(),
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: SmallVec::from_vec(vec![FieldEntry {
+                sig: SubrecordSig::from_str("PSDT").unwrap(),
+                value: FieldValue::Bytes(SmallVec::from_vec(psdt)),
+            }]),
+            warnings: SmallVec::new(),
+        };
+
+        normalize_flags_and_enums(&mut record, &schema, &interner);
+
+        let out = match &record.fields[0].value {
+            FieldValue::Bytes(b) => b.clone(),
+            other => panic!("PSDT must stay Bytes, got {other:?}"),
+        };
+        assert_eq!(out[1], 0xff, "DayOfWeek 'Any' (-1) must survive");
+        assert_eq!(out[3], 0xff, "Hour 'Any' (-1) must survive");
+        assert_eq!(out[4], 0xff, "Minute 'Any' (-1) must survive");
+        assert_eq!(
+            &out[5..8],
+            &[0xab, 0xab, 0xab],
+            "non-enum unknowns untouched"
+        );
+    }
+
+    /// FURN.FNAM is required by the FO4 schema and present on every vanilla FO4
+    /// FURN, so it is carried through translation rather than dropped. FO76 sets
+    /// bits FO4 does not define (`0x40` on WorkbenchTinkersA 012FF0); Class A
+    /// masks those away while keeping the FO4-defined ones.
+    #[test]
+    fn furn_fnam_masks_fo76_only_flag_bits() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        for (raw, expected) in [(0x0040_u16, 0x0000_u16), (0x0042, 0x0002)] {
+            let mut record = Record {
+                sig: SigCode::from_str("FURN").unwrap(),
+                form_key: FormKey::parse("012FF0@SeventySix.esm", &interner).unwrap(),
+                eid: None,
+                flags: RecordFlags::empty(),
+                fields: SmallVec::from_vec(vec![FieldEntry {
+                    sig: SubrecordSig::from_str("FNAM").unwrap(),
+                    value: FieldValue::Bytes(SmallVec::from_vec(raw.to_le_bytes().to_vec())),
+                }]),
+                warnings: SmallVec::new(),
+            };
+
+            normalize_flags_and_enums(&mut record, &schema, &interner);
+
+            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+                panic!("FNAM must stay Bytes");
+            };
+            assert_eq!(u16::from_le_bytes(bytes[..2].try_into().unwrap()), expected);
+        }
     }
 }

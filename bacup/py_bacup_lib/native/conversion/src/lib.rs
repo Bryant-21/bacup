@@ -5,9 +5,11 @@
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
+pub mod collision_donor;
 pub mod drop_trace;
 pub mod embedded;
 pub mod errors;
+pub mod filesystem;
 pub mod fixups;
 pub mod fnv_legacy_scripting;
 pub mod fo76_navmesh;
@@ -16,7 +18,9 @@ pub mod formkey_mapper;
 pub mod full_plugin;
 pub mod ids;
 mod legacy_fallout_navmesh;
+pub mod legacy_pack_preflight;
 pub mod material_source_overrides;
+pub mod materialized_npc_facegen;
 pub mod merge_sources;
 pub mod modt_compute;
 pub mod modt_manifest;

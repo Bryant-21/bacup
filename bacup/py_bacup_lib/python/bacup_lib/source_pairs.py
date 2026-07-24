@@ -50,13 +50,17 @@ SKYRIM_MVP_EXCLUDE_SIGNATURES = frozenset(
         "DIAL",
         "DLBR",
         "DLVW",
+        "ENCH",
         "EYES",
+        "FURN",
         "HDPT",
         "INFO",
         "LVLN",
+        "LSCR",
         "MOVT",
         "NPC_",
         "PACK",
+        "PERK",
         "PROJ",
         "QUST",
         "RACE",
@@ -64,9 +68,45 @@ SKYRIM_MVP_EXCLUDE_SIGNATURES = frozenset(
         "SMBN",
         "SMEN",
         "SMQN",
+        "SPEL",
         "WEAP",
     }
 )
+
+FNV_MVP_EXCLUDE_SIGNATURES = frozenset(
+    {
+        "ACHR",
+        "ACRE",
+        "AMMO",
+        "ARMA",
+        "ARMO",
+        "BPTD",
+        "CREA",
+        "CSTY",
+        "DIAL",
+        "ENCH",
+        "EYES",
+        "HAIR",
+        "HDPT",
+        "INFO",
+        "LVLC",
+        "LVLN",
+        "NPC_",
+        "PACK",
+        "PERK",
+        "PROJ",
+        "QUST",
+        "RACE",
+        "SCEN",
+        "SPEL",
+        "WEAP",
+    }
+)
+
+MVP_EXCLUDE_SIGNATURES_BY_PAIR = {
+    "fnvfo3:fo4": FNV_MVP_EXCLUDE_SIGNATURES,
+    "skyrimse:fo4": SKYRIM_MVP_EXCLUDE_SIGNATURES,
+}
 
 
 SOURCE_PAIRS: dict[str, SourcePair] = {
@@ -100,7 +140,7 @@ SOURCE_PAIRS: dict[str, SourcePair] = {
             "MercenaryPack.esm",
             "TribalPack.esm",
         ),
-        output_mod_name="MojaveCapital",
+        output_mod_name="FNV_FO3_Merged",
         source_extracted_env=get_profile("fnv").env_var_name,
         source_data_env="FONV_DATA_DIR",
         source_dir_env="FONV_DIR",
@@ -132,7 +172,7 @@ SOURCE_PAIRS: dict[str, SourcePair] = {
             "HearthFires.esm",
             "Dragonborn.esm",
         ),
-        output_mod_name="Skyrim",
+        output_mod_name="Skyrim_Merged",
         source_extracted_env=get_profile("skyrimse").env_var_name,
         source_data_env="SKYRIMSE_DATA_DIR",
         source_dir_env="SKYRIMSE_DIR",

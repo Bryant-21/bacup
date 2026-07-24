@@ -15,6 +15,8 @@ from imgui_bundle import imgui
 
 from creation_lib.nif.nif_bsx_flags import BSX_FLAG_DEFS
 from .collision_info import (
+    find_physics_system_shape,
+    havok_shape_detail_lines,
     is_collision_block,
     summarize_collision_block,
     _COLL_OBJ_FLAGS,
@@ -133,6 +135,26 @@ class PropertiesPanel:
             imgui.end()
             return
 
+        virtual_shape = getattr(
+            getattr(self.app, "selection_mgr", None),
+            "selected_collision_shape",
+            None,
+        )
+        if (
+            virtual_shape is not None
+            and virtual_shape.nif_id == nif_id
+            and virtual_shape.block_id == block.block_id
+        ):
+            shape = find_physics_system_shape(
+                block,
+                virtual_shape.body_id,
+                virtual_shape.shape_index,
+            )
+            if shape is not None:
+                self._draw_havok_shape_properties(block, shape)
+                imgui.end()
+                return
+
         # Header
         imgui.text_colored(
             imgui.ImVec4(0.9, 0.8, 0.5, 1.0),
@@ -181,6 +203,28 @@ class PropertiesPanel:
 
         imgui.end_child()
         imgui.end()
+
+    @staticmethod
+    def _draw_havok_shape_properties(block, shape) -> None:
+        imgui.text_colored(
+            imgui.ImVec4(0.9, 0.7, 0.4, 1.0),
+            shape.display_type,
+        )
+        imgui.separator()
+        imgui.text(f"Physics System Block: [{block.block_id}]")
+        for line in havok_shape_detail_lines(shape):
+            imgui.text(line)
+        if shape.sub_shapes:
+            imgui.separator()
+            imgui.text("Contained Shapes")
+            for child in shape.sub_shapes:
+                geometry = []
+                if child.vertex_count is not None:
+                    geometry.append(f"{child.vertex_count} verts")
+                if child.triangle_count is not None:
+                    geometry.append(f"{child.triangle_count} tris")
+                suffix = f" ({', '.join(geometry)})" if geometry else ""
+                imgui.bullet_text(f"[{child.shape_index}] {child.display_type}{suffix}")
 
     def draw_block_fields(
         self,

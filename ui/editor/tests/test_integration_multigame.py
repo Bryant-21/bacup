@@ -16,6 +16,7 @@ from creation_lib.renderer.scene_renderer import SceneNode
 from creation_lib.renderer.nif_loader import (
     PreparedShape,
     PreparedNifData,
+    _PrepareContext,
     _extract_external_geometry_info,
     _make_bbox_placeholder,
     _prepare_walk_blocks,
@@ -160,22 +161,18 @@ class TestArchiveManagerIntegration:
         with tempfile.TemporaryDirectory() as tmp:
             for name in ["Skyrim.bsa", "Fallout.ba2", "other.zip"]:
                 Path(tmp, name).touch()
-            with patch("creation_lib.ba2.ba2_manager.BSAReader") as mock_bsa_cls, \
-                 patch("creation_lib.ba2.ba2_manager.BA2File") as mock_ba2_cls:
-                mock_bsa_cls.return_value.file_count = 0
-                mock_ba2_cls.return_value.file_count = 0
-                mgr._scan_dir(Path(tmp))
-        # Should find 2 archives, skip .zip
-        assert len(mgr._archives) == 2
+            mgr.scan_directories([Path(tmp)])
+        # Should queue 2 archives (.bsa + .ba2), skip .zip
+        assert mgr.archive_count == 2
 
     def test_find_returns_first_hit(self):
         from creation_lib.ba2 import BA2Manager
         mgr = BA2Manager()
-        mock_bsa = MagicMock()
-        mock_bsa.extract.return_value = b"bsa_data"
-        mock_ba2 = MagicMock()
-        mock_ba2.extract.return_value = None
-        mgr._archives = [mock_ba2, mock_bsa]
+        mock_arc = MagicMock()
+        mock_arc.extract.return_value = b"bsa_data"
+        mgr._routing_loaded = True
+        mgr._file_index = {"textures/test.dds": "arc1"}
+        mgr._open_archives = {"arc1": mock_arc}
         result = mgr.find("textures/test.dds")
         assert result == b"bsa_data"
 
@@ -338,7 +335,10 @@ class TestStarfieldLoaderPipeline:
         """_prepare_walk_blocks finds BSGeometry children of NiNode roots."""
         nif = self._make_nif_with_bsgeometry()
         shapes = {}
-        _prepare_walk_blocks(nif, nif.blocks[0], shapes, "main")
+        _prepare_walk_blocks(
+            nif, nif.blocks[0], shapes,
+            _PrepareContext(nif_id="main", texture_dirs=[], ba2_mgr=None),
+        )
         assert 1 in shapes
         ps = shapes[1]
         assert ps.external_mesh_paths == ["geometries/weapon/gun.mesh"]
@@ -349,7 +349,10 @@ class TestStarfieldLoaderPipeline:
         """Placeholder verts span the BSBoundingBox dimensions."""
         nif = self._make_nif_with_bsgeometry()
         shapes = {}
-        _prepare_walk_blocks(nif, nif.blocks[0], shapes, "main")
+        _prepare_walk_blocks(
+            nif, nif.blocks[0], shapes,
+            _PrepareContext(nif_id="main", texture_dirs=[], ba2_mgr=None),
+        )
         ps = shapes[1]
         # BBox center=0, dims=10 => verts from -10 to +10
         assert ps.verts.min() == pytest.approx(-10.0)
@@ -379,7 +382,10 @@ class TestStarfieldLoaderPipeline:
         nif = MagicMock()
         nif.schema = schema
         shapes = {}
-        _prepare_walk_blocks(nif, block, shapes, "main")
+        _prepare_walk_blocks(
+            nif, block, shapes,
+            _PrepareContext(nif_id="main", texture_dirs=[], ba2_mgr=None),
+        )
         assert 0 in shapes
         assert shapes[0].external_mesh_paths is None  # Not external geometry
 

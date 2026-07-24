@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stub_game_dbs(monkeypatch):
+    """BehaviorEditorApp() scans the ``data/`` dir for ``*_havok.db`` files on
+    construction; the public repo ships no ``data/`` dir. Stub the scan so these
+    menu/toolbar tests don't depend on a populated data directory."""
+    monkeypatch.setattr("ui.behaivor.main_window.get_available_game_dbs", lambda: {})
+
 
 def test_behavior_editor_host_menu_can_skip_local_help(monkeypatch):
     from ui.behaivor.main_window import BehaviorEditorApp

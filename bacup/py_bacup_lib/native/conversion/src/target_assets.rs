@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime};
 use nif_core_native::model::NifFile;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use rayon::prelude::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::relocation::normalize_rel;
@@ -59,6 +60,7 @@ pub struct TargetAssetStore {
     cache_data_root: PathBuf,
     membership_root: PathBuf,
     archive_readers: Mutex<HashMap<PathBuf, Arc<Mutex<bsarchive_native::python::ArchiveReader>>>>,
+    archive_paths: Vec<PathBuf>,
     warnings: Vec<String>,
     stats: Mutex<TargetAssetStats>,
 }
@@ -181,6 +183,13 @@ impl TargetAssetStore {
         }
 
         let mut assets = load_catalog_assets(&connection, &active_archives)?;
+        let mut archive_paths: Vec<(i64, PathBuf)> = active_archives
+            .values()
+            .map(|(path, _, priority)| (*priority, path.clone()))
+            .collect();
+        archive_paths
+            .sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        let archive_paths = archive_paths.into_iter().map(|(_, path)| path).collect();
         let mut mismatch_dependency_members: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
         for (archive_path, catalog_valid, priority) in active_archives.values() {
             if *catalog_valid {
@@ -265,6 +274,7 @@ impl TargetAssetStore {
             cache_data_root,
             membership_root,
             archive_readers: Mutex::new(HashMap::new()),
+            archive_paths,
             warnings,
             stats: Mutex::new(TargetAssetStats {
                 archives_reindexed: reindexed,
@@ -301,6 +311,10 @@ impl TargetAssetStore {
                 .keys()
                 .filter(|path| !self.assets.contains_key(*path))
                 .count()
+    }
+
+    pub fn archive_paths(&self) -> &[PathBuf] {
+        &self.archive_paths
     }
 
     pub fn dependency_closure(&self, roots: &[String]) -> Vec<String> {
@@ -1152,10 +1166,103 @@ fn write_runtime_catalog_overlay(
     }
 }
 
+// Full NIF decoding expands far beyond compressed BA2 bytes, so higher parallelism
+// can add gigabytes to the one-time catalog build's peak working set.
+const CATALOG_MAX_WORKERS: usize = 2;
+const CATALOG_PARSE_BATCH_BYTES: usize = 32 * 1024 * 1024;
+const CATALOG_PARSE_BATCH_FILES: usize = 512;
+
+#[derive(Clone, Copy)]
+struct CatalogDependencySource {
+    priority: u32,
+    archive_index: u32,
+    asset_id: u32,
+}
+
+struct CatalogDependencyJob {
+    source_id: u32,
+    source_path: String,
+    bytes: Vec<u8>,
+}
+
+struct CatalogParsedDependencies {
+    source_id: u32,
+    source_path: String,
+    targets: Vec<(u32, &'static str)>,
+}
+
+fn catalog_worker_count(workers: Option<usize>) -> usize {
+    workers
+        .filter(|workers| *workers > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(usize::from)
+                .unwrap_or(1)
+        })
+        .min(CATALOG_MAX_WORKERS)
+}
+
+fn flush_catalog_dependency_jobs(
+    pool: &rayon::ThreadPool,
+    jobs: &mut Vec<CatalogDependencyJob>,
+    target_asset_ids: &HashMap<Box<str>, u32>,
+    insert_dependency: &mut rusqlite::Statement<'_>,
+) -> Result<(), String> {
+    if jobs.is_empty() {
+        return Ok(());
+    }
+    let jobs = std::mem::take(jobs);
+    let mut parsed: Vec<CatalogParsedDependencies> = pool.install(|| {
+        jobs.into_par_iter()
+            .map(|job| {
+                let mut targets: Vec<(u32, &'static str)> =
+                    referenced_dependencies(&job.source_path, &job.bytes)
+                        .into_iter()
+                        .filter_map(|(target_path, ref_kind)| {
+                            target_asset_ids
+                                .get(target_path.as_str())
+                                .copied()
+                                .map(|target_id| (target_id, ref_kind))
+                        })
+                        .collect();
+                targets.sort_unstable();
+                targets.dedup();
+                CatalogParsedDependencies {
+                    source_id: job.source_id,
+                    source_path: job.source_path,
+                    targets,
+                }
+            })
+            .collect()
+    });
+    parsed.sort_unstable_by_key(|item| item.source_id);
+    for item in parsed {
+        for (target_id, ref_kind) in item.targets {
+            insert_dependency
+                .execute(params![
+                    i64::from(item.source_id),
+                    i64::from(target_id),
+                    ref_kind
+                ])
+                .map_err(|error| format!("insert dependency for {}: {error}", item.source_path))?;
+        }
+    }
+    Ok(())
+}
+
 pub fn build_catalog(
     target_data_dir: &Path,
     output_path: &Path,
     game_build: &str,
+) -> Result<(), String> {
+    build_catalog_with_workers(target_data_dir, output_path, game_build, None)
+}
+
+fn build_catalog_with_workers(
+    target_data_dir: &Path,
+    output_path: &Path,
+    game_build: &str,
+    workers: Option<usize>,
 ) -> Result<(), String> {
     if !target_data_dir.is_dir() {
         return Err(format!(
@@ -1288,7 +1395,8 @@ pub fn build_catalog(
         archive_rows.push((archive_path.clone(), archive_id, priority));
     }
 
-    let mut selected: HashMap<String, (i64, PathBuf, String, i64)> = HashMap::new();
+    let mut selected: HashMap<Box<str>, CatalogDependencySource> = HashMap::new();
+    let mut target_asset_ids: HashMap<Box<str>, u32> = HashMap::new();
     let mut directory_ids = HashMap::new();
     {
         let mut insert_directory = transaction
@@ -1312,7 +1420,13 @@ pub fn build_catalog(
             )
             .map_err(|error| format!("prepare asset-owner insert: {error}"))?;
 
-        for (archive_path, archive_id, priority) in archive_rows {
+        for (archive_index, (archive_path, archive_id, priority)) in
+            archive_rows.into_iter().enumerate()
+        {
+            let archive_index = u32::try_from(archive_index)
+                .map_err(|_| "target asset catalog has too many archives".to_string())?;
+            let compact_priority = u32::try_from(priority)
+                .map_err(|_| format!("invalid archive priority {priority}"))?;
             let files = bsarchive_native::list_archive_files(&archive_path)
                 .map_err(|error| format!("list {}: {error}", archive_path.display()))?;
             for canonical_path in files {
@@ -1330,47 +1444,57 @@ pub fn build_catalog(
                     directory_ids.insert(directory.to_string(), id);
                     id
                 };
+                let asset_kind = asset_kind(&canonical_path);
                 let asset_id = insert_asset
-                    .query_row(
-                        params![directory_id, name, asset_kind(&canonical_path)],
-                        |row| row.get::<_, i64>(0),
-                    )
+                    .query_row(params![directory_id, name, asset_kind], |row| {
+                        row.get::<_, i64>(0)
+                    })
                     .map_err(|error| format!("insert asset {canonical_path}: {error}"))?;
                 insert_owner
                     .execute(params![asset_id, archive_id, priority])
                     .map_err(|error| format!("insert asset owner {canonical_path}: {error}"))?;
-                let dependency_source = canonical_path.to_ascii_lowercase().ends_with(".nif")
-                    || canonical_path.to_ascii_lowercase().ends_with(".bgsm")
-                    || canonical_path.to_ascii_lowercase().ends_with(".bgem");
-                if dependency_source
-                    && selected
-                        .get(&path_key)
-                        .is_none_or(|(current_priority, _, _, _)| priority >= *current_priority)
-                {
-                    selected.insert(
-                        path_key,
-                        (priority, archive_path.clone(), canonical_path, asset_id),
-                    );
+                let asset_id = u32::try_from(asset_id)
+                    .map_err(|_| "target asset catalog exceeded u32 asset ids".to_string())?;
+                if matches!(asset_kind, "material" | "texture") {
+                    target_asset_ids.insert(path_key.clone().into_boxed_str(), asset_id);
+                }
+                if matches!(asset_kind, "nif" | "material") {
+                    let candidate = CatalogDependencySource {
+                        priority: compact_priority,
+                        archive_index,
+                        asset_id,
+                    };
+                    if selected
+                        .get(path_key.as_str())
+                        .is_none_or(|current| candidate.priority >= current.priority)
+                    {
+                        selected.insert(path_key.into_boxed_str(), candidate);
+                    }
                 }
             }
         }
     }
 
-    let mut by_archive: BTreeMap<PathBuf, Vec<(i64, String)>> = BTreeMap::new();
-    for (_, (_, archive_path, canonical_path, asset_id)) in selected {
-        by_archive
-            .entry(archive_path)
-            .or_default()
-            .push((asset_id, canonical_path));
+    let mut by_archive: Vec<Vec<(u32, String)>> = vec![Vec::new(); archives.len()];
+    for (path, source) in selected {
+        let archive_index = usize::try_from(source.archive_index)
+            .map_err(|_| "invalid target asset archive index".to_string())?;
+        let entries = by_archive
+            .get_mut(archive_index)
+            .ok_or_else(|| "target asset archive index is out of range".to_string())?;
+        entries.push((source.asset_id, path.into()));
     }
+    for entries in &mut by_archive {
+        entries.sort_unstable_by(|left, right| {
+            left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1))
+        });
+    }
+    let worker_count = catalog_worker_count(workers);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(worker_count)
+        .build()
+        .map_err(|error| format!("create target asset catalog worker pool: {error}"))?;
     {
-        let mut lookup_asset = transaction
-            .prepare_cached(
-                "SELECT a.id FROM assets a
-                 JOIN directories d ON d.id = a.directory_id
-                 WHERE d.path_key = ?1 AND a.name_key = ?2",
-            )
-            .map_err(|error| format!("prepare dependency target lookup: {error}"))?;
         let mut insert_dependency = transaction
             .prepare_cached(
                 "INSERT OR IGNORE INTO asset_dependencies(
@@ -1378,42 +1502,56 @@ pub fn build_catalog(
                  ) VALUES (?1, ?2, ?3)",
             )
             .map_err(|error| format!("prepare dependency insert: {error}"))?;
-        for (archive_path, entries) in by_archive {
-            let requested: Vec<String> = entries.iter().map(|(_, path)| path.clone()).collect();
-            let source_ids: HashMap<String, i64> = entries
-                .into_iter()
-                .map(|(id, path)| (normalize_rel(&path), id))
-                .collect();
+        for (archive_index, entries) in by_archive.into_iter().enumerate() {
+            if entries.is_empty() {
+                continue;
+            }
+            let archive_path = &archives[archive_index];
+            let (source_ids, requested): (Vec<u32>, Vec<String>) = entries.into_iter().unzip();
+            let mut visited = 0usize;
+            let mut batch_bytes = 0usize;
+            let mut jobs = Vec::new();
             bsarchive_native::python::visit_archive_files(
-                &archive_path,
+                archive_path,
                 &requested,
                 |path, bytes| {
-                    let source_id =
-                        source_ids
-                            .get(&normalize_rel(path))
-                            .copied()
-                            .ok_or_else(|| {
-                                format!("catalog builder received unexpected member {path}")
-                            })?;
-                    for (target_key, ref_kind) in referenced_dependencies(path, bytes) {
-                        let (directory, name) = split_asset_path(&target_key);
-                        let target_id = lookup_asset
-                            .query_row(params![directory, name], |row| row.get::<_, i64>(0))
-                            .optional()
-                            .map_err(|error| {
-                                format!("lookup dependency target {target_key}: {error}")
-                            })?;
-                        if let Some(target_id) = target_id {
-                            insert_dependency
-                                .execute(params![source_id, target_id, ref_kind])
-                                .map_err(|error| {
-                                    format!("insert dependency for {path}: {error}")
-                                })?;
-                        }
+                    let source_id = source_ids.get(visited).copied().ok_or_else(|| {
+                        format!("catalog builder received unexpected member {path}")
+                    })?;
+                    visited += 1;
+                    batch_bytes = batch_bytes.saturating_add(bytes.len());
+                    jobs.push(CatalogDependencyJob {
+                        source_id,
+                        source_path: path.to_string(),
+                        bytes: bytes.to_vec(),
+                    });
+                    if batch_bytes >= CATALOG_PARSE_BATCH_BYTES
+                        || jobs.len() >= CATALOG_PARSE_BATCH_FILES
+                    {
+                        flush_catalog_dependency_jobs(
+                            &pool,
+                            &mut jobs,
+                            &target_asset_ids,
+                            &mut insert_dependency,
+                        )?;
+                        batch_bytes = 0;
                     }
                     Ok(())
                 },
             )?;
+            flush_catalog_dependency_jobs(
+                &pool,
+                &mut jobs,
+                &target_asset_ids,
+                &mut insert_dependency,
+            )?;
+            if visited != source_ids.len() {
+                return Err(format!(
+                    "catalog builder visited {visited} of {} members in {}",
+                    source_ids.len(),
+                    archive_path.display()
+                ));
+            }
         }
     }
     transaction
@@ -1509,6 +1647,15 @@ impl PyTargetAssetStore {
     }
 
     #[getter]
+    fn archive_paths(&self) -> Vec<String> {
+        self.inner
+            .archive_paths()
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[getter]
     fn asset_count(&self) -> usize {
         self.inner.asset_count()
     }
@@ -1561,18 +1708,21 @@ pub fn catalog_schema_version_py() -> i64 {
 }
 
 #[pyfunction(name = "conversion_build_target_asset_catalog")]
-#[pyo3(signature = (target_data_dir, output_path, game_build=""))]
+#[pyo3(signature = (target_data_dir, output_path, game_build="", workers=None))]
 pub fn build_catalog_py(
     py: Python<'_>,
     target_data_dir: &str,
     output_path: &str,
     game_build: &str,
+    workers: Option<usize>,
 ) -> PyResult<()> {
     let target_data_dir = PathBuf::from(target_data_dir);
     let output_path = PathBuf::from(output_path);
     let game_build = game_build.to_string();
-    py.detach(move || build_catalog(&target_data_dir, &output_path, &game_build))
-        .map_err(PyRuntimeError::new_err)
+    py.detach(move || {
+        build_catalog_with_workers(&target_data_dir, &output_path, &game_build, workers)
+    })
+    .map_err(PyRuntimeError::new_err)
 }
 
 #[cfg(test)]
@@ -1649,6 +1799,20 @@ mod tests {
         assert_eq!(
             path_from_data_relative("../Meshes/Test.nif"),
             PathBuf::from("Meshes/Test.nif")
+        );
+    }
+
+    #[test]
+    fn catalog_dependency_source_stays_compact() {
+        assert!(std::mem::size_of::<CatalogDependencySource>() <= 12);
+    }
+
+    #[test]
+    fn catalog_worker_count_is_bounded() {
+        assert_eq!(catalog_worker_count(Some(1)), 1);
+        assert_eq!(
+            catalog_worker_count(Some(CATALOG_MAX_WORKERS + 1)),
+            CATALOG_MAX_WORKERS
         );
     }
 }

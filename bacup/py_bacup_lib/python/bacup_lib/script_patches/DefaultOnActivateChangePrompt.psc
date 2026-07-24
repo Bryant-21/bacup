@@ -1,4 +1,5 @@
 Event OnActivate(ObjectReference akActionRef)
+    ; TODO
     If akActionRef != Game.GetPlayer()
         Return
     EndIf

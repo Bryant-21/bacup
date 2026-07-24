@@ -171,6 +171,9 @@ class ConversionRun:
             payload["target_data_dir"] = target_data_dir
         return _native().conversion_run_phase(self._id, name, payload)
 
+    def preflight_legacy_packs(self) -> None:
+        _native().conversion_run_preflight_legacy_packs(self._id)
+
     def drain_events(self, max: int = 256) -> list[dict]:
         """Drain up to ``max`` queued PhaseEvent dicts. Non-blocking."""
         return _native().conversion_run_drain_events(self._id, max)

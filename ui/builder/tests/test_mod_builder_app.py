@@ -5,7 +5,7 @@ import re
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from ruamel.yaml import YAML
 
@@ -213,6 +213,43 @@ def test_set_plugin_header_flags_normalizes_raw_known_bits(tmp_path: Path):
 def test_mod_list_label_marks_deployed_mods():
     assert _mod_list_label("B21_Test", "ESP", deployed=True) == "* B21_Test [ESP]"
     assert _mod_list_label("B21_Test", "ESP", deployed=False) == "B21_Test [ESP]"
+
+
+def test_mod_selector_uses_cached_display_metadata():
+    with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None):
+        app = ModBuilderApp()
+
+    app._mod_list = ["B21_Test"]
+    app._mod_kinds = ["mod"]
+    app._mod_deployed = [False]
+    cached_color = MagicMock()
+
+    mock_imgui = MagicMock()
+    mock_imgui.get_content_region_avail.return_value = SimpleNamespace(x=400.0, y=600.0)
+    mock_imgui.get_style.return_value.item_spacing.x = 8.0
+    mock_imgui.input_text_with_hint.return_value = (False, "")
+    mock_imgui.begin_child.return_value = True
+    mock_imgui.selectable.return_value = (False, False)
+    mock_imgui.is_item_hovered.return_value = False
+    mock_imgui.button.return_value = False
+
+    with (
+        patch("ui.builder.mod_builder_app._mod_plugin_type_label", return_value="ESP (Light)") as plugin_label,
+        patch("ui.builder.mod_builder_app._mod_plugin_text_color", return_value=cached_color) as plugin_color,
+        patch("ui.builder.mod_builder_app._xse_plugin_label") as xse_label,
+    ):
+        app._refresh_mod_display()
+        assert app._mod_display == {"B21_Test": ("ESP (Light)", cached_color)}
+
+        plugin_label.reset_mock()
+        plugin_color.reset_mock()
+        xse_label.reset_mock()
+        with patch("ui.builder.mod_builder_app.imgui", mock_imgui):
+            app._draw_mod_selector()
+
+        plugin_label.assert_not_called()
+        plugin_color.assert_not_called()
+        xse_label.assert_not_called()
 
 
 def test_mod_kind_keeps_xse_with_loose_scripts_as_xse(tmp_path: Path):

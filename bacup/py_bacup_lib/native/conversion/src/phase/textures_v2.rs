@@ -5,9 +5,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use materials_native::texture_convert::TextureConversionParamsPayload;
 
+use crate::phase::copy_textures::discover_nif_texture_dependencies_with_progress;
+use crate::phase::progress::ProgressReporter;
 use crate::phase::textures::{extract_f32, parse_conversion_workers, parse_texture_entries};
 use crate::phase::{LogLevel, Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
 use crate::terrain_textures::manifest::TerrainTextureJob;
@@ -27,6 +30,31 @@ fn parse_landscape_mip_flooding(params: &serde_json::Value) -> bool {
         .get("landscape_mip_flooding")
         .and_then(|value| value.as_bool())
         .unwrap_or(false)
+}
+
+fn dedup_key(path: &str) -> String {
+    path.replace('\\', "/").to_ascii_lowercase()
+}
+
+/// Append NIF-discovered textures the explicit list does not already cover.
+///
+/// The same file reached through two roots would otherwise land in the engine
+/// twice and race on its own output.
+fn extend_with_nif_dependencies(
+    textures: &mut Vec<TextureEntryIn>,
+    discovered: Vec<(String, String)>,
+) {
+    let mut seen: std::collections::HashSet<String> =
+        textures.iter().map(|e| dedup_key(&e.source_path)).collect();
+    for (_source_path, resolved_path) in discovered {
+        if resolved_path.is_empty() || !seen.insert(dedup_key(&resolved_path)) {
+            continue;
+        }
+        textures.push(TextureEntryIn {
+            source_path: resolved_path,
+            output_subpath: None,
+        });
+    }
 }
 
 fn parse_terrain_jobs(params: &serde_json::Value) -> Result<Vec<TerrainTextureJob>, PhaseError> {
@@ -50,13 +78,49 @@ impl Phase for ConvertTexturesV2Phase {
             .and_then(|v| v.as_str())
             .map(PathBuf::from)
             .unwrap_or_else(|| ctx.source_extracted_dir.to_path_buf());
-        let textures: Vec<TextureEntryIn> = parse_texture_entries(p.get("textures"))
+        let mut textures: Vec<TextureEntryIn> = parse_texture_entries(p.get("textures"))
             .into_iter()
             .map(|e| TextureEntryIn {
                 source_path: e.source_path,
                 output_subpath: e.output_subpath,
             })
             .collect();
+        let nif_count = p
+            .get("nif_paths")
+            .and_then(|value| value.as_array())
+            .map(|entries| entries.len().min(u32::MAX as usize) as u32)
+            .unwrap_or(0);
+        let discovery_started = Instant::now();
+        let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+            phase: "convert_textures_v2",
+            level: LogLevel::Info,
+            message: format!(
+                "textures_v2: scanning {nif_count} NIFs for embedded texture dependencies"
+            ),
+        });
+        let discovery_reporter =
+            ProgressReporter::new("convert_textures_v2", nif_count, ctx.run.event_tx.clone());
+        let discovery = discover_nif_texture_dependencies_with_progress(p, &discovery_reporter)?;
+        discovery_reporter.finish();
+        let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+            phase: "convert_textures_v2",
+            level: LogLevel::Info,
+            message: format!(
+                "textures_v2: NIF texture dependency scan completed; nifs={nif_count} discovered={} failed={} elapsed_ms={}",
+                discovery.textures.len(),
+                discovery.failures,
+                discovery_started.elapsed().as_millis(),
+            ),
+        });
+        let discovery_failures = discovery.failures;
+        extend_with_nif_dependencies(&mut textures, discovery.textures);
+        for warning in &discovery.warnings {
+            let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+                phase: "convert_textures_v2",
+                level: LogLevel::Warn,
+                message: warning.clone(),
+            });
+        }
         let format_overrides: HashMap<String, String> = p
             .get("target_format_overrides")
             .and_then(|v| v.as_object())
@@ -196,11 +260,12 @@ impl Phase for ConvertTexturesV2Phase {
         });
 
         // Keep the public PhaseReport counters stable for Python summaries.
+        let failed = report.failed.min(u64::from(u32::MAX)) as u32 + discovery_failures;
         Ok(PhaseReport {
             assets_written: report.outputs_written.min(u64::from(u32::MAX)) as u32,
             records_dropped: report.skipped_base_owned_outputs.min(u64::from(u32::MAX)) as u32,
-            warnings: report.failed.min(u64::from(u32::MAX)) as u32,
-            items_failed: report.failed.min(u64::from(u32::MAX)) as u32,
+            warnings: failed,
+            items_failed: failed,
             ..Default::default()
         })
     }
@@ -209,6 +274,40 @@ impl Phase for ConvertTexturesV2Phase {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nif_dependencies_extend_the_list_without_duplicating_it() {
+        let mut textures = vec![TextureEntryIn {
+            source_path: r"C:\src\Textures\Clutter\crate_d.dds".to_owned(),
+            output_subpath: Some("Textures/Clutter/crate_d.dds".to_owned()),
+        }];
+
+        extend_with_nif_dependencies(
+            &mut textures,
+            vec![
+                // Same file the record graph already supplied, reached with the
+                // other separator and casing.
+                (
+                    "Textures/Clutter/crate_d.dds".to_owned(),
+                    "C:/SRC/textures/clutter/crate_d.dds".to_owned(),
+                ),
+                (
+                    "Textures/Clutter/crate_n.dds".to_owned(),
+                    r"C:\src\Textures\Clutter\crate_n.dds".to_owned(),
+                ),
+                // Two NIFs naming the same normal must still yield one entry.
+                (
+                    "Textures/Clutter/crate_n.dds".to_owned(),
+                    r"C:\src\Textures\Clutter\crate_n.dds".to_owned(),
+                ),
+                ("Textures/Clutter/gone.dds".to_owned(), String::new()),
+            ],
+        );
+
+        assert_eq!(textures.len(), 2);
+        assert!(textures[1].source_path.ends_with("crate_n.dds"));
+        assert!(textures[1].output_subpath.is_none());
+    }
 
     #[test]
     fn pbr_carry_param_defaults_off_and_parses_true() {

@@ -21,6 +21,27 @@ fn string_value(value: &FieldValue, interner: &StringInterner) -> Option<String>
     }
 }
 
+/// `Actors\<Race>` for this RACE, from its skeletal model (`ANAM`, e.g.
+/// `actors\scorched\characterassets\skeleton.nif`). Humanoid creatures mount the shared
+/// `Actors\Character\Behaviors\*` graphs, so a subgraph's core-behavior path names
+/// `Character` and cannot identify the race that owns the animation project.
+fn race_dir_from_skeletal_model(record: &Record, interner: &StringInterner) -> Option<String> {
+    let anam = SubrecordSig::from_str("ANAM").ok()?;
+    record
+        .fields
+        .iter()
+        .filter(|entry| entry.sig == anam)
+        .filter_map(|entry| string_value(&entry.value, interner))
+        .find_map(|model| {
+            let norm = model.replace('/', "\\");
+            if !norm.to_ascii_lowercase().ends_with(".nif") {
+                return None;
+            }
+            let parts: Vec<&str> = norm.split('\\').filter(|s| !s.is_empty()).collect();
+            (parts.len() >= 3).then(|| parts[..2].join("\\"))
+        })
+}
+
 /// Read every subgraph from a decoded RACE record. Each `SGNM` (Behaviour Graph)
 /// begins a subgraph; the consecutive `SAPT` (Path) entries that follow are its
 /// SAPT chain, self-first — exactly as the engine stores it. Other subgraph
@@ -35,12 +56,14 @@ pub fn subgraphs_from_race_record(
     ) else {
         return Vec::new();
     };
+    let race_dir = race_dir_from_skeletal_model(record, interner);
     let mut out: Vec<SubgraphInput> = Vec::new();
     for entry in &record.fields {
         if entry.sig == sgnm {
             out.push(SubgraphInput {
                 core_behavior: string_value(&entry.value, interner).unwrap_or_default(),
                 sapt_chain: Vec::new(),
+                race_dir: race_dir.clone(),
             });
         } else if entry.sig == sapt {
             if let (Some(sg), Some(p)) = (out.last_mut(), string_value(&entry.value, interner)) {
@@ -72,6 +95,7 @@ fn weapon_subgraph_profiles_from_race_record(
         Some(form_key) => form_key,
         None => return Vec::new(),
     };
+    let race_dir = race_dir_from_skeletal_model(record, interner);
     let sadd = match record.fields.iter().find(|entry| entry.sig == sadd_sig) {
         Some(entry) => match &entry.value {
             FieldValue::FormKey(form_key) => match stance_form_key(*form_key, interner) {
@@ -115,6 +139,7 @@ fn weapon_subgraph_profiles_from_race_record(
             let subgraph = SubgraphInput {
                 core_behavior: core_behavior.clone(),
                 sapt_chain: sapt.clone(),
+                race_dir: race_dir.clone(),
             };
             let id = subgraph.id();
             Some(WeaponProfileInput {
@@ -366,13 +391,13 @@ fn decode_anim_text_data_inputs_for_handle(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use ck_native::anim_text_data::race_decode::subgraph_inputs_from_plugin;
     use esp_authoring_core::plugin_runtime::{
         ParsedRecord as RawRecord, ParsedSubrecord, insert_parsed_record_in_slot,
         plugin_handle_close_native, plugin_handle_load_no_py, plugin_handle_new_native,
         plugin_handle_save_no_py, plugin_handle_store_ref,
     };
+    use std::path::PathBuf;
 
     use super::*;
     use crate::ids::SigCode;
@@ -567,5 +592,4 @@ mod tests {
         assert_eq!(subs[2].id(), 9947826212300345643);
         assert_eq!(subs[3].id(), 3632382008203366699);
     }
-
 }

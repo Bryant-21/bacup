@@ -1,11 +1,12 @@
 //! Fixup: sync ARMO hand slots from referenced hand ARMA add-ons.
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
 use crate::record::{FieldEntry, FieldValue, Record};
+use crate::schema::AuthoringSchema;
 use crate::session::PluginSession;
 use crate::sym::{StringInterner, Sym};
 
@@ -22,6 +23,10 @@ const HAND_SLOT_MASK: u64 = BIPED_SLOT_34_LEFT_HAND | BIPED_SLOT_35_RIGHT_HAND;
 const BARE_HUMAN_HAND_ADDONS: &[u32] = &[0x000D6C, 0x01D980, 0x0316C7];
 const BARE_GHOUL_HAND_ADDON: u32 = 0x0EAFBA;
 const GHOUL_RACE: u32 = 0x0EAFB6;
+const LEGACY_ARMOR_BMDT_CODEC: &str = "struct:I,B,B,B,B";
+const LEGACY_ARMOR_DATA_CODEC: &str = "struct:i,i,f";
+const SYNTHETIC_ARMOR_ADDON_PLUGIN: &str = "__legacy_armor_addon__";
+const FO4_HUMAN_RACE_LOCAL: u32 = 0x0001_3746;
 
 #[derive(Default)]
 struct HandAddonIndex {
@@ -63,6 +68,24 @@ impl Fixup for SyncArmoHandSlotsFromAddonsFixup {
             .ok_or_else(|| FixupError::Other("missing target schema in fixup config".into()))?;
 
         let mut report = FixupReport::empty();
+        resolve_legacy_armor_addon_lists(
+            session,
+            mapper,
+            target_schema,
+            &config.target_master_handle_ids,
+            &mut report,
+            arma_sig,
+            armo_sig,
+        )?;
+        synthesize_legacy_armor_addons(
+            session,
+            mapper,
+            config,
+            target_schema,
+            &mut report,
+            arma_sig,
+            armo_sig,
+        )?;
         let hand_addons = collect_hand_addons(
             session,
             mapper,
@@ -147,6 +170,631 @@ impl Fixup for SyncArmoHandSlotsFromAddonsFixup {
         }
 
         Ok(report)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ArmorActorModels {
+    male: Option<String>,
+    female: Option<String>,
+}
+
+fn synthesize_legacy_armor_addons(
+    session: &mut PluginSession,
+    mapper: &mut FormKeyMapper,
+    config: &FixupConfig,
+    target_schema: &AuthoringSchema,
+    report: &mut FixupReport,
+    arma_sig: SigCode,
+    armo_sig: SigCode,
+) -> Result<(), FixupError> {
+    let Some(source_schema) = config.source_schema.as_deref() else {
+        return Ok(());
+    };
+    if !is_legacy_armor_schema(source_schema) || session.source_slot_opt().is_none() {
+        return Ok(());
+    }
+
+    let mut armor_fks = session
+        .form_keys_of_sig(armo_sig, mapper.interner)
+        .map_err(|error| FixupError::HandleError(error.to_string()))?;
+    armor_fks.sort_by_key(|form_key| form_key.local);
+    let armor_fk_set = armor_fks.iter().copied().collect::<FxHashSet<_>>();
+
+    let mut mappings = mapper
+        .source_to_target_iter()
+        .filter(|(_, target)| armor_fk_set.contains(target))
+        .collect::<Vec<_>>();
+    mappings.sort_by(|(source_a, target_a), (source_b, target_b)| {
+        target_a
+            .local
+            .cmp(&target_b.local)
+            .then_with(|| source_a.local.cmp(&source_b.local))
+            .then_with(|| {
+                mapper
+                    .interner
+                    .resolve(source_a.plugin)
+                    .unwrap_or("")
+                    .cmp(mapper.interner.resolve(source_b.plugin).unwrap_or(""))
+            })
+    });
+    let mut source_by_target = FxHashMap::default();
+    for (source, target) in mappings {
+        source_by_target.entry(target).or_insert(source);
+    }
+
+    let mut target_addon_models = collect_target_armor_addon_models(
+        session,
+        mapper.interner,
+        target_schema,
+        &config.target_master_handle_ids,
+        arma_sig,
+        report,
+    )?;
+    let mut changed_armors = Vec::new();
+    let mut added_addons = Vec::new();
+
+    for armor_fk in armor_fks {
+        let Some(&source_fk) = source_by_target.get(&armor_fk) else {
+            continue;
+        };
+        let source_record =
+            match session.source_record_decoded(&source_fk, source_schema, mapper.interner) {
+                Ok(record) if record.sig == armo_sig => record,
+                Ok(_) => continue,
+                Err(error) => {
+                    report.warnings.push(mapper.interner.intern(&format!(
+                        "sync_armo_hand_slots_from_addons:legacy_source_armo_read_err:{error}"
+                    )));
+                    continue;
+                }
+            };
+        let actor_models = legacy_armo_actor_models(&source_record, mapper.interner);
+        if actor_models == ArmorActorModels::default() {
+            continue;
+        }
+
+        let mut armor = match session.record_decoded(&armor_fk, target_schema, mapper.interner) {
+            Ok(record) => record,
+            Err(error) => {
+                report.warnings.push(mapper.interner.intern(&format!(
+                    "sync_armo_hand_slots_from_addons:legacy_target_armo_read_err:{error}"
+                )));
+                continue;
+            }
+        };
+        let uncovered_models = uncovered_actor_models(&armor, &target_addon_models, &actor_models);
+        if uncovered_models == ArmorActorModels::default() {
+            continue;
+        }
+
+        let synthetic_source = synthetic_armor_addon_source_key(source_fk, mapper.interner);
+        let addon_fk = mapper.allocate_or_resolve(synthetic_source, None, arma_sig);
+        if !target_addon_models.contains_key(&addon_fk) {
+            let addon = build_synthetic_armor_addon(
+                addon_fk,
+                source_fk,
+                &armor,
+                &actor_models,
+                mapper.interner,
+            );
+            added_addons.push(addon);
+            target_addon_models.insert(addon_fk, actor_models.clone());
+        }
+        if insert_addon_entry(&mut armor, addon_fk) {
+            changed_armors.push(armor);
+        }
+    }
+
+    let expected_added = added_addons.len();
+    let added = session
+        .add_records(added_addons, target_schema, mapper.interner)
+        .map_err(|error| FixupError::HandleError(error.to_string()))?;
+    if added != expected_added {
+        return Err(FixupError::HandleError(format!(
+            "sync_armo_hand_slots_from_addons added {added} of {expected_added} synthesized armor add-ons"
+        )));
+    }
+    let expected_changed = changed_armors.len();
+    let changed = session
+        .replace_records_contents(changed_armors, target_schema, mapper.interner)
+        .map_err(|error| FixupError::HandleError(error.to_string()))?;
+    if changed != expected_changed {
+        return Err(FixupError::HandleError(format!(
+            "sync_armo_hand_slots_from_addons attached {changed} of {expected_changed} synthesized armor add-ons"
+        )));
+    }
+    report.records_added += added as u32;
+    report.records_changed += changed as u32;
+    Ok(())
+}
+
+fn is_legacy_armor_schema(schema: &AuthoringSchema) -> bool {
+    let Some(armor) = schema.record_def("ARMO") else {
+        return false;
+    };
+    armor
+        .subrecord_def("BMDT")
+        .and_then(|field| field.codec.as_deref())
+        == Some(LEGACY_ARMOR_BMDT_CODEC)
+        && armor
+            .subrecord_def("DATA")
+            .and_then(|field| field.codec.as_deref())
+            == Some(LEGACY_ARMOR_DATA_CODEC)
+}
+
+fn collect_target_armor_addon_models(
+    session: &mut PluginSession,
+    interner: &StringInterner,
+    target_schema: &AuthoringSchema,
+    target_master_handle_ids: &[u64],
+    arma_sig: SigCode,
+    report: &mut FixupReport,
+) -> Result<FxHashMap<FormKey, ArmorActorModels>, FixupError> {
+    let mut models = FxHashMap::default();
+    for form_key in session
+        .form_keys_of_sig(arma_sig, interner)
+        .map_err(|error| FixupError::HandleError(error.to_string()))?
+    {
+        match session.record_decoded(&form_key, target_schema, interner) {
+            Ok(record) => {
+                models.insert(form_key, target_arma_actor_models(&record, interner));
+            }
+            Err(error) => report.warnings.push(interner.intern(&format!(
+                "sync_armo_hand_slots_from_addons:synthesis_arma_read_err:{error}"
+            ))),
+        }
+    }
+    for handle_id in target_master_handle_ids {
+        for form_key in session
+            .form_keys_of_sig_in_handle(*handle_id, arma_sig, interner)
+            .map_err(|error| FixupError::HandleError(error.to_string()))?
+        {
+            match session.record_decoded_in_handle(*handle_id, &form_key, target_schema, interner) {
+                Ok(record) => {
+                    models.insert(form_key, target_arma_actor_models(&record, interner));
+                }
+                Err(error) => report.warnings.push(interner.intern(&format!(
+                    "sync_armo_hand_slots_from_addons:synthesis_master_arma_read_err:{error}"
+                ))),
+            }
+        }
+    }
+    Ok(models)
+}
+
+fn legacy_armo_actor_models(record: &Record, interner: &StringInterner) -> ArmorActorModels {
+    actor_models_from_record(record, interner, "MODL", "MOD3")
+}
+
+fn target_arma_actor_models(record: &Record, interner: &StringInterner) -> ArmorActorModels {
+    actor_models_from_record(record, interner, "MOD2", "MOD3")
+}
+
+fn actor_models_from_record(
+    record: &Record,
+    interner: &StringInterner,
+    male_sig: &str,
+    female_sig: &str,
+) -> ArmorActorModels {
+    let mut male = Vec::new();
+    let mut female = Vec::new();
+    for entry in &record.fields {
+        if entry.sig.as_str() == male_sig {
+            match &entry.value {
+                FieldValue::Struct(_) | FieldValue::List(_) => {
+                    collect_named_model_paths(&entry.value, male_sig, interner, &mut male);
+                    collect_named_model_paths(&entry.value, female_sig, interner, &mut female);
+                }
+                value => {
+                    if let Some(path) = model_path_from_value(value, interner) {
+                        male.push(path);
+                    }
+                }
+            }
+        } else if entry.sig.as_str() == female_sig {
+            match &entry.value {
+                FieldValue::Struct(_) | FieldValue::List(_) => {
+                    collect_named_model_paths(&entry.value, female_sig, interner, &mut female);
+                }
+                value => {
+                    if let Some(path) = model_path_from_value(value, interner) {
+                        female.push(path);
+                    }
+                }
+            }
+        }
+    }
+    ArmorActorModels {
+        male: male.into_iter().next(),
+        female: female.into_iter().next(),
+    }
+}
+
+fn collect_named_model_paths(
+    value: &FieldValue,
+    name: &str,
+    interner: &StringInterner,
+    output: &mut Vec<String>,
+) {
+    match value {
+        FieldValue::Struct(fields) => {
+            for (key, nested) in fields {
+                if interner.resolve(*key) == Some(name) {
+                    if let Some(path) = model_path_from_value(nested, interner) {
+                        output.push(path);
+                    }
+                } else {
+                    collect_named_model_paths(nested, name, interner, output);
+                }
+            }
+        }
+        FieldValue::List(items) => {
+            for item in items {
+                collect_named_model_paths(item, name, interner, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn model_path_from_value(value: &FieldValue, interner: &StringInterner) -> Option<String> {
+    match value {
+        FieldValue::String(value) => interner
+            .resolve(*value)
+            .and_then(normalize_legacy_armor_model_path),
+        FieldValue::Bytes(value) => String::from_utf8(value.to_vec())
+            .ok()
+            .and_then(|value| normalize_legacy_armor_model_path(&value)),
+        FieldValue::Struct(fields) => fields
+            .iter()
+            .find_map(|(_, value)| model_path_from_value(value, interner)),
+        FieldValue::List(items) => items
+            .iter()
+            .find_map(|value| model_path_from_value(value, interner)),
+        _ => None,
+    }
+}
+
+fn normalize_legacy_armor_model_path(path: &str) -> Option<String> {
+    let mut path = path.trim().trim_matches('\0').replace('/', "\\");
+    path = path.trim_start_matches('\\').to_string();
+    for prefix in ["data\\", "meshes\\"] {
+        if path
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        {
+            path = path[prefix.len()..].to_string();
+        }
+    }
+    if !path.to_ascii_lowercase().ends_with(".nif") || path.contains(':') {
+        return None;
+    }
+    Some(path)
+}
+
+fn attached_addons_cover_actor_models(
+    armor: &Record,
+    addon_models: &FxHashMap<FormKey, ArmorActorModels>,
+    source_models: &ArmorActorModels,
+) -> bool {
+    uncovered_actor_models(armor, addon_models, source_models) == ArmorActorModels::default()
+}
+
+fn uncovered_actor_models(
+    armor: &Record,
+    addon_models: &FxHashMap<FormKey, ArmorActorModels>,
+    source_models: &ArmorActorModels,
+) -> ArmorActorModels {
+    let mut uncovered = source_models.clone();
+    for addon in record_addon_formkeys(armor) {
+        let Some(models) = addon_models.get(&addon) else {
+            continue;
+        };
+        if uncovered
+            .male
+            .as_ref()
+            .zip(models.male.as_ref())
+            .is_some_and(|(source, target)| source.eq_ignore_ascii_case(target))
+        {
+            uncovered.male = None;
+        }
+        if uncovered
+            .female
+            .as_ref()
+            .zip(models.female.as_ref())
+            .is_some_and(|(source, target)| source.eq_ignore_ascii_case(target))
+        {
+            uncovered.female = None;
+        }
+    }
+    uncovered
+}
+
+fn synthetic_armor_addon_source_key(source_armor: FormKey, interner: &StringInterner) -> FormKey {
+    let source_plugin = interner.resolve(source_armor.plugin).unwrap_or("unknown");
+    FormKey {
+        local: 1,
+        plugin: interner.intern(&format!(
+            "{SYNTHETIC_ARMOR_ADDON_PLUGIN}:{source_plugin}:{:06X}",
+            source_armor.local
+        )),
+    }
+}
+
+fn build_synthetic_armor_addon(
+    addon_fk: FormKey,
+    source_armor: FormKey,
+    target_armor: &Record,
+    models: &ArmorActorModels,
+    interner: &StringInterner,
+) -> Record {
+    let editor_suffix = target_armor
+        .eid
+        .and_then(|editor_id| interner.resolve(editor_id))
+        .map(sanitize_editor_id_suffix)
+        .filter(|suffix| !suffix.is_empty());
+    let editor_id = match editor_suffix {
+        Some(suffix) => format!("B21_Legacy_ARMA_{:06X}_{suffix}", source_armor.local),
+        None => format!("B21_Legacy_ARMA_{:06X}", source_armor.local),
+    };
+    let editor_id = interner.intern(&editor_id);
+    let mut addon = Record::new(SigCode::from_str("ARMA").expect("ARMA signature"), addon_fk);
+    addon.eid = Some(editor_id);
+    addon.fields.push(FieldEntry {
+        sig: SubrecordSig::from_str("EDID").expect("EDID signature"),
+        value: FieldValue::String(editor_id),
+    });
+    addon.fields.push(FieldEntry {
+        sig: SubrecordSig::from_str("BOD2").expect("BOD2 signature"),
+        value: target_armor
+            .fields
+            .iter()
+            .find(|entry| entry.sig.as_str() == "BOD2")
+            .map(|entry| entry.value.clone())
+            .unwrap_or(FieldValue::Uint(0)),
+    });
+    addon.fields.push(FieldEntry {
+        sig: SubrecordSig::from_str("RNAM").expect("RNAM signature"),
+        value: FieldValue::FormKey(FormKey {
+            local: FO4_HUMAN_RACE_LOCAL,
+            plugin: interner.intern("Fallout4.esm"),
+        }),
+    });
+    addon.fields.push(FieldEntry {
+        sig: SubrecordSig::from_str("DNAM").expect("DNAM signature"),
+        value: FieldValue::Bytes(smallvec::SmallVec::from_slice(&[0; 12])),
+    });
+    if let Some(model) = &models.male {
+        addon.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("MOD2").expect("MOD2 signature"),
+            value: FieldValue::String(interner.intern(model)),
+        });
+    }
+    if let Some(model) = &models.female {
+        addon.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("MOD3").expect("MOD3 signature"),
+            value: FieldValue::String(interner.intern(model)),
+        });
+    }
+    addon
+}
+
+fn sanitize_editor_id_suffix(editor_id: &str) -> String {
+    editor_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect()
+}
+
+fn resolve_legacy_armor_addon_lists(
+    session: &mut PluginSession,
+    mapper: &mut FormKeyMapper,
+    target_schema: &crate::schema::AuthoringSchema,
+    target_master_handle_ids: &[u64],
+    report: &mut FixupReport,
+    arma_sig: SigCode,
+    armo_sig: SigCode,
+) -> Result<(), FixupError> {
+    let flst_sig = SigCode::from_str("FLST").map_err(|e| FixupError::SchemaError(e.to_string()))?;
+    let mut valid_addons = session
+        .form_keys_of_sig(arma_sig, mapper.interner)
+        .map_err(|e| FixupError::HandleError(e.to_string()))?
+        .into_iter()
+        .collect::<FxHashSet<_>>();
+    for handle_id in target_master_handle_ids {
+        valid_addons.extend(
+            session
+                .form_keys_of_sig_in_handle(*handle_id, arma_sig, mapper.interner)
+                .map_err(|e| FixupError::HandleError(e.to_string()))?,
+        );
+    }
+
+    let mut addon_lists = FxHashMap::default();
+    for fk in session
+        .form_keys_of_sig(flst_sig, mapper.interner)
+        .map_err(|e| FixupError::HandleError(e.to_string()))?
+    {
+        match session.record_decoded(&fk, target_schema, mapper.interner) {
+            Ok(record) => {
+                addon_lists.insert(fk, valid_armor_addons_from_list(&record, &valid_addons));
+            }
+            Err(e) => report.warnings.push(mapper.interner.intern(&format!(
+                "sync_armo_hand_slots_from_addons:flst_read_err:{e}"
+            ))),
+        }
+    }
+    for handle_id in target_master_handle_ids {
+        for fk in session
+            .form_keys_of_sig_in_handle(*handle_id, flst_sig, mapper.interner)
+            .map_err(|e| FixupError::HandleError(e.to_string()))?
+        {
+            match session.record_decoded_in_handle(*handle_id, &fk, target_schema, mapper.interner)
+            {
+                Ok(record) => {
+                    addon_lists.insert(fk, valid_armor_addons_from_list(&record, &valid_addons));
+                }
+                Err(e) => report.warnings.push(mapper.interner.intern(&format!(
+                    "sync_armo_hand_slots_from_addons:master_flst_read_err:{e}"
+                ))),
+            }
+        }
+    }
+    if addon_lists.is_empty() {
+        return Ok(());
+    }
+
+    let mut changed_records = Vec::new();
+    for fk in session
+        .form_keys_of_sig(armo_sig, mapper.interner)
+        .map_err(|e| FixupError::HandleError(e.to_string()))?
+    {
+        let mut record = match session.record_decoded(&fk, target_schema, mapper.interner) {
+            Ok(record) => record,
+            Err(e) => {
+                report.warnings.push(mapper.interner.intern(&format!(
+                    "sync_armo_hand_slots_from_addons:legacy_armo_read_err:{e}"
+                )));
+                continue;
+            }
+        };
+        let expansion = expand_legacy_armor_addon_lists(&mut record, &addon_lists);
+        if expansion.lists_expanded == 0 {
+            continue;
+        }
+        if expansion.addons_added == 0 {
+            report.warnings.push(
+                mapper.interner.intern(
+                    "sync_armo_hand_slots_from_addons:legacy_addon_list_had_no_arma_members",
+                ),
+            );
+        }
+        report.records_changed += 1;
+        changed_records.push(record);
+    }
+
+    let expected = changed_records.len();
+    if expected > 0 {
+        let replaced = session
+            .replace_records_contents(changed_records, target_schema, mapper.interner)
+            .map_err(|e| FixupError::HandleError(e.to_string()))?;
+        if replaced != expected {
+            return Err(FixupError::HandleError(format!(
+                "sync_armo_hand_slots_from_addons resolved {replaced} of {expected} legacy armor addon lists"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct AddonListExpansion {
+    lists_expanded: u32,
+    addons_added: u32,
+}
+
+fn expand_legacy_armor_addon_lists(
+    record: &mut Record,
+    addon_lists: &FxHashMap<FormKey, Vec<FormKey>>,
+) -> AddonListExpansion {
+    let modl_sig = match SubrecordSig::from_str("MODL") {
+        Ok(sig) => sig,
+        Err(_) => return AddonListExpansion::default(),
+    };
+    let indx_sig = match SubrecordSig::from_str("INDX") {
+        Ok(sig) => sig,
+        Err(_) => return AddonListExpansion::default(),
+    };
+    let mut seen_addons = record_addon_formkeys(record);
+    for list in addon_lists.keys() {
+        seen_addons.remove(list);
+    }
+
+    let mut expansion = AddonListExpansion::default();
+    let mut output: smallvec::SmallVec<[FieldEntry; 8]> =
+        smallvec::SmallVec::with_capacity(record.fields.len());
+    for entry in record.fields.drain(..) {
+        let list = (entry.sig == modl_sig)
+            .then(|| first_formkey_from_value(&entry.value))
+            .flatten()
+            .and_then(|form_key| addon_lists.get(&form_key));
+        let Some(list) = list else {
+            output.push(entry);
+            continue;
+        };
+
+        expansion.lists_expanded += 1;
+        if output.last().is_some_and(|entry| entry.sig == indx_sig) {
+            output.pop();
+        }
+        for addon in list {
+            if !seen_addons.insert(*addon) {
+                continue;
+            }
+            output.push(FieldEntry {
+                sig: indx_sig,
+                value: FieldValue::Uint(0),
+            });
+            output.push(FieldEntry {
+                sig: modl_sig,
+                value: FieldValue::FormKey(*addon),
+            });
+            expansion.addons_added += 1;
+        }
+    }
+    record.fields = output;
+    expansion
+}
+
+fn valid_armor_addons_from_list(
+    record: &Record,
+    valid_addons: &FxHashSet<FormKey>,
+) -> Vec<FormKey> {
+    let mut members = Vec::new();
+    for entry in record
+        .fields
+        .iter()
+        .filter(|entry| entry.sig.as_str() == "LNAM")
+    {
+        collect_formkeys_in_order(&entry.value, &mut members);
+    }
+    let mut seen = FxHashSet::default();
+    members.retain(|member| valid_addons.contains(member) && seen.insert(*member));
+    members
+}
+
+fn first_formkey_from_value(value: &FieldValue) -> Option<FormKey> {
+    match value {
+        FieldValue::FormKey(form_key) => Some(*form_key),
+        FieldValue::List(items) => items.iter().find_map(first_formkey_from_value),
+        FieldValue::Struct(fields) => fields
+            .iter()
+            .find_map(|(_, value)| first_formkey_from_value(value)),
+        _ => None,
+    }
+}
+
+fn collect_formkeys_in_order(value: &FieldValue, form_keys: &mut Vec<FormKey>) {
+    match value {
+        FieldValue::FormKey(form_key) => form_keys.push(*form_key),
+        FieldValue::List(items) => {
+            for item in items {
+                collect_formkeys_in_order(item, form_keys);
+            }
+        }
+        FieldValue::Struct(fields) => {
+            for (_, value) in fields {
+                collect_formkeys_in_order(value, form_keys);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -858,8 +1506,14 @@ fn mask_for_slot(slot: u8) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formkey_mapper::{FormKeyMapper, MapperOptions, MapperState};
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
+    use crate::schema::AuthoringSchema;
+    use crate::session::open_session;
     use crate::sym::StringInterner;
+    use esp_authoring_core::plugin_runtime::{
+        plugin_handle_add_master_native, plugin_handle_new_native,
+    };
 
     fn make_fk(hex: &str, plugin: &str, interner: &StringInterner) -> FormKey {
         FormKey::parse(&format!("{hex}@{plugin}"), interner).unwrap()
@@ -912,6 +1566,26 @@ mod tests {
         push_field(record, "MODL", FieldValue::FormKey(addon_fk));
     }
 
+    fn set_editor_id(record: &mut Record, editor_id: &str, interner: &StringInterner) {
+        let editor_id = interner.intern(editor_id);
+        record.eid = Some(editor_id);
+        record.fields.insert(
+            0,
+            FieldEntry {
+                sig: SubrecordSig::from_str("EDID").unwrap(),
+                value: FieldValue::String(editor_id),
+            },
+        );
+    }
+
+    fn seed_records(handle: u64, records: Vec<Record>, interner: &StringInterner) {
+        let mut session = open_session(handle, None).unwrap();
+        let schema = session.schema().unwrap();
+        session
+            .add_records(records, schema.as_ref(), interner)
+            .unwrap();
+    }
+
     fn bod2_tokens(record: &Record, interner: &StringInterner) -> Vec<String> {
         record
             .fields
@@ -954,6 +1628,492 @@ mod tests {
             .iter()
             .filter(|entry| entry.sig.as_str() == "INDX")
             .count()
+    }
+
+    fn model_path(record: &Record, sig: &str, interner: &StringInterner) -> Option<String> {
+        record
+            .fields
+            .iter()
+            .find(|field| field.sig.as_str() == sig)
+            .and_then(|field| model_path_from_value(&field.value, interner))
+    }
+
+    #[test]
+    fn builds_synthetic_legacy_arma_with_proto_model_routing() {
+        let interner = StringInterner::new();
+        let source_fk = make_fk("104C23", "FalloutNV.esm", &interner);
+        let addon_fk = make_fk("A00001", "FNV_FO3_Merged.esm", &interner);
+        let mut armor = make_record("ARMO", make_fk("104C23", "FNV_FO3_Merged.esm", &interner));
+        armor.eid = Some(interner.intern("OutfitBennySuit"));
+        push_field(&mut armor, "BOD2", FieldValue::Uint(1 << 6));
+        let models = ArmorActorModels {
+            male: Some("armor\\1950stylesuit\\m\\NV_Outfit_Benny.NIF".into()),
+            female: Some("armor\\1950stylesuit\\f\\bennysuit_f.NIF".into()),
+        };
+
+        let addon = build_synthetic_armor_addon(addon_fk, source_fk, &armor, &models, &interner);
+
+        assert_eq!(addon.form_key, addon_fk);
+        assert_eq!(
+            addon.eid.and_then(|editor_id| interner.resolve(editor_id)),
+            Some("B21_Legacy_ARMA_104C23_OutfitBennySuit")
+        );
+        assert_eq!(
+            model_path(&addon, "MOD2", &interner).as_deref(),
+            models.male.as_deref()
+        );
+        assert_eq!(
+            model_path(&addon, "MOD3", &interner).as_deref(),
+            models.female.as_deref()
+        );
+        assert!(
+            !addon
+                .fields
+                .iter()
+                .any(|field| matches!(field.sig.as_str(), "MOD4" | "MOD5"))
+        );
+        assert_eq!(
+            addon
+                .fields
+                .iter()
+                .find(|field| field.sig.as_str() == "DNAM")
+                .and_then(|field| match &field.value {
+                    FieldValue::Bytes(bytes) => Some(bytes.as_slice()),
+                    _ => None,
+                }),
+            Some([0; 12].as_slice())
+        );
+        assert_eq!(
+            addon
+                .fields
+                .iter()
+                .find(|field| field.sig.as_str() == "RNAM")
+                .and_then(|field| first_formkey_from_value(&field.value)),
+            Some(make_fk("013746", "Fallout4.esm", &interner))
+        );
+    }
+
+    #[test]
+    fn extracts_mixed_legacy_actor_models_and_ignores_missing_paths() {
+        let interner = StringInterner::new();
+        let mut armor = make_record("ARMO", make_fk("000800", "FalloutNV.esm", &interner));
+        push_field(
+            &mut armor,
+            "MODL",
+            FieldValue::List(vec![FieldValue::Struct(vec![
+                (
+                    interner.intern("MODL"),
+                    FieldValue::String(interner.intern("Meshes/Armor/Male.NIF")),
+                ),
+                (
+                    interner.intern("MOD3"),
+                    FieldValue::String(interner.intern("Armor/Female.NIF")),
+                ),
+            ])]),
+        );
+        assert_eq!(
+            legacy_armo_actor_models(&armor, &interner),
+            ArmorActorModels {
+                male: Some("Armor\\Male.NIF".into()),
+                female: Some("Armor\\Female.NIF".into()),
+            }
+        );
+
+        armor.fields.clear();
+        push_field(
+            &mut armor,
+            "MODL",
+            FieldValue::List(vec![FieldValue::Struct(vec![(
+                interner.intern("MOD3"),
+                FieldValue::String(interner.intern("Armor/FemaleOnly.NIF")),
+            )])]),
+        );
+        assert_eq!(
+            legacy_armo_actor_models(&armor, &interner),
+            ArmorActorModels {
+                male: None,
+                female: Some("Armor\\FemaleOnly.NIF".into()),
+            }
+        );
+
+        armor.fields.clear();
+        push_field(&mut armor, "MODL", FieldValue::String(interner.intern("")));
+        push_field(
+            &mut armor,
+            "MOD3",
+            FieldValue::String(interner.intern("textures\\not_a_mesh.dds")),
+        );
+        assert_eq!(
+            legacy_armo_actor_models(&armor, &interner),
+            ArmorActorModels::default()
+        );
+    }
+
+    #[test]
+    fn attached_addon_must_cover_actor_models_not_merely_exist() {
+        let interner = StringInterner::new();
+        let body = make_fk("000900", "Output.esp", &interner);
+        let hands = make_fk("000901", "Output.esp", &interner);
+        let mut armor = make_record("ARMO", make_fk("000800", "Output.esp", &interner));
+        push_addon(&mut armor, hands);
+        let source_models = ArmorActorModels {
+            male: Some("armor\\body_m.nif".into()),
+            female: Some("armor\\body_f.nif".into()),
+        };
+        let mut addon_models = FxHashMap::default();
+        addon_models.insert(
+            hands,
+            ArmorActorModels {
+                male: Some("armor\\hands.nif".into()),
+                female: Some("armor\\hands.nif".into()),
+            },
+        );
+        assert!(!attached_addons_cover_actor_models(
+            &armor,
+            &addon_models,
+            &source_models
+        ));
+
+        push_addon(&mut armor, body);
+        addon_models.insert(
+            body,
+            ArmorActorModels {
+                male: source_models.male.clone(),
+                female: Some("armor\\other_f.nif".into()),
+            },
+        );
+        assert_eq!(
+            uncovered_actor_models(&armor, &addon_models, &source_models),
+            ArmorActorModels {
+                male: None,
+                female: source_models.female.clone(),
+            }
+        );
+        assert!(!attached_addons_cover_actor_models(
+            &armor,
+            &addon_models,
+            &source_models
+        ));
+
+        addon_models.insert(body, source_models.clone());
+        assert!(attached_addons_cover_actor_models(
+            &armor,
+            &addon_models,
+            &source_models
+        ));
+    }
+
+    #[test]
+    fn synthetic_armor_addon_keys_are_deterministic_and_collision_safe() {
+        let interner = StringInterner::new();
+        let source = make_fk("104C23", "FalloutNV.esm", &interner);
+        let same_local_other_plugin = make_fk("104C23", "Fallout3.esm", &interner);
+        let source_key = synthetic_armor_addon_source_key(source, &interner);
+        assert_eq!(
+            source_key,
+            synthetic_armor_addon_source_key(source, &interner)
+        );
+        assert_ne!(
+            source_key,
+            synthetic_armor_addon_source_key(same_local_other_plugin, &interner)
+        );
+
+        let mut state = MapperState::new(
+            std::iter::empty(),
+            MapperOptions {
+                output_plugin_name: "Output.esp".into(),
+                preserve_source_ids: true,
+                generated_object_id_floor: 0x00A0_0000,
+                ..Default::default()
+            },
+        );
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        mapper.reserve_object_ids([0x00A0_0000, source.local]);
+        assert_eq!(
+            mapper
+                .allocate_or_resolve(source_key, None, SigCode::from_str("ARMA").unwrap())
+                .local,
+            0x00A0_0001
+        );
+    }
+
+    #[test]
+    fn legacy_armor_schema_gate_excludes_fo76_and_target_fo4() {
+        assert!(is_legacy_armor_schema(
+            &AuthoringSchema::for_game("fnv").unwrap()
+        ));
+        assert!(is_legacy_armor_schema(
+            &AuthoringSchema::for_game("fo3").unwrap()
+        ));
+        assert!(!is_legacy_armor_schema(
+            &AuthoringSchema::for_game("fo76").unwrap()
+        ));
+        assert!(!is_legacy_armor_schema(
+            &AuthoringSchema::for_game("fo4").unwrap()
+        ));
+    }
+
+    #[test]
+    fn session_synthesis_preserves_bipl_addons_and_covers_actor_models() {
+        let interner = StringInterner::new();
+        let source_name = "FalloutNV.esm";
+        let target_name = "FNV_FO3_Merged.esm";
+        let source_handle = plugin_handle_new_native(source_name, Some("fnv")).unwrap();
+        let target_handle = plugin_handle_new_native(target_name, Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
+
+        let source_armor_fk = make_fk("1649DD", source_name, &interner);
+        let target_armor_fk = make_fk("1649DD", target_name, &interner);
+        let hand_addon_fk = make_fk("1649DF", target_name, &interner);
+        let mut source_armor = make_record("ARMO", source_armor_fk);
+        set_editor_id(&mut source_armor, "ArmorLegate", &interner);
+        push_field(
+            &mut source_armor,
+            "BMDT",
+            FieldValue::Bytes(smallvec::smallvec![4, 0, 0, 0, 0, 0, 0, 0]),
+        );
+        push_field(
+            &mut source_armor,
+            "MODL",
+            FieldValue::String(interner.intern("armor/LegateArmor/LegateArmor.NIF")),
+        );
+        push_field(
+            &mut source_armor,
+            "MOD3",
+            FieldValue::String(interner.intern("armor\\LegateArmor\\LegateArmor.NIF")),
+        );
+        push_field(
+            &mut source_armor,
+            "DATA",
+            FieldValue::Bytes(smallvec::SmallVec::from_slice(&[
+                250, 0, 0, 0, 100, 0, 0, 0, 0, 0, 52, 66,
+            ])),
+        );
+        seed_records(source_handle, vec![source_armor], &interner);
+
+        let mut target_armor = make_record("ARMO", target_armor_fk);
+        set_editor_id(&mut target_armor, "ArmorLegate", &interner);
+        push_field(&mut target_armor, "BOD2", FieldValue::Uint(1 << 6));
+        push_addon(&mut target_armor, hand_addon_fk);
+        let mut hand_addon = make_record("ARMA", hand_addon_fk);
+        set_editor_id(&mut hand_addon, "LegateArmorRightH", &interner);
+        push_field(&mut hand_addon, "BOD2", FieldValue::Uint(1 << 5));
+        push_rnam(&mut hand_addon, 0x013746, "Fallout4.esm", &interner);
+        push_field(
+            &mut hand_addon,
+            "DNAM",
+            FieldValue::Bytes(smallvec::SmallVec::from_slice(&[0; 12])),
+        );
+        push_field(
+            &mut hand_addon,
+            "MOD2",
+            FieldValue::String(interner.intern("armor\\LegateArmor\\LegateArmor.NIF")),
+        );
+        seed_records(target_handle, vec![target_armor, hand_addon], &interner);
+
+        let mut state = MapperState::new(
+            std::iter::empty(),
+            MapperOptions {
+                output_plugin_name: target_name.into(),
+                source_plugin_name: source_name.into(),
+                generated_object_id_floor: 0x00A0_0000,
+                preserve_source_ids: true,
+                ..Default::default()
+            },
+        );
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        mapper.add_mapping(source_armor_fk, target_armor_fk);
+        mapper.reserve_object_ids([target_armor_fk.local, hand_addon_fk.local]);
+        let config = FixupConfig {
+            target_schema: Some(AuthoringSchema::for_game("fo4").unwrap()),
+            source_schema: Some(AuthoringSchema::for_game("fnv").unwrap()),
+            ..Default::default()
+        };
+        let mut session = open_session(target_handle, Some(source_handle)).unwrap();
+        let first = SyncArmoHandSlotsFromAddonsFixup
+            .run_with_session(&mut session, &mut mapper, &config)
+            .unwrap();
+        assert_eq!(first.records_added, 1);
+
+        let arma_sig = SigCode::from_str("ARMA").unwrap();
+        let arma_fks = session.form_keys_of_sig(arma_sig, &interner).unwrap();
+        assert_eq!(arma_fks.len(), 2);
+        let synthesized_fk = *arma_fks
+            .iter()
+            .find(|form_key| **form_key != hand_addon_fk)
+            .unwrap();
+        assert_eq!(synthesized_fk.local, 0x00A0_0000);
+        let synthesized = session
+            .record_decoded(
+                &synthesized_fk,
+                config.target_schema.as_deref().unwrap(),
+                &interner,
+            )
+            .unwrap();
+        assert_eq!(
+            model_path(&synthesized, "MOD2", &interner).as_deref(),
+            Some("armor\\LegateArmor\\LegateArmor.NIF")
+        );
+        assert_eq!(
+            model_path(&synthesized, "MOD3", &interner).as_deref(),
+            Some("armor\\LegateArmor\\LegateArmor.NIF")
+        );
+        assert!(
+            !synthesized
+                .fields
+                .iter()
+                .any(|field| matches!(field.sig.as_str(), "MOD4" | "MOD5"))
+        );
+
+        let armor = session
+            .record_decoded(
+                &target_armor_fk,
+                config.target_schema.as_deref().unwrap(),
+                &interner,
+            )
+            .unwrap();
+        let attached = addon_formkeys(&armor);
+        assert_eq!(attached, vec![hand_addon_fk, synthesized_fk]);
+        let second = SyncArmoHandSlotsFromAddonsFixup
+            .run_with_session(&mut session, &mut mapper, &config)
+            .unwrap();
+        assert_eq!(second.records_added, 0);
+        assert_eq!(
+            addon_formkeys(
+                &session
+                    .record_decoded(
+                        &target_armor_fk,
+                        config.target_schema.as_deref().unwrap(),
+                        &interner,
+                    )
+                    .unwrap()
+            ),
+            attached
+        );
+    }
+
+    #[test]
+    fn session_synthesis_covers_fo3_male_only_actor_model() {
+        let interner = StringInterner::new();
+        let source_name = "Fallout3.esm";
+        let target_name = "FNV_FO3_Merged.esm";
+        let source_handle = plugin_handle_new_native(source_name, Some("fo3")).unwrap();
+        let target_handle = plugin_handle_new_native(target_name, Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
+
+        let source_armor_fk = make_fk("00431E", source_name, &interner);
+        let target_armor_fk = make_fk("00431E", target_name, &interner);
+        let mut source_armor = make_record("ARMO", source_armor_fk);
+        set_editor_id(&mut source_armor, "VaultSuit101", &interner);
+        push_field(
+            &mut source_armor,
+            "BMDT",
+            FieldValue::Bytes(smallvec::smallvec![4, 0, 0, 0, 0, 0, 0, 0]),
+        );
+        push_field(
+            &mut source_armor,
+            "MODL",
+            FieldValue::String(interner.intern("armor\\vaultsuit\\VaultSuit101M.NIF")),
+        );
+        push_field(
+            &mut source_armor,
+            "DATA",
+            FieldValue::Bytes(smallvec::SmallVec::from_slice(&[
+                50, 0, 0, 0, 100, 0, 0, 0, 0, 0, 32, 65,
+            ])),
+        );
+        seed_records(source_handle, vec![source_armor], &interner);
+
+        let mut target_armor = make_record("ARMO", target_armor_fk);
+        set_editor_id(&mut target_armor, "VaultSuit101", &interner);
+        push_field(&mut target_armor, "BOD2", FieldValue::Uint(1 << 6));
+        seed_records(target_handle, vec![target_armor], &interner);
+
+        let mut state = MapperState::new(
+            std::iter::empty(),
+            MapperOptions {
+                output_plugin_name: target_name.into(),
+                source_plugin_name: source_name.into(),
+                generated_object_id_floor: 0x00A0_0000,
+                preserve_source_ids: true,
+                ..Default::default()
+            },
+        );
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        mapper.add_mapping(source_armor_fk, target_armor_fk);
+        mapper.reserve_object_ids([target_armor_fk.local]);
+        let config = FixupConfig {
+            target_schema: Some(AuthoringSchema::for_game("fo4").unwrap()),
+            source_schema: Some(AuthoringSchema::for_game("fo3").unwrap()),
+            ..Default::default()
+        };
+        let mut session = open_session(target_handle, Some(source_handle)).unwrap();
+
+        let report = SyncArmoHandSlotsFromAddonsFixup
+            .run_with_session(&mut session, &mut mapper, &config)
+            .unwrap();
+
+        assert_eq!(report.records_added, 1);
+        let armor = session
+            .record_decoded(
+                &target_armor_fk,
+                config.target_schema.as_deref().unwrap(),
+                &interner,
+            )
+            .unwrap();
+        let synthesized_fk = addon_formkeys(&armor).into_iter().next().unwrap();
+        let synthesized = session
+            .record_decoded(
+                &synthesized_fk,
+                config.target_schema.as_deref().unwrap(),
+                &interner,
+            )
+            .unwrap();
+        assert_eq!(
+            model_path(&synthesized, "MOD2", &interner).as_deref(),
+            Some("armor\\vaultsuit\\VaultSuit101M.NIF")
+        );
+        assert_eq!(model_path(&synthesized, "MOD3", &interner), None);
+    }
+
+    #[test]
+    fn expands_legacy_bipl_list_into_direct_arma_rows() {
+        let interner = StringInterner::new();
+        let list = make_fk("1649E0", "FNV_FO3_Merged.esm", &interner);
+        let male = make_fk("1649DF", "FNV_FO3_Merged.esm", &interner);
+        let female = make_fk("1649DE", "FNV_FO3_Merged.esm", &interner);
+        let mut lists = FxHashMap::default();
+        lists.insert(list, vec![male, female]);
+        let mut armo = make_record("ARMO", make_fk("1649DD", "FNV_FO3_Merged.esm", &interner));
+        push_field(&mut armo, "INDX", FieldValue::Uint(0));
+        push_field(&mut armo, "MODL", FieldValue::FormKey(list));
+
+        let expansion = expand_legacy_armor_addon_lists(&mut armo, &lists);
+
+        assert_eq!(expansion.lists_expanded, 1);
+        assert_eq!(expansion.addons_added, 2);
+        assert_eq!(addon_formkeys(&armo), vec![male, female]);
+        assert_eq!(addon_index_count(&armo), 2);
+        assert_eq!(
+            armo.fields
+                .iter()
+                .map(|field| field.sig.as_str())
+                .collect::<Vec<_>>(),
+            vec!["INDX", "MODL", "INDX", "MODL"]
+        );
+    }
+
+    #[test]
+    fn omits_non_arma_members_from_legacy_addon_list() {
+        let interner = StringInterner::new();
+        let arma = make_fk("01D980", "FNV_FO3_Merged.esm", &interner);
+        let not_arma = make_fk("000007", "Fallout4.esm", &interner);
+        let mut flst = make_record("FLST", make_fk("01D981", "FNV_FO3_Merged.esm", &interner));
+        push_field(&mut flst, "LNAM", FieldValue::FormKey(arma));
+        push_field(&mut flst, "LNAM", FieldValue::FormKey(not_arma));
+        let valid = FxHashSet::from_iter([arma]);
+
+        assert_eq!(valid_armor_addons_from_list(&flst, &valid), vec![arma]);
     }
 
     #[test]

@@ -126,9 +126,19 @@ fn rewrite_lctn_raw_formids(
         }
     }
     if !defer_placed_child_special_refs {
-        report.records_changed += strip_nonpersistent_placed_ref_xlcn(session) as u32;
+        report.records_changed += strip_nonpersistent_nonactor_placed_ref_xlcn(session) as u32;
     }
     report.records_changed += sync_cell_locations_from_lctn_world_cells(session) as u32;
+    if !defer_placed_child_special_refs {
+        let reconciled = reconcile_lctn_persistence_locations(session);
+        report.records_changed = report
+            .records_changed
+            .saturating_add(reconciled.records_changed);
+        eprintln!(
+            "[lctn_persistence] rows_rehomed={} rows_dropped={} refs_changed={}",
+            reconciled.rows_rehomed, reconciled.rows_dropped, reconciled.refs_changed
+        );
+    }
 
     Ok(report)
 }
@@ -428,6 +438,7 @@ struct LctnPersistenceIndex {
 }
 
 struct PlacedRefPersistence {
+    is_actor: bool,
     persistent: bool,
     persist_location: Option<u32>,
     world: Option<u32>,
@@ -465,7 +476,7 @@ impl LctnPersistenceIndex {
         let Some(placed_ref) = self.placed_refs.get(&ref_object_id) else {
             return false;
         };
-        if layout.require_persistent && !placed_ref.persistent {
+        if layout.require_non_actor_persistent && !placed_ref.persistent && !placed_ref.is_actor {
             return false;
         }
         // Special-reference rows are the location relationship; FO76 map markers
@@ -552,6 +563,7 @@ impl LctnPersistenceIndex {
                 self.placed_refs.insert(
                     object_id,
                     PlacedRefPersistence {
+                        is_actor: record.signature.as_str() == "ACHR",
                         persistent: record.flags & RECORD_FLAG_PERSISTENT != 0,
                         persist_location: parsed_subrecords_first_form_id(
                             subrecords.as_ref(),
@@ -568,9 +580,9 @@ impl LctnPersistenceIndex {
     }
 }
 
-fn strip_nonpersistent_placed_ref_xlcn(session: &mut PluginSession) -> usize {
+fn strip_nonpersistent_nonactor_placed_ref_xlcn(session: &mut PluginSession) -> usize {
     let mut changed_form_ids = SmallVec::<[u32; 4]>::new();
-    let changed = strip_nonpersistent_placed_ref_xlcn_from_items(
+    let changed = strip_nonpersistent_nonactor_placed_ref_xlcn_from_items(
         &mut session.target_slot_mut().parsed.root_items,
         &mut changed_form_ids,
     );
@@ -582,7 +594,7 @@ fn strip_nonpersistent_placed_ref_xlcn(session: &mut PluginSession) -> usize {
     changed
 }
 
-fn strip_nonpersistent_placed_ref_xlcn_from_items(
+fn strip_nonpersistent_nonactor_placed_ref_xlcn_from_items(
     items: &mut [ParsedItem],
     changed_form_ids: &mut SmallVec<[u32; 4]>,
 ) -> usize {
@@ -591,6 +603,7 @@ fn strip_nonpersistent_placed_ref_xlcn_from_items(
         match item {
             ParsedItem::Record(record)
                 if is_placed_record_sig(record.signature.as_str())
+                    && record.signature.as_str() != "ACHR"
                     && record.flags & RECORD_FLAG_PERSISTENT == 0 =>
             {
                 if record.subrecords.is_empty() {
@@ -607,7 +620,7 @@ fn strip_nonpersistent_placed_ref_xlcn_from_items(
                 }
             }
             ParsedItem::Group(group) => {
-                changed += strip_nonpersistent_placed_ref_xlcn_from_items(
+                changed += strip_nonpersistent_nonactor_placed_ref_xlcn_from_items(
                     &mut group.children,
                     changed_form_ids,
                 );
@@ -655,6 +668,425 @@ fn parsed_ref_position_grid(subrecords: &[ParsedSubrecord]) -> Option<(i32, i32)
     Some(((x / 4096.0).floor() as i32, (y / 4096.0).floor() as i32))
 }
 
+#[derive(Default)]
+struct LctnPersistenceLocationIndex {
+    own_index: u32,
+    worlds: FxHashSet<u32>,
+    locations: FxHashSet<u32>,
+    location_parents: FxHashMap<u32, u32>,
+    exterior_cells: FxHashMap<(u32, i16, i16), Option<u32>>,
+    interior_cells: FxHashMap<u32, Option<u32>>,
+}
+
+impl LctnPersistenceLocationIndex {
+    fn from_items(items: &[ParsedItem], own_index: u32) -> Self {
+        let mut index = Self {
+            own_index,
+            ..Self::default()
+        };
+        index.collect_items(items, None);
+        index
+    }
+
+    fn collect_items(&mut self, items: &[ParsedItem], current_world: Option<u32>) {
+        for item in items {
+            match item {
+                ParsedItem::Record(record) => self.collect_record(record, current_world),
+                ParsedItem::Group(group) => {
+                    let child_world = if group.group_type == WORLD_CHILD_GROUP {
+                        Some(u32::from_le_bytes(group.label) & 0x00FF_FFFF)
+                    } else {
+                        current_world
+                    };
+                    self.collect_items(&group.children, child_world);
+                }
+            }
+        }
+    }
+
+    fn collect_record(&mut self, record: &ParsedRecord, current_world: Option<u32>) {
+        let object_id = record.form_id & 0x00FF_FFFF;
+        let subrecords = effective_subrecords_for_record(record);
+        match record.signature.as_str() {
+            "WRLD" => {
+                self.worlds.insert(object_id);
+            }
+            "LCTN" => {
+                self.locations.insert(object_id);
+                if let Some(parent) = parsed_subrecords_raw_form_id(subrecords.as_ref(), "PNAM") {
+                    self.location_parents.insert(object_id, parent);
+                }
+            }
+            "CELL" => {
+                let location = parsed_subrecords_raw_form_id(subrecords.as_ref(), "XLCN");
+                self.interior_cells.insert(object_id, location);
+                if let (Some(world), Some((x, y))) =
+                    (current_world, parsed_cell_grid_i16(subrecords.as_ref()))
+                {
+                    self.exterior_cells.insert((world, x, y), location);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn row_cell_location(&self, world_cell_raw: u32, grid_x: i16, grid_y: i16) -> RowCellLocation {
+        if world_cell_raw >> 24 != self.own_index {
+            return RowCellLocation::External;
+        }
+        let object_id = world_cell_raw & 0x00FF_FFFF;
+        if self.worlds.contains(&object_id) {
+            return match self.exterior_cells.get(&(object_id, grid_x, grid_y)) {
+                Some(Some(location)) => RowCellLocation::Location(*location),
+                Some(None) => RowCellLocation::NoLocation,
+                None => RowCellLocation::Missing,
+            };
+        }
+        match self.interior_cells.get(&object_id) {
+            Some(Some(location)) => RowCellLocation::Location(*location),
+            Some(None) => RowCellLocation::NoLocation,
+            None => RowCellLocation::Missing,
+        }
+    }
+
+    fn location_contains(&self, ancestor_raw: u32, descendant_raw: u32) -> bool {
+        if ancestor_raw == descendant_raw {
+            return true;
+        }
+        if ancestor_raw >> 24 != self.own_index || descendant_raw >> 24 != self.own_index {
+            return false;
+        }
+
+        let ancestor = ancestor_raw & 0x00FF_FFFF;
+        let mut current = descendant_raw & 0x00FF_FFFF;
+        let mut seen = FxHashSet::default();
+        while seen.insert(current) {
+            let Some(parent_raw) = self.location_parents.get(&current).copied() else {
+                return false;
+            };
+            if parent_raw >> 24 != self.own_index {
+                return false;
+            }
+            current = parent_raw & 0x00FF_FFFF;
+            if current == ancestor {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+enum RowCellLocation {
+    External,
+    Missing,
+    NoLocation,
+    Location(u32),
+}
+
+#[derive(Clone)]
+struct RehomedPersistenceRow {
+    sig: smol_str::SmolStr,
+    bytes: [u8; 12],
+}
+
+enum RefLocationAction {
+    Set(u32),
+    Remove(u32),
+}
+
+#[derive(Default)]
+struct LctnPersistenceReconcileReport {
+    records_changed: u32,
+    rows_rehomed: u32,
+    rows_dropped: u32,
+    refs_changed: u32,
+}
+
+fn reconcile_lctn_persistence_locations(
+    session: &mut PluginSession,
+) -> LctnPersistenceReconcileReport {
+    let own_index = session.target_masters().len() as u32;
+    let index = LctnPersistenceLocationIndex::from_items(
+        &session.target_slot().parsed.root_items,
+        own_index,
+    );
+    let mut moves: FxHashMap<u32, Vec<RehomedPersistenceRow>> = FxHashMap::default();
+    let mut ref_actions: FxHashMap<u32, RefLocationAction> = FxHashMap::default();
+    let mut changed_form_ids = SmallVec::<[u32; 4]>::new();
+    let mut report = LctnPersistenceReconcileReport::default();
+
+    collect_lctn_persistence_moves(
+        &mut session.target_slot_mut().parsed.root_items,
+        &index,
+        &mut moves,
+        &mut ref_actions,
+        &mut changed_form_ids,
+        &mut report,
+    );
+    apply_lctn_persistence_moves(
+        &mut session.target_slot_mut().parsed.root_items,
+        &mut moves,
+        &mut changed_form_ids,
+    );
+    report.refs_changed = apply_ref_location_actions(
+        &mut session.target_slot_mut().parsed.root_items,
+        &ref_actions,
+        &mut changed_form_ids,
+    );
+
+    changed_form_ids.sort_unstable();
+    changed_form_ids.dedup();
+    report.records_changed = changed_form_ids.len() as u32;
+    if !changed_form_ids.is_empty() {
+        session.record_effect(WriteEffect::RecordContents {
+            form_ids: changed_form_ids,
+        });
+    }
+    report
+}
+
+fn collect_lctn_persistence_moves(
+    items: &mut [ParsedItem],
+    index: &LctnPersistenceLocationIndex,
+    moves: &mut FxHashMap<u32, Vec<RehomedPersistenceRow>>,
+    ref_actions: &mut FxHashMap<u32, RefLocationAction>,
+    changed_form_ids: &mut SmallVec<[u32; 4]>,
+    report: &mut LctnPersistenceReconcileReport,
+) {
+    for item in items {
+        match item {
+            ParsedItem::Record(record) if record.signature.as_str() == "LCTN" => {
+                let source_location = record.form_id;
+                if record.subrecords.is_empty() {
+                    record.subrecords = effective_subrecords_for_record(record).into_owned();
+                }
+                let mut record_changed = false;
+                for subrecord in &mut record.subrecords {
+                    if !matches!(subrecord.signature.as_str(), "LCPR" | "ACPR") {
+                        continue;
+                    }
+                    let mut kept = Vec::with_capacity(subrecord.data.len());
+                    for row in subrecord.data.chunks_exact(12) {
+                        let ref_raw = u32::from_le_bytes(row[0..4].try_into().unwrap());
+                        let world_cell_raw = u32::from_le_bytes(row[4..8].try_into().unwrap());
+                        let grid_y = i16::from_le_bytes(row[8..10].try_into().unwrap());
+                        let grid_x = i16::from_le_bytes(row[10..12].try_into().unwrap());
+                        if ref_raw >> 24 != index.own_index {
+                            kept.extend_from_slice(row);
+                            continue;
+                        }
+
+                        match index.row_cell_location(world_cell_raw, grid_x, grid_y) {
+                            RowCellLocation::External => kept.extend_from_slice(row),
+                            RowCellLocation::Location(actual_location)
+                                if index.location_contains(source_location, actual_location) =>
+                            {
+                                kept.extend_from_slice(row);
+                            }
+                            RowCellLocation::Location(actual_location)
+                                if actual_location >> 24 == index.own_index
+                                    && index
+                                        .locations
+                                        .contains(&(actual_location & 0x00FF_FFFF)) =>
+                            {
+                                moves.entry(actual_location).or_default().push(
+                                    RehomedPersistenceRow {
+                                        sig: subrecord.signature.clone(),
+                                        bytes: row.try_into().unwrap(),
+                                    },
+                                );
+                                ref_actions
+                                    .insert(ref_raw, RefLocationAction::Set(actual_location));
+                                report.rows_rehomed = report.rows_rehomed.saturating_add(1);
+                                record_changed = true;
+                            }
+                            RowCellLocation::Missing
+                            | RowCellLocation::NoLocation
+                            | RowCellLocation::Location(_) => {
+                                ref_actions
+                                    .entry(ref_raw)
+                                    .or_insert(RefLocationAction::Remove(source_location));
+                                report.rows_dropped = report.rows_dropped.saturating_add(1);
+                                record_changed = true;
+                            }
+                        }
+                    }
+                    if subrecord.data.len() % 12 != 0 {
+                        kept.extend_from_slice(&subrecord.data[subrecord.data.len() / 12 * 12..]);
+                    }
+                    if kept.len() != subrecord.data.len() {
+                        subrecord.data = Bytes::from(kept);
+                    }
+                }
+                let before = record.subrecords.len();
+                record.subrecords.retain(|subrecord| {
+                    !matches!(subrecord.signature.as_str(), "LCPR" | "ACPR")
+                        || !subrecord.data.is_empty()
+                });
+                record_changed |= record.subrecords.len() != before;
+                if record_changed {
+                    record.raw_payload = None;
+                    changed_form_ids.push(record.form_id);
+                }
+            }
+            ParsedItem::Group(group) => collect_lctn_persistence_moves(
+                &mut group.children,
+                index,
+                moves,
+                ref_actions,
+                changed_form_ids,
+                report,
+            ),
+            _ => {}
+        }
+    }
+}
+
+fn apply_lctn_persistence_moves(
+    items: &mut [ParsedItem],
+    moves: &mut FxHashMap<u32, Vec<RehomedPersistenceRow>>,
+    changed_form_ids: &mut SmallVec<[u32; 4]>,
+) {
+    for item in items {
+        match item {
+            ParsedItem::Record(record) if record.signature.as_str() == "LCTN" => {
+                let Some(rows) = moves.remove(&record.form_id) else {
+                    continue;
+                };
+                if record.subrecords.is_empty() {
+                    record.subrecords = effective_subrecords_for_record(record).into_owned();
+                }
+                let mut changed = false;
+                for row in rows {
+                    let ref_raw = u32::from_le_bytes(row.bytes[0..4].try_into().unwrap());
+                    let existing = record
+                        .subrecords
+                        .iter()
+                        .filter(|subrecord| subrecord.signature == row.sig)
+                        .flat_map(|subrecord| subrecord.data.chunks_exact(12))
+                        .any(|candidate| {
+                            u32::from_le_bytes(candidate[0..4].try_into().unwrap()) == ref_raw
+                        });
+                    if existing {
+                        continue;
+                    }
+                    if let Some(subrecord) = record
+                        .subrecords
+                        .iter_mut()
+                        .find(|subrecord| subrecord.signature == row.sig)
+                    {
+                        let mut bytes = subrecord.data.to_vec();
+                        bytes.extend_from_slice(&row.bytes);
+                        subrecord.data = Bytes::from(bytes);
+                    } else {
+                        let insert_at = record
+                            .subrecords
+                            .iter()
+                            .position(|subrecord| {
+                                matches!(
+                                    subrecord.signature.as_str(),
+                                    "LCSR" | "ACSR" | "LCEC" | "ACEC"
+                                )
+                            })
+                            .unwrap_or(record.subrecords.len());
+                        record.subrecords.insert(
+                            insert_at,
+                            ParsedSubrecord {
+                                signature: row.sig,
+                                data: Bytes::copy_from_slice(&row.bytes),
+                                semantic_type: None,
+                            },
+                        );
+                    }
+                    changed = true;
+                }
+                if changed {
+                    record.raw_payload = None;
+                    changed_form_ids.push(record.form_id);
+                }
+            }
+            ParsedItem::Group(group) => {
+                apply_lctn_persistence_moves(&mut group.children, moves, changed_form_ids)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn apply_ref_location_actions(
+    items: &mut [ParsedItem],
+    actions: &FxHashMap<u32, RefLocationAction>,
+    changed_form_ids: &mut SmallVec<[u32; 4]>,
+) -> u32 {
+    let mut changed_count = 0;
+    for item in items {
+        match item {
+            ParsedItem::Record(record) if is_placed_record_sig(record.signature.as_str()) => {
+                let Some(action) = actions.get(&record.form_id) else {
+                    continue;
+                };
+                if record.subrecords.is_empty() {
+                    record.subrecords = effective_subrecords_for_record(record).into_owned();
+                }
+                let changed = match action {
+                    RefLocationAction::Set(location) => {
+                        let mut changed = false;
+                        for subrecord in record
+                            .subrecords
+                            .iter_mut()
+                            .filter(|subrecord| subrecord.signature.as_str() == "XLCN")
+                        {
+                            if subrecord.data.as_ref() != location.to_le_bytes() {
+                                subrecord.data = Bytes::copy_from_slice(&location.to_le_bytes());
+                                changed = true;
+                            }
+                        }
+                        changed
+                    }
+                    RefLocationAction::Remove(expected) => {
+                        let before = record.subrecords.len();
+                        record.subrecords.retain(|subrecord| {
+                            if subrecord.signature.as_str() != "XLCN" || subrecord.data.len() < 4 {
+                                return true;
+                            }
+                            u32::from_le_bytes(subrecord.data[..4].try_into().unwrap()) != *expected
+                        });
+                        record.subrecords.len() != before
+                    }
+                };
+                if changed {
+                    record.raw_payload = None;
+                    changed_form_ids.push(record.form_id);
+                    changed_count += 1;
+                }
+            }
+            ParsedItem::Group(group) => {
+                changed_count +=
+                    apply_ref_location_actions(&mut group.children, actions, changed_form_ids);
+            }
+            _ => {}
+        }
+    }
+    changed_count
+}
+
+fn parsed_subrecords_raw_form_id(subrecords: &[ParsedSubrecord], sig: &str) -> Option<u32> {
+    subrecords
+        .iter()
+        .find(|subrecord| subrecord.signature.as_str() == sig)
+        .and_then(|subrecord| read_u32_at(subrecord.data.as_ref(), 0))
+        .filter(|raw| *raw != 0)
+}
+
+fn parsed_cell_grid_i16(subrecords: &[ParsedSubrecord]) -> Option<(i16, i16)> {
+    let xclc = subrecords
+        .iter()
+        .find(|subrecord| subrecord.signature.as_str() == "XCLC")?;
+    let x = i32::from_le_bytes(xclc.data.get(0..4)?.try_into().ok()?);
+    let y = i32::from_le_bytes(xclc.data.get(4..8)?.try_into().ok()?);
+    Some((i16::try_from(x).ok()?, i16::try_from(y).ok()?))
+}
+
 fn read_u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
     let chunk = bytes.get(offset..offset.checked_add(4)?)?;
     Some(u32::from_le_bytes(chunk.try_into().ok()?))
@@ -687,11 +1119,9 @@ struct LctnPersistenceRowLayout {
     grid_y_offset: usize,
     grid_x_offset: usize,
     require_ref_location: bool,
-    /// Persistent-reference lists (LCPR/ACPR) require the ref to be persistent.
-    /// Static-reference lists (LCSR/ACSR) do NOT — non-persistent refs are
-    /// normal there (vanilla FO4 LCSR carries both), so requiring persistence
-    /// over-prunes legitimate rows and breaks location-based quest aliases.
-    require_persistent: bool,
+    /// LCPR/ACPR requires persistence for non-actors, but vanilla FO4 uses it
+    /// for temporary ACHRs with XLCN. LCSR/ACSR also allows nonpersistent refs.
+    require_non_actor_persistent: bool,
 }
 
 impl LctnRawLayout {
@@ -706,7 +1136,7 @@ impl LctnRawLayout {
                     grid_y_offset: 8,
                     grid_x_offset: 10,
                     require_ref_location: true,
-                    require_persistent: true,
+                    require_non_actor_persistent: true,
                 }),
             }),
             b"ACSR" | b"LCSR" => Some(Self::Rows {
@@ -718,7 +1148,7 @@ impl LctnRawLayout {
                     grid_y_offset: 12,
                     grid_x_offset: 14,
                     require_ref_location: false,
-                    require_persistent: false,
+                    require_non_actor_persistent: false,
                 }),
             }),
             b"ACEC" | b"LCEC" => Some(Self::FirstFormId),
@@ -1053,6 +1483,204 @@ mod tests {
         None
     }
 
+    fn find_record(items: &[ParsedItem], form_id: u32) -> Option<&ParsedRecord> {
+        for item in items {
+            match item {
+                ParsedItem::Record(record) if record.form_id == form_id => return Some(record),
+                ParsedItem::Group(group) => {
+                    if let Some(record) = find_record(&group.children, form_id) {
+                        return Some(record);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn find_record_mut(items: &mut [ParsedItem], form_id: u32) -> Option<&mut ParsedRecord> {
+        for item in items {
+            match item {
+                ParsedItem::Record(record) if record.form_id == form_id => return Some(record),
+                ParsedItem::Group(group) => {
+                    if let Some(record) = find_record_mut(&mut group.children, form_id) {
+                        return Some(record);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn reconcile_test_items(actual_parent: Option<u32>) -> Vec<ParsedItem> {
+        const SOURCE_LOCATION: u32 = 0x077D6A95;
+        const ACTUAL_LOCATION: u32 = 0x077D2A0E;
+        const WORLD: u32 = 0x0725DA15;
+        const CELL: u32 = 0x07265353;
+        const REFERENCE: u32 = 0x077FF721;
+
+        let source_location = parsed_record(
+            "LCTN",
+            SOURCE_LOCATION,
+            vec![parsed_subrecord(
+                "LCPR",
+                lcpr_row(REFERENCE, WORLD, 17, -54),
+            )],
+        );
+        let actual_location = parsed_record(
+            "LCTN",
+            ACTUAL_LOCATION,
+            actual_parent
+                .map(|parent| vec![parsed_subrecord("PNAM", parent.to_le_bytes().to_vec())])
+                .unwrap_or_default(),
+        );
+        let placed = placed_record(
+            "ACHR",
+            REFERENCE,
+            RECORD_FLAG_PERSISTENT,
+            Some(SOURCE_LOCATION),
+            -53.25 * 4096.0,
+            17.25 * 4096.0,
+        );
+
+        vec![
+            ParsedItem::Record(source_location),
+            ParsedItem::Record(actual_location),
+            ParsedItem::Record(parsed_record("WRLD", WORLD, vec![])),
+            world_children_group(
+                WORLD,
+                vec![
+                    ParsedItem::Record(parsed_cell_record(CELL, -54, 17, Some(ACTUAL_LOCATION))),
+                    cell_child_group(
+                        CELL,
+                        vec![cell_section_group(
+                            CELL_PERSISTENT_GROUP,
+                            vec![ParsedItem::Record(placed)],
+                        )],
+                    ),
+                ],
+            ),
+        ]
+    }
+
+    fn reconcile_test_tree(items: &mut [ParsedItem]) -> LctnPersistenceReconcileReport {
+        let index = LctnPersistenceLocationIndex::from_items(items, 7);
+        let mut moves = FxHashMap::default();
+        let mut actions = FxHashMap::default();
+        let mut changed = SmallVec::<[u32; 4]>::new();
+        let mut report = LctnPersistenceReconcileReport::default();
+        collect_lctn_persistence_moves(
+            items,
+            &index,
+            &mut moves,
+            &mut actions,
+            &mut changed,
+            &mut report,
+        );
+        apply_lctn_persistence_moves(items, &mut moves, &mut changed);
+        report.refs_changed = apply_ref_location_actions(items, &actions, &mut changed);
+        report
+    }
+
+    #[test]
+    fn rehomes_persistence_row_when_cell_uses_sibling_location() {
+        const SOURCE_LOCATION: u32 = 0x077D6A95;
+        const ACTUAL_LOCATION: u32 = 0x077D2A0E;
+        const REFERENCE: u32 = 0x077FF721;
+        let mut items = reconcile_test_items(None);
+
+        let report = reconcile_test_tree(&mut items);
+
+        assert_eq!(report.rows_rehomed, 1);
+        assert_eq!(report.rows_dropped, 0);
+        assert_eq!(report.refs_changed, 1);
+        let source = find_record(&items, SOURCE_LOCATION).expect("source location");
+        assert!(
+            source
+                .subrecords
+                .iter()
+                .all(|subrecord| subrecord.signature.as_str() != "LCPR")
+        );
+        let actual = find_record(&items, ACTUAL_LOCATION).expect("actual location");
+        let moved = actual
+            .subrecords
+            .iter()
+            .find(|subrecord| subrecord.signature.as_str() == "LCPR")
+            .expect("moved LCPR row");
+        assert_eq!(
+            u32::from_le_bytes(moved.data[0..4].try_into().unwrap()),
+            REFERENCE
+        );
+        let reference = find_record(&items, REFERENCE).expect("placed reference");
+        assert_eq!(
+            parsed_subrecords_raw_form_id(&reference.subrecords, "XLCN"),
+            Some(ACTUAL_LOCATION)
+        );
+    }
+
+    #[test]
+    fn keeps_persistence_row_when_cell_location_is_descendant() {
+        const SOURCE_LOCATION: u32 = 0x077D6A95;
+        const ACTUAL_LOCATION: u32 = 0x077D2A0E;
+        const REFERENCE: u32 = 0x077FF721;
+        let mut items = reconcile_test_items(Some(SOURCE_LOCATION));
+
+        let report = reconcile_test_tree(&mut items);
+
+        assert_eq!(report.rows_rehomed, 0);
+        assert_eq!(report.rows_dropped, 0);
+        assert_eq!(report.refs_changed, 0);
+        let source = find_record(&items, SOURCE_LOCATION).expect("source location");
+        assert!(
+            source
+                .subrecords
+                .iter()
+                .any(|subrecord| subrecord.signature.as_str() == "LCPR")
+        );
+        let reference = find_record(&items, REFERENCE).expect("placed reference");
+        assert_eq!(
+            parsed_subrecords_raw_form_id(&reference.subrecords, "XLCN"),
+            Some(SOURCE_LOCATION)
+        );
+        let actual = find_record(&items, ACTUAL_LOCATION).expect("actual location");
+        assert!(
+            actual
+                .subrecords
+                .iter()
+                .all(|subrecord| subrecord.signature.as_str() != "LCPR")
+        );
+    }
+
+    #[test]
+    fn drops_persistence_row_when_cell_has_no_location() {
+        const SOURCE_LOCATION: u32 = 0x077D6A95;
+        const CELL: u32 = 0x07265353;
+        const REFERENCE: u32 = 0x077FF721;
+        let mut items = reconcile_test_items(None);
+        let cell = find_record_mut(&mut items, CELL).expect("cell");
+        cell.subrecords
+            .retain(|subrecord| subrecord.signature.as_str() != "XLCN");
+
+        let report = reconcile_test_tree(&mut items);
+
+        assert_eq!(report.rows_rehomed, 0);
+        assert_eq!(report.rows_dropped, 1);
+        assert_eq!(report.refs_changed, 1);
+        let source = find_record(&items, SOURCE_LOCATION).expect("source location");
+        assert!(
+            source
+                .subrecords
+                .iter()
+                .all(|subrecord| subrecord.signature.as_str() != "LCPR")
+        );
+        let reference = find_record(&items, REFERENCE).expect("placed reference");
+        assert_eq!(
+            parsed_subrecords_raw_form_id(&reference.subrecords, "XLCN"),
+            None
+        );
+    }
+
     #[test]
     fn rewrites_lctn_master_special_reference_formids() {
         let mut record = lctn_record_with_raw("LCSR", lcsr_row(0x003D4B0D, 0x00001234, 0x0025DA15));
@@ -1320,13 +1948,14 @@ mod tests {
     }
 
     #[test]
-    fn prunes_lcpr_row_when_ref_is_not_persistent() {
+    fn keeps_lcpr_row_for_nonpersistent_actor() {
         let location = 0x0700414F;
         let world = 0x0725DA15;
         let cell = 0x07A035C5;
+        let reference = 0x07001234;
         let placed = placed_record(
             "ACHR",
-            0x07001234,
+            reference,
             0,
             Some(location),
             -37.0 * 4096.0,
@@ -1334,7 +1963,6 @@ mod tests {
         );
         let items = exterior_persistence_items(world, cell, placed);
         let index = LctnPersistenceIndex::from_items(&items, 7);
-        // LCPR is the PERSISTENT reference list — a non-persistent ref is invalid here.
         let mut record = lctn_record_with_raw("LCPR", lcpr_row(0x00001234, 0x0025DA15, -18, -37));
 
         assert!(rewrite_lctn_record(
@@ -1344,10 +1972,41 @@ mod tests {
             Some(&index)
         ));
 
-        assert!(
-            record.fields.is_empty(),
-            "temporary refs cannot remain in LCTN persistent (LCPR) rows"
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("temporary actor LCPR row must be retained");
+        };
+        assert_eq!(bytes.len(), 12);
+        assert_eq!(
+            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            reference
         );
+    }
+
+    #[test]
+    fn prunes_lcpr_row_for_nonpersistent_nonactor() {
+        let location = 0x0700414F;
+        let world = 0x0725DA15;
+        let cell = 0x07A035C5;
+        let placed = placed_record(
+            "REFR",
+            0x07001234,
+            0,
+            Some(location),
+            -37.0 * 4096.0,
+            -18.0 * 4096.0,
+        );
+        let items = exterior_persistence_items(world, cell, placed);
+        let index = LctnPersistenceIndex::from_items(&items, 7);
+        let mut record = lctn_record_with_raw("LCPR", lcpr_row(0x00001234, 0x0025DA15, -18, -37));
+
+        assert!(rewrite_lctn_record(
+            &mut record,
+            &target_map(),
+            false,
+            Some(&index)
+        ));
+
+        assert!(record.fields.is_empty());
     }
 
     #[test]
@@ -1456,7 +2115,7 @@ mod tests {
     }
 
     #[test]
-    fn strips_xlcn_from_nonpersistent_placed_refs_only() {
+    fn preserves_xlcn_on_nonpersistent_actors() {
         let location = 0x0700414F;
         let mut items = vec![
             ParsedItem::Record(placed_record(
@@ -1468,8 +2127,16 @@ mod tests {
                 0.0,
             )),
             ParsedItem::Record(placed_record(
-                "REFR",
+                "ACHR",
                 0x07001235,
+                0,
+                Some(location),
+                0.0,
+                0.0,
+            )),
+            ParsedItem::Record(placed_record(
+                "REFR",
+                0x07001236,
                 RECORD_FLAG_PERSISTENT,
                 Some(location),
                 0.0,
@@ -1482,7 +2149,10 @@ mod tests {
         let mut changed_form_ids = SmallVec::<[u32; 4]>::new();
 
         assert_eq!(
-            strip_nonpersistent_placed_ref_xlcn_from_items(&mut items, &mut changed_form_ids),
+            strip_nonpersistent_nonactor_placed_ref_xlcn_from_items(
+                &mut items,
+                &mut changed_form_ids
+            ),
             1
         );
         assert_eq!(changed_form_ids.as_slice(), &[0x07001234]);
@@ -1496,7 +2166,16 @@ mod tests {
                 .all(|subrecord| subrecord.signature.as_str() != "XLCN")
         );
         assert!(nonpersistent.raw_payload.is_none());
-        let ParsedItem::Record(persistent) = &items[1] else {
+        let ParsedItem::Record(nonpersistent_actor) = &items[1] else {
+            panic!("expected actor record");
+        };
+        assert!(
+            nonpersistent_actor
+                .subrecords
+                .iter()
+                .any(|subrecord| subrecord.signature.as_str() == "XLCN")
+        );
+        let ParsedItem::Record(persistent) = &items[2] else {
             panic!("expected record");
         };
         assert!(

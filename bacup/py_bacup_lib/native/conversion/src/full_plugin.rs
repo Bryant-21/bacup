@@ -100,6 +100,26 @@ impl FullPluginRunState {
         }
     }
 
+    pub fn capture_record_refs_with_unresolved(
+        &mut self,
+        record: &Record,
+        unresolved_source_refs: &FxHashSet<FormKey>,
+        target_master_plugins: &FxHashSet<Sym>,
+    ) {
+        let owner = RefOwner {
+            owner: record.form_key,
+            owner_sig: record.sig,
+        };
+        for source_ref in unresolved_source_refs {
+            if source_ref.local != 0 {
+                self.capture_unresolved_ref(*source_ref, owner);
+            }
+        }
+        for entry in &record.fields {
+            self.capture_target_master_value_refs(&entry.value, owner, target_master_plugins);
+        }
+    }
+
     pub fn capture_raw_zero_master_refs(&mut self, record: &Record, raw_zero_master_plugin: Sym) {
         let owner = RefOwner {
             owner: record.form_key,
@@ -140,22 +160,12 @@ impl FullPluginRunState {
     ) {
         match value {
             FieldValue::FormKey(fk) if fk.local != 0 && fk.plugin == source_plugin => {
-                if self.seen_unresolved_pairs.insert((owner.owner, *fk)) {
-                    self.unresolved_source_ref_owners
-                        .entry(*fk)
-                        .or_default()
-                        .push(owner);
-                }
+                self.capture_unresolved_ref(*fk, owner);
             }
             FieldValue::FormKey(fk)
                 if fk.local != 0 && target_master_plugins.contains(&fk.plugin) =>
             {
-                if self.seen_target_master_pairs.insert((owner.owner, *fk)) {
-                    self.target_master_ref_owners
-                        .entry(*fk)
-                        .or_default()
-                        .push(owner);
-                }
+                self.capture_target_master_ref(*fk, owner);
             }
             FieldValue::List(values) => {
                 for child in values {
@@ -168,6 +178,53 @@ impl FullPluginRunState {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn capture_target_master_value_refs(
+        &mut self,
+        value: &FieldValue,
+        owner: RefOwner,
+        target_master_plugins: &FxHashSet<Sym>,
+    ) {
+        match value {
+            FieldValue::FormKey(fk)
+                if fk.local != 0 && target_master_plugins.contains(&fk.plugin) =>
+            {
+                self.capture_target_master_ref(*fk, owner);
+            }
+            FieldValue::List(values) => {
+                for child in values {
+                    self.capture_target_master_value_refs(child, owner, target_master_plugins);
+                }
+            }
+            FieldValue::Struct(fields) => {
+                for (_name, child) in fields {
+                    self.capture_target_master_value_refs(child, owner, target_master_plugins);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn capture_unresolved_ref(&mut self, source_ref: FormKey, owner: RefOwner) {
+        if self.seen_unresolved_pairs.insert((owner.owner, source_ref)) {
+            self.unresolved_source_ref_owners
+                .entry(source_ref)
+                .or_default()
+                .push(owner);
+        }
+    }
+
+    fn capture_target_master_ref(&mut self, target_master_ref: FormKey, owner: RefOwner) {
+        if self
+            .seen_target_master_pairs
+            .insert((owner.owner, target_master_ref))
+        {
+            self.target_master_ref_owners
+                .entry(target_master_ref)
+                .or_default()
+                .push(owner);
         }
     }
 
@@ -314,6 +371,67 @@ mod tests {
                 .get(&target_master_ref)
                 .unwrap(),
             &vec![RefOwner { owner, owner_sig }]
+        );
+    }
+
+    #[test]
+    fn explicit_unresolved_capture_does_not_reclassify_same_name_mapped_refs() {
+        let interner = StringInterner::new();
+        let same_name_plugin = interner.intern("Skyrim_Merged.esm");
+        let target_master_plugin = interner.intern("Fallout4.esm");
+        let owner = FormKey {
+            local: 0x900,
+            plugin: same_name_plugin,
+        };
+        let source_unresolved = FormKey {
+            local: 0x812,
+            plugin: same_name_plugin,
+        };
+        let mapped_output_ref = FormKey {
+            local: 0x8E1,
+            plugin: same_name_plugin,
+        };
+        let target_master_ref = FormKey {
+            local: 0x1234,
+            plugin: target_master_plugin,
+        };
+        let owner_sig = SigCode::from_str("WRLD").unwrap();
+        let record = Record {
+            sig: owner_sig,
+            form_key: owner,
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: smallvec![FieldEntry {
+                sig: SubrecordSig::from_str("CNAM").unwrap(),
+                value: FieldValue::List(vec![
+                    FieldValue::FormKey(mapped_output_ref),
+                    FieldValue::FormKey(target_master_ref),
+                ]),
+            }],
+            warnings: smallvec![],
+        };
+        let unresolved_source_refs = FxHashSet::from_iter([source_unresolved]);
+        let target_master_plugins = FxHashSet::from_iter([target_master_plugin]);
+        let mut state = FullPluginRunState::default();
+
+        state.capture_record_refs_with_unresolved(
+            &record,
+            &unresolved_source_refs,
+            &target_master_plugins,
+        );
+
+        assert_eq!(
+            state.unresolved_source_ref_owners.get(&source_unresolved),
+            Some(&vec![RefOwner { owner, owner_sig }])
+        );
+        assert!(
+            !state
+                .unresolved_source_ref_owners
+                .contains_key(&mapped_output_ref)
+        );
+        assert_eq!(
+            state.target_master_ref_owners.get(&target_master_ref),
+            Some(&vec![RefOwner { owner, owner_sig }])
         );
     }
 

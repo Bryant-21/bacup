@@ -30,12 +30,14 @@ def _asset(asset_type: str, source_path: str, resolved_path: Path | None = None)
 def _builder(monkeypatch, tmp_path: Path, source_game: str):
     source_root = tmp_path / "source"
     nif_path = source_root / "Meshes" / "clutter" / "crate.nif"
+    egt_path = source_root / "Meshes" / "characters" / "body.egt"
     base_nif_path = source_root / "Meshes" / "clutter" / "base.nif"
     texture_path = source_root / "Textures" / "clutter" / "crate_d.dds"
     base_texture_path = source_root / "Textures" / "clutter" / "base_d.dds"
     sound_path = source_root / "Sound" / "fx" / "crate.wav"
     for path in (
         nif_path,
+        egt_path,
         base_nif_path,
         texture_path,
         base_texture_path,
@@ -48,6 +50,7 @@ def _builder(monkeypatch, tmp_path: Path, source_game: str):
         _asset("nif", "Meshes/clutter/crate.nif", nif_path),
         _asset("nif", "Meshes/clutter/base.nif", base_nif_path),
         _asset("nif", "Meshes/clutter/missing.nif"),
+        _asset("nif", "Meshes/characters/body.egt", egt_path),
         _asset("texture", "Textures/clutter/crate_d.dds", texture_path),
         _asset("texture", "Textures/clutter/base_d.dds", base_texture_path),
         _asset("texture", "Textures/clutter/missing_d.dds"),
@@ -77,7 +80,11 @@ def _builder(monkeypatch, tmp_path: Path, source_game: str):
         _track_asset=lambda *_args: None,
     )
     ctx = SimpleNamespace(source_game=source_game, assets=assets, summary=summary)
-    driver = SimpleNamespace(ctx=ctx, terrain_texture_jobs=[])
+    driver = SimpleNamespace(
+        ctx=ctx,
+        terrain_texture_jobs=[],
+        _req=SimpleNamespace(options=SimpleNamespace(exclude_signatures=())),
+    )
     runs = SimpleNamespace(
         nifs=SimpleNamespace(id=11),
         textures=SimpleNamespace(id=12),
@@ -114,7 +121,9 @@ def _builder(monkeypatch, tmp_path: Path, source_game: str):
     monkeypatch.setattr(
         asset_phases,
         "_params_for_convert_textures",
-        lambda _shim, _assets: {"textures": []},
+        lambda _shim, assets: {
+            "textures": [a.resolved_path or a.source_path for a in (assets or [])]
+        },
     )
     monkeypatch.setattr(
         asset_phases,
@@ -147,10 +156,13 @@ def test_fo76_wave_phase_sets_and_params_are_unchanged(monkeypatch, tmp_path):
         "convert_havok",
         "synthesize_drivers",
         "postprocess_havok_assets",
+        "copy_materialized_facegen",
     ]
 
 
-def test_fnv_wave_uses_gamebryo_nifs_and_explicit_texture_copy(monkeypatch, tmp_path):
+def test_fnv_wave_uses_gamebryo_nifs_and_converts_the_referenced_textures(
+    monkeypatch, tmp_path
+):
     builder, shim, assets, source_root = _builder(monkeypatch, tmp_path, "fnv")
 
     assert [stage.phase for stage in builder.build_wave_a1()] == ["copy_sounds"]
@@ -173,24 +185,15 @@ def test_fnv_wave_uses_gamebryo_nifs_and_explicit_texture_copy(monkeypatch, tmp_
     shim.graph.all_assets = assets
 
     a3 = builder.build_wave_a3()
-    assert [stage.phase for stage in a3] == ["copy_textures"]
+    assert [stage.phase for stage in a3] == ["convert_textures_v2"]
+    # The unresolved reference is dropped: role grouping needs every member of
+    # a group on disk to read its header.
     assert a3[0].params == {
-        "texture_paths": [
-            {
-                "source_path": "Textures/clutter/crate_d.dds",
-                "resolved_path": str(
-                    source_root / "Textures" / "clutter" / "crate_d.dds"
-                ),
-            },
-            {
-                "source_path": "Textures/clutter/missing_d.dds",
-                "resolved_path": "",
-            },
-            {
-                "source_path": "Textures/landscape/late_d.dds",
-                "resolved_path": str(late_texture),
-            },
+        "textures": [
+            str(source_root / "Textures" / "clutter" / "crate_d.dds"),
+            str(late_texture),
         ],
+        "convert_all": False,
         "nif_paths": [
             {
                 "source_path": "Meshes/clutter/crate.nif",
@@ -198,11 +201,13 @@ def test_fnv_wave_uses_gamebryo_nifs_and_explicit_texture_copy(monkeypatch, tmp_
             }
         ],
     }
+    assert a3[0].target_extracted_dir == str(tmp_path / "target")
+    assert a3[0].target_data_dir == str(tmp_path / "Fallout4" / "Data")
     assert shim._summary.textures_base_game_skipped == 1
     assert builder.build_wave_a4() == []
 
 
-def test_fnv_texture_copy_scans_filtered_nifs_without_texture_refs(
+def test_fnv_texture_conversion_scans_filtered_nifs_without_texture_refs(
     monkeypatch, tmp_path
 ):
     builder, shim, assets, source_root = _builder(monkeypatch, tmp_path, "fnv")
@@ -211,8 +216,8 @@ def test_fnv_texture_copy_scans_filtered_nifs_without_texture_refs(
 
     a3 = builder.build_wave_a3()
 
-    assert [stage.phase for stage in a3] == ["copy_textures"]
-    assert a3[0].params["texture_paths"] == []
+    assert [stage.phase for stage in a3] == ["convert_textures_v2"]
+    assert a3[0].params["textures"] == []
     assert a3[0].params["nif_paths"] == [
         {
             "source_path": "Meshes/clutter/crate.nif",

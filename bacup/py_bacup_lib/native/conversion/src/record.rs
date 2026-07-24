@@ -139,7 +139,7 @@ impl Record {
 }
 
 /// Overwrite a u32-typed field value with `value`, returning whether it changed.
-fn write_u32_field(field: &mut FieldValue, value: u32) -> bool {
+pub(crate) fn write_u32_field(field: &mut FieldValue, value: u32) -> bool {
     match field {
         FieldValue::Uint(n) => {
             let changed = *n != u64::from(value);

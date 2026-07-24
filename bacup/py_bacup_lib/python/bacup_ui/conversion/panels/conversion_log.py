@@ -19,6 +19,11 @@ _COLORS = {
 }
 
 _MAX_ENTRIES = 5000
+_SCROLL_BOTTOM_TOLERANCE = 10.0
+
+
+def _is_at_log_bottom(scroll_y: float, scroll_max_y: float) -> bool:
+    return scroll_y >= scroll_max_y - _SCROLL_BOTTOM_TOLERANCE
 
 
 class ConversionLogPanel:
@@ -51,6 +56,9 @@ class ConversionLogPanel:
         # Log content
         avail = imgui.get_content_region_avail()
         if imgui.begin_child(f"log_scroll{_NS}", imgui.ImVec2(0, avail.y)):
+            follow_bottom = self._auto_scroll and _is_at_log_bottom(
+                imgui.get_scroll_y(), imgui.get_scroll_max_y()
+            )
             for level, msg in self._entries:
                 if level == "INFO" and not self._show_info:
                     continue
@@ -64,7 +72,7 @@ class ConversionLogPanel:
                 imgui.text_wrapped(f"[{level}] {msg}")
                 imgui.pop_style_color()
 
-            if self._auto_scroll:
+            if follow_bottom:
                 imgui.set_scroll_here_y(1.0)
         imgui.end_child()
 

@@ -943,6 +943,71 @@ pub(crate) fn scrub_invalid_quest_references(
     if can_validate_quests && alias_context.can_validate() {
         changed |= scrub_invalid_vmad_aliases(record, alias_context.known_ids());
     }
+    if can_validate_quests {
+        changed |= neutralize_dangling_pack_alias_data_targets(record, alias_context);
+    }
+    changed
+}
+
+// PACK package-data target (PTDA) and location (PLDT/PLVD) unions can select a
+// quest-ALIAS variant: the offset-4 value is an alias INDEX into the package's
+// owning quest (its QNAM), not a FormID. Now that quests AND their aliases are
+// translated, these bindings are valid and must be preserved — the old blanket
+// record-local neutralization (from before QUST conversion existed) wrongly turned
+// every alias target into "Self"/"Near Package Start Location", severing e.g.
+// AC_MQ01_Opportunity_Abbie_Breakdown's "target RefAlias 18". Neutralize to the
+// benign non-alias selector ONLY when the owning quest is known AND provably lacks
+// that alias id (a genuine dangle, e.g. the alias was dropped during QUST
+// conversion). When the owning quest can't be resolved/validated, preserve.
+const PACK_TARGET_ALIAS_TYPE: i32 = 4;
+const PACK_TARGET_SELF_TYPE: i32 = 6;
+const PACK_LOCATION_ALIAS_TYPES: &[i32] = &[8, 9, 14];
+const PACK_LOCATION_NEAR_PACKAGE_START_TYPE: i32 = 2;
+
+fn neutralize_dangling_pack_alias_data_targets(
+    record: &mut Record,
+    alias_context: AliasContext<'_>,
+) -> bool {
+    if record.sig.0 != *b"PACK" {
+        return false;
+    }
+    let mut changed = false;
+    for entry in &mut record.fields {
+        let (alias_types, replacement) = match &entry.sig.0 {
+            b"PLDT" | b"PLVD" => (
+                PACK_LOCATION_ALIAS_TYPES,
+                PACK_LOCATION_NEAR_PACKAGE_START_TYPE,
+            ),
+            b"PTDA" => (
+                std::slice::from_ref(&PACK_TARGET_ALIAS_TYPE),
+                PACK_TARGET_SELF_TYPE,
+            ),
+            _ => continue,
+        };
+        let FieldValue::Bytes(bytes) = &mut entry.value else {
+            continue;
+        };
+        if bytes.len() < 8 {
+            continue;
+        }
+        let type_value = i32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        if !alias_types.contains(&type_value) {
+            continue;
+        }
+        let alias_index = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        // `alias_id_is_invalid` is true ONLY for a Known owning quest whose alias
+        // set excludes this index — a proven dangle. `Unknown` (quest present,
+        // aliases not indexed) and `None` (no resolvable owning quest) preserve, so
+        // a valid alias binding is never severed.
+        if !alias_id_is_invalid(alias_index, alias_context) {
+            continue;
+        }
+        bytes[0..4].copy_from_slice(&replacement.to_le_bytes());
+        // The benign replacement types treat offset 4 as cpIgnore; the dead alias
+        // index is zeroed.
+        bytes[4..8].copy_from_slice(&0u32.to_le_bytes());
+        changed = true;
+    }
     changed
 }
 
@@ -2378,6 +2443,107 @@ mod tests {
             panic!("VMAD should remain bytes");
         };
         assert_eq!(alias_at(bytes, alias_offset), 11);
+    }
+
+    fn ptda_field(type_value: i32, target: u32) -> FieldEntry {
+        let mut b = Vec::with_capacity(12);
+        b.extend_from_slice(&type_value.to_le_bytes());
+        b.extend_from_slice(&target.to_le_bytes());
+        b.extend_from_slice(&1i32.to_le_bytes()); // Count / Distance
+        field("PTDA", &b)
+    }
+
+    fn pldt_field(sig: &str, type_value: i32, location: u32) -> FieldEntry {
+        let mut b = Vec::with_capacity(16);
+        b.extend_from_slice(&type_value.to_le_bytes());
+        b.extend_from_slice(&location.to_le_bytes());
+        b.extend_from_slice(&(-1i32).to_le_bytes()); // Radius
+        b.extend_from_slice(&0u32.to_le_bytes()); // Collection Index
+        field(sig, &b)
+    }
+
+    fn union_type_and_value(rec: &Record, sig: &str) -> (i32, u32) {
+        let f = rec.fields.iter().find(|f| f.sig.as_str() == sig).unwrap();
+        let FieldValue::Bytes(b) = &f.value else {
+            panic!("{sig} bytes");
+        };
+        (
+            i32::from_le_bytes(b[0..4].try_into().unwrap()),
+            u32::from_le_bytes(b[4..8].try_into().unwrap()),
+        )
+    }
+
+    #[test]
+    fn pack_alias_target_preserved_when_owner_quest_has_alias() {
+        // The reported 6C2DAF case: a Ref-Alias package target whose owning quest
+        // converted WITH that alias — must survive translation intact.
+        let interner = StringInterner::new();
+        let owner_quest = 0x0000_0800;
+        let index = quest_index(&[owner_quest], &[(owner_quest, &[18])]);
+        let mut rec = record_with_interner(
+            "PACK",
+            0x900,
+            vec![
+                field("QNAM", &owner_quest.to_le_bytes()),
+                ptda_field(4, 18),         // target: Ref Alias 18
+                pldt_field("PLDT", 8, 18), // location: Ref Alias 18
+            ],
+            &interner,
+        );
+        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
+        assert_eq!(union_type_and_value(&rec, "PTDA"), (4, 18));
+        assert_eq!(union_type_and_value(&rec, "PLDT"), (8, 18));
+    }
+
+    #[test]
+    fn pack_alias_target_severed_when_owner_quest_lacks_alias() {
+        // Owning quest converted, but this alias index was dropped during QUST
+        // conversion — a proven dangle → neutralize to the benign non-alias kind.
+        let interner = StringInterner::new();
+        let owner_quest = 0x0000_0800;
+        let index = quest_index(&[owner_quest], &[(owner_quest, &[2])]);
+        let mut rec = record_with_interner(
+            "PACK",
+            0x900,
+            vec![
+                field("QNAM", &owner_quest.to_le_bytes()),
+                ptda_field(4, 18),
+                pldt_field("PLVD", 14, 18),
+            ],
+            &interner,
+        );
+        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
+        assert_eq!(union_type_and_value(&rec, "PTDA"), (6, 0)); // Self
+        assert_eq!(union_type_and_value(&rec, "PLVD"), (2, 0)); // Near Package Start
+    }
+
+    #[test]
+    fn pack_alias_target_preserved_when_owner_context_unresolvable() {
+        // Unknown (quest present, alias table not indexed) and None (QNAM not a
+        // known quest) both preserve — we cannot prove the alias dangles.
+        let interner = StringInterner::new();
+        let owner_quest = 0x0000_0800;
+        let mut unknown = quest_index(&[owner_quest], &[]);
+        unknown
+            .quest_alias_ids_by_encoded_quest
+            .insert(owner_quest, None);
+        let none = quest_index(&[owner_quest], &[(owner_quest, &[2])]);
+
+        for (index, qnam) in [(&unknown, owner_quest), (&none, 0x0000_0555u32)] {
+            let mut rec = record_with_interner(
+                "PACK",
+                0x900,
+                vec![
+                    field("QNAM", &qnam.to_le_bytes()),
+                    ptda_field(4, 18),
+                    pldt_field("PLDT", 8, 18),
+                ],
+                &interner,
+            );
+            assert!(!scrub_invalid_quest_references(&mut rec, index, &interner));
+            assert_eq!(union_type_and_value(&rec, "PTDA"), (4, 18));
+            assert_eq!(union_type_and_value(&rec, "PLDT"), (8, 18));
+        }
     }
 
     #[test]

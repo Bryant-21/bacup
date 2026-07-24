@@ -799,8 +799,7 @@ class NifEditorApp:
             )
             draw_list.path_stroke(
                 imgui.get_color_u32((1.0, 1.0, 1.0, 1.0)),
-                False,
-                3.0,
+                thickness=3.0,
             )
 
             # Centered filename label

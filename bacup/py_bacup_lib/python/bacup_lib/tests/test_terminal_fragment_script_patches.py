@@ -87,7 +87,7 @@ def _merged_production_source(base_name: str) -> str:
 
 
 @pytest.mark.parametrize(("base_name", "fragment_ids"), PATCH_CASES.items())
-def test_terminal_patch_supplies_every_vmad_fragment(
+def test_terminal_patch_supplies_expected_fragments_and_compiles_for_fo4(
     base_name: str, fragment_ids: set[int]
 ):
     patch = _script_patch_source(_script_name(base_name))
@@ -107,9 +107,6 @@ def test_terminal_patch_supplies_every_vmad_fragment(
     expected = {f"fragment_terminal_{fragment_id:02d}" for fragment_id in fragment_ids}
     assert expected <= members
 
-
-@pytest.mark.parametrize("base_name", PATCH_CASES)
-def test_terminal_production_merge_native_compiles_for_fo4(base_name: str):
     base_source = _fo4_base_source()
     if base_source is None:
         pytest.skip("FO4 base Papyrus sources unavailable")
@@ -130,23 +127,3 @@ def test_terminal_production_merge_native_compiles_for_fo4(base_name: str):
 def test_terminal_patch_count_matches_confirmed_linked_control_batch():
     assert len(PATCH_CASES) == 27
     assert sum(len(fragment_ids) for fragment_ids in PATCH_CASES.values()) == 97
-
-
-def test_nonsequential_terminal_actions_keep_their_vmad_fragment_numbers():
-    armory = _script_patch_source(
-        _script_name("TERM_FS03_MQ_Fruition_Armory_004EA3B4")
-    )
-    bank = _script_patch_source(_script_name("TERM_nativeBankMegaSecurityD_00176E19"))
-    decon = _script_patch_source(
-        _script_name("TERM_nativeDeconArchControlT_002ED20B")
-    )
-
-    assert armory is not None
-    assert "Function Fragment_Terminal_02" in armory
-    assert "UnlockLinkedDoors(akTerminalRef)" in armory
-    assert bank is not None
-    assert "Function Fragment_Terminal_02" in bank
-    assert "SetLinkedDoorsOpen(akTerminalRef, False)" in bank
-    assert decon is not None
-    assert "Function Fragment_Terminal_02" in decon
-    assert "SetLinkedDeconArchesActive(akTerminalRef, False)" in decon

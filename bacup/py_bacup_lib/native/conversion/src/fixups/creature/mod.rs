@@ -81,11 +81,9 @@ pub fn npc_is_creature_in_view(
     )
 }
 
-/// Collect the NPC_ FormKeys a LVLN references via its `LVLO` entries (reference
-/// FormID at byte offset 4 of each raw payload). The entry's plugin is the LVLN
-/// record's own plugin, since converted leveled-list entries point at sibling
-/// output records.
-fn lvln_entry_form_keys(lvln: &Record, _interner: &StringInterner) -> Vec<FormKey> {
+/// Collect the NPC_ FormKeys a LVLN references via its `LVLO` entries. The
+/// session can expose LVLO as either its raw FO4 payload or a decoded struct.
+fn lvln_entry_form_keys(lvln: &Record, interner: &StringInterner) -> Vec<FormKey> {
     let Ok(lvlo_sig) = SubrecordSig::from_str("LVLO") else {
         return Vec::new();
     };
@@ -95,24 +93,58 @@ fn lvln_entry_form_keys(lvln: &Record, _interner: &StringInterner) -> Vec<FormKe
         if entry.sig != lvlo_sig {
             continue;
         }
-        match &entry.value {
-            FieldValue::Bytes(data) if data.len() >= LVLO_REFERENCE_OFFSET + 4 => {
-                let raw = u32::from_le_bytes([
-                    data[LVLO_REFERENCE_OFFSET],
-                    data[LVLO_REFERENCE_OFFSET + 1],
-                    data[LVLO_REFERENCE_OFFSET + 2],
-                    data[LVLO_REFERENCE_OFFSET + 3],
-                ]);
-                out.push(FormKey {
-                    local: raw & 0x00FF_FFFF,
-                    plugin,
-                });
-            }
-            FieldValue::FormKey(fk) => out.push(*fk),
-            _ => {}
+        if let Some(fk) = lvln_entry_form_key(&entry.value, plugin, interner) {
+            out.push(fk);
         }
     }
     out
+}
+
+fn lvln_entry_form_key(
+    value: &FieldValue,
+    plugin: crate::sym::Sym,
+    interner: &StringInterner,
+) -> Option<FormKey> {
+    match value {
+        FieldValue::Bytes(data) if data.len() >= LVLO_REFERENCE_OFFSET + 4 => {
+            let raw = u32::from_le_bytes(
+                data[LVLO_REFERENCE_OFFSET..LVLO_REFERENCE_OFFSET + 4]
+                    .try_into()
+                    .ok()?,
+            );
+            (raw != 0).then_some(FormKey {
+                local: raw & 0x00FF_FFFF,
+                plugin,
+            })
+        }
+        FieldValue::Struct(fields) => fields.iter().find_map(|(name, value)| {
+            let is_entry = interner.resolve(*name).is_some_and(|name| {
+                name.eq_ignore_ascii_case("npc") || name.eq_ignore_ascii_case("reference")
+            });
+            is_entry.then(|| scalar_form_key(value, plugin)).flatten()
+        }),
+        FieldValue::FormKey(fk) if fk.local != 0 => Some(*fk),
+        _ => None,
+    }
+}
+
+fn scalar_form_key(value: &FieldValue, plugin: crate::sym::Sym) -> Option<FormKey> {
+    match value {
+        FieldValue::FormKey(fk) if fk.local != 0 => Some(*fk),
+        FieldValue::Uint(raw) if *raw > 0 && *raw <= u32::MAX as u64 => Some(FormKey {
+            local: *raw as u32 & 0x00FF_FFFF,
+            plugin,
+        }),
+        FieldValue::Int(raw) if *raw > 0 && *raw <= u32::MAX as i64 => Some(FormKey {
+            local: *raw as u32 & 0x00FF_FFFF,
+            plugin,
+        }),
+        FieldValue::Bytes(data) if data.len() >= 4 => {
+            let local = u32::from_le_bytes(data[0..4].try_into().ok()?) & 0x00FF_FFFF;
+            (local != 0).then_some(FormKey { local, plugin })
+        }
+        _ => None,
+    }
 }
 
 /// Per-RACE gate for the RACE-internal creature fixups
@@ -180,6 +212,7 @@ pub fn creature_internal_fixup_applies(config: &crate::fixups::FixupConfig) -> b
 
 pub fn likely_creature_weapon_editor_id(eid_lower: &str) -> bool {
     eid_lower.starts_with("cr")
+        || eid_lower.contains("crrobot")
         || eid_lower.contains("creature")
         || eid_lower.contains("unarmed")
         || likely_ranged_creature_weapon_editor_id(eid_lower)
@@ -202,9 +235,30 @@ mod tests {
     use crate::ids::SigCode;
     use crate::record::{FieldEntry, RecordFlags};
 
+    #[test]
+    fn recognizes_prefixed_robot_creature_weapons() {
+        assert!(likely_creature_weapon_editor_id(
+            "hto_crrobot_liberator_lasergun"
+        ));
+    }
+
     fn lvln(local: u32, plugin: &str, interner: &StringInterner) -> Record {
         Record {
             sig: SigCode::from_str("LVLN").unwrap(),
+            form_key: FormKey {
+                local,
+                plugin: interner.intern(plugin),
+            },
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: smallvec::SmallVec::new(),
+            warnings: smallvec::SmallVec::new(),
+        }
+    }
+
+    fn npc(local: u32, plugin: &str, interner: &StringInterner) -> Record {
+        Record {
+            sig: SigCode::from_str("NPC_").unwrap(),
             form_key: FormKey {
                 local,
                 plugin: interner.intern(plugin),
@@ -270,6 +324,93 @@ mod tests {
         assert_eq!(fks[0].local, 0x200001);
         assert_eq!(fks[1].local, 0x200002);
         assert_eq!(fks[0].plugin, rec.form_key.plugin);
+    }
+
+    #[test]
+    fn lvln_entry_form_keys_reads_structured_npc_field() {
+        let interner = StringInterner::new();
+        let mut rec = lvln(0x000900, "Output.esm", &interner);
+        let entry_fk = FormKey {
+            local: 0x200001,
+            plugin: rec.form_key.plugin,
+        };
+        rec.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("LVLO").unwrap(),
+            value: FieldValue::Struct(vec![
+                (interner.intern("level"), FieldValue::Uint(1)),
+                (interner.intern("npc"), FieldValue::FormKey(entry_fk)),
+                (interner.intern("count"), FieldValue::Uint(1)),
+            ]),
+        });
+
+        assert_eq!(lvln_entry_form_keys(&rec, &interner), vec![entry_fk]);
+    }
+
+    #[test]
+    fn structured_lvln_entry_keeps_template_creature_gate_active() {
+        let interner = StringInterner::new();
+        let plugin = "Output.esm";
+        let lvln_fk = FormKey {
+            local: 0x000900,
+            plugin: interner.intern(plugin),
+        };
+        let entry_fk = FormKey {
+            local: 0x200001,
+            plugin: lvln_fk.plugin,
+        };
+        let race_fk = FormKey {
+            local: 0x10CA5F,
+            plugin: lvln_fk.plugin,
+        };
+
+        let mut root = npc(0x31B1FF, plugin, &interner);
+        let mut acbs = [0u8; 20];
+        acbs[14..16].copy_from_slice(&1u16.to_le_bytes());
+        push_bytes(&mut root, "ACBS", &acbs);
+        root.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("TPLT").unwrap(),
+            value: FieldValue::FormKey(lvln_fk),
+        });
+
+        let mut list = lvln(lvln_fk.local, plugin, &interner);
+        list.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("LVLO").unwrap(),
+            value: FieldValue::Struct(vec![
+                (interner.intern("level"), FieldValue::Uint(1)),
+                (interner.intern("npc"), FieldValue::FormKey(entry_fk)),
+                (interner.intern("count"), FieldValue::Uint(1)),
+            ]),
+        });
+
+        let mut entry = npc(entry_fk.local, plugin, &interner);
+        entry.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("RNAM").unwrap(),
+            value: FieldValue::FormKey(race_fk),
+        });
+        let mut race = race_with_editor_id(race_fk.local, plugin, "ScorchedRace", &interner);
+        push_bytes(&mut race, "KWDA", &0x0001_3795u32.to_le_bytes());
+
+        let resolve = |fk: FormKey| {
+            if fk == lvln_fk {
+                Some(list.clone())
+            } else if fk == entry_fk {
+                Some(entry.clone())
+            } else if fk == race_fk {
+                Some(race.clone())
+            } else {
+                None
+            }
+        };
+        let entries = |fk: FormKey| {
+            (fk == lvln_fk)
+                .then(|| lvln_entry_form_keys(&list, &interner))
+                .unwrap_or_default()
+        };
+
+        assert_eq!(
+            npc_is_creature_following_template(&root, &resolve, &entries),
+            CreatureVerdict::Creature
+        );
     }
 
     #[test]

@@ -21,7 +21,7 @@ dependencies = [
     "moderngl>=5.11",          # OpenGL rendering
     "PyGLM>=2.7",              # matrix/vector math
     "watchdog>=4.0",           # texture hot-reload
-    "pywinpty>=2.0",           # AI terminal PTY
+    "pywinpty>=2.0; sys_platform == 'win32'",  # AI terminal PTY
     "pyte>=0.8",               # VT terminal emulator
     "fastmcp>=2.0",            # MCP server framework (SSE transport for UI)
     "uvicorn>=0.34",           # ASGI server for SSE MCP
@@ -60,6 +60,7 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*", "ui*"]
+namespaces = false
 
 [tool.pytest.ini_options]
 pythonpath = [".", "py_creation_lib/python", "bacup/py_bacup_lib/python"]

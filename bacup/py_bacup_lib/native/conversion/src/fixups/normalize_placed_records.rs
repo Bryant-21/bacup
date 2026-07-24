@@ -33,13 +33,16 @@ use smallvec::{SmallVec, smallvec};
 
 use esp_authoring_core::plugin_runtime::{
     ParsedItem, ParsedRecord, WriteEffect, effective_subrecords_for_record,
+    normalize_fo76_refr_lod_header_flags,
 };
 
-use crate::fixups::FixupError;
 use crate::fixups::ref_index::validate_struct_fk_fields;
 use crate::fixups::rewrite_raw_object_template_formids::{
-    rewrite_placed_ref_location_record, target_record_sigs_by_encoded_form_id,
+    encode_target_form_id, rewrite_placed_ref_location_record,
+    target_record_sigs_by_encoded_form_id,
 };
+use crate::fixups::{FixupError, FixupReport};
+use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::SigCode;
 use crate::session::{PluginSession, open_session};
 use crate::sym::StringInterner;
@@ -63,6 +66,108 @@ pub struct PlacedNormalizeReport {
     pub empty_xown_stripped: u32,
     /// FO4 ownership payloads defaulted from owner-only XOWN to owner + No Crime.
     pub xown_no_crime_defaulted: u32,
+}
+
+const RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE: u32 = 0x0000_0100;
+const XALG_LOD_HEADER_MASK: u64 = 0x0000_0208;
+
+pub fn normalize_placed_lod_header_flags(
+    session: &mut PluginSession,
+    mapper: &FormKeyMapper<'_>,
+) -> Result<FixupReport, FixupError> {
+    let mut report = FixupReport::empty();
+    let Some(source_id) = session.source_id() else {
+        return Ok(report);
+    };
+    let refr = SigCode::from_str("REFR").map_err(|e| FixupError::SchemaError(e.to_string()))?;
+
+    let candidates = {
+        use rayon::prelude::*;
+
+        let source_scan = session
+            .handle_raw_scan(source_id)
+            .map_err(|e| FixupError::HandleError(e.to_string()))?;
+        source_scan
+            .raw_form_ids_of_sig(refr)
+            .par_iter()
+            .filter_map(|raw_form_id| {
+                if *raw_form_id == 0 || *raw_form_id >> 24 != 0 {
+                    return None;
+                }
+                source_scan
+                    .with_record(*raw_form_id, |record| {
+                        let xalg_flags = raw_xalg_flags(record);
+                        (record.flags & RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE != 0
+                            || xalg_flags & XALG_LOD_HEADER_MASK != 0)
+                            .then_some((record.form_id & 0x00FF_FFFF, xalg_flags))
+                    })
+                    .flatten()
+            })
+            .collect::<Vec<_>>()
+    };
+    if candidates.is_empty() {
+        return Ok(report);
+    }
+
+    let source_plugin_name = session
+        .source_slot_opt()
+        .map(|slot| slot.parsed.plugin_name.clone())
+        .unwrap_or_default();
+    let source_plugin = mapper.interner.intern(&source_plugin_name);
+    let target_masters = session.target_masters().to_vec();
+    let own_load_index = target_masters.len() as u32;
+    if own_load_index > u8::MAX as u32 {
+        return Ok(report);
+    }
+    let own_prefix = own_load_index << 24;
+    let mapped_targets: FxHashMap<u32, u32> = mapper
+        .source_to_target_iter()
+        .filter(|(source, _)| source.plugin == source_plugin)
+        .filter_map(|(source, target)| {
+            encode_target_form_id(target, mapper.interner, target_masters.as_slice())
+                .map(|raw| (source.local & 0x00FF_FFFF, raw))
+        })
+        .collect();
+
+    let mut touched = SmallVec::<[u32; 4]>::new();
+    for (source_local, xalg_flags) in candidates {
+        let target_raw = match mapped_targets.get(&source_local).copied() {
+            Some(raw) if raw >> 24 == own_load_index => raw,
+            Some(_) => continue,
+            None => own_prefix | source_local,
+        };
+        let Ok(record) = session.record_mut(target_raw) else {
+            continue;
+        };
+        if record.signature.as_str() != "REFR" {
+            continue;
+        }
+        let normalized = normalize_fo76_refr_lod_header_flags(record.flags, xalg_flags);
+        if normalized == record.flags {
+            continue;
+        }
+        record.flags = normalized;
+        record.raw_payload = None;
+        touched.push(target_raw);
+        report.records_changed = report.records_changed.saturating_add(1);
+    }
+
+    if !touched.is_empty() {
+        session.record_effect(WriteEffect::RecordContents { form_ids: touched });
+    }
+    Ok(report)
+}
+
+fn raw_xalg_flags(record: &ParsedRecord) -> u64 {
+    effective_subrecords_for_record(record)
+        .iter()
+        .filter(|subrecord| subrecord.signature.as_str() == "XALG")
+        .fold(0u64, |flags, subrecord| {
+            let mut bytes = [0u8; 8];
+            let len = subrecord.data.len().min(bytes.len());
+            bytes[..len].copy_from_slice(&subrecord.data[..len]);
+            flags | u64::from_le_bytes(bytes)
+        })
 }
 
 /// Normalize every placed-signature record currently in the target plugin
@@ -668,8 +773,14 @@ fn remap_raw_zero_master_ref(
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use esp_authoring_core::plugin_runtime::ParsedSubrecord;
+    use esp_authoring_core::plugin_runtime::{
+        ParsedSubrecord, plugin_handle_close_native, plugin_handle_new_native,
+        plugin_handle_store_ref,
+    };
     use smol_str::SmolStr;
+
+    use crate::formkey_mapper::{MapperOptions, MapperState};
+    use crate::ids::FormKey;
 
     fn subrecord(sig: &str, data: Vec<u8>) -> ParsedSubrecord {
         ParsedSubrecord {
@@ -695,6 +806,81 @@ mod tests {
 
     fn record(subrecords: Vec<ParsedSubrecord>) -> ParsedRecord {
         record_with_sig("REFR", subrecords)
+    }
+
+    #[test]
+    fn post_copy_lod_normalizer_repairs_every_fo76_refr_flag_combination() {
+        let cases = [
+            (0x0010_0000, 0x0000_0500, 0x0000_2000_u64, 0x0000_0400),
+            (0x0010_0001, 0x0000_0100, 0x0000_2001_u64, 0),
+            (0x0010_0002, 0x0000_0100, 0x0000_2200_u64, 0x0000_8100),
+            (0x0010_0003, 0x0001_0100, 0, 0x0001_0100),
+        ];
+        let source = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
+        let target = plugin_handle_new_native("Converted.esm", Some("fo4")).unwrap();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let source_items = cases
+                .iter()
+                .map(|(form_id, flags, xalg_flags, _)| {
+                    let subrecords = (*xalg_flags != 0)
+                        .then(|| subrecord("XALG", xalg_flags.to_le_bytes().to_vec()))
+                        .into_iter()
+                        .collect();
+                    let mut record = record_with_sig("REFR", subrecords);
+                    record.form_id = *form_id;
+                    record.flags = *flags;
+                    ParsedItem::Record(record)
+                })
+                .collect();
+            store.get_mut(&source).unwrap().parsed.root_items = source_items;
+
+            let target_items = cases
+                .iter()
+                .map(|(form_id, flags, _, _)| {
+                    let mut record = record_with_sig("REFR", Vec::new());
+                    record.form_id = *form_id;
+                    record.flags = *flags;
+                    ParsedItem::Record(record)
+                })
+                .collect();
+            store.get_mut(&target).unwrap().parsed.root_items = target_items;
+        }
+
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("SeventySix.esm");
+        let target_plugin = interner.intern("Converted.esm");
+        let mut state = MapperState::new(std::iter::empty(), MapperOptions::default());
+        for (form_id, _, _, _) in cases {
+            state.source_to_target.insert(
+                FormKey {
+                    local: form_id,
+                    plugin: source_plugin,
+                },
+                FormKey {
+                    local: form_id,
+                    plugin: target_plugin,
+                },
+            );
+        }
+        let mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let mut session = open_session(target, Some(source)).unwrap();
+
+        let report = normalize_placed_lod_header_flags(&mut session, &mapper).unwrap();
+
+        assert_eq!(report.records_changed, 3);
+        assert_eq!(
+            normalize_placed_lod_header_flags(&mut session, &mapper)
+                .unwrap()
+                .records_changed,
+            0
+        );
+        for (form_id, _, _, expected) in cases {
+            assert_eq!(session.record_mut(form_id).unwrap().flags, expected);
+        }
+        drop(session);
+        assert!(plugin_handle_close_native(source));
+        assert!(plugin_handle_close_native(target));
     }
 
     #[test]

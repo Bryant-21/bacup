@@ -31,3 +31,16 @@ State open
         EndIf
     EndEvent
 EndState
+
+Auto State Initial
+    Event OnInit()
+        ObjectReference linkedAudio = GetLinkedRef()
+        If linkedAudio != None
+            If IsOpen
+                linkedAudio.Enable(False)
+            Else
+                linkedAudio.Disable(False)
+            EndIf
+        EndIf
+    EndEvent
+EndState

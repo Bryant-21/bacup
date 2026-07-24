@@ -7,9 +7,12 @@ use std::fs;
 use std::path::Path;
 
 use materials_native::texture_convert::{
-    TextureConversionParamsPayload, TexturePathInput, TexturePathOutput, TextureSetPathRequest,
-    TextureSetPathResult, convert_texture_set_paths, f32_vec_to_bytes, fo76_bundle_to_fo4_buffers,
-    fo76_reflectivity_lighting_to_fo4_specgloss_buffers, output_format_for_path,
+    GamebryoSpecParams, TextureConversionParams, TextureConversionParamsPayload, TexturePathInput,
+    TexturePathOutput, TextureSetPathRequest, TextureSetPathResult, convert_texture_set_paths,
+    f32_vec_to_bytes, fo76_bundle_to_fo4_buffers,
+    fo76_reflectivity_lighting_to_fo4_specgloss_buffers,
+    gamebryo_normal_envmask_to_fo4_specgloss_buffers, is_named_glow_lighting_path,
+    output_format_for_path,
 };
 
 use super::gpu_service::GpuService;
@@ -232,6 +235,8 @@ pub(crate) fn execute_bundle(
     let d = directxtex_native::read_dds_float_rgba_image(&diffuse.path)?;
     let r = directxtex_native::read_dds_float_rgba_image(&reflectivity.path)?;
     let l = directxtex_native::read_dds_float_rgba_image(&lighting.path)?;
+    let mut params: TextureConversionParams = conv_params.into();
+    params.preserve_lighting_rgb_for_glow = is_named_glow_lighting_path(&lighting.path);
     let mut outputs = fo76_bundle_to_fo4_buffers(
         &f32_vec_to_bytes(&d.rgba),
         &f32_vec_to_bytes(&r.rgba),
@@ -242,7 +247,7 @@ pub(crate) fn execute_bundle(
         r.height as usize,
         l.width as usize,
         l.height as usize,
-        conv_params.into(),
+        params,
         out_glow.is_some(),
     )
     .map_err(|e| e.to_string())?;
@@ -343,6 +348,116 @@ pub(crate) fn execute_specgloss(
         sink.map(|s| (out_specular, s)),
         false,
     )
+}
+
+/// FO4's normal format, independent of what the source used.
+///
+/// `output_format_for_path` maps a normal's output format from its source
+/// format, which is right for FO76 (already BC5) but wrong for Gamebryo: a
+/// DXT5 source maps to BC7, giving a four-channel normal FO4 never ships.
+/// Measured across 4000 vanilla FO4 `_n.dds`: 85.8% BC5U, and BC5U is the
+/// convention in every content directory including `terrain` and `lod`.
+fn fo4_normal_format(request_fallback: &str) -> String {
+    if request_fallback.is_empty() {
+        "BC5_UNORM".to_owned()
+    } else {
+        request_fallback.to_owned()
+    }
+}
+
+/// FNV/FO3/Skyrim normal (+ optional env mask) → FO4 normal + spec/gloss.
+/// Outputs are produced at the normal's dimensions; the mask is resized to match.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_legacy_specgloss(
+    normal: &TexturePathInput,
+    envmask: Option<&TexturePathInput>,
+    out_normal: Option<&TexturePathOutput>,
+    out_specular: &TexturePathOutput,
+    gloss_baseline: f32,
+    gpu: &GpuService,
+    use_gpu: bool,
+    gpu_min_pixels: u32,
+    sink: Option<&TextureOutputSink<'_>>,
+) -> Result<u32, String> {
+    let n = directxtex_native::read_dds_float_rgba_image(&normal.path)?;
+    let mask = match envmask {
+        Some(input) => Some(directxtex_native::read_dds_float_rgba_image(&input.path)?),
+        None => None,
+    };
+
+    let mask_bytes = mask.as_ref().map(|image| f32_vec_to_bytes(&image.rgba));
+    let params = GamebryoSpecParams {
+        gloss_baseline,
+        ..GamebryoSpecParams::default()
+    };
+    let outputs = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
+        &f32_vec_to_bytes(&n.rgba),
+        mask_bytes.as_deref(),
+        n.width as usize,
+        n.height as usize,
+        mask.as_ref().map_or(0, |image| image.width as usize),
+        mask.as_ref().map_or(0, |image| image.height as usize),
+        params,
+    )
+    .map_err(|error| error.to_string())?;
+
+    let mut written = 0u32;
+    if let Some(out) = out_normal {
+        let format = fo4_normal_format(&out.format);
+        write_f32_as_dds_with_mips(
+            &outputs.normal,
+            n.width,
+            n.height,
+            &format,
+            &out.path,
+            gpu,
+            gpu_min_pixels,
+            use_gpu,
+            sink.map(|s| (out, s)),
+            false,
+        )?;
+        written += 1;
+    }
+
+    let format = output_format_for_path(
+        &out_specular.role,
+        n.dxgi_format,
+        &out_specular.format,
+        &out_specular.path,
+    );
+    write_f32_as_dds_with_mips(
+        &outputs.specgloss,
+        n.width,
+        n.height,
+        &format,
+        &out_specular.path,
+        gpu,
+        gpu_min_pixels,
+        use_gpu,
+        sink.map(|s| (out_specular, s)),
+        false,
+    )?;
+    written += 1;
+
+    Ok(written)
+}
+
+/// Normalize a source environment map into an FO4 cubemap.
+///
+/// Returns `false` without writing when the source is a flat 2D image — the
+/// caller substitutes a vanilla FO4 cubemap in that case.
+pub(crate) fn execute_cubemap_normalize(
+    input: &TexturePathInput,
+    output: &TexturePathOutput,
+    sink: Option<&TextureOutputSink<'_>>,
+) -> Result<bool, String> {
+    let source =
+        fs::read(&input.path).map_err(|e| format!("read {}: {e}", input.path.display()))?;
+    let Some(bytes) = super::cubemaps::normalize_cubemap_bytes(&source)? else {
+        return Ok(false);
+    };
+    write_output_bytes(output, &bytes, sink)?;
+    Ok(true)
 }
 
 /// Residue: the unmodified legacy converter on a one-pair sub-request.
@@ -564,6 +679,28 @@ pub(crate) fn execute_task_with_landscape_mip_flooding(
             sink,
         )
         .map(|()| (1, 0, false, 0)),
+        TextureTask::LegacySpecGloss {
+            normal,
+            envmask,
+            out_normal,
+            out_specular,
+            gloss_baseline,
+        } => execute_legacy_specgloss(
+            normal,
+            envmask.as_ref(),
+            out_normal.as_ref(),
+            out_specular,
+            *gloss_baseline,
+            gpu,
+            use_gpu,
+            gpu_min_pixels,
+            sink,
+        )
+        .map(|written| (written, 0, false, 0)),
+        TextureTask::CubemapNormalize { input, output } => {
+            execute_cubemap_normalize(input, output, sink)
+                .map(|written| (u32::from(written), 0, false, 0))
+        }
     }
 }
 
@@ -600,6 +737,58 @@ mod tests {
             .collect();
         directxtex_native::write_dds_rgba_image(&dir.join(name), w, h, &rgba, format, mips)
             .unwrap();
+    }
+
+    #[test]
+    fn legacy_specgloss_writes_a_two_channel_bc5_normal_from_a_dxt5_source() {
+        // Skyrim ships 100% DXT5 normals and FNV 82%; mapping the output format
+        // from the source would land on BC7 and keep the source's blue channel,
+        // which is what makes a converted normal read blue instead of yellow.
+        let tmp = std::env::temp_dir().join("exec_legacy_specgloss_normal_bc5");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_tex(&tmp, "crate01_n.dds", 16, 16, "BC3_UNORM", true);
+
+        let normal = TexturePathInput {
+            role: "normal".to_string(),
+            path: tmp.join("crate01_n.dds"),
+        };
+        let out_normal = TexturePathOutput {
+            role: "normal".to_string(),
+            path: tmp.join("out").join("crate01_n.dds"),
+            format: "BC5_UNORM".to_string(),
+        };
+        let out_specular = TexturePathOutput {
+            role: "specular".to_string(),
+            path: tmp.join("out").join("crate01_s.dds"),
+            format: "BC5_UNORM".to_string(),
+        };
+
+        let gpu = GpuService::start_cpu_only();
+        execute_legacy_specgloss(
+            &normal,
+            None,
+            Some(&out_normal),
+            &out_specular,
+            0.8,
+            &gpu,
+            false,
+            u32::MAX,
+            None,
+        )
+        .unwrap();
+
+        let probe = directxtex_native::read_dds_probe(&out_normal.path).unwrap();
+        assert_eq!(probe.dxgi_format, 83, "FO4 normals are BC5_UNORM");
+
+        let decoded = directxtex_native::read_dds_float_rgba_image(&out_normal.path).unwrap();
+        let max_blue = decoded
+            .rgba
+            .chunks_exact(4)
+            .map(|texel| texel[2])
+            .fold(0.0f32, f32::max);
+        assert_eq!(max_blue, 0.0, "BC5 leaves no blue for FO4 to misread");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

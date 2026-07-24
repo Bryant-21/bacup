@@ -381,6 +381,40 @@ fn projected_navmesh_offset_from_value(config: &Value) -> [f32; 3] {
     ]
 }
 
+fn legacy_pack_origins_from_value(
+    config: &Value,
+) -> PyResult<Vec<crate::legacy_pack_preflight::LegacyPackOriginRow>> {
+    config
+        .get("legacy_pack_origins")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .cloned()
+        .map(|value| {
+            serde_json::from_value(value).map_err(|error| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid legacy_pack_origins row: {error}"
+                ))
+            })
+        })
+        .collect()
+}
+
+fn legacy_pack_counts_from_value(
+    config: &Value,
+    key: &str,
+) -> PyResult<Option<crate::legacy_pack_preflight::LegacyPackExpectedCounts>> {
+    let Some(value) = config.get(key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    serde_json::from_value(value.clone())
+        .map(Some)
+        .map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("invalid {key}: {error}")))
+}
+
 fn config_from_json(config_json: &str) -> PyResult<RunConfig> {
     let config = config_object_from_json(config_json)?;
     let strict_mapper = bool_from_value(&config, "strict_mapper", false);
@@ -433,6 +467,20 @@ fn config_from_json(config_json: &str) -> PyResult<RunConfig> {
         defer_placed_child_ref_class: bool_from_value(
             &config,
             "defer_placed_child_ref_class",
+            false,
+        ),
+        legacy_pack_origins: legacy_pack_origins_from_value(&config)?,
+        legacy_pack_raw_source_counts: legacy_pack_counts_from_value(
+            &config,
+            "legacy_pack_raw_source_counts",
+        )?,
+        legacy_pack_expected_counts: legacy_pack_counts_from_value(
+            &config,
+            "legacy_pack_expected_counts",
+        )?,
+        legacy_pack_provenance_required: bool_from_value(
+            &config,
+            "legacy_pack_provenance_required",
             false,
         ),
     })
@@ -1129,6 +1177,16 @@ pub fn translate_all_py<'py>(
         })?;
 
         translate_stats_to_pyraw(py, &stats)
+    })
+}
+
+#[pyfunction(name = "conversion_run_preflight_legacy_packs")]
+pub fn preflight_legacy_packs_py(py: Python<'_>, run_id: u64) -> PyResult<()> {
+    run_with_panic_catch("conversion_run_preflight_legacy_packs", || {
+        py.detach(move || {
+            with_run(run_id, |run| run.preflight_legacy_packs_from_handle())
+                .map_err(run_error_to_py)
+        })
     })
 }
 
@@ -2246,6 +2304,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(diagnose_navmesh_links_py, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::filesystem::remove_path_py, m)?)?;
     m.add_function(wrap_pyfunction!(merge_sources_py, m)?)?;
     m.add_function(wrap_pyfunction!(collect_lod_closures_py, m)?)?;
     m.add_function(wrap_pyfunction!(create_run_from_paths_py, m)?)?;
@@ -2263,6 +2322,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(drain_warnings_py, m)?)?;
     m.add_function(wrap_pyfunction!(release_remap_state_py, m)?)?;
     m.add_function(wrap_pyfunction!(set_progress_callback_py, m)?)?;
+    m.add_function(wrap_pyfunction!(preflight_legacy_packs_py, m)?)?;
     m.add_function(wrap_pyfunction!(translate_all_py, m)?)?;
     m.add_function(wrap_pyfunction!(translate_records_py, m)?)?;
     m.add_function(wrap_pyfunction!(weapon_metadata_py, m)?)?;
@@ -2597,6 +2657,15 @@ mod tests {
                 "target_data_dir": "N:/Steam Games/steamapps/common/Fallout 4/Data",
                 "target_record_preflight": [["Ammo10mm", "AMMO", "01F276:Fallout4.esm"]],
                 "target_master_names": ["Fallout4.esm"],
+                "legacy_pack_origins": [{
+                    "merged_form_key": "000900@FNV_FO3_Merged.esm",
+                    "source_game": "fo3",
+                    "source_plugin": "Fallout3.esm",
+                    "source_form_key": "00000900@Fallout3.esm"
+                }],
+                "legacy_pack_raw_source_counts": {"fnv": 2, "fo3": 3},
+                "legacy_pack_expected_counts": {"fnv": 1, "fo3": 1},
+                "legacy_pack_provenance_required": true,
                 "conversion_workers": 7,
                 "records_limit": 123,
                 "asset_phases": {
@@ -2621,6 +2690,17 @@ mod tests {
         assert_eq!(cfg.target_record_preflight.len(), 1);
         assert_eq!(cfg.target_record_preflight[0].editor_id, "Ammo10mm");
         assert_eq!(cfg.target_master_names, vec!["Fallout4.esm".to_string()]);
+        assert_eq!(cfg.legacy_pack_origins.len(), 1);
+        assert_eq!(cfg.legacy_pack_origins[0].source_game, "fo3");
+        assert_eq!(
+            cfg.legacy_pack_raw_source_counts,
+            Some(crate::legacy_pack_preflight::LegacyPackExpectedCounts { fnv: 2, fo3: 3 })
+        );
+        assert_eq!(
+            cfg.legacy_pack_expected_counts,
+            Some(crate::legacy_pack_preflight::LegacyPackExpectedCounts { fnv: 1, fo3: 1 })
+        );
+        assert!(cfg.legacy_pack_provenance_required);
         assert!(cfg.mod_path.is_some());
         assert!(cfg.source_extracted_dir.is_some());
         assert!(cfg.target_extracted_dir.is_some());
@@ -2647,6 +2727,18 @@ mod tests {
             cfg.target_record_preflight[0].form_key,
             "01F276:Fallout4.esm"
         );
+    }
+
+    #[test]
+    fn config_from_json_accepts_absent_and_null_legacy_pack_counts() {
+        for config in [
+            "{}",
+            r#"{"legacy_pack_raw_source_counts": null, "legacy_pack_expected_counts": null}"#,
+        ] {
+            let cfg = config_from_json(config).unwrap();
+            assert_eq!(cfg.legacy_pack_raw_source_counts, None);
+            assert_eq!(cfg.legacy_pack_expected_counts, None);
+        }
     }
 
     #[test]

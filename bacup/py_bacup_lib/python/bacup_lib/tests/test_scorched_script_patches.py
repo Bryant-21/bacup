@@ -97,6 +97,35 @@ def test_scorched_statue_patches_restore_proxy_and_skin_lifecycle():
     assert "akTarget.RemoveItem(SkinScorchedStatue" in variant
 
 
+def test_scorched_statue_break_crosses_the_initial_cap_damage_stage():
+    patch = _script_patch_source("ScorchedStatueScript")
+
+    assert patch is not None
+    break_start = patch.index("Function BreakStatue()")
+    break_end = patch.index("EndFunction", break_start)
+    break_member = patch[break_start:break_end]
+    assert break_member.count("DamageObject(1000000.0)") == 2
+    assert "If GetCurrentDestructionStage() < 1" in break_member
+
+    merged = _merged_old_source(
+        "ScorchedStatueScript", PATCH_CASES["ScorchedStatueScript"]
+    )
+    assert merged.count("Function BreakStatue()") == 1
+    assert merged.count("If GetCurrentDestructionStage() < 1") == 1
+
+
+def test_scorched_statue_uses_fo4_registered_hit_event_contract():
+    patch = _script_patch_source("ScorchedStatueScript")
+
+    assert patch is not None
+    assert "RegisterForHitEvent(Self)" in patch
+    assert "UnRegisterForHitEvent(Self)" in patch
+    assert (
+        "Event OnHit(ObjectReference akTarget, ObjectReference akAggressor"
+        in patch
+    )
+
+
 def test_unportable_scorched_effects_remain_explicit_review_items():
     assert _script_patch_source("Creatures:ScorchedRaceScript") is None
     assert _script_patch_source("Creatures:Festive_LegendaryScorched") is None

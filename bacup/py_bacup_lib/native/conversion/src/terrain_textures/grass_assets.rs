@@ -716,8 +716,7 @@ mod tests {
             entry.assets.push(GrassAsset {
                 asset_type: "nif".to_owned(),
                 source_path: "meshes/landscape/grass/foo.nif".to_owned(),
-                resolved_path: "X:/extracted/fo76/meshes/landscape/grass/foo.nif"
-                    .to_owned(),
+                resolved_path: "X:/extracted/fo76/meshes/landscape/grass/foo.nif".to_owned(),
             });
         });
 

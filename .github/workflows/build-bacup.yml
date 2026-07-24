@@ -8,6 +8,7 @@ jobs:
   test:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: windows-latest
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,7 +25,8 @@ jobs:
             py_creation_lib -> py_creation_lib/target
             bacup/py_bacup_lib -> bacup/py_bacup_lib/target
       - run: uv sync
-      - run: uv run pytest
+      # known deadlock under investigation; runs in the private repo only
+      - run: uv run pytest --deselect app/tests/test_esp_roundtrip_parity.py
   gate:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest

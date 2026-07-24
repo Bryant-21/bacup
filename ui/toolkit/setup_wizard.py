@@ -1100,7 +1100,7 @@ class SetupWizard:
             game=game,
             data_dir=data_dir,
             strings_dir=strings_dir,
-            cache_dir=get_app_root() / "data" / "cache",
+            db_dir=get_db_dir(),
         )
         return bool(cache_path and cache_path.is_file())
 

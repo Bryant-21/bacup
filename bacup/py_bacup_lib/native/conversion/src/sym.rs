@@ -4,6 +4,7 @@
 //! used across worker threads without external synchronization.
 
 use lasso::{Spur, ThreadedRodeo};
+use std::sync::Mutex;
 
 /// Interned-string handle. `Copy + Eq + Hash`. Scoped to one `RunHandle`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -12,22 +13,34 @@ pub struct Sym(pub(crate) Spur);
 /// Per-run string interner. `Sync` — can be shared across threads.
 pub struct StringInterner {
     rodeo: ThreadedRodeo,
+    // Prevent concurrent misses from racing Lasso's exponentially growing arena buckets.
+    insert_lock: Mutex<()>,
 }
 
 impl StringInterner {
     pub fn new() -> Self {
         Self {
             rodeo: ThreadedRodeo::default(),
+            insert_lock: Mutex::new(()),
         }
     }
 
     pub fn intern(&self, s: &str) -> Sym {
+        if let Some(sym) = self.rodeo.get(s) {
+            return Sym(sym);
+        }
+
+        let _guard = self
+            .insert_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match self.rodeo.try_get_or_intern(s) {
             Ok(sym) => Sym(sym),
             Err(err) => panic!(
-                "string interner allocation failed: bytes={}, interned_strings={}, error={err:?}",
+                "string interner allocation failed: bytes={}, interned_strings={}, allocated_bytes={}, error={err:?}",
                 s.len(),
-                self.rodeo.len()
+                self.rodeo.len(),
+                self.rodeo.current_memory_usage()
             ),
         }
     }
@@ -154,5 +167,36 @@ mod tests {
             handle.join().unwrap();
         }
         assert_eq!(interner.len(), 8 * 1000);
+    }
+
+    #[test]
+    fn concurrent_inserts_share_one_arena_growth_bucket() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const THREADS: usize = 32;
+
+        let interner = Arc::new(StringInterner::new());
+        interner.intern(&"x".repeat(4080));
+        assert_eq!(interner.rodeo.current_memory_usage(), 4096);
+
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|i| {
+                let interner = Arc::clone(&interner);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    interner.intern(&format!("{i:032}"));
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(interner.len(), THREADS + 1);
+        assert_eq!(interner.rodeo.current_memory_usage(), 4096 + 8192);
     }
 }

@@ -405,6 +405,31 @@ def test_runner_progress_infers_previous_phase_slots_for_active_phase():
     assert message == "Build ESP"
 
 
+def test_runner_progress_uses_specific_post_phase_status():
+    fraction, message = RegenPanel._runner_progress(
+        [
+            {
+                "ui_key": "pack",
+                "phase_name": "Pack BA2",
+                "status": "completed",
+            }
+        ],
+        [("pack", "Pack BA2"), ("deploy", "Deploy Mod")],
+        "Sanitizing generated plugin files",
+    )
+
+    assert fraction == 0.5
+    assert message == "Sanitizing generated plugin files"
+
+
+def test_handle_event_updates_specific_runner_status():
+    panel, _ = _panel()
+
+    panel.handle_event({"type": "status", "message": "Writing conversion reports"})
+
+    assert panel._runner_status == "Writing conversion reports"
+
+
 def test_handle_event_maps_native_asset_stage_to_visible_phase():
     panel, _ = _panel()
 
@@ -535,6 +560,51 @@ def test_modt_phase_is_visible_between_build_and_animtext():
     ) < rows.index(("generate_anim_text_data", "Generate AnimTextData"))
 
 
+def test_generate_precombines_phase_tracked_by_generic_row_appending():
+    # The experimental phase is intentionally NOT a static _PHASE_ROWS entry (that
+    # would drag it into the recovery menu). The panel's generic phase tracking
+    # must surface it dynamically once its events arrive.
+    panel, _ = _panel()
+
+    panel.handle_event(
+        {
+            "type": "phase_start",
+            "data": {
+                "phase": 0,
+                "phase_name": "Generate precombines",
+                "status": "running",
+                "current_item": "Baking precombines",
+            },
+        }
+    )
+
+    assert panel._phases[0]["ui_key"] == "generate_precombines"
+    rows = panel._phase_rows(panel._phases)
+    assert ("generate_precombines", "Generate precombines") in rows
+
+
+def test_cell_offsets_phase_is_visible_between_modt_and_animtext():
+    panel, _ = _panel()
+
+    panel.handle_event(
+        {
+            "type": "phase_start",
+            "data": {
+                "phase": 0,
+                "phase_name": "Rebuild Cell Offsets",
+                "status": "running",
+                "current_item": "Rebuilding WRLD cell offset tables",
+            },
+        }
+    )
+
+    assert panel._phases[0]["ui_key"] == "rebuild_cell_offsets"
+    rows = panel._phase_rows(panel._phases)
+    assert rows.index(("regenerate_modt", "Regenerate MODT")) < rows.index(
+        ("rebuild_cell_offsets", "Rebuild Cell Offsets")
+    ) < rows.index(("generate_anim_text_data", "Generate AnimTextData"))
+
+
 def test_draw_status_column_shows_non_modal_runner_status(monkeypatch):
     panel, ws = _panel()
     ws._runner = SimpleNamespace(done=False, cancel=lambda: None)
@@ -597,13 +667,16 @@ def test_draw_status_column_shows_non_modal_runner_status(monkeypatch):
         "bacup_ui.conversion.panels.regen_panel.imgui.get_style",
         lambda: SimpleNamespace(item_spacing=SimpleNamespace(y=4.0)),
     )
+    monkeypatch.setattr(
+        "bacup_ui.conversion.panels.regen_panel.imgui.get_time", lambda: 0.0
+    )
 
     panel._draw_status_column()
 
     assert captured == {
         "status": [
-            "Converting Tales From Appalachia — 14%",
-            "Convert Terrain: tile.bto",
+            "Converting Tales From Appalachia — 13%",
+            "|  Convert Terrain: tile.bto",
         ],
         "phase_progress": 1,
         "overlay": 0,
@@ -660,6 +733,90 @@ def test_draw_settings_column_balances_disabled_stack_when_convert_starts(monkey
     panel._draw_settings_column()
 
     assert disabled_depth == 0
+
+
+def test_maintenance_controls_remain_available_while_cleanup_is_measuring(monkeypatch):
+    from imgui_bundle import imgui
+
+    panel, _ws = _panel()
+    panel.fixed_pair_id = "fo76:fo4"
+    panel._cleanup_status = "scanning"
+    panel._is_admin = False
+    panel.disk_usage_summary = lambda: {
+        "extracted": 0,
+        "mod_output": 0,
+        "mod_ba2": 0,
+        "deployed_ba2": 0,
+    }
+    panel.disk_usage_loading = lambda: True
+    panel._disk_space_projection = lambda **_kwargs: None
+    panel._detect_ba2_target = lambda: ("og", "1.10.163")
+    panel.resolve_ba2_target = lambda: "og"
+    panel._deployed_esm_exists = lambda: False
+    panel._load_upgrade_manifest_cached = lambda: None
+    panel.can_convert = lambda: False
+    panel.can_deploy_existing = lambda: False
+    panel.generated_plugin_path = lambda: Path("Z:/missing/SeventySix.esm")
+
+    disabled_depth = 0
+    button_depths = {}
+    invoked = []
+
+    def begin_disabled():
+        nonlocal disabled_depth
+        disabled_depth += 1
+
+    def end_disabled():
+        nonlocal disabled_depth
+        disabled_depth -= 1
+
+    def button(label, *_args):
+        name = label.split("##", 1)[0]
+        button_depths[name] = disabled_depth
+        return disabled_depth == 0 and name in {
+            "Restart as administrator",
+            "Check / repair INI",
+            "Free up space...",
+        }
+
+    monkeypatch.setattr(imgui, "begin_disabled", begin_disabled)
+    monkeypatch.setattr(imgui, "end_disabled", end_disabled)
+    monkeypatch.setattr(imgui, "button", button)
+    monkeypatch.setattr(imgui, "combo", lambda _label, index, _items: (False, index))
+    monkeypatch.setattr(imgui, "checkbox", lambda _label, value: (False, value))
+    monkeypatch.setattr(
+        imgui,
+        "slider_int",
+        lambda _label, value, _minimum, _maximum: (False, value),
+    )
+    monkeypatch.setattr(
+        imgui,
+        "collapsing_header",
+        lambda label, *_args: label.startswith("Install Info"),
+    )
+    monkeypatch.setattr(panel, "_restart_elevated", lambda: invoked.append("restart"))
+    monkeypatch.setattr(panel, "_run_install_audit", lambda: invoked.append("repair"))
+    monkeypatch.setattr(panel, "_open_cleanup_dialog", lambda: invoked.append("cleanup"))
+
+    context = imgui.create_context()
+    try:
+        io = imgui.get_io()
+        io.display_size = (1100, 900)
+        io.delta_time = 1 / 60
+        io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
+        imgui.new_frame()
+        imgui.begin("maintenance controls")
+        panel._draw_settings_column()
+        imgui.end()
+        imgui.render()
+    finally:
+        imgui.destroy_context(context)
+
+    assert disabled_depth == 0
+    assert button_depths["Restart as administrator"] == 0
+    assert button_depths["Check / repair INI"] == 0
+    assert button_depths["Free up space..."] == 1
+    assert invoked == ["restart", "repair"]
 
 
 def test_cancel_button_replaces_deploy_next_to_convert_while_running(monkeypatch):

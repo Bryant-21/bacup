@@ -11,8 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
-use havok_native::hkx::types::HkxValue;
 use havok_native::hkx::read_packfile;
+use havok_native::hkx::types::HkxValue;
 
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -56,7 +56,9 @@ impl Fixup for NormalizeSpacedAssetNamesFixup {
     }
 }
 
-pub fn normalize_spaced_asset_names_in_mod_path(mod_path: &Path) -> Result<FixupReport, FixupError> {
+pub fn normalize_spaced_asset_names_in_mod_path(
+    mod_path: &Path,
+) -> Result<FixupReport, FixupError> {
     let mut changed = 0u32;
     for meshes_root in mesh_roots_for_mod_path(mod_path) {
         changed += rename_spaced_files(&meshes_root);
@@ -292,7 +294,10 @@ mod tests {
             normalized_reference(r"Characters\FloaterCharacter .hkx").as_deref(),
             Some(r"Characters\FloaterCharacter.hkx")
         );
-        assert_eq!(normalized_reference(r"Characters\FloaterCharacter.hkx"), None);
+        assert_eq!(
+            normalized_reference(r"Characters\FloaterCharacter.hkx"),
+            None
+        );
         assert_eq!(
             normalized_reference("FloaterCharacter .hkx").as_deref(),
             Some("FloaterCharacter.hkx")
@@ -319,8 +324,8 @@ mod tests {
     /// internal hkbCharacterData `name` ("FloaterCharacter ").
     #[test]
     fn strips_internal_character_name_when_renaming() {
-        let data = include_bytes!("../../test_fixtures/havok_postprocess/floatercharacter.hkx")
-            .to_vec();
+        let data =
+            include_bytes!("../../test_fixtures/havok_postprocess/floatercharacter.hkx").to_vec();
         let tmp = tempfile::tempdir().unwrap();
         let chars = tmp.path().join("data/Meshes/Actors/Floater/Characters");
         std::fs::create_dir_all(&chars).unwrap();
@@ -353,7 +358,8 @@ mod tests {
     /// come out de-spaced.
     #[test]
     fn patches_real_floater_project_reference() {
-        let data = include_bytes!("../../test_fixtures/havok_postprocess/floaterproject.hkx").to_vec();
+        let data =
+            include_bytes!("../../test_fixtures/havok_postprocess/floaterproject.hkx").to_vec();
         let tmp = tempfile::tempdir().unwrap();
         let actor = tmp.path().join("data/Meshes/Actors/Floater");
         std::fs::create_dir_all(&actor).unwrap();
@@ -369,9 +375,14 @@ mod tests {
             collect_strings(&obj.members, &mut strings);
         }
         assert!(
-            strings.iter().any(|s| s.eq_ignore_ascii_case(r"Characters\FloaterCharacter.hkx")),
+            strings
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(r"Characters\FloaterCharacter.hkx")),
             "expected de-spaced character reference, got: {:?}",
-            strings.iter().filter(|s| s.to_ascii_lowercase().contains("character")).collect::<Vec<_>>()
+            strings
+                .iter()
+                .filter(|s| s.to_ascii_lowercase().contains("character"))
+                .collect::<Vec<_>>()
         );
         assert!(
             !strings.iter().any(|s| s.contains(" .hkx")),

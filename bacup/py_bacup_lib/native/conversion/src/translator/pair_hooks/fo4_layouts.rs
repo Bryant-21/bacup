@@ -437,7 +437,7 @@ fn push_zero_field(record: &mut Record, sig: [u8; 4], len: usize) {
 const FO4_WTHR_NAM0_SIZE: usize = 608;
 const DEFAULT_CLOUD_ROWS: usize = 32;
 
-fn rebuild_wthr_nam0(value: &mut FieldValue, family: SourceFamily) {
+fn rebuild_legacy_wthr_nam0(value: &mut FieldValue) {
     let Some(source) = raw(value) else {
         *value = raw_value(vec![0_u8; FO4_WTHR_NAM0_SIZE]);
         return;
@@ -445,19 +445,11 @@ fn rebuild_wthr_nam0(value: &mut FieldValue, family: SourceFamily) {
     if source.len() == FO4_WTHR_NAM0_SIZE {
         return;
     }
-    let valid_len = match family {
-        SourceFamily::LegacyFallout => source.len() == 160,
-        SourceFamily::SkyrimSe => source.len() == 272,
-    };
-    if !valid_len {
+    if source.len() != 160 {
         *value = raw_value(vec![0_u8; FO4_WTHR_NAM0_SIZE]);
         return;
     }
 
-    // Both source families store four proven shared time colors in each
-    // sixteen-byte semantic row. FO4 doubles each row to eight time colors;
-    // early/late target-only slots default to zero. FO4 adds two high-fog rows
-    // after Skyrim's seventeen rows, which likewise default to zero.
     let mut target = vec![0_u8; FO4_WTHR_NAM0_SIZE];
     for (source_row, target_row) in source.chunks_exact(16).zip(target.chunks_exact_mut(32)) {
         target_row[..16].copy_from_slice(source_row);
@@ -536,10 +528,9 @@ fn wthr_target_order(sig: [u8; 4]) -> usize {
     }
 }
 
-/// Rebuild WTHR's expanded FO4 time-of-day layouts. Source-only DNAM is
-/// removed. Missing required target fields are synthesized with explicit zero
-/// defaults; source semantics are only retained in the shared prefix.
-pub(crate) fn normalize_wthr(record: &mut Record, family: SourceFamily, interner: &StringInterner) {
+/// Rebuild legacy Fallout WTHR layouts for Fallout 4. Source-only DNAM is
+/// removed and target-only fields use the historical zero-tail defaults.
+pub(crate) fn normalize_legacy_wthr(record: &mut Record, interner: &StringInterner) {
     if record.sig.0 != *b"WTHR" {
         return;
     }
@@ -607,7 +598,7 @@ pub(crate) fn normalize_wthr(record: &mut Record, family: SourceFamily, interner
                     pnam_rows = structured_rows(&entry.value).unwrap_or(1).max(1);
                 }
             }
-            sig if sig == *b"NAM0" => rebuild_wthr_nam0(&mut entry.value, family),
+            sig if sig == *b"NAM0" => rebuild_legacy_wthr_nam0(&mut entry.value),
             sig if sig == *b"NAM4" => {
                 if let FieldValue::Bytes(bytes) = &entry.value
                     && (bytes.is_empty() || bytes.len() % 4 != 0)
@@ -635,31 +626,6 @@ pub(crate) fn normalize_wthr(record: &mut Record, family: SourceFamily, interner
             }
             sig if sig == *b"FNAM" => match &mut entry.value {
                 FieldValue::Bytes(bytes) if bytes.len() == 72 => {}
-                FieldValue::Bytes(bytes)
-                    if family == SourceFamily::SkyrimSe && bytes.len() == 32 =>
-                {
-                    let mut target = vec![0_u8; 72];
-                    target[..32].copy_from_slice(bytes);
-                    entry.value = raw_value(target);
-                }
-                FieldValue::Struct(_) if family == SourceFamily::SkyrimSe => {
-                    append_float_defaults(
-                        &mut entry.value,
-                        &[
-                            "day_near_height_mid",
-                            "day_near_height_range",
-                            "night_near_height_mid",
-                            "night_near_height_range",
-                            "day_high_density_scale",
-                            "night_high_density_scale",
-                            "day_far_height_mid",
-                            "day_far_height_range",
-                            "night_far_height_mid",
-                            "night_far_height_range",
-                        ],
-                        interner,
-                    );
-                }
                 _ => entry.value = raw_value(vec![0_u8; 72]),
             },
             sig if sig == *b"IMSP" => {
@@ -1067,7 +1033,7 @@ mod tests {
     }
 
     fn assert_legacy_wthr_rebuild(mut wthr: Record, interner: &StringInterner) {
-        normalize_wthr(&mut wthr, SourceFamily::LegacyFallout, interner);
+        normalize_legacy_wthr(&mut wthr, interner);
         assert_wthr_contract(&wthr, 2);
         assert_eq!(
             &bytes(&wthr, b"PNAM")[..16],
@@ -1092,74 +1058,6 @@ mod tests {
     fn wthr_fo3_rebuilds_complete_fo4_required_contract() {
         let interner = StringInterner::new();
         assert_legacy_wthr_rebuild(legacy_wthr_fixture(&interner), &interner);
-    }
-
-    #[test]
-    fn wthr_skyrim_maps_all_source_layouts_and_fills_late_times() {
-        let interner = StringInterner::new();
-        let mut wthr = record("WTHR", &interner);
-        push(&mut wthr, *b"DATA", vec![0x10; 19]);
-        push(&mut wthr, *b"PNAM", vec![0x20; 16]);
-        push(&mut wthr, *b"JNAM", vec![0x30; 16]);
-        let mut nam0 = vec![0_u8; 272];
-        nam0[..16].copy_from_slice(&[0x35; 16]);
-        push(&mut wthr, *b"NAM0", nam0);
-        push(&mut wthr, *b"FNAM", vec![0x40; 32]);
-        push(&mut wthr, *b"IMSP", vec![0x50; 16]);
-        for _ in 0..4 {
-            push(&mut wthr, *b"DALC", vec![0x60; 24]);
-        }
-
-        normalize_wthr(&mut wthr, SourceFamily::SkyrimSe, &interner);
-
-        assert_wthr_contract(&wthr, 1);
-        for (sig, source_len, target_len, fill) in [
-            (*b"DATA", 19, 20, 0x10),
-            (*b"PNAM", 16, 32, 0x20),
-            (*b"JNAM", 16, 32, 0x30),
-            (*b"FNAM", 32, 72, 0x40),
-            (*b"IMSP", 16, 32, 0x50),
-        ] {
-            let output = bytes(&wthr, &sig);
-            assert_eq!(output.len(), target_len);
-            assert_eq!(&output[..source_len], vec![fill; source_len]);
-            assert!(output[source_len..].iter().all(|byte| *byte == 0));
-        }
-        let dalc: Vec<_> = wthr
-            .fields
-            .iter()
-            .filter(|entry| entry.sig.0 == *b"DALC")
-            .map(|entry| raw(&entry.value).unwrap())
-            .collect();
-        assert_eq!(dalc.len(), 8);
-        assert_eq!(&dalc[0][..24], &[0x60; 24]);
-        assert!(dalc[0][24..].iter().all(|byte| *byte == 0));
-        assert!(dalc[4].iter().all(|byte| *byte == 0));
-        assert_eq!(&bytes(&wthr, b"NAM0")[..16], &[0x35; 16]);
-        assert_eq!(&bytes(&wthr, b"NAM0")[16..32], &[0; 16]);
-        assert!(bytes(&wthr, b"NAM0")[576..].iter().all(|byte| *byte == 0));
-    }
-
-    #[test]
-    fn malformed_wthr_source_fields_never_raw_pass_into_required_contract() {
-        let interner = StringInterner::new();
-        let mut wthr = record("WTHR", &interner);
-        for sig in [
-            *b"LNAM", *b"MNAM", *b"NNAM", *b"RNAM", *b"QNAM", *b"PNAM", *b"JNAM", *b"NAM0",
-            *b"NAM4", *b"FNAM", *b"DATA", *b"NAM1", *b"IMSP", *b"DALC", *b"UNAM", *b"VNAM",
-            *b"WNAM",
-        ] {
-            push(&mut wthr, sig, vec![0xCC; 3]);
-        }
-
-        normalize_wthr(&mut wthr, SourceFamily::SkyrimSe, &interner);
-
-        assert_wthr_contract(&wthr, DEFAULT_CLOUD_ROWS);
-        for entry in &wthr.fields {
-            if WTHR_REQUIRED_ORDER.contains(&entry.sig.as_str()) {
-                assert!(!raw(&entry.value).unwrap().contains(&0xCC));
-            }
-        }
     }
 
     #[test]
@@ -1241,7 +1139,7 @@ mod tests {
 
         normalize_refr_xloc(&mut stat, &interner);
         normalize_efsh(&mut stat, SourceFamily::LegacyFallout, &interner);
-        normalize_wthr(&mut stat, SourceFamily::SkyrimSe, &interner);
+        normalize_legacy_wthr(&mut stat, &interner);
         normalize_skyrim_proj(&mut stat);
 
         assert_eq!(stat.fields, before);

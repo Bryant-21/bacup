@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use esp_authoring_core::plugin_runtime::compiled_schema_for_game;
 
+use crate::fixups::clean_leveled_item_entries::extract_entry_reference;
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
@@ -150,6 +151,8 @@ impl Fixup for ApplyFo76WorkshopCatalogFixup {
             .collect();
         let fallout4_plugin = mapper.interner.intern("Fallout4.esm");
         let output_plugin = mapper.output_plugin_sym();
+        let target_master_names = session.target_masters().to_vec();
+        let target_plugin_name = session.target_slot().parsed.plugin_name.clone();
         let mut added_records = Vec::new();
         let mut expansion_cache = FxHashMap::default();
         let mut unsupported_created_types: FxHashMap<SigCode, u32> = FxHashMap::default();
@@ -191,6 +194,8 @@ impl Fixup for ApplyFo76WorkshopCatalogFixup {
                         session,
                         created_object,
                         output_plugin,
+                        &target_master_names,
+                        &target_plugin_name,
                         target_schema,
                         mapper.interner,
                         &mut expansion_cache,
@@ -405,6 +410,8 @@ fn resolve_created_object(
     session: &mut PluginSession<'_>,
     created_object: FormKey,
     output_plugin: crate::sym::Sym,
+    target_master_names: &[String],
+    target_plugin_name: &str,
     target_schema: &crate::schema::AuthoringSchema,
     interner: &crate::sym::StringInterner,
     expansion_cache: &mut FxHashMap<FormKey, Vec<FormKey>>,
@@ -442,11 +449,14 @@ fn resolve_created_object(
     }
 
     let mut variants = Vec::new();
-    for member in group_member_form_keys(&record) {
+    for member in group_member_form_keys(&record, target_master_names, target_plugin_name, interner)
+    {
         match resolve_created_object(
             session,
             member,
             output_plugin,
+            target_master_names,
+            target_plugin_name,
             target_schema,
             interner,
             expansion_cache,
@@ -474,7 +484,12 @@ fn is_workshop_group_signature(sig: SigCode) -> bool {
     )
 }
 
-fn group_member_form_keys(record: &Record) -> Vec<FormKey> {
+fn group_member_form_keys(
+    record: &Record,
+    target_master_names: &[String],
+    target_plugin_name: &str,
+    interner: &crate::sym::StringInterner,
+) -> Vec<FormKey> {
     let member_sig = if record.sig.0 == *b"FLST" {
         *b"LNAM"
     } else {
@@ -483,7 +498,19 @@ fn group_member_form_keys(record: &Record) -> Vec<FormKey> {
     let mut members = Vec::new();
     for field in &record.fields {
         if field.sig.0 == member_sig {
-            collect_form_keys(&field.value, &mut members);
+            if record.sig.0 == *b"FLST" {
+                collect_form_keys(&field.value, &mut members);
+            } else if let Some(member) = extract_entry_reference(
+                &field.value,
+                interner.intern("Reference"),
+                target_master_names,
+                target_plugin_name,
+                interner,
+            )
+            .or_else(|| first_form_key(&field.value))
+            {
+                members.push(member);
+            }
         }
     }
     members.retain(|member| member.local != 0);
@@ -870,7 +897,7 @@ mod tests {
             ),
         ];
         assert_eq!(
-            group_member_form_keys(&leveled),
+            group_member_form_keys(&leveled, &[], "SeventySix.esm", &interner),
             vec![
                 fk(0x200, "SeventySix.esm", &interner),
                 fk(0x201, "SeventySix.esm", &interner),
@@ -892,10 +919,34 @@ mod tests {
             ),
         ];
         assert_eq!(
-            group_member_form_keys(&form_list),
+            group_member_form_keys(&form_list, &[], "SeventySix.esm", &interner),
             vec![
                 fk(0x400, "SeventySix.esm", &interner),
                 fk(0x401, "SeventySix.esm", &interner),
+            ]
+        );
+    }
+
+    #[test]
+    fn reads_raw_lvlo_references_before_leveled_list_cleanup() {
+        let interner = StringInterner::new();
+        let masters = vec!["Fallout4.esm".to_string()];
+        let mut leveled = Record::new(
+            SigCode::from_str("LVLI").unwrap(),
+            fk(0x100, "SeventySix.esm", &interner),
+        );
+        let raw_entry = |raw: u32| {
+            let mut bytes = vec![0u8; 12];
+            bytes[4..8].copy_from_slice(&raw.to_le_bytes());
+            field("LVLO", FieldValue::Bytes(bytes.into()))
+        };
+        leveled.fields = smallvec![raw_entry(0x00_001234), raw_entry(0x01_7B2872), raw_entry(0),];
+
+        assert_eq!(
+            group_member_form_keys(&leveled, &masters, "SeventySix.esm", &interner),
+            vec![
+                fk(0x001234, "Fallout4.esm", &interner),
+                fk(0x7B2872, "SeventySix.esm", &interner),
             ]
         );
     }

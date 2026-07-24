@@ -59,6 +59,7 @@ impl Fixup for NormalizeFo76PackTemplatesFixup {
         let pack_sig =
             SigCode::from_str("PACK").map_err(|e| FixupError::SchemaError(e.to_string()))?;
         let target_masters = session.target_masters().to_vec();
+        let output_plugin = mapper.output_plugin_sym();
 
         let mut report = FixupReport::empty();
         let canonical_templates = collect_canonical_pack_templates(
@@ -82,6 +83,10 @@ impl Fixup for NormalizeFo76PackTemplatesFixup {
 
         let mut changed_records = Vec::new();
         let mut abi_by_encoded_template: FxHashMap<u32, PackTemplateAbi> = FxHashMap::default();
+        let mut keyword_redirects_by_encoded_template: FxHashMap<u32, FxHashMap<u32, u32>> =
+            FxHashMap::default();
+        let mut keyword_form_key_redirects: FxHashMap<FormKey, Option<FormKey>> =
+            FxHashMap::default();
         // Renamed FO76-copy template (07xxxxxx) -> FO4 NATIVE template (Fallout4.esm).
         // Package templates are critical engine systems: FO4's procedure logic is
         // keyed to the native template form id, so instances must reference it, not
@@ -115,6 +120,34 @@ impl Fixup for NormalizeFo76PackTemplatesFixup {
             };
 
             abi_by_encoded_template.insert(encoded_template, canonical.abi.clone());
+            let keyword_redirects = pack_input_keyword_redirects(&record, &canonical.record);
+            for (&source_raw, &target_raw) in &keyword_redirects {
+                let Some(source_fk) = form_key_from_encoded_target(
+                    source_raw,
+                    output_plugin,
+                    &target_masters,
+                    mapper.interner,
+                ) else {
+                    continue;
+                };
+                let Some(target_fk) = form_key_from_encoded_target(
+                    target_raw,
+                    output_plugin,
+                    &target_masters,
+                    mapper.interner,
+                ) else {
+                    continue;
+                };
+                keyword_form_key_redirects
+                    .entry(source_fk)
+                    .and_modify(|existing| {
+                        if existing.is_some_and(|existing| existing != target_fk) {
+                            *existing = None;
+                        }
+                    })
+                    .or_insert(Some(target_fk));
+            }
+            keyword_redirects_by_encoded_template.insert(encoded_template, keyword_redirects);
             if let Some(native_template) =
                 encode_target_form_id(canonical.record.form_key, mapper.interner, &target_masters)
             {
@@ -128,6 +161,10 @@ impl Fixup for NormalizeFo76PackTemplatesFixup {
         if abi_by_encoded_template.is_empty() {
             return Ok(report);
         }
+
+        // Placed actors are copied after this fixup, so retain these redirects in
+        // the shared mapper for their XLKR keyword references.
+        register_pack_keyword_mapper_redirects(mapper, &keyword_form_key_redirects);
 
         for fk in &pack_fks {
             let mut record = match session.record_decoded(fk, target_schema, mapper.interner) {
@@ -144,6 +181,11 @@ impl Fixup for NormalizeFo76PackTemplatesFixup {
                 continue;
             };
             let mut changed = trim_pack_instance_to_template_abi(&mut record, abi);
+            if let Some(keyword_redirects) =
+                keyword_redirects_by_encoded_template.get(&pkcu.package_template)
+            {
+                changed |= rewrite_pack_input_keyword_formids(&mut record, keyword_redirects);
+            }
             // Repoint the instance at FO4's native template so the engine runs its
             // hardcoded template procedure logic instead of the copy's inert tree.
             if let Some(&native_template) = native_template_redirect.get(&pkcu.package_template) {
@@ -289,6 +331,145 @@ fn pack_template_abi(record: &Record) -> Option<PackTemplateAbi> {
             .find(|entry| entry.sig.as_str() == "XNAM")
             .cloned(),
     })
+}
+
+fn pack_input_keyword_redirects(source: &Record, canonical: &Record) -> FxHashMap<u32, u32> {
+    let Some((source_pkcu_pos, _)) = read_pack_pkcu(source) else {
+        return FxHashMap::default();
+    };
+    let Some((canonical_pkcu_pos, _)) = read_pack_pkcu(canonical) else {
+        return FxHashMap::default();
+    };
+    let Some((_, source_chunks)) = pack_input_chunks(source, source_pkcu_pos) else {
+        return FxHashMap::default();
+    };
+    let Some((_, canonical_chunks)) = pack_input_chunks(canonical, canonical_pkcu_pos) else {
+        return FxHashMap::default();
+    };
+
+    let canonical_by_unam: FxHashMap<u32, &PackInputChunk> = canonical_chunks
+        .iter()
+        .filter_map(|chunk| chunk.unam.map(|unam| (unam, chunk)))
+        .collect();
+    let mut redirects = FxHashMap::default();
+    let mut conflicts = FxHashSet::default();
+
+    for source_chunk in &source_chunks {
+        let Some(unam) = source_chunk.unam else {
+            continue;
+        };
+        let Some(canonical_chunk) = canonical_by_unam.get(&unam) else {
+            continue;
+        };
+        let source_keywords = pack_chunk_keyword_formids(source_chunk);
+        let canonical_keywords = pack_chunk_keyword_formids(canonical_chunk);
+        for ((source_sig, source_raw), (canonical_sig, canonical_raw)) in
+            source_keywords.into_iter().zip(canonical_keywords)
+        {
+            if source_sig != canonical_sig || source_raw == canonical_raw {
+                continue;
+            }
+            if redirects
+                .get(&source_raw)
+                .is_some_and(|existing| *existing != canonical_raw)
+            {
+                redirects.remove(&source_raw);
+                conflicts.insert(source_raw);
+            } else if !conflicts.contains(&source_raw) {
+                redirects.insert(source_raw, canonical_raw);
+            }
+        }
+    }
+
+    redirects
+}
+
+fn pack_chunk_keyword_formids(chunk: &PackInputChunk) -> Vec<(SubrecordSig, u32)> {
+    chunk
+        .data_fields
+        .iter()
+        .filter_map(|field| pack_keyword_formid(field).map(|raw| (field.sig, raw)))
+        .collect()
+}
+
+fn pack_keyword_formid(field: &FieldEntry) -> Option<u32> {
+    let FieldValue::Bytes(bytes) = &field.value else {
+        return None;
+    };
+    let selector = i32::from_le_bytes(bytes.get(0..4)?.try_into().ok()?);
+    let carries_keyword = match field.sig.as_str() {
+        "PLDT" | "PLD2" => selector == 6,
+        "PTDA" | "PTD2" | "PTDT" => matches!(selector, 3 | 7),
+        _ => false,
+    };
+    if !carries_keyword {
+        return None;
+    }
+    Some(u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?))
+}
+
+fn rewrite_pack_input_keyword_formids(
+    record: &mut Record,
+    redirects: &FxHashMap<u32, u32>,
+) -> bool {
+    let Some((pkcu_pos, _)) = read_pack_pkcu(record) else {
+        return false;
+    };
+    let data_end_pos = pack_data_end_pos(record, pkcu_pos);
+    let mut changed = false;
+    for field in &mut record.fields[pkcu_pos + 1..data_end_pos] {
+        let Some(source_raw) = pack_keyword_formid(field) else {
+            continue;
+        };
+        let Some(&target_raw) = redirects.get(&source_raw) else {
+            continue;
+        };
+        let FieldValue::Bytes(bytes) = &mut field.value else {
+            continue;
+        };
+        bytes[4..8].copy_from_slice(&target_raw.to_le_bytes());
+        changed = true;
+    }
+    changed
+}
+
+fn form_key_from_encoded_target(
+    raw: u32,
+    output_plugin: Sym,
+    target_masters: &[String],
+    interner: &StringInterner,
+) -> Option<FormKey> {
+    let local = raw & 0x00FF_FFFF;
+    if local == 0 {
+        return None;
+    }
+    let load_index = (raw >> 24) as usize;
+    let plugin = if load_index < target_masters.len() {
+        interner.intern(&target_masters[load_index])
+    } else if load_index == target_masters.len() {
+        output_plugin
+    } else {
+        return None;
+    };
+    Some(FormKey { local, plugin })
+}
+
+fn register_pack_keyword_mapper_redirects(
+    mapper: &mut FormKeyMapper<'_>,
+    redirects: &FxHashMap<FormKey, Option<FormKey>>,
+) {
+    let source_redirects: Vec<(FormKey, FormKey)> = mapper
+        .source_to_target_iter()
+        .filter_map(|(source, current_target)| {
+            redirects
+                .get(&current_target)
+                .and_then(|target| *target)
+                .map(|target| (source, target))
+        })
+        .collect();
+    for (source, target) in source_redirects {
+        mapper.add_mapping(source, target);
+    }
 }
 
 pub(crate) fn replace_pack_template_contents_preserving_editor_id(
@@ -652,6 +833,7 @@ pub(crate) fn encode_target_form_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formkey_mapper::MapperOptions;
 
     fn interner() -> StringInterner {
         StringInterner::new()
@@ -696,6 +878,15 @@ mod tests {
 
     fn unam(value: u32) -> FieldEntry {
         field("UNAM", FieldValue::Uint(value as u64))
+    }
+
+    fn linked_location(keyword_form_id: u32) -> FieldEntry {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&6_i32.to_le_bytes());
+        raw.extend_from_slice(&keyword_form_id.to_le_bytes());
+        raw.extend_from_slice(&0_i32.to_le_bytes());
+        raw.extend_from_slice(&0_u32.to_le_bytes());
+        bytes_field("PLDT", raw)
     }
 
     #[test]
@@ -821,5 +1012,70 @@ mod tests {
             .find(|entry| entry.sig.as_str() == "XNAM")
             .expect("XNAM");
         assert_eq!(xnam.value, FieldValue::Bytes(SmallVec::from_vec(vec![8])));
+    }
+
+    #[test]
+    fn redirects_common_linked_keyword_input_to_canonical_template() {
+        let interner = interner();
+        let mut source_template =
+            pack_record(&interner, 0x03F70E, "DefaultMasterPackageTemplatefo76");
+        source_template.fields.push(pkcu(1, 0, 25));
+        source_template.fields.push(anam("Location", &interner));
+        source_template.fields.push(linked_location(0x071C_A8CF));
+        source_template.fields.push(unam(85));
+        source_template.fields.push(bytes_field("XNAM", vec![37]));
+
+        let mut canonical_template =
+            pack_record(&interner, 0x03F70E, "DefaultMasterPackageTemplate");
+        canonical_template.fields.push(pkcu(1, 0, 18));
+        canonical_template.fields.push(anam("Location", &interner));
+        canonical_template.fields.push(linked_location(0x001C_A8CF));
+        canonical_template.fields.push(unam(85));
+        canonical_template
+            .fields
+            .push(bytes_field("XNAM", vec![58]));
+
+        let redirects = pack_input_keyword_redirects(&source_template, &canonical_template);
+        assert_eq!(redirects.get(&0x071C_A8CF), Some(&0x001C_A8CF));
+
+        let mut instance = pack_record(&interner, 0x6536B7, "DefaultMasterPackageNoRun");
+        instance.fields.push(pkcu(1, 0x0703_F70E, 25));
+        instance.fields.push(anam("Location", &interner));
+        instance.fields.push(linked_location(0x071C_A8CF));
+        instance.fields.push(unam(85));
+        instance.fields.push(bytes_field("XNAM", vec![37]));
+
+        assert!(rewrite_pack_input_keyword_formids(
+            &mut instance,
+            &redirects
+        ));
+        let location = instance
+            .fields
+            .iter()
+            .find(|field| field.sig.as_str() == "PLDT")
+            .expect("PLDT");
+        assert_eq!(pack_keyword_formid(location), Some(0x001C_A8CF));
+    }
+
+    #[test]
+    fn persists_keyword_redirect_for_late_placed_refs() {
+        let interner = interner();
+        let source = FormKey::parse("1CA8CF@SeventySix.esm", &interner).unwrap();
+        let copied = FormKey::parse("1CA8CF@SeventySix.esm", &interner).unwrap();
+        let canonical = FormKey::parse("1CA8CF@Fallout4.esm", &interner).unwrap();
+        let mut mapper = FormKeyMapper::new(
+            std::iter::empty(),
+            MapperOptions {
+                output_plugin_name: "SeventySix.esm".to_string(),
+                ..Default::default()
+            },
+            &interner,
+        );
+        mapper.add_mapping(source, copied);
+
+        let redirects = FxHashMap::from_iter([(copied, Some(canonical))]);
+        register_pack_keyword_mapper_redirects(&mut mapper, &redirects);
+
+        assert_eq!(mapper.lookup(source), Some(canonical));
     }
 }

@@ -8,6 +8,7 @@ archives directly, so an extracted Fallout 4 tree remains optional.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import logging
 import os
 import shutil
@@ -81,6 +82,7 @@ _CLEANUP_MOD_OUTPUT_KEY = "cleanup_mod_output_after_deploy"
 _APP_OWNED_EXTRACTED_GAMES_KEY = "app_owned_extracted_games"
 _APP_OWNED_EXTRACTED_PATHS_KEY = "app_owned_extracted_paths"
 _PENDING_PROJECT_SETUP_KEY = "pending_project_setup"
+_ACTIVE_PROJECT_KEY = "active_conversion_project"
 _ALPHA_ACCEPTED_KEY = "alpha_v0_0_1_accepted"
 _PERSONAL_USE_ACCEPTED_KEY = "personal_use_only_accepted"
 _STEAM_OWNERSHIP_ACCEPTED_KEY = "steam_owned_not_pirated_accepted"
@@ -119,6 +121,8 @@ _STEAM_INSTALL_REQUIRED_GAMES = {"fo4", "fo76", "fnv", "fo3", "skyrimse"}
 class ProjectSetupProfile:
     id: str
     title: str
+    source_label: str
+    conversion_id: str
     games: tuple[str, ...]
     source_games: tuple[str, ...]
     generated_mod_name: str
@@ -137,6 +141,8 @@ PROJECT_PROFILES = {
     "appalachia": ProjectSetupProfile(
         id="appalachia",
         title="Tales From Appalachia",
+        source_label="Fallout 76",
+        conversion_id="fo76:fo4",
         games=("fo4", "fo76"),
         source_games=("fo76",),
         generated_mod_name="SeventySix",
@@ -145,17 +151,21 @@ PROJECT_PROFILES = {
     "wasteland": ProjectSetupProfile(
         id="wasteland",
         title="Legends of the Wasteland",
+        source_label="Fallout: New Vegas + Fallout 3 (MVP)",
+        conversion_id="fnvfo3:fo4",
         games=("fo4", "fnv", "fo3"),
         source_games=("fnv", "fo3"),
-        generated_mod_name="MojaveCapital",
+        generated_mod_name="FNV_FO3_Merged",
         description="Convert Fallout: New Vegas and grafted Fallout 3 content into Fallout 4.",
     ),
     "north": ProjectSetupProfile(
         id="north",
         title="Fables of the North",
+        source_label="Skyrim Special Edition (MVP)",
+        conversion_id="skyrimse:fo4",
         games=("fo4", "skyrimse"),
         source_games=("skyrimse",),
-        generated_mod_name="Skyrim",
+        generated_mod_name="Skyrim_Merged",
         description="Convert Skyrim Special Edition's northern lands into Fallout 4.",
     ),
 }
@@ -169,6 +179,19 @@ def get_project_profile(project_id: str) -> ProjectSetupProfile:
         return PROJECT_PROFILES[project_id]
     except KeyError as exc:
         raise ValueError(f"Unknown B.A.C.U.P. project: {project_id}") from exc
+
+
+@lru_cache(maxsize=None)
+def _current_release_notes(project_id: str) -> tuple[str, ...]:
+    try:
+        manifest = load_upgrade_manifest(bundled_upgrade_manifest_path())
+        current = next(
+            version for version in manifest.versions if version.id == manifest.current
+        )
+    except Exception as exc:
+        _log.warning("Unable to load current release notes: %s", exc)
+        return ()
+    return current.notes_for_conversion(get_project_profile(project_id).conversion_id)
 
 
 def _project_workspace_key(base_key: str, project_id: str) -> str:
@@ -194,7 +217,23 @@ def _persist_workspace_values(settings, values: dict) -> None:
 def request_project_setup(settings, project_id: str) -> None:
     """Persist a project-specific setup request across an application restart."""
     get_project_profile(project_id)
-    _persist_workspace_values(settings, {_PENDING_PROJECT_SETUP_KEY: project_id})
+    _persist_workspace_values(
+        settings,
+        {
+            _PENDING_PROJECT_SETUP_KEY: project_id,
+            _ACTIVE_PROJECT_KEY: project_id,
+        },
+    )
+
+
+def set_active_project(settings, project_id: str) -> None:
+    get_project_profile(project_id)
+    _persist_workspace_values(settings, {_ACTIVE_PROJECT_KEY: project_id})
+
+
+def get_active_project(settings) -> str:
+    project_id = str(_workspace_settings(settings).get(_ACTIVE_PROJECT_KEY, ""))
+    return project_id if project_id in PROJECT_PROFILES else "appalachia"
 
 
 def get_pending_project_setup(settings) -> str | None:
@@ -446,6 +485,80 @@ def clear_project_owned_extractions(
     return tuple(cleared)
 
 
+class BacupProjectPicker:
+    def __init__(self, settings):
+        self._settings = settings
+        self.selected_project_id = get_active_project(settings)
+        self._completed = False
+
+    def select_project(self, project_id: str) -> None:
+        get_project_profile(project_id)
+        self.selected_project_id = project_id
+
+    def confirm(self) -> None:
+        set_active_project(self._settings, self.selected_project_id)
+        self._completed = True
+        hello_imgui.get_runner_params().app_shall_exit = True
+
+    def run(self) -> str | None:
+        params = hello_imgui.RunnerParams()
+        params.app_window_params.window_title = f"{_PRODUCT_NAME} - Choose Games"
+        set_ini_folder(params, "setup-bacup-project-picker", get_ini_dir())
+        params.app_window_params.window_geometry.size = _SETUP_WINDOW_SIZE
+        params.imgui_window_params.tweaked_theme = hello_imgui.ImGuiTweakedTheme(
+            hello_imgui.ImGuiTheme_.darcula
+        )
+        params.callbacks.show_gui = self._draw
+        params.callbacks.post_init = self._apply_window_icon
+        immapp.run(params)
+        return self.selected_project_id if self._completed else None
+
+    @staticmethod
+    def _apply_window_icon() -> None:
+        try:
+            from ui.toolkit.app import set_window_icon
+            from bacup_ui.variant import BACUP_VARIANT
+
+            set_window_icon(BACUP_VARIANT)
+        except Exception as exc:
+            _log.warning("Setup window icon failed: %s", exc)
+        set_native_dark_title_bar()
+
+    def _draw(self) -> None:
+        imgui.text_colored(
+            imgui.ImVec4(0.88, 0.94, 1.0, 1.0),
+            f"{_PRODUCT_NAME} Setup",
+        )
+        imgui.text_disabled(f"{_CURRENT_RELEASE_LABEL} - Steam installs required")
+        imgui.separator()
+        imgui.spacing()
+        imgui.text_colored(
+            imgui.ImVec4(0.88, 0.94, 1.0, 1.0),
+            "Which games do you want to set up?",
+        )
+        imgui.text_wrapped(
+            "Choose the source-game set to extract now. You can configure the "
+            "other conversions later from their Setup menu."
+        )
+        imgui.spacing()
+        for profile in PROJECT_PROFILES.values():
+            if imgui.radio_button(
+                f"{profile.source_label}  ->  Fallout 4##{profile.id}",
+                self.selected_project_id == profile.id,
+            ):
+                self.select_project(profile.id)
+            imgui.indent()
+            imgui.text_disabled(profile.title)
+            imgui.text_wrapped(profile.description)
+            imgui.unindent()
+            imgui.spacing()
+        imgui.separator()
+        x = max(0.0, imgui.get_content_region_avail().x - _FOOTER_BUTTON_WIDTH)
+        imgui.set_cursor_pos_x(x)
+        if imgui.button("Continue", imgui.ImVec2(_FOOTER_BUTTON_WIDTH, 0)):
+            self.confirm()
+
+
 class BacupProjectSetup:
     STEP_WELCOME = 0
     STEP_AGREEMENTS = 1
@@ -460,6 +573,7 @@ class BacupProjectSetup:
         self.profile = get_project_profile(project_id)
         self._games = self.profile.games
         self._source_games = self.profile.source_games
+        self._release_notes = _current_release_notes(project_id)
         self.step = self.STEP_WELCOME
         self._roots: dict[str, str] = {
             g: (settings.get_game_paths(g).get("root_dir", "") or "")
@@ -963,12 +1077,12 @@ class BacupProjectSetup:
 
     def _draw_features(self) -> None:
         self._draw_section_title(_FEATURE_STATUS_TITLE)
-        if _CURRENT_RELEASE_NOTES:
+        if self._release_notes:
             imgui.text_colored(
                 imgui.ImVec4(0.55, 0.78, 1.0, 1.0),
                 f"What's new in {_CURRENT_RELEASE_LABEL}",
             )
-            for note in _CURRENT_RELEASE_NOTES:
+            for note in self._release_notes:
                 imgui.bullet_text(note)
             imgui.separator()
             imgui.spacing()

@@ -120,7 +120,7 @@ def test_non_fo76_pair_uses_pair_scoped_upgrade_manifest(monkeypatch, tmp_path):
 
     assert options.upgrade is True
     assert panel.upgrade_plan_preview() == (
-        "No changes for Fables of the North in this upgrade."
+        "No changes for Northern Lands in this upgrade."
     )
 
 
@@ -149,6 +149,25 @@ def test_upgrade_plan_preview_repeats_target_scripts_when_current(monkeypatch, t
 
     assert panel.upgrade_plan_preview() == (
         "Will regenerate: Scripts -> swap Misc; reuse rest"
+    )
+
+
+def test_upgrade_plan_preview_repeats_all_declared_target_families_when_current(
+    monkeypatch, tmp_path
+):
+    manifest = UpgradeManifest(
+        current="alpha2.1",
+        versions=(
+            _version("alpha2", ("ALL",)),
+            _version("alpha2.1", ("NIFs", "Havok", "Scripts", "Textures")),
+        ),
+    )
+    panel = _panel(monkeypatch, tmp_path, manifest=manifest, snam="alpha2.1")
+    panel.upgrade = True
+
+    assert panel.upgrade_plan_preview() == (
+        "Will regenerate: Havok, NIFs, Scripts, Textures -> "
+        "swap Animations, Meshes, MeshesExtra, Misc, Textures; reuse rest"
     )
 
 

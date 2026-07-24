@@ -38,8 +38,11 @@ Event OnDistanceLessThan(ObjectReference akObj1, ObjectReference akObj2, Float a
 EndEvent
 
 Event OnAnimationEvent(ObjectReference akSource, String asEventName)
-	If selfActorRef != None && !selfActorRef.IsDead() && akSource == selfActorRef && asEventName == animEventTeleportStart && DisappearExplosion != None
-		selfActorRef.PlaceAtMe(DisappearExplosion)
+	If selfActorRef != None && !selfActorRef.IsDead() && akSource == selfActorRef && asEventName == animEventTeleportStart
+		If DisappearExplosion != None
+			selfActorRef.PlaceAtMe(DisappearExplosion)
+		EndIf
+		selfActorRef.Disable()
 	EndIf
 EndEvent
 

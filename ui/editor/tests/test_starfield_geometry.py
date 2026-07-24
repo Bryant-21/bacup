@@ -155,7 +155,7 @@ class TestPrepareWalkHandlesBSGeometry:
 
     def test_bsgeometry_added_to_shapes(self):
         """BSGeometry with external mesh path produces a PreparedShape in shapes dict."""
-        from creation_lib.renderer.nif_loader import _prepare_walk_blocks
+        from creation_lib.renderer.nif_loader import _PrepareContext, _prepare_walk_blocks
 
         meshes = [
             {"Has Mesh": 1, "Mesh": {"Mesh Path": "geometries/test.mesh", "Indices Size": 0, "Num Verts": 0, "Flags": 0}},
@@ -175,7 +175,10 @@ class TestPrepareWalkHandlesBSGeometry:
         nif.schema = _make_mock_schema()
 
         shapes = {}
-        _prepare_walk_blocks(nif, block, shapes, "main")
+        _prepare_walk_blocks(
+            nif, block, shapes,
+            _PrepareContext(nif_id="main", texture_dirs=[], ba2_mgr=None),
+        )
         assert 5 in shapes
         assert shapes[5].external_mesh_paths == ["geometries/test.mesh"]
 

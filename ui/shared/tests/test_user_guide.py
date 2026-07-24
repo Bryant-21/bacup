@@ -211,6 +211,9 @@ def test_base_workspace_draw_user_guide_window_uses_generic_renderer(monkeypatch
     ws._show_user_guide = True
     calls = []
 
+    # No HelloImGui runner exists in headless tests, so short-circuit the
+    # docked-window probe that would call hello_imgui.get_runner_params().
+    monkeypatch.setattr(ws, "_has_docked_user_guide_window", lambda: False)
     monkeypatch.setattr(
         "creation_lib.ui.widgets.user_guide.draw_generic_user_guide_window",
         lambda visible, guide: calls.append((visible, guide.title)) or False,

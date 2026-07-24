@@ -6,8 +6,8 @@
 //! For creature conversions (root sig NPC_ or LVLN), scans every RACE record in
 //! the target plugin and applies:
 //!
-//! 1a. Strip the `0x40` bit (`unknown_6`) from `ATKD.attack_flags` — FO76-only
-//!     flag with no FO4 semantics.
+//! 1a. Strip confirmed FO76-only bits from `ATKD.attack_flags` while preserving
+//!     the FO4 attack-mode flags.
 //! 1b. (No-op in binary form.) FO4 `ATKD` has no `Unknown` field; the
 //!     post-translation record only carries the FO4 11-field layout.
 //! 1c. Inject `ATKD.attack_angle` for directional attack events
@@ -31,7 +31,7 @@
 //!     carry 43 all-zero `PHWT` rows before movement/subgraph data.
 //!
 //! 3a. Link a race with no movement defaults to its unique converted
-//!     `<Actor>_Default_MT` record. Floating movement types also populate `FLMV`.
+//!     `<Actor>_Default_MT` record. Floating and flying races also populate `FLMV`.
 //!
 //! 4.  Strip subgraph-data blocks (delimited by SGNM) that contain an STKD
 //!     (Target Keywords) subrecord when they are invalid target-keyword-only
@@ -88,11 +88,14 @@ const ATKD_SIZE: usize = 44;
 const ATKD_ATTACK_FLAGS_OFFSET: usize = 12;
 const ATKD_ATTACK_ANGLE_OFFSET: usize = 16;
 
-/// FO76-only `unknown_6` bit — must be cleared from FO4 attack_flags.
-const ATKD_FO76_UNKNOWN_BIT: u32 = 0x40;
+/// FO76-only attack flags absent from the vanilla FO4 creature attack corpus.
+const ATKD_FO76_ONLY_BITS: u32 = 0x40 | 0x100 | 0x200 | 0x400;
 
 /// FO4 `ActorTypeAnimal` keyword local FormID (`013798:Fallout4.esm`).
 const ACTOR_TYPE_ANIMAL_LOW24: u32 = 0x00_013798;
+
+/// FO4's `RACE.DATA` bit for actors that use the native flight controller.
+const RACE_FLAG_FLIES: u32 = 0x0000_0080;
 
 /// FO4 creature fan ports carry 43 all-zero `PHWT` rows after the 16 `PHTN`
 /// phoneme names. Each row is 16 f32 weights.
@@ -344,7 +347,8 @@ fn link_missing_default_movement_types(
     };
     let has_default = record.fields.iter().any(|entry| entry.sig == wkmv_sig);
     let has_fly = record.fields.iter().any(|entry| entry.sig == flvm_sig);
-    if has_default && (has_fly || !candidate.has_float_height) {
+    let needs_fly = candidate.has_float_height || race_has_fly_flag(record, interner);
+    if has_default && (has_fly || !needs_fly) {
         return false;
     }
 
@@ -373,7 +377,7 @@ fn link_missing_default_movement_types(
         );
         insert_at += 1;
     }
-    if candidate.has_float_height && !has_fly {
+    if needs_fly && !has_fly {
         record.fields.insert(
             insert_at,
             FieldEntry {
@@ -383,6 +387,32 @@ fn link_missing_default_movement_types(
         );
     }
     true
+}
+
+fn race_has_fly_flag(record: &Record, interner: &StringInterner) -> bool {
+    let Ok(data_sig) = SubrecordSig::from_str("DATA") else {
+        return false;
+    };
+    let flags = interner.intern("flags");
+    record.fields.iter().any(|entry| {
+        if entry.sig != data_sig {
+            return false;
+        }
+        let FieldValue::Struct(fields) = &entry.value else {
+            return false;
+        };
+        fields.iter().any(|(name, value)| {
+            *name == flags
+                && match value {
+                    FieldValue::Uint(bits) => *bits & u64::from(RACE_FLAG_FLIES) != 0,
+                    FieldValue::Int(bits) => *bits & i64::from(RACE_FLAG_FLIES) != 0,
+                    FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap()) & RACE_FLAG_FLIES != 0
+                    }
+                    _ => false,
+                }
+        })
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -464,7 +494,7 @@ pub fn apply_to_record(record: &mut Record, interner: &StringInterner) -> RaceFi
 }
 
 // ---------------------------------------------------------------------------
-// Fix 1a — strip 0x40 from ATKD attack_flags
+// Fix 1a — strip confirmed FO76-only ATKD attack_flags
 // ---------------------------------------------------------------------------
 
 fn fix_attack_data_flags(record: &mut Record, outcome: &mut RaceFixOutcome) {
@@ -487,8 +517,8 @@ fn fix_attack_data_flags(record: &mut Record, outcome: &mut RaceFixOutcome) {
                 data[ATKD_ATTACK_FLAGS_OFFSET + 2],
                 data[ATKD_ATTACK_FLAGS_OFFSET + 3],
             ]);
-            if flags & ATKD_FO76_UNKNOWN_BIT != 0 {
-                let cleaned = flags & !ATKD_FO76_UNKNOWN_BIT;
+            if flags & ATKD_FO76_ONLY_BITS != 0 {
+                let cleaned = flags & !ATKD_FO76_ONLY_BITS;
                 let bytes = cleaned.to_le_bytes();
                 data[ATKD_ATTACK_FLAGS_OFFSET] = bytes[0];
                 data[ATKD_ATTACK_FLAGS_OFFSET + 1] = bytes[1];
@@ -2639,6 +2669,9 @@ fn normalize_path_key(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixups::creature::creature_predicate::{
+        ACTOR_TYPE_CREATURE_LOW24, ACTOR_TYPE_NPC_LOW24,
+    };
     use crate::fixups::{FixupConfig, FixupContext, FixupRegistry};
     use crate::formkey_mapper::{FormKeyMapper, MapperOptions};
     use crate::ids::{FormKey, SigCode, SubrecordSig};
@@ -2648,7 +2681,8 @@ mod tests {
     use crate::sym::StringInterner;
     use bytes::Bytes;
     use esp_authoring_core::plugin_runtime::{
-        ParsedRecord, ParsedSubrecord, insert_parsed_record, plugin_handle_new_native,
+        ParsedRecord, ParsedSubrecord, insert_parsed_record, plugin_handle_close_native,
+        plugin_handle_new_native,
     };
     use smol_str::SmolStr;
     use std::sync::Arc;
@@ -2820,6 +2854,30 @@ mod tests {
                 parsed_zstring_subrecord("EDID", "Floater_Default_MT"),
                 parsed_zstring_subrecord("MNAM", "FloaterDefault"),
                 parsed_bytes_subrecord("JNAM", 80.0f32.to_le_bytes().to_vec()),
+            ],
+            raw_payload: None,
+            parse_error: None,
+        }
+    }
+
+    fn parsed_race_with_equipment_flags(
+        form_id: u32,
+        editor_id: &str,
+        actor_type_keyword: u32,
+        equipment_flags: u32,
+    ) -> ParsedRecord {
+        ParsedRecord {
+            signature: SmolStr::new("RACE"),
+            form_id,
+            flags: 0,
+            version_control: 0,
+            form_version: Some(131),
+            version2: None,
+            subrecords: vec![
+                parsed_zstring_subrecord("EDID", editor_id),
+                parsed_bytes_subrecord("KSIZ", 1_u32.to_le_bytes().to_vec()),
+                parsed_bytes_subrecord("KWDA", actor_type_keyword.to_le_bytes().to_vec()),
+                parsed_bytes_subrecord("VNAM", equipment_flags.to_le_bytes().to_vec()),
             ],
             raw_payload: None,
             parse_error: None,
@@ -3130,6 +3188,32 @@ mod tests {
     }
 
     #[test]
+    fn strips_sheepsquatch_fo76_only_attack_flags() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &mut interner);
+        for flags in [0x200, 0x254, 0x504] {
+            push_field(
+                &mut record,
+                "ATKD",
+                FieldValue::Bytes(atkd_bytes(flags, 0.0)),
+            );
+        }
+
+        let outcome = apply_to_record(&mut record, &interner);
+        assert_eq!(outcome.atkd_flags_stripped, 3);
+
+        let actual: Vec<u32> = record
+            .fields
+            .iter()
+            .map(|entry| match &entry.value {
+                FieldValue::Bytes(data) => read_atkd_flags(data),
+                _ => panic!("expected Bytes"),
+            })
+            .collect();
+        assert_eq!(actual, vec![0, 0x14, 0x04]);
+    }
+
+    #[test]
     fn atkd_without_unknown_bit_not_touched() {
         let mut interner = StringInterner::new();
         let mut record = make_race(0x000100, "Output.esp", &mut interner);
@@ -3146,7 +3230,7 @@ mod tests {
     fn preserves_high_equipment_flags_on_creature_race() {
         let mut interner = StringInterner::new();
         let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        let source_vnam = 1_u32 | 512 | 8192 | 16384 | 0xF8FF_8000;
+        let source_vnam = 1_u32 | 2 | 512 | 8192 | 16384 | 0xF8FF_8000;
         let mut bytes: smallvec::SmallVec<[u8; 32]> = smallvec::SmallVec::new();
         bytes.extend_from_slice(&source_vnam.to_le_bytes());
         push_field(&mut record, "VNAM", FieldValue::Bytes(bytes));
@@ -3157,7 +3241,7 @@ mod tests {
             panic!("expected VNAM bytes");
         };
         let actual = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        assert_eq!(actual, 512 | 8192 | 16384 | 0xF8FF_8000);
+        assert_eq!(actual, 1 | 512 | 8192 | 16384 | 0xF8FF_8000);
     }
 
     #[test]
@@ -3413,6 +3497,84 @@ mod tests {
             &movement_types,
             &interner
         ));
+    }
+
+    #[test]
+    fn links_matching_flying_race_movement_to_missing_fly_slot() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &mut interner);
+        record.eid = Some(interner.intern("ScorchBeastRace"));
+        push_field(
+            &mut record,
+            "DATA",
+            FieldValue::Struct(vec![(
+                interner.intern("flags"),
+                FieldValue::Uint(u64::from(RACE_FLAG_FLIES)),
+            )]),
+        );
+        let movement_fk = FormKey {
+            local: 0x2C041B,
+            plugin: interner.intern("Output.esp"),
+        };
+        push_field(&mut record, "WKMV", FieldValue::FormKey(movement_fk));
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(
+                interner.intern("Actors\\ScorchBeast\\Behaviors\\ScorchBeastCore.hkx"),
+            ),
+        );
+        let mut movement_types = DefaultMovementTypeIndex::default();
+        movement_types.insert(
+            "scorchbeast".to_string(),
+            Some(DefaultMovementType {
+                form_key: movement_fk,
+                has_float_height: false,
+            }),
+        );
+
+        assert!(link_missing_default_movement_types(
+            &mut record,
+            &movement_types,
+            &interner
+        ));
+        assert_eq!(sigs(&record), vec!["DATA", "WKMV", "FLMV", "SGNM"]);
+        assert!(matches!(
+            record.fields[2].value,
+            FieldValue::FormKey(fk) if fk == movement_fk
+        ));
+        assert!(!link_missing_default_movement_types(
+            &mut record,
+            &movement_types,
+            &interner
+        ));
+    }
+
+    #[test]
+    fn keeps_nonfloating_ground_race_out_of_fly_slot() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &mut interner);
+        record.eid = Some(interner.intern("GroundCreatureRace"));
+        let movement_fk = FormKey {
+            local: 0x000200,
+            plugin: interner.intern("Output.esp"),
+        };
+        push_field(&mut record, "WKMV", FieldValue::FormKey(movement_fk));
+        let mut movement_types = DefaultMovementTypeIndex::default();
+        movement_types.insert(
+            "groundcreature".to_string(),
+            Some(DefaultMovementType {
+                form_key: movement_fk,
+                has_float_height: false,
+            }),
+        );
+
+        assert!(!link_missing_default_movement_types(
+            &mut record,
+            &movement_types,
+            &interner
+        ));
+        assert_eq!(sigs(&record), vec!["WKMV"]);
     }
 
     #[test]
@@ -4925,6 +5087,103 @@ mod tests {
                     && matches!(entry.value, FieldValue::FormKey(fk) if fk == movement_fk)
             }));
         }
+    }
+
+    #[test]
+    fn registry_whole_plugin_preserves_h2h_only_on_creature_races() {
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        let plugin_name = "FixCreatureRaceEquipmentFlagsTest.esp";
+        let target_handle =
+            plugin_handle_new_native(plugin_name, Some("fo4")).expect("test plugin handle");
+        let source_flags: u32 = 1 | 2 | 512 | 8192 | 16384 | 0xF8FF_8000;
+        insert_parsed_record(
+            target_handle,
+            parsed_race_with_equipment_flags(
+                0x0000_0100,
+                "ScorchBeastRace",
+                ACTOR_TYPE_CREATURE_LOW24,
+                source_flags,
+            ),
+        )
+        .expect("seed creature RACE");
+        insert_parsed_record(
+            target_handle,
+            parsed_race_with_equipment_flags(
+                0x0000_0101,
+                "HumanRace",
+                ACTOR_TYPE_NPC_LOW24,
+                source_flags,
+            ),
+        )
+        .expect("seed humanoid RACE");
+        insert_parsed_record(
+            target_handle,
+            parsed_race_with_equipment_flags(
+                0x0000_0102,
+                "HumanRaceAdditive",
+                ACTOR_TYPE_CREATURE_LOW24,
+                source_flags,
+            ),
+        )
+        .expect("seed additive RACE");
+
+        let interner = StringInterner::new();
+        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &interner);
+        let config = FixupConfig {
+            is_whole_plugin: true,
+            target_schema: Some(schema.clone()),
+            ..Default::default()
+        };
+        {
+            let mut session = open_session(target_handle, None).expect("open session");
+            let mut registry = FixupRegistry::new();
+            registry.register(Box::new(FixCreatureRaceRecordsFixup));
+            let reports = registry
+                .run_all_in_session(&mut session, &mut mapper, &config)
+                .expect("run whole-plugin creature RACE fixup");
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].1.records_changed, 1);
+
+            let mut read_equipment_flags = |local| {
+                let record = session
+                    .record_decoded(
+                        &FormKey {
+                            local,
+                            plugin: interner.intern(plugin_name),
+                        },
+                        schema.as_ref(),
+                        &interner,
+                    )
+                    .expect("decode RACE");
+                record
+                    .fields
+                    .iter()
+                    .find_map(|entry| {
+                        if entry.sig.as_str() != "VNAM" {
+                            return None;
+                        }
+                        match &entry.value {
+                            FieldValue::Uint(value) => Some(*value as u32),
+                            FieldValue::Bytes(data) if data.len() >= 4 => {
+                                Some(u32::from_le_bytes(data[..4].try_into().unwrap()))
+                            }
+                            _ => None,
+                        }
+                    })
+                    .expect("RACE.VNAM equipment flags")
+            };
+
+            let creature_flags = read_equipment_flags(0x0000_0100);
+            assert_ne!(creature_flags & 1, 0, "creature H2H must survive");
+            assert_eq!(
+                creature_flags & 2,
+                0,
+                "unsupported creature bit is filtered"
+            );
+            assert_eq!(read_equipment_flags(0x0000_0101), source_flags);
+            assert_eq!(read_equipment_flags(0x0000_0102), source_flags);
+        }
+        assert!(plugin_handle_close_native(target_handle));
     }
 
     #[test]

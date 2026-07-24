@@ -36,8 +36,10 @@ def test_multi_step_union():
         M, "alpha1", "alpha3", conversion_id=PAIR
     ) == frozenset({"Meshes", "Materials", "Terrain"})
 
-def test_from_equals_target_is_empty():
-    assert resolve_family_union(M, "alpha3", "alpha3", conversion_id=PAIR) == frozenset()
+def test_from_equals_target_runs_declared_family():
+    assert resolve_family_union(
+        M, "alpha3", "alpha3", conversion_id=PAIR
+    ) == frozenset({"Terrain"})
 
 def test_unknown_from_is_full_build():
     assert resolve_family_union(
@@ -240,13 +242,33 @@ def test_force_regen_applies_only_when_flagged_version_is_crossed():
 def test_load_bundled_upgrade_manifest_has_notes():
     manifest = load_upgrade_manifest(bundled_upgrade_manifest_path())
     by_id = {v.id: v for v in manifest.versions}
+    assert manifest.current == "alpha2.1"
     assert by_id["alpha1"].notes_for_conversion("fo76:fo4") != ()
     assert by_id["alpha2"].notes_for_conversion("fo76:fo4") != ()
+    assert by_id["alpha2.1"].notes_for_conversion("fo76:fo4") != ()
+    assert by_id["alpha2.1"].families_for_conversion("fo76:fo4") == (
+        "NIFs",
+        "Havok",
+        "Scripts",
+        "Textures",
+    )
+    assert resolve_family_union(
+        manifest,
+        "alpha2",
+        "alpha2.1",
+        conversion_id="fo76:fo4",
+    ) == frozenset({"NIFs", "Havok", "Scripts", "Textures"})
+    assert requires_forced_regen(
+        manifest,
+        "alpha2",
+        "alpha2.1",
+        conversion_id="fo76:fo4",
+    ) is False
     assert by_id["alpha2"].notes_for_conversion("skyrimse:fo4") != ()
     assert by_id["alpha1"].families_for_conversion("skyrimse:fo4") == ()
     assert by_id["alpha2"].families_for_conversion("skyrimse:fo4") == ()
     assert by_id["alpha2"].force_regen_for_conversion("skyrimse:fo4") is True
-# --- repeatable Scripts family ----------------------------------------------
+# --- target families --------------------------------------------------------
 
 
 def test_target_scripts_family_runs_when_already_current():
@@ -261,6 +283,59 @@ def test_target_scripts_family_runs_when_already_current():
     assert resolve_family_union(
         manifest, "alpha3", "alpha3", conversion_id=PAIR
     ) == frozenset({"Scripts"})
+
+
+def test_target_nifs_havok_families_run_when_already_current():
+    manifest = UpgradeManifest(
+        current="alpha2.1",
+        versions=(
+            _version("alpha2", ("ALL",)),
+            _version("alpha2.1", ("NIFs", "Havok")),
+        ),
+    )
+
+    assert resolve_family_union(
+        manifest, "alpha2.1", "alpha2.1", conversion_id=PAIR
+    ) == frozenset({"NIFs", "Havok"})
+
+
+def test_target_textures_family_runs_when_already_current():
+    manifest = UpgradeManifest(
+        current="alpha2.1",
+        versions=(
+            _version("alpha2", ("ALL",)),
+            _version("alpha2.1", ("Textures",)),
+        ),
+    )
+
+    assert resolve_family_union(
+        manifest, "alpha2.1", "alpha2.1", conversion_id=PAIR
+    ) == frozenset({"Textures"})
+
+
+def test_target_lod_family_runs_when_already_current():
+    manifest = UpgradeManifest(
+        current="alpha2.1",
+        versions=(
+            _version("alpha2", ("ALL",)),
+            _version("alpha2.1", ("LOD",)),
+        ),
+    )
+
+    assert resolve_family_union(
+        manifest, "alpha2.1", "alpha2.1", conversion_id=PAIR
+    ) == frozenset({"LOD"})
+
+
+def test_target_all_runs_full_build_when_already_current():
+    manifest = UpgradeManifest(
+        current="alpha2",
+        versions=(_version("alpha2", ("ALL",)),),
+    )
+
+    assert resolve_family_union(
+        manifest, "alpha2", "alpha2", conversion_id=PAIR
+    ) == frozenset({"ALL"})
 
 
 def test_target_scripts_family_joins_version_range_changes():
@@ -278,7 +353,7 @@ def test_target_scripts_family_joins_version_range_changes():
     ) == frozenset({"Terrain", "Scripts"})
 
 
-def test_historical_scripts_family_does_not_repeat_for_later_target():
+def test_historical_scripts_family_does_not_join_current_target_family():
     manifest = UpgradeManifest(
         current="alpha3",
         versions=(
@@ -290,4 +365,4 @@ def test_historical_scripts_family_does_not_repeat_for_later_target():
 
     assert resolve_family_union(
         manifest, "alpha3", "alpha3", conversion_id=PAIR
-    ) == frozenset()
+    ) == frozenset({"Terrain"})

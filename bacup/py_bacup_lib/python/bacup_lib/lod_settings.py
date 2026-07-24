@@ -28,6 +28,13 @@ PROFILE_FILENAMES = {
     PROFILE_PERFORMANCE: "hybrid-performance.fo76fo4.json",
 }
 
+PAIR_PROFILE_FILENAMES = {
+    "fo76:fo4": PROFILE_FILENAMES,
+    "skyrimse:fo4": {
+        PROFILE_HIGH_QUALITY: "high-quality.skyrimsefo4.json",
+    },
+}
+
 
 def normalize_profile(profile: str | None, lod_mode: str) -> str:
     value = (profile or PROFILE_AUTO).strip().lower().replace("_", "-")
@@ -38,8 +45,11 @@ def normalize_profile(profile: str | None, lod_mode: str) -> str:
     return value
 
 
-def profile_path(code_root: Path, profile: str) -> Path:
-    filename = PROFILE_FILENAMES[profile]
+def profile_path(code_root: Path, profile: str, pair_id: str = "fo76:fo4") -> Path:
+    pair_profiles = PAIR_PROFILE_FILENAMES.get(pair_id, {})
+    if profile not in pair_profiles:
+        raise ValueError(f"LOD profile '{profile}' is not available for {pair_id}")
+    filename = pair_profiles[profile]
     return code_root / "bacup" / "scripts" / "lod_settings" / filename
 
 
@@ -48,23 +58,28 @@ def load_profile_settings(
     *,
     profile: str | None,
     lod_mode: str,
+    pair_id: str = "fo76:fo4",
 ) -> dict:
     resolved = normalize_profile(profile, lod_mode)
     checked: list[Path] = []
     for root in code_roots:
-        path = profile_path(root, resolved)
+        path = profile_path(root, resolved, pair_id)
         checked.append(path)
         if path.is_file():
             with path.open(encoding="utf-8") as f:
-                return json.load(f)
+                settings = json.load(f)
+            settings["_pair_id"] = pair_id
+            return settings
 
-    if resolved == PROFILE_HIGH_QUALITY:
+    if pair_id == "fo76:fo4" and resolved == PROFILE_HIGH_QUALITY:
         for root in code_roots:
             legacy_path = root / "bacup" / "scripts" / "lod_settings.fo76fo4.json"
             checked.append(legacy_path)
             if legacy_path.is_file():
                 with legacy_path.open(encoding="utf-8") as f:
-                    return json.load(f)
+                    settings = json.load(f)
+                settings["_pair_id"] = pair_id
+                return settings
 
     searched = ", ".join(str(path) for path in checked)
     raise FileNotFoundError(

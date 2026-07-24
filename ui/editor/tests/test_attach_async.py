@@ -44,7 +44,10 @@ class TestPrepareAttachData:
         mock_prepared.nif = mock_nif
         mock_prepared.nif_id = "child_0"
 
-        with patch("ui.editor.nif_loader.prepare_nif_data", return_value=mock_prepared):
+        with patch(
+            "creation_lib.renderer.nif_loader.prepare_nif_data",
+            return_value=mock_prepared,
+        ):
             return prepare_attach_data(
                 filepath="child.nif",
                 texture_dirs=[],
@@ -152,6 +155,8 @@ class TestPollAttaching:
         mock_prepared_nif.nif_id = "child_0"
         mock_prepared_nif.filepath = "scope.nif"
         mock_prepared_nif.game_profile = None
+        mock_prepared_nif.texture_dirs = []
+        mock_prepared_nif.ba2_mgr = None
 
         mock_attach_data = MagicMock(spec=PreparedAttachData)
         mock_attach_data.prepared = mock_prepared_nif
@@ -174,12 +179,12 @@ class TestPollAttaching:
 
         with (
             patch(
-                "ui.editor.nif_loader.upload_nif_to_gpu",
+                "creation_lib.renderer.nif_loader.upload_nif_to_gpu",
                 return_value=(fake_scene_root, fake_nif),
             ),
             patch("ui.editor.app.AnimationManager"),
             patch("ui.editor.app.NifSession"),
-            patch("ui.editor.nif_loader._update_world_transforms"),
+            patch("creation_lib.renderer.nif_loader._update_world_transforms"),
             patch.object(app, "_rebuild_selection_bounds"),
             patch.object(app, "_find_child_connect_point", return_value=None),
             patch.object(app, "_get_cp_world_transform", return_value=MagicMock()),
@@ -232,7 +237,7 @@ class TestAttachNifAutoAsync:
 
         with (
             patch.object(app, "_detect_game_profile", return_value=None),
-            patch.object(app, "_build_texture_dirs", return_value=[]),
+            patch.object(app, "_build_texture_dirs", return_value=([], [], [])),
         ):
             NifEditorApp.attach_nif_auto(app, "child.nif")
 
@@ -253,7 +258,7 @@ class TestAttachNifAutoAsync:
 
         with (
             patch.object(app, "_detect_game_profile", return_value=None),
-            patch.object(app, "_build_texture_dirs", return_value=[]),
+            patch.object(app, "_build_texture_dirs", return_value=([], [], [])),
         ):
             # Should not raise
             NifEditorApp.attach_nif_auto(app, "child.nif")

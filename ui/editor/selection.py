@@ -9,6 +9,7 @@ world-space triangle data. On click, we unproject a ray from the camera,
 cull with spheres, then test actual triangles for the closest hit.
 """
 from __future__ import annotations
+from dataclasses import dataclass
 import logging
 import math
 
@@ -21,6 +22,16 @@ _log = logging.getLogger("nif_editor.selection")
 
 # Small epsilon for ray intersection tests
 _EPS = 1e-6
+
+
+@dataclass(frozen=True)
+class CollisionShapeSelection:
+    """Selection address for a virtual shape inside bhkPhysicsSystem data."""
+
+    nif_id: str
+    block_id: int
+    body_id: int
+    shape_index: int | None
 
 
 def _ray_sphere_t(origin: glm.vec3, direction: glm.vec3,
@@ -112,6 +123,7 @@ class SelectionManager:
         self._selected_nif_id: str | None = None
         self._selected_block_id: int | None = None
         self._selected_block_id_override: int | None = None
+        self._selected_collision_shape: CollisionShapeSelection | None = None
         self._callbacks: list = []
         # Store only node references — read bound_center/bound_radius live
         # so picking stays correct after gizmo moves update world_transform.
@@ -156,6 +168,7 @@ class SelectionManager:
         self._selected = None
         self._selected_block_id = None
         self._selected_nif_id = None
+        self._selected_collision_shape = None
 
     def _get_world_verts(self, node: SceneNode) -> np.ndarray | None:
         """Get world-space vertex positions for a node's mesh."""
@@ -259,6 +272,7 @@ class SelectionManager:
         self._selected = node
         self._selected_block_id = node.block_id
         self._selected_nif_id = node.nif_id
+        self._selected_collision_shape = None
         _log.debug("Selected: %s (block %d, nif %s)", node.name, node.block_id, node.nif_id)
         if node is not old:
             self._notify(self._selected_nif_id, self._selected_block_id)
@@ -269,6 +283,30 @@ class SelectionManager:
             if node.nif_id == nif_id and node.block_id == block_id:
                 self.select(node)
                 return
+        self._selected = None
+        self._selected_nif_id = nif_id
+        self._selected_block_id = block_id
+        self._selected_collision_shape = None
+        self._notify(nif_id, block_id)
+
+    def select_collision_shape(
+        self,
+        nif_id: str,
+        block_id: int,
+        body_id: int,
+        shape_index: int | None,
+    ):
+        """Select a decoded shape that has no standalone NIF block."""
+        self._selected = None
+        self._selected_nif_id = nif_id
+        self._selected_block_id = block_id
+        self._selected_collision_shape = CollisionShapeSelection(
+            nif_id=nif_id,
+            block_id=block_id,
+            body_id=body_id,
+            shape_index=shape_index,
+        )
+        self._notify(nif_id, block_id)
 
     def select_by_block_id(self, block_id: int):
         """Legacy: select by block_id only. Ambiguous in multi-NIF mode."""
@@ -280,8 +318,10 @@ class SelectionManager:
                 self.select(node)
                 return
         # Block not in spheres (not a mesh) — still track and notify
+        self._selected = None
         self._selected_block_id = block_id
         self._selected_nif_id = None
+        self._selected_collision_shape = None
         self._notify(None, block_id)
 
     def deselect(self):
@@ -290,6 +330,7 @@ class SelectionManager:
         self._selected_block_id = None
         self._selected_nif_id = None
         self._selected_block_id_override = None
+        self._selected_collision_shape = None
         self._notify(None, None)
 
     def _notify(self, nif_id: str | None, block_id: int | None):
@@ -319,3 +360,7 @@ class SelectionManager:
             self._selected_block_id_override = None
             return bid
         return self._selected_block_id
+
+    @property
+    def selected_collision_shape(self) -> CollisionShapeSelection | None:
+        return self._selected_collision_shape

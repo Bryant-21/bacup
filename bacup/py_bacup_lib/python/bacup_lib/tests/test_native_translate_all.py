@@ -19,6 +19,11 @@ from bacup_lib.run import ConversionRun
 from creation_lib.esp import Plugin
 from creation_lib.esp.api import export_data, import_json
 from creation_lib.esp.model import Record, Subrecord
+from creation_lib.esp.native_runtime import (
+    plugin_handle_close,
+    plugin_handle_load,
+    plugin_handle_record_subrecords,
+)
 
 # ---------------------------------------------------------------------------
 # Fixture path — walk up to repo root
@@ -204,6 +209,119 @@ def _fo76_dialogue_source_json(plugin_name: str) -> str:
 """
 
 
+def _fo76_combined_scene_dialogue_source_json(plugin_name: str) -> str:
+    def text(value: str) -> str:
+        return (value + "\0").encode().hex()
+
+    quest = {
+        "signature": "QUST",
+        "form_id": "000800",
+        "form_version": 257,
+        "subrecords": [
+            {"signature": "EDID", "data_hex": text("ParentQuest")},
+        ],
+    }
+    player_dial = {
+        "signature": "DIAL",
+        "form_id": "000801",
+        "form_version": 257,
+        "subrecords": [
+            {"signature": "EDID", "data_hex": text("PlayerTopic")},
+            {"signature": "PNAM", "data_hex": "0000803F"},
+            {"signature": "QNAM", "data_hex": "00080000"},
+            {"signature": "DATA", "data_hex": "00000000"},
+            {"signature": "TIFC", "data_hex": "01000000"},
+            {"signature": "INFO", "data_hex": "03080000"},
+        ],
+    }
+    npc_dial = {
+        "signature": "DIAL",
+        "form_id": "000802",
+        "form_version": 257,
+        "subrecords": [
+            {"signature": "EDID", "data_hex": text("NpcTopic")},
+            {"signature": "PNAM", "data_hex": "0000803F"},
+            {"signature": "QNAM", "data_hex": "00080000"},
+            {"signature": "DATA", "data_hex": "00000000"},
+            {"signature": "TIFC", "data_hex": "00000000"},
+        ],
+    }
+    combined_info = {
+        "signature": "INFO",
+        "form_id": "000803",
+        "form_version": 257,
+        "subrecords": [
+            {"signature": "ENAM", "data_hex": "00000000"},
+            {
+                "signature": "TRDA",
+                "data_hex": "000000000100000000000000FFFFFFFFFFFFFFFF",
+            },
+            {
+                "signature": "NAM1",
+                "data_hex": text("God damn it. *sigh*"),
+            },
+            {"signature": "NAM2", "data_hex": "00"},
+            {"signature": "NAM3", "data_hex": "00"},
+            {"signature": "NAM4", "data_hex": "00"},
+            {
+                "signature": "RNAM",
+                "data_hex": text("The door's sealed tight. No one's getting in."),
+            },
+            {"signature": "TSCE", "data_hex": "04080000"},
+        ],
+    }
+    scene = {
+        "signature": "SCEN",
+        "form_id": "000804",
+        "form_version": 257,
+        "subrecords": [
+            {"signature": "EDID", "data_hex": text("CombinedDialogueScene")},
+            {"signature": "PNAM", "data_hex": "00080000"},
+            {"signature": "ANAM", "data_hex": "03000000"},
+            {"signature": "INAM", "data_hex": "38000000"},
+            {"signature": "ESCE", "data_hex": "02080000"},
+            {"signature": "ESCS", "data_hex": "01080000"},
+            {"signature": "DTGT", "data_hex": "00000000"},
+        ],
+    }
+    return json.dumps(
+        {
+            "plugin": plugin_name,
+            "game": "fo76",
+            "header": {"version": 1.0, "next_object_id": "000805"},
+            "items": [
+                {
+                    "type": "group",
+                    "label_text": "QUST",
+                    "group_type": 0,
+                    "children": [quest],
+                },
+                {
+                    "type": "group",
+                    "label_text": "DIAL",
+                    "group_type": 0,
+                    "children": [
+                        player_dial,
+                        {
+                            "type": "group",
+                            "label_hex": "01080000",
+                            "group_type": 7,
+                            "children": [combined_info],
+                        },
+                        npc_dial,
+                    ],
+                },
+                {
+                    "type": "group",
+                    "label_text": "SCEN",
+                    "group_type": 0,
+                    "children": [scene],
+                },
+            ],
+        }
+    )
+
+
 def _exported_signatures(items) -> set[str]:
     signatures: set[str] = set()
     for item in items:
@@ -253,6 +371,35 @@ class TestTranslateAll:
             assert stats["records_failed"] == 0, (
                 f"expected 0 failed records, got {stats['records_failed']}"
             )
+
+    def test_translate_all_preserves_short_fnv_inline_lstring(self, tmp_path):
+        source_path = _write_plugin(
+            tmp_path / "FalloutNV.esm",
+            game="fnv",
+            records=[
+                Record(
+                    signature="MISC",
+                    form_id=0x000800,
+                    form_version=15,
+                    subrecords=[
+                        Subrecord("EDID", b"DrinkingGlass01\0"),
+                        Subrecord("FULL", b"Cup\0"),
+                    ],
+                )
+            ],
+        )
+        with _create_run(source_path, source_game="fnv") as run:
+            stats = _native().conversion_run_translate_all(run.id)
+            assert stats["records_translated"] == 1
+            target_path = _save_target(run, tmp_path)
+
+        handle = plugin_handle_load(str(target_path), game="fo4")
+        try:
+            subrecords = plugin_handle_record_subrecords(handle, 0x000800) or []
+            full = next(data for signature, data, _ in subrecords if signature == "FULL")
+            assert full == b"Cup\0"
+        finally:
+            plugin_handle_close(handle)
 
     def test_translate_all_honors_zero_records_limit(self):
         m = _native()
@@ -505,6 +652,74 @@ class TestTranslateAll:
                 child.get("signature") == "INFO"
                 for child in topic_child_groups[0]["children"]
             )
+
+    def test_whole_plugin_splits_fo76_combined_player_prompt_and_npc_response(
+        self,
+        tmp_path,
+    ):
+        m = _native()
+        source_path = _write_imported_plugin(
+            tmp_path / "SourceCombinedDialogue.esm",
+            _fo76_combined_scene_dialogue_source_json("SourceCombinedDialogue.esm"),
+        )
+        target_name = "OutputCombinedDialogue.esm"
+        with _create_run(
+            source_path,
+            source_game="fo76",
+            target_plugin_name=target_name,
+            config={
+                "preserve_source_ids": True,
+                "is_whole_plugin": True,
+            },
+        ) as run:
+            stats = m.conversion_run_translate_all(run.id)
+            assert stats["by_signature"]["INFO"]["translated"] == 1
+            exported = _target_export(run, tmp_path, target_name)
+
+        quest_group = next(
+            item for item in exported["items"] if item.get("label_text") == "QUST"
+        )
+        quest_child = next(
+            item
+            for item in quest_group["children"]
+            if item.get("type") == "group"
+            and item.get("group_type") == 10
+            and item.get("label_hex") == "00080000"
+        )
+        topic_groups = {
+            item["label_hex"]: item
+            for item in quest_child["children"]
+            if item.get("type") == "group" and item.get("group_type") == 7
+        }
+        player_info = next(
+            child
+            for child in topic_groups["01080000"]["children"]
+            if child.get("signature") == "INFO"
+        )
+        npc_info = next(
+            child
+            for child in topic_groups["02080000"]["children"]
+            if child.get("signature") == "INFO"
+        )
+
+        def fields(record: dict) -> dict[str, str]:
+            return {
+                field["signature"]: field["data_hex"]
+                for field in record["subrecords"]
+            }
+
+        player_fields = fields(player_info)
+        npc_fields = fields(npc_info)
+        assert bytes.fromhex(player_fields["NAM1"]).rstrip(b"\0").decode() == (
+            "The door's sealed tight. No one's getting in."
+        )
+        assert bytes.fromhex(npc_fields["NAM1"]).rstrip(b"\0").decode() == (
+            "God damn it. *sigh*"
+        )
+        assert "RNAM" in player_fields
+        assert "RNAM" not in npc_fields
+        assert "TSCE" not in player_fields
+        assert npc_fields["TSCE"] == "04080000"
 
     def test_whole_plugin_translate_all_excluding_quest_suppresses_dialogue_tail(
         self,

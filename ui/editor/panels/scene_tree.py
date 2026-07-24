@@ -16,6 +16,8 @@ from imgui_bundle import imgui
 from creation_lib.nif.types import categorize_block_type
 
 from .collision_info import (
+    havok_shape_detail_lines,
+    inspect_physics_system_shapes,
     is_collision_block,
     summarize_collision_block,
     summarize_np_body_shape,
@@ -53,6 +55,7 @@ class SceneTreePanel:
         self.window_name = "Scene Tree"
         self._selected_nif_id = None
         self._selected_block_id = None
+        self._selected_collision_shape = None
         self._filter_text = ""
         self._insert_search = ""
         self._expand_path = set()       # Block IDs to force-open in tree
@@ -66,6 +69,10 @@ class SceneTreePanel:
         """Sync tree selection when viewport selection changes."""
         self._selected_nif_id = nif_id
         self._selected_block_id = block_id
+        selection_mgr = getattr(self.app, "selection_mgr", None)
+        self._selected_collision_shape = getattr(
+            selection_mgr, "selected_collision_shape", None
+        )
         if block_id is not None:
             self._expand_to_block(block_id)
             self._scroll_to_selected = True
@@ -307,7 +314,8 @@ class SceneTreePanel:
 
         # Determine if this has any ref children
         ref_fields = list(self._get_ref_fields(block, nif))
-        has_children = len(ref_fields) > 0
+        has_havok_shapes = type_name == "bhkPhysicsSystem"
+        has_children = len(ref_fields) > 0 or has_havok_shapes
 
         # BSConnectPoint::Parents has expandable connect point entries
         if type_name == "BSConnectPoint::Parents":
@@ -316,7 +324,16 @@ class SceneTreePanel:
                 has_children = True
         is_node = schema.is_subtype_of(type_name, "NiNode")
         is_shape = schema.is_subtype_of(type_name, "BSTriShape")
-        is_selected = (block_id == self._selected_block_id and nif_id == self._selected_nif_id)
+        virtual_selection = self._selected_collision_shape
+        is_selected = (
+            block_id == self._selected_block_id
+            and nif_id == self._selected_nif_id
+            and not (
+                virtual_selection is not None
+                and virtual_selection.nif_id == nif_id
+                and virtual_selection.block_id == block_id
+            )
+        )
 
         # Color coding by category (dimmed when hidden)
         category = categorize_block_type(type_name, schema)
@@ -408,6 +425,11 @@ class SceneTreePanel:
             if type_name == "BSConnectPoint::Parents":
                 self._draw_connect_point_children(nif, block, nif_id=nif_id)
 
+            if has_havok_shapes:
+                havok_shapes = inspect_physics_system_shapes(block)
+                if havok_shapes:
+                    self._draw_havok_shapes(block_id, havok_shapes, nif_id)
+
             imgui.tree_pop()
 
     @staticmethod
@@ -448,6 +470,7 @@ class SceneTreePanel:
         # Set tree state AFTER any deselect callback so the highlight sticks.
         self._selected_nif_id = nif_id
         self._selected_block_id = block_id
+        self._selected_collision_shape = None
         # For blocks without a SceneNode (shaders, textures, etc.) and for
         # the header sentinel, select_by_id won't notify — call properties
         # directly so it refreshes.
@@ -455,6 +478,115 @@ class SceneTreePanel:
             self.app.properties._on_select(nif_id, block_id)
         # Update active NIF
         if nif_id and nif_id in self.app.registry.sessions:
+            self.app.registry.active_id = nif_id
+
+    def _draw_havok_shapes(self, block_id: int, shapes, nif_id: str) -> None:
+        """Draw selectable virtual rows decoded from bhkPhysicsSystem data."""
+        for body in shapes:
+            parts = []
+            if body.layer:
+                parts.append(body.layer)
+            if body.materials:
+                parts.append(body.materials[0])
+            if body.sub_shapes:
+                parts.append(f"{len(body.sub_shapes)} sub-shapes")
+            suffix = f"  ({', '.join(parts)})" if parts else ""
+            label = f"Body {body.body_id}: {body.display_type}{suffix}"
+            selected = self._is_havok_shape_selected(
+                nif_id, block_id, body.body_id, None
+            )
+            flags = imgui.TreeNodeFlags_.open_on_arrow.value
+            if not body.sub_shapes:
+                flags |= imgui.TreeNodeFlags_.leaf.value
+            if selected:
+                flags |= imgui.TreeNodeFlags_.selected.value
+
+            imgui.push_style_color(
+                imgui.Col_.text.value, imgui.ImVec4(*CATEGORY_COLORS["Collision"])
+            )
+            opened = imgui.tree_node_ex(
+                f"{label}##havok_body_{nif_id}_{block_id}_{body.body_id}", flags
+            )
+            if imgui.is_item_clicked(0):
+                self._select_havok_shape(nif_id, block_id, body.body_id, None)
+            if imgui.is_item_hovered():
+                self._draw_havok_shape_tooltip(body)
+            imgui.pop_style_color()
+
+            if opened:
+                for shape in body.sub_shapes:
+                    self._draw_havok_sub_shape(block_id, shape, nif_id)
+                imgui.tree_pop()
+
+    def _draw_havok_sub_shape(self, block_id: int, shape, nif_id: str) -> None:
+        parts = []
+        if shape.vertex_count is not None:
+            parts.append(f"{shape.vertex_count} verts")
+        if shape.triangle_count is not None:
+            parts.append(f"{shape.triangle_count} tris")
+        if shape.materials:
+            parts.append(shape.materials[0])
+        suffix = f"  ({', '.join(parts)})" if parts else ""
+        label = f"[{shape.shape_index}] {shape.display_type}{suffix}"
+        selected = self._is_havok_shape_selected(
+            nif_id, block_id, shape.body_id, shape.shape_index
+        )
+        flags = (
+            imgui.TreeNodeFlags_.leaf.value
+            | imgui.TreeNodeFlags_.no_tree_push_on_open.value
+        )
+        if selected:
+            flags |= imgui.TreeNodeFlags_.selected.value
+        imgui.push_style_color(
+            imgui.Col_.text.value, imgui.ImVec4(*CATEGORY_COLORS["Collision"])
+        )
+        imgui.tree_node_ex(
+            f"{label}##havok_shape_{nif_id}_{block_id}_{shape.body_id}_{shape.shape_index}",
+            flags,
+        )
+        if imgui.is_item_clicked(0):
+            self._select_havok_shape(nif_id, block_id, shape.body_id, shape.shape_index)
+        if imgui.is_item_hovered():
+            self._draw_havok_shape_tooltip(shape)
+        imgui.pop_style_color()
+
+    @staticmethod
+    def _draw_havok_shape_tooltip(shape) -> None:
+        imgui.begin_tooltip()
+        for line in havok_shape_detail_lines(shape):
+            imgui.text(line)
+        imgui.end_tooltip()
+
+    def _is_havok_shape_selected(
+        self,
+        nif_id: str,
+        block_id: int,
+        body_id: int,
+        shape_index: int | None,
+    ) -> bool:
+        selected = self._selected_collision_shape
+        return bool(
+            selected is not None
+            and selected.nif_id == nif_id
+            and selected.block_id == block_id
+            and selected.body_id == body_id
+            and selected.shape_index == shape_index
+        )
+
+    def _select_havok_shape(
+        self,
+        nif_id: str,
+        block_id: int,
+        body_id: int,
+        shape_index: int | None,
+    ) -> None:
+        selection_mgr = getattr(self.app, "selection_mgr", None)
+        if selection_mgr is not None:
+            selection_mgr.select_collision_shape(nif_id, block_id, body_id, shape_index)
+            self._selected_collision_shape = selection_mgr.selected_collision_shape
+        self._selected_nif_id = nif_id
+        self._selected_block_id = block_id
+        if nif_id in self.app.registry.sessions:
             self.app.registry.active_id = nif_id
 
     def _draw_connect_point_children(self, nif, block, nif_id="main"):

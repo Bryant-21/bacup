@@ -18,6 +18,7 @@ pub mod backfill_placed_loc_ref_types;
 pub mod clean_leveled_item_entries;
 pub mod clear_interior_hand_changed;
 pub mod creature;
+pub(crate) mod curve_table;
 pub mod drop_incompatible_player_idles;
 pub mod drop_untranslatable_loadscreen_records;
 pub mod encounter_zones;
@@ -27,6 +28,7 @@ pub mod filter_non_vanilla_races_for_weapon_roots;
 pub mod fix_invalid_target_formkeys;
 pub mod fix_stag_sound_refs;
 pub mod fix_water_spell_refs;
+pub mod flatten_npc_property_curves;
 pub mod flatten_omod_includes;
 pub mod gate_runtime_controlled_placed_refs;
 pub mod harvest_modt;
@@ -45,6 +47,7 @@ pub mod null_dangling_own_plugin_refs;
 pub mod null_dangling_vmad_refs;
 pub mod null_invalid_qust_alla_keywords;
 pub mod preserve_packin_storage_cells;
+pub mod promote_placed_custom_material_swaps;
 pub mod prune_faction_relations;
 pub mod prune_orphaned_records;
 pub mod recover_fo76_leveled_list_values;
@@ -52,8 +55,11 @@ pub mod ref_index;
 pub mod remap_idle_anchor_actions;
 pub mod remap_light_gobo_to_fo4_base;
 pub mod remap_struct_internal_formids;
+pub mod repair_omod_target_keywords;
 pub mod repair_placed_linked_refs;
 pub mod repair_placed_teleport_doors;
+pub mod repair_quest_completion_xp;
+pub mod repair_radio_scene_properties;
 pub mod repair_scen_htid_sound_refs;
 pub mod resolve_addon_node_indices;
 pub mod resolve_injected_stub_refs;
@@ -186,6 +192,7 @@ pub struct FixupReport {
     pub records_dropped: u32,
     pub records_added: u32,
     pub warnings: Vec<Sym>,
+    pub diagnostics: Vec<Sym>,
     pub elapsed_ms: u64,
     pub iteration: u32,
     pub status: FixupStatus,
@@ -212,6 +219,7 @@ impl FixupReport {
             records_dropped: 0,
             records_added: 0,
             warnings: Vec::new(),
+            diagnostics: Vec::new(),
             elapsed_ms: 0,
             iteration: 1,
             status: FixupStatus::Ran,

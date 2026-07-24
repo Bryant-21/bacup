@@ -174,7 +174,8 @@ fn remap_value(value: &mut FieldValue, ctx: &AnchorRemapCtx) -> bool {
             changed
         }
         FieldValue::FormKey(fk) => {
-            if fk.plugin == ctx.output_plugin_sym && ctx.remappable.contains(&(fk.local & 0x00FF_FFFF))
+            if fk.plugin == ctx.output_plugin_sym
+                && ctx.remappable.contains(&(fk.local & 0x00FF_FFFF))
             {
                 fk.plugin = ctx.fo4_plugin_sym;
                 true
@@ -225,9 +226,16 @@ mod tests {
 
     fn ctx(interner: &StringInterner) -> AnchorRemapCtx {
         AnchorRemapCtx {
-            remappable: [0x02FFA9u32, 0x05704C, 0x05DD59, 0x02CBA4, 0x0489ED, 0x046BAF]
-                .into_iter()
-                .collect(),
+            remappable: [
+                0x02FFA9u32,
+                0x05704C,
+                0x05DD59,
+                0x02CBA4,
+                0x0489ED,
+                0x046BAF,
+            ]
+            .into_iter()
+            .collect(),
             output_master_index: 2, // e.g. [Fallout4.esm, DLCRobot.esm] + output
             fo4_master_index: 0,
             output_plugin_sym: interner.intern("SeventySix.esm"),
@@ -331,6 +339,9 @@ mod tests {
             panic!("expected fk");
         };
         assert_eq!(parent.plugin, c.fo4_plugin_sym);
-        assert_eq!(previous.plugin, c.output_plugin_sym, "FO76-only action stays local");
+        assert_eq!(
+            previous.plugin, c.output_plugin_sym,
+            "FO76-only action stays local"
+        );
     }
 }

@@ -70,14 +70,16 @@ use crate::session::PluginSession;
 /// scripts and never reads the INFO fragment trailer, so listing INFO only
 /// reaches the script-property objects.
 ///
-/// BOOK/FURN/MISC/MSTT/NPC_/REFR and SCEN fragment scripts carry the same
+/// BOOK/FURN/MISC/MSTT/NPC_/REFR/ACHR and SCEN fragment scripts carry the same
 /// standard VMAD object-property layouts and use this same resolver policy:
 /// keep resolving target-master/output refs; null only slots that resolve
 /// nowhere.
 pub(crate) const TOUCHED_RECORD_SIGS: &[&str] = &[
     "ACTI", "TERM", "DOOR", "NOTE", "CONT", "MGEF", "PACK", "INFO", "QUST", "BOOK", "FURN", "MISC",
-    "MSTT", "NPC_", "REFR", "SCEN",
+    "MSTT", "NPC_", "REFR", "ACHR", "SCEN",
 ];
+
+const FO4_INTRINSIC_AGGRESSION_ACTOR_VALUE: u32 = 0x0002_BC;
 
 pub struct NullDanglingVmadRefsFixup;
 
@@ -200,6 +202,9 @@ pub(crate) struct VmadResolver {
     /// master_index → object-id set, parallel to the target master load order.
     /// `Arc` so the store2 master-scan cache can share them across sweeps.
     master_objids: Vec<Arc<FxHashSet<u32>>>,
+    /// Encoded master index of Fallout4.esm for an FO4 target, when that master
+    /// is actually present in the output plugin header.
+    fo4_base_master_index: Option<u32>,
     /// Number of target masters; the output plugin's own master byte is this.
     output_master_index: u32,
     /// When set, a slot that resolves NOWHERE is LEFT intact instead of nulled
@@ -233,6 +238,10 @@ impl VmadResolver {
         session: &mut PluginSession,
         master_objids: Vec<Arc<FxHashSet<u32>>>,
     ) -> Result<Self, FixupError> {
+        let fo4_base_master_index = discover_fo4_base_master_index(
+            session.target_slot().parsed.game.as_deref(),
+            session.target_masters(),
+        );
         let target_id = session.target_id();
         let output_objids = session
             .local_object_ids_in_handle(target_id)
@@ -241,6 +250,7 @@ impl VmadResolver {
         Ok(Self {
             output_objids,
             master_objids,
+            fo4_base_master_index,
             output_master_index,
             defer_null: false,
         })
@@ -268,6 +278,13 @@ impl VmadResolver {
         }
         let master_index = raw >> 24;
         let object_id = raw & 0x00FF_FFFF;
+        // Aggression is an engine-intrinsic FO4 ActorValue used in vanilla VMAD
+        // bindings, but it has no physical AVIF record in Fallout4.esm.
+        if self.fo4_base_master_index == Some(master_index)
+            && object_id == FO4_INTRINSIC_AGGRESSION_ACTOR_VALUE
+        {
+            return None;
+        }
         if master_index == self.output_master_index {
             return if self.output_objids.contains(&object_id) {
                 None
@@ -289,6 +306,19 @@ impl VmadResolver {
             None => None,
         }
     }
+}
+
+fn discover_fo4_base_master_index(
+    target_game: Option<&str>,
+    target_masters: &[String],
+) -> Option<u32> {
+    if target_game != Some("fo4") {
+        return None;
+    }
+    target_masters
+        .iter()
+        .position(|name| name.eq_ignore_ascii_case("Fallout4.esm"))
+        .and_then(|index| u32::try_from(index).ok())
 }
 
 pub(crate) fn null_dangling_in_record(record: &mut Record, resolver: &VmadResolver) -> bool {
@@ -648,8 +678,29 @@ mod tests {
                 .iter()
                 .map(|ids| Arc::new(ids.iter().copied().collect()))
                 .collect(),
+            fo4_base_master_index: None,
             output_master_index: masters.len() as u32,
             defer_null: false,
+        }
+    }
+
+    fn resolver_for_target(
+        output: &[u32],
+        masters: &[&[u32]],
+        target_game: Option<&str>,
+        target_master_names: &[&str],
+    ) -> VmadResolver {
+        assert_eq!(masters.len(), target_master_names.len());
+        let target_master_names: Vec<String> = target_master_names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        VmadResolver {
+            fo4_base_master_index: discover_fo4_base_master_index(
+                target_game,
+                &target_master_names,
+            ),
+            ..resolver(output, masters)
         }
     }
 
@@ -663,6 +714,14 @@ mod tests {
         out.extend_from_slice(&alias.to_le_bytes());
         let offset = out.len();
         out.extend_from_slice(&raw.to_le_bytes());
+        offset
+    }
+
+    fn push_objfmt1_object(out: &mut Vec<u8>, alias: i16, raw: u32) -> usize {
+        let offset = out.len();
+        out.extend_from_slice(&raw.to_le_bytes());
+        out.extend_from_slice(&alias.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
         offset
     }
 
@@ -685,6 +744,45 @@ mod tests {
             // objfmt 2 object: [u16][i16 alias][u32 formid]
             offsets.push(push_objfmt2_object(&mut out, 0, *raw));
         }
+        (out, offsets)
+    }
+
+    fn vmad_objfmt1(props: &[u32]) -> (Vec<u8>, Vec<usize>) {
+        let mut out = Vec::new();
+        out.extend_from_slice(&5u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        push_string(&mut out, "Script");
+        out.push(0);
+        out.extend_from_slice(&(props.len() as u16).to_le_bytes());
+        let mut offsets = Vec::new();
+        for (i, raw) in props.iter().enumerate() {
+            push_string(&mut out, &format!("P{i}"));
+            out.push(1);
+            out.push(0);
+            offsets.push(push_objfmt1_object(&mut out, 0, *raw));
+        }
+        (out, offsets)
+    }
+
+    fn qust_fragment_vmad_objfmt2(props: &[u32]) -> (Vec<u8>, Vec<usize>) {
+        let mut out = Vec::new();
+        out.extend_from_slice(&5u16.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // script count
+        out.push(4); // fragment version
+        out.extend_from_slice(&0u16.to_le_bytes()); // fragment count
+        push_string(&mut out, "Fragments:Quests:Fixture");
+        out.push(0); // script flags
+        out.extend_from_slice(&(props.len() as u16).to_le_bytes());
+        let mut offsets = Vec::new();
+        for (i, raw) in props.iter().enumerate() {
+            push_string(&mut out, &format!("P{i}"));
+            out.push(1); // type = Object
+            out.push(0); // status
+            offsets.push(push_objfmt2_object(&mut out, -1, *raw));
+        }
+        out.extend_from_slice(&0u16.to_le_bytes()); // alias count
         (out, offsets)
     }
 
@@ -750,6 +848,66 @@ mod tests {
         assert_eq!(raw_at(&b, offs[0]), 0);
     }
 
+    #[test]
+    fn keeps_fo4_intrinsic_aggression_for_actual_master_in_both_object_formats() {
+        let r = resolver_for_target(&[0x111111], &[&[]], Some("fo4"), &["Fallout4.esm"]);
+
+        let (mut objfmt1, objfmt1_offsets) = vmad_objfmt1(&[0x0000_02BC]);
+        assert!(!null_dangling_in_vmad_blob(&mut objfmt1, &r, b"ACTI"));
+        assert_eq!(raw_at(&objfmt1, objfmt1_offsets[0]), 0x0000_02BC);
+
+        let (mut objfmt2, objfmt2_offsets) = qust_fragment_vmad_objfmt2(&[0x0000_02BC]);
+        assert!(!null_dangling_in_vmad_blob(&mut objfmt2, &r, b"QUST"));
+        assert_eq!(raw_at(&objfmt2, objfmt2_offsets[0]), 0x0000_02BC);
+    }
+
+    #[test]
+    fn nulls_fo4_aggression_object_id_for_non_fo4_target() {
+        let r = resolver_for_target(&[0x111111], &[&[]], Some("fo76"), &["Fallout4.esm"]);
+        let (mut b, offsets) = vmad_objfmt2(&[0x0000_02BC]);
+
+        assert!(null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
+        assert_eq!(raw_at(&b, offsets[0]), 0);
+    }
+
+    #[test]
+    fn nulls_fo4_aggression_object_id_at_wrong_master_index() {
+        let r = resolver_for_target(
+            &[0x111111],
+            &[&[], &[]],
+            Some("fo4"),
+            &["Other.esm", "Fallout4.esm"],
+        );
+        let (mut b, offsets) = vmad_objfmt2(&[0x0000_02BC]);
+
+        assert!(null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
+        assert_eq!(raw_at(&b, offsets[0]), 0);
+    }
+
+    #[test]
+    fn keeps_fo4_aggression_at_nonzero_discovered_master_index() {
+        let r = resolver_for_target(
+            &[0x111111],
+            &[&[], &[]],
+            Some("fo4"),
+            &["Other.esm", "Fallout4.esm"],
+        );
+        let (mut b, offsets) = vmad_objfmt2(&[0x0100_02BC]);
+
+        assert!(!null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
+        assert_eq!(raw_at(&b, offsets[0]), 0x0100_02BC);
+    }
+
+    #[test]
+    fn nulls_arbitrary_absent_fo4_object_next_to_intrinsic_aggression() {
+        let r = resolver_for_target(&[0x111111], &[&[]], Some("fo4"), &["Fallout4.esm"]);
+        let (mut b, offsets) = qust_fragment_vmad_objfmt2(&[0x0000_02BC, 0x00FF_FFFE]);
+
+        assert!(null_dangling_in_vmad_blob(&mut b, &r, b"QUST"));
+        assert_eq!(raw_at(&b, offsets[0]), 0x0000_02BC);
+        assert_eq!(raw_at(&b, offsets[1]), 0);
+    }
+
     /// 7 empty masters → the output plugin's own master byte is 0x07, matching
     /// the real FO76→FO4 output (Fallout4 + 6 DLCs).
     fn seven_masters() -> Vec<&'static [u32]> {
@@ -797,6 +955,18 @@ mod tests {
         assert_eq!(raw_at(&b, offs[0]), 0x075A77D3);
         assert_eq!(raw_at(&b, offs[1]), 0);
         assert_eq!(raw_at(&b, offs[2]), 0x00042241);
+    }
+
+    #[test]
+    fn repairs_reported_achr_object_formids() {
+        assert!(TOUCHED_RECORD_SIGS.contains(&"ACHR"));
+        let r = resolver(&[0x58912C, 0x589134, 0x589136], &seven_masters());
+        let (mut b, offs) = vmad_objfmt2(&[0x0058912C, 0x00589134, 0x00589136]);
+
+        assert!(null_dangling_in_vmad_blob(&mut b, &r, b"ACHR"));
+        assert_eq!(raw_at(&b, offs[0]), 0x0758912C);
+        assert_eq!(raw_at(&b, offs[1]), 0x07589134);
+        assert_eq!(raw_at(&b, offs[2]), 0x07589136);
     }
 
     #[test]

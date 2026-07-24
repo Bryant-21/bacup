@@ -75,8 +75,8 @@ def test_base_workspace_without_body_has_no_user_guide():
     assert ws.get_user_guide() is None
 
 
-def test_base_workspace_with_body_toggles_generic_guide():
-    from creation_lib.ui.shell import BaseWorkspace
+def test_base_workspace_with_body_toggles_generic_guide(monkeypatch):
+    from creation_lib.ui.shell import BaseWorkspace, base_workspace
 
     class GuideWorkspace(BaseWorkspace):
         name = "Example"
@@ -89,6 +89,9 @@ def test_base_workspace_with_body_toggles_generic_guide():
     assert guide.title == "Example User Guide"
     assert guide.window_id == "user_guide_example"
     assert ws._show_user_guide is False
+    # toggle_user_guide() calls hello_imgui.get_runner_params(), which raises
+    # against the real imgui_bundle without a live ImGui runner.
+    monkeypatch.setattr(base_workspace, "hello_imgui", MagicMock())
     ws.toggle_user_guide()
     assert ws._show_user_guide is True
 

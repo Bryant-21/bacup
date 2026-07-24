@@ -20,7 +20,7 @@ from ui.editor.panels.validation import ValidationPanel
 _ALL_GAMES = [
     pytest.param("fo4", 130, "Fallout 4", id="fo4"),
     pytest.param("skyrimse", 100, "Skyrim Special Edition", id="skyrimse"),
-    pytest.param("fo76", 150, "Fallout 76", id="fo76"),
+    pytest.param("fo76", 155, "Fallout 76", id="fo76"),
     pytest.param("starfield", 170, "Starfield", id="starfield"),
 ]
 

@@ -23,7 +23,9 @@
 //! For each REFR carrying an `XTEL`, the door FormID (offset 0) is rewritten to the
 //! own plugin when it currently names a target MASTER but an own REFR exists at the
 //! same object-id (the preserved partner door); the transition CELL (offset 32) is
-//! rewritten the same way against own CELLs. Doors already pointing at the own
+//! rewritten the same way against own CELLs. FO76 is masterless, so the own record
+//! wins even when a FO4 master happens to contain the same object-id. Doors already
+//! pointing at the own
 //! plugin (correct exterior/worldspace doors, or interior doors that happened to be
 //! emitted via the cell-slice path) are a no-op (idempotent). Object-ids are
 //! preserved across this conversion, so the own record at the door's object-id IS
@@ -92,6 +94,18 @@ impl FinalRefResolver {
         } else {
             RefResolution::Dangling
         }
+    }
+
+    fn resolve_source_own(&self, raw: u32) -> RefResolution {
+        let object_id = raw & 0x00FF_FFFF;
+        let load_index = raw >> 24;
+        if object_id != 0
+            && load_index < self.output_master_index
+            && self.output_objids.contains(&object_id)
+        {
+            return RefResolution::Repair((self.output_master_index << 24) | object_id);
+        }
+        self.resolve(raw)
     }
 }
 
@@ -310,11 +324,11 @@ fn repair_refr_subrecords(
 
             if sig == "XTEL" {
                 let door = read_formid(&subrecord.data, XTEL_DOOR_OFFSET)
-                    .map(|raw| refr_resolver.resolve(raw))
+                    .map(|raw| refr_resolver.resolve_source_own(raw))
                     .unwrap_or(RefResolution::Dangling);
                 let transition = read_formid(&subrecord.data, XTEL_TRANSITION_OFFSET)
                     .filter(|raw| *raw != 0)
-                    .map(|raw| cell_resolver.resolve(raw))
+                    .map(|raw| cell_resolver.resolve_source_own(raw))
                     .unwrap_or(RefResolution::Keep);
                 if matches!(door, RefResolution::Dangling)
                     || matches!(transition, RefResolution::Dangling)
@@ -416,6 +430,15 @@ mod tests {
     }
 
     #[test]
+    fn source_own_ref_prefers_output_when_master_has_same_object_id() {
+        let resolver = resolver(&[0x6295D2], &[&[0x6295D2]]);
+        assert_eq!(
+            resolver.resolve_source_own(0x0062_95D2),
+            RefResolution::Repair(0x0162_95D2),
+        );
+    }
+
+    #[test]
     fn marks_null_and_missing_targets_dangling() {
         let resolver = resolver(&[0x111111], &[&[0x000010]]);
         assert_eq!(resolver.resolve(0), RefResolution::Dangling);
@@ -503,6 +526,8 @@ mod tests {
             let mut session = open_session(target, None).unwrap();
             let schema = session.schema().unwrap();
             let records = [
+                record("Out.esm", "REFR", 0x800, vec![], &interner),
+                record("Out.esm", "CELL", 0x802, vec![], &interner),
                 record("Out.esm", "REFR", 0x900, vec![], &interner),
                 record("Out.esm", "CELL", 0x901, vec![], &interner),
                 record("Out.esm", "FACT", 0x902, vec![], &interner),
@@ -596,7 +621,7 @@ mod tests {
         let mut session = open_session(target, None).unwrap();
 
         let first = repair_placed_references(&mut session, &mut mapper, &config).unwrap();
-        assert_eq!(first.records_changed, 4);
+        assert_eq!(first.records_changed, 5);
 
         let dropped_fk = FormKey {
             local: 0xA00,
@@ -642,6 +667,18 @@ mod tests {
                     .is_some()
             );
         }
+        let shadowed_xtel = session
+            .first_subrecord_bytes(&master_fk, "XTEL")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            read_formid(&shadowed_xtel, XTEL_DOOR_OFFSET),
+            Some(0x0100_0800),
+        );
+        assert_eq!(
+            read_formid(&shadowed_xtel, XTEL_TRANSITION_OFFSET),
+            Some(0x0100_0802),
+        );
 
         let repaired_fk = FormKey {
             local: 0xA02,

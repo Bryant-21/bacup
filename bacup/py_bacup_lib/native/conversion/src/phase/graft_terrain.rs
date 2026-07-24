@@ -8,10 +8,30 @@
 //! `rebuild_projected_navi` phase rebuilds it from the grafted exterior NAVM plus
 //! the freshly-converted interior NAVM.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseReport};
 use crate::run::OwnedPluginHandle;
+
+pub struct PrepareGraftTerrainPhase;
+
+impl Phase for PrepareGraftTerrainPhase {
+    fn name(&self) -> &'static str {
+        "prepare_graft_terrain"
+    }
+
+    fn run(&self, ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
+        let prior_plugin_path = required_prior_plugin_path(ctx)?;
+        let reserved = ctx
+            .run
+            .prepare_terrain_navmesh_graft(&prior_plugin_path)
+            .map_err(|error| PhaseError::Internal(error.to_string()))?;
+        Ok(PhaseReport {
+            records_deferred: reserved.try_into().unwrap_or(u32::MAX),
+            ..PhaseReport::default()
+        })
+    }
+}
 
 pub struct GraftTerrainPhase;
 
@@ -26,18 +46,9 @@ impl Phase for GraftTerrainPhase {
                 "graft_terrain: legacy parameter is not supported: prior_handle_id".into(),
             ));
         }
-        let prior_plugin_path = ctx
-            .params
-            .get("prior_plugin_path")
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                PhaseError::BadParams("graft_terrain: prior_plugin_path is required".into())
-            })?;
-        let prior =
-            OwnedPluginHandle::load(Path::new(prior_plugin_path), ctx.run.target.as_str(), None)
-                .map_err(|error| PhaseError::BadParams(format!("graft_terrain: {error}")))?;
-
+        let prior_plugin_path = required_prior_plugin_path(ctx)?;
+        let prior = OwnedPluginHandle::load(&prior_plugin_path, ctx.run.target.as_str(), None)
+            .map_err(|error| PhaseError::BadParams(format!("graft_terrain: {error}")))?;
         let stats = ctx
             .run
             .graft_terrain_navmesh(prior.id())
@@ -52,9 +63,19 @@ impl Phase for GraftTerrainPhase {
     }
 }
 
+fn required_prior_plugin_path(ctx: &PhaseCtx<'_>) -> Result<PathBuf, PhaseError> {
+    ctx.params
+        .get("prior_plugin_path")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| PhaseError::BadParams("graft_terrain: prior_plugin_path is required".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},

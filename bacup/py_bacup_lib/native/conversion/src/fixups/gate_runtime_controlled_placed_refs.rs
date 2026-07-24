@@ -18,7 +18,6 @@ use crate::session::{HandleRawScan, PluginSession};
 
 const RECORD_FLAG_PERSISTENT: u32 = 0x0000_0400;
 const RECORD_FLAG_INITIALLY_DISABLED: u32 = 0x0000_0800;
-const GATED_FLAGS: u32 = RECORD_FLAG_PERSISTENT | RECORD_FLAG_INITIALLY_DISABLED;
 
 const PLACED_SIGS: &[&str] = &["REFR", "ACHR", "PGRE", "PHZD", "PGRD"];
 const QUEST_RUNTIME_GATE_TOKENS: &[&str] = &[
@@ -755,10 +754,10 @@ fn resolve_target_raw_for_source_local(
 }
 
 fn mark_record_initially_disabled(record: &mut ParsedRecord) -> bool {
-    if record.flags & GATED_FLAGS == GATED_FLAGS {
+    if record.flags & RECORD_FLAG_INITIALLY_DISABLED != 0 {
         return false;
     }
-    record.flags |= GATED_FLAGS;
+    record.flags |= RECORD_FLAG_INITIALLY_DISABLED;
     true
 }
 
@@ -1374,13 +1373,24 @@ mod tests {
     }
 
     #[test]
-    fn marking_target_record_is_idempotent() {
+    fn marking_temporary_target_record_is_idempotent_without_making_it_persistent() {
         let mut placed = record("REFR", 0x0785647F, 0, Vec::new());
 
         assert!(mark_record_initially_disabled(&mut placed));
-        assert_eq!(placed.flags & GATED_FLAGS, GATED_FLAGS);
+        assert_eq!(placed.flags, RECORD_FLAG_INITIALLY_DISABLED);
         assert!(!mark_record_initially_disabled(&mut placed));
-        assert_eq!(placed.flags & GATED_FLAGS, GATED_FLAGS);
+        assert_eq!(placed.flags, RECORD_FLAG_INITIALLY_DISABLED);
+    }
+
+    #[test]
+    fn marking_persistent_target_record_preserves_its_persistence() {
+        let mut placed = record("REFR", 0x0785647F, RECORD_FLAG_PERSISTENT, Vec::new());
+
+        assert!(mark_record_initially_disabled(&mut placed));
+        assert_eq!(
+            placed.flags,
+            RECORD_FLAG_PERSISTENT | RECORD_FLAG_INITIALLY_DISABLED
+        );
     }
 
     #[test]

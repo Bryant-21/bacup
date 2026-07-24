@@ -31,28 +31,39 @@ class _Settings:
         return dict(self.paths.get(game_id, {}))
 
 
-def test_bacup_keeps_all_projects_but_enables_only_appalachia():
+def test_bacup_exposes_all_conversion_projects():
     assert APP_NAME == "B.A.C.U.P."
     assert APP_EXPANSION == "Bethesda Asset Converter Universal Platform"
     assert _PROJECTS == (
         ("appalachia", "Tales From Appalachia", "fo76:fo4"),
         ("wasteland", "Legends of the Wasteland", "fnvfo3:fo4"),
-        ("north", "Fables of the North", "skyrimse:fo4"),
+        ("north", "Northern Lands", "skyrimse:fo4"),
     )
-    assert _ENABLED_PROJECTS == (
-        ("appalachia", "Tales From Appalachia", "fo76:fo4"),
-    )
+    assert _ENABLED_PROJECTS == _PROJECTS
 
     workspace = AppalachiaWorkspace(_Settings())
     workspace.initialize()
 
-    assert len(workspace._regen_panels) == 1
+    assert len(workspace._regen_panels) == 3
     assert {
         project_id: panel.fixed_pair_id
         for project_id, panel in workspace._regen_panels.items()
     } == {
         "appalachia": "fo76:fo4",
+        "wasteland": "fnvfo3:fo4",
+        "north": "skyrimse:fo4",
     }
+
+
+def test_workspace_starts_on_project_selected_during_setup():
+    settings = _Settings()
+    settings.workspaces["appalachia"]["active_conversion_project"] = "north"
+
+    workspace = AppalachiaWorkspace(settings)
+    workspace.initialize()
+
+    assert workspace._active_project_id == "north"
+    assert workspace._regen_panel.fixed_pair_id == "skyrimse:fo4"
 
 
 def test_project_settings_and_status_are_isolated(monkeypatch):
@@ -282,7 +293,7 @@ def test_wasteland_preflight_checks_grafted_asset_root(tmp_path):
     assert report.required_missing[0].checked_path == str(tmp_path / "missing-fo3")
 
 
-def test_disk_usage_deduplicates_primary_and_grafted_asset_roots(monkeypatch):
+def test_disk_usage_does_not_walk_primary_or_grafted_asset_roots(monkeypatch):
     settings = _Settings()
     settings.paths["fo4"]["extracted_dir"] = ""
     settings.paths["fo3"]["extracted_dir"] = settings.paths["fnv"]["extracted_dir"]
@@ -292,17 +303,10 @@ def test_disk_usage_deduplicates_primary_and_grafted_asset_roots(monkeypatch):
         fixed_pair_id="fnvfo3:fo4",
         project_id="wasteland",
     )
-    scanned = []
     monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel._dir_size_bytes",
-        lambda path: scanned.append(path) or 10,
+        "bacup_ui.setup._dir_size_bytes",
+        lambda _path: (_ for _ in ()).throw(AssertionError("recursive scan")),
     )
-    monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel._ba2_size_bytes",
-        lambda _path: 0,
-    )
-
     summary = wasteland._compute_disk_usage_summary()
 
-    assert summary["extracted"] == 10
-    assert scanned.count(Path("C:/fnv/Data")) == 1
+    assert summary["extracted"] == 0

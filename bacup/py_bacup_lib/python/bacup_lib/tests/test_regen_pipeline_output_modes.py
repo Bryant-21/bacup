@@ -5,6 +5,7 @@ import pytest
 
 from bacup_lib import PhaseSelection, regen_pipeline
 from bacup_lib.regen_pipeline import RegenOptions, RegenPaths
+from bacup_lib.source_pairs import get_pair
 
 
 def _paths(tmp_path: Path) -> RegenPaths:
@@ -122,6 +123,11 @@ def test_direct_deploy_archives_packs_to_deploy_data_and_skips_archive_deploy(
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_payloads_for_outputs", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_materials_for_outputs", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "bacup_lib.target_assets.ensure_target_asset_catalog",
+        lambda *_a, **_k: None,
+    )
+
     def fake_check_run_invariants(*_args, **kwargs):
         captures["skip_pack"] = kwargs["skip_pack"]
         return [], []
@@ -144,6 +150,7 @@ def test_direct_deploy_archives_packs_to_deploy_data_and_skips_archive_deploy(
         captures["papyrus_compiler"] = request.options.papyrus_compiler
         captures["generate_anim_text_data"] = request.options.generate_anim_text_data
         captures["anim_text_data_native"] = request.options.anim_text_data_native
+        captures["target_master_paths"] = request.target_master_paths
         paths.output_root.mkdir(parents=True, exist_ok=True)
         (paths.output_root / "SeventySix.esm").write_bytes(b"TES4")
         return SimpleNamespace(
@@ -182,10 +189,50 @@ def test_direct_deploy_archives_packs_to_deploy_data_and_skips_archive_deploy(
     assert captures["papyrus_compiler"] == "native"
     assert captures["generate_anim_text_data"] is True
     assert captures["anim_text_data_native"] is True
+    assert captures["target_master_paths"] == [paths.deploy_data_dir.parent]
     assert captures["skip_pack"] is True
     assert deploy_kwargs == [
         {"archives_already_deployed": True, "update_runtime_ini": True}
     ]
+
+
+def test_resume_pack_routes_archives_directly_to_deploy_data(monkeypatch, tmp_path):
+    from bacup_lib import native_runtime
+    from bacup_lib.workflows import unified
+
+    paths = _paths(tmp_path)
+    paths.output_root.mkdir(parents=True)
+    paths.deploy_data_dir = tmp_path / "MO2" / "mods" / "SeventySix"
+    captures: dict[str, object] = {}
+
+    class Native:
+        def sinks_create(self, config):
+            captures["sink_config"] = config
+            return 7
+
+        def sinks_drop(self, sink_id):
+            captures["dropped_sink"] = sink_id
+
+    def fake_finalize(sink_id, mod_root, **kwargs):
+        captures["sink_id"] = sink_id
+        captures["mod_root"] = mod_root
+        captures["finalize_kwargs"] = kwargs
+
+    monkeypatch.setattr(native_runtime, "load_native_module", lambda: Native())
+    monkeypatch.setattr(unified, "finalize_sinks_for_mod", fake_finalize)
+
+    already_deployed = regen_pipeline._pack_existing_output(
+        paths,
+        RegenOptions(deploy=True, direct_deploy_archives=True),
+        resolved_workers=4,
+    )
+
+    assert already_deployed is True
+    assert captures["sink_id"] == 7
+    assert captures["mod_root"] == paths.output_root
+    assert captures["finalize_kwargs"]["archive_output_dir"] == paths.deploy_data_dir
+    assert captures["finalize_kwargs"]["direct_pack_all"] is True
+    assert captures["dropped_sink"] == 7
 
 
 def test_write_land_cache_false_skips_cache_snapshots(monkeypatch, tmp_path):
@@ -575,6 +622,59 @@ def test_resume_from_lodgen_runs_lod_pack_and_deploy(monkeypatch, tmp_path):
     assert captures["phase_complete"] == ["Generate LOD", "Pack BA2", "Deploy Mod"]
 
 
+def test_cross_game_resume_from_lodgen_preserves_layout_and_source_root(
+    monkeypatch, tmp_path
+):
+    paths = _paths(tmp_path)
+    paths.output_root = tmp_path / "mods" / "Skyrim"
+    paths.source_extracted_dir = tmp_path / "skyrim_extracted"
+    paths.output_root.mkdir(parents=True)
+    pair = get_pair("skyrimse:fo4")
+    for plugin_name in pair.source_plugins:
+        (paths.output_root / plugin_name).write_bytes(b"TES4")
+    captures: dict[str, object] = {}
+
+    monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 2)
+    monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
+    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_payloads_for_outputs", lambda *_a, **_k: None)
+    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_materials_for_outputs", lambda *_a, **_k: None)
+    monkeypatch.setattr(regen_pipeline, "_run_generate_lod", lambda **kwargs: captures.update(lod=kwargs))
+    monkeypatch.setattr(regen_pipeline, "_target_lod_asset_dirs", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        "creation_lib.lod.native_runtime.discover_worldspaces",
+        lambda *_a, **_k: ["Tamriel"],
+    )
+    monkeypatch.setattr(regen_pipeline, "_pack_existing_output", lambda *_a, **_k: False)
+
+    runner = SimpleNamespace(
+        emit_log=lambda *_a, **_k: None,
+        emit_phase_start=lambda _p: None,
+        emit_phase_complete=lambda _p: None,
+    )
+    result = regen_pipeline.run_resume_from_phase(
+        paths,
+        RegenOptions(deploy=False, lod_mode="generate"),
+        pair=pair,
+        start_phase="lodgen",
+        phases=PhaseSelection(lod_mode="generate"),
+        runner=runner,
+        lod_settings={
+            "global": {
+                "worldspaces": [],
+                "southwest_cell": [-96, -96],
+                "stride": 256,
+            }
+        },
+    )
+
+    assert result.exit_code == 0
+    assert captures["lod"]["worldspaces"] == ["Tamriel"]
+    assert captures["lod"]["source_data_dir"] == paths.source_extracted_dir
+    assert captures["lod"]["fo76_profile"] is False
+    assert captures["lod"]["settings"]["global"]["southwest_cell"] == [-96, -96]
+    assert captures["lod"]["settings"]["global"]["stride"] == 256
+
+
 def test_resume_from_modt_runs_every_downstream_phase(monkeypatch, tmp_path):
     paths = _paths(tmp_path)
     paths.output_root.mkdir(parents=True)
@@ -626,6 +726,11 @@ def test_resume_from_modt_runs_every_downstream_phase(monkeypatch, tmp_path):
         "_run_anim_text_data_generation",
         lambda *_a, **_k: order.append("animtext"),
     )
+    monkeypatch.setattr(
+        unified,
+        "_rebuild_cell_offsets_after_build",
+        lambda *_a, **_k: order.append("offsets"),
+    )
 
     runner = SimpleNamespace(
         emit_log=lambda *_a, **_k: None,
@@ -652,6 +757,7 @@ def test_resume_from_modt_runs_every_downstream_phase(monkeypatch, tmp_path):
         "modt",
         "term",
         "map",
+        "offsets",
         "animtext",
         "lod",
         "sanitize",
@@ -659,6 +765,71 @@ def test_resume_from_modt_runs_every_downstream_phase(monkeypatch, tmp_path):
         "deploy",
         "cleanup",
     ]
+
+
+def test_resume_from_offsets_skips_modt_but_rebuilds_tables(monkeypatch, tmp_path):
+    paths = _paths(tmp_path)
+    paths.output_root.mkdir(parents=True)
+    (paths.output_root / "SeventySix.esm").write_bytes(b"TES4")
+    order: list[str] = []
+
+    class FakeRecordRuntime:
+        def _repair_term_marker_parameters_final(self, *_args):
+            order.append("term")
+
+        def _close_target_master_handles(self, *_args):
+            order.append("cleanup")
+
+    post_driver = SimpleNamespace(record_runtime=FakeRecordRuntime())
+    post_request = SimpleNamespace(options=SimpleNamespace(convert_textures=False))
+    post_ctx = SimpleNamespace()
+    source_plugin = paths.source_data_dir / "SeventySix.esm"
+
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_build_existing_post_driver",
+        lambda *_a, **_k: (source_plugin, post_request, post_driver, post_ctx),
+    )
+    monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 2)
+    monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
+    monkeypatch.setattr(regen_pipeline, "_sanitize_existing_outputs", lambda *_a, **_k: order.append("sanitize"))
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_pack_existing_output",
+        lambda *_a, **_k: order.append("pack") or True,
+    )
+    monkeypatch.setattr(regen_pipeline, "_deploy_post_steps", lambda *_a, **_k: order.append("deploy"))
+
+    import bacup_lib.workflows.unified as unified
+
+    monkeypatch.setattr(
+        unified,
+        "_regenerate_modt_after_asset_waves",
+        lambda *_a, **_k: order.append("modt"),
+    )
+    monkeypatch.setattr(
+        unified,
+        "_rebuild_cell_offsets_after_build",
+        lambda *_a, **_k: order.append("offsets"),
+    )
+
+    runner = SimpleNamespace(
+        emit_log=lambda *_a, **_k: None,
+        emit_phase_start=lambda _p: None,
+        emit_phase_complete=lambda _p: None,
+        emit_item_progress=lambda _p: None,
+    )
+    result = regen_pipeline.run_resume_from_phase(
+        paths,
+        RegenOptions(deploy=True, lod_mode="none"),
+        start_phase="offsets",
+        phases=PhaseSelection(lod_mode="none"),
+        runner=runner,
+    )
+
+    assert result.exit_code == 0
+    assert result.deployed is True
+    assert order == ["offsets", "sanitize", "pack", "deploy", "cleanup"]
 
 
 def test_resume_from_build_esp_uses_full_rebuild_without_existing_output(

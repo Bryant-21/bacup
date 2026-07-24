@@ -13,7 +13,7 @@ archives are left untouched. The new version is stamped into the output
 ESM's `TES4` `SNAM` subrecord so the next upgrade run can auto-detect the
 installed version.
 
-## Generate alpha2 from an installed alpha1
+## Generate the current release from an installed build
 
 ```
 uv run --no-sync python scripts/regen.py --upgrade --deploy
@@ -27,7 +27,20 @@ uv run --no-sync python scripts/regen.py --upgrade --deploy
   reading `SNAM` off the deployed `SeventySix.esm`. Pass it explicitly to
   override (e.g. if the deployed ESM predates version stamping).
 - `--mod-version` is omitted here: it defaults to the manifest's `current`
-  (`alpha2`), which is also what gets stamped into the new ESM's `SNAM`.
+  (`alpha2.1`), which is also what gets stamped into the new ESM's `SNAM`.
+
+## alpha2 -> alpha2.1 family scope
+
+- **Regenerated**: NIFs, Havok (including behavior-driver synthesis), scripts,
+  textures, and the ESM. LAND / NAVM / NAVI and terrain-texture records are
+  grafted from the deployed alpha2 ESM.
+- **Packed and deployed**: the `Meshes`, `MeshesExtra`, `Animations`, `Misc`,
+  and `Textures` BA2 shards from the main mod. The UI deploys the companion mod
+  separately.
+- **Reused from the deployed alpha2 output**: materials, terrain, LOD, and
+  sounds.
+- **Repeatable**: running the upgrade again when Alpha 2.1 is already installed
+  repeats this same partial scope instead of returning an already-current no-op.
 
 ## alpha1 -> alpha2 family scope
 
@@ -56,5 +69,6 @@ and the families it changes, e.g.:
 `notes_by_conversion` scopes changelog entries to the matching B.A.C.U.P. tab.
 Versions without notes for a conversion do not appear in that tab's changelog.
 `families_by_conversion` is required. Every supported pair must be listed; use
-`[NONE]` when a version requires no work for that pair. Forced clean rebuilds
-are declared only through `force_regen_by_conversion`.
+`[NONE]` when a version requires no work for that pair. Every family listed for
+the target version runs even when that version is already installed. Forced
+clean rebuilds are declared only through `force_regen_by_conversion`.

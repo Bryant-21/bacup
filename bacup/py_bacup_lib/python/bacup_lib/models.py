@@ -303,7 +303,19 @@ class PhaseSelection:
     copy_sounds: bool = True
     build_esp: bool = True
     regenerate_modt: bool = True        # Bucket B: post-asset MODT compute, always on (see family_map)
+    rebuild_cell_offsets: bool = True   # Bucket B: WRLD OFST/CLSZ rebuild, last ESM mutation, always on (see family_map)
     generate_anim_text_data: bool = True
+    # EXPERIMENTAL gate — deliberately defaults False, breaking the all-True
+    # PhaseSelection convention. `generate_precombines` is a post-asset HYBRID
+    # phase (Bucket A: emits Meshes-family `*_OC.nif`; Bucket B: stamps CELL
+    # PCMB/XCRI + REFR VC into the rebuilt ESM). END-STATE INVARIANT for when the
+    # gate is lifted (flip this default to True): it must behave restamp-always
+    # like `regenerate_modt` — i.e. become a Meshes feeder AND be force-enabled in
+    # family_map._phases_off(), because the ESM is always rebuilt on upgrade and a
+    # rebuild drops the stamps unless the phase re-runs. While the default is
+    # False the whole wiring stays dormant (family_map._PRECOMBINES_ENABLED),
+    # so flipping this one flag is all that's needed to enable it.
+    generate_precombines: bool = False
     lod_mode: str = "convert"  # {"convert","generate","hybrid","hybrid-atlas","none"}: native lodgen delivery switch
 
     @classmethod
@@ -457,6 +469,34 @@ class PluginPortOptions:
     papyrus_compiler: Literal["exe", "exe-batch", "native"] = "native"
     include_interior: bool = True
     carry_interior_previs: bool = False
+    # Derived from PhaseSelection.generate_precombines by _build_options; consulted
+    # by the unified driver's post-asset window. Experimental, default off.
+    generate_precombines: bool = False
+
+
+@dataclass(frozen=True)
+class LegacyPackOriginRow:
+    merged_form_key: str
+    source_game: str
+    source_plugin: str
+    source_form_key: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "merged_form_key": self.merged_form_key,
+            "source_game": self.source_game,
+            "source_plugin": self.source_plugin,
+            "source_form_key": self.source_form_key,
+        }
+
+
+@dataclass(frozen=True)
+class LegacyPackExpectedCounts:
+    fnv: int
+    fo3: int
+
+    def to_dict(self) -> dict[str, int]:
+        return {"fnv": self.fnv, "fo3": self.fo3}
 
 
 @dataclass
@@ -479,6 +519,10 @@ class PluginPortRequest:
     emit_authoring_yaml: bool = True
     source_worldspace_authoring_dir: Path | None = None
     diagnostics_root: Path | None = None
+    legacy_pack_origins: tuple[LegacyPackOriginRow, ...] = ()
+    legacy_pack_raw_source_counts: LegacyPackExpectedCounts | None = None
+    legacy_pack_expected_counts: LegacyPackExpectedCounts | None = None
+    legacy_pack_provenance_required: bool = False
 
 
 @dataclass

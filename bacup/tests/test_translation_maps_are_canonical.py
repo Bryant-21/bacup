@@ -100,3 +100,14 @@ def test_required_translation_maps_exist() -> None:
         if not (MAP_DIR / filename).is_file()
     )
     assert not missing, "Required translation maps missing from active loader path: " + ", ".join(missing)
+
+
+def test_fo76_fact_preserves_legacy_and_relayouts_new_vendor_values() -> None:
+    translation_map = yaml.safe_load(
+        (MAP_DIR / "fo76_to_fo4.yaml").read_text(encoding="utf-8")
+    )
+    fact_rules = translation_map["FACT"]
+
+    assert "VENV" not in fact_rules.get("drop", [])
+    assert fact_rules["fields"]["VENP"] == "VENV"
+    assert fact_rules["transforms"]["VENV"] == {"type": "venp_to_venv"}

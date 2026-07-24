@@ -177,6 +177,11 @@ impl Fixup for RewriteRawObjectTemplateFormIdsFixup {
         config: &FixupConfig,
     ) -> Result<FixupReport, FixupError> {
         let target_masters = session.target_masters().to_vec();
+        let rewrite_skyrim_weather_master_refs = session
+            .source_slot_opt()
+            .and_then(|slot| slot.parsed.game.as_deref())
+            == Some("skyrimse")
+            && session.target_slot().parsed.game.as_deref() == Some("fo4");
         let target_master_handles: Vec<(String, u64)> = target_masters
             .iter()
             .cloned()
@@ -301,6 +306,11 @@ impl Fixup for RewriteRawObjectTemplateFormIdsFixup {
                     &mut is_valid_target_master_npc_template_formid,
                 )
             };
+            let skyrim_weather_rewrite_changed = rewrite_skyrim_weather_master_refs
+                && crate::translator::pair_hooks::skyrimse_fo4::rewrite_skyrim_weather_master_refs(
+                    &mut record,
+                    mapper,
+                );
             let pack_template_changed = resolve_pack_template_inputs_with_session(
                 session,
                 &changed_records_by_fk,
@@ -314,6 +324,7 @@ impl Fixup for RewriteRawObjectTemplateFormIdsFixup {
                 || decoded_rewrite_changed
                 || xmsp_rewrite_changed
                 || raw_rewrite_changed
+                || skyrim_weather_rewrite_changed
                 || pack_template_changed
             {
                 changed_records_by_fk.insert(record.form_key, record.clone());
@@ -7019,6 +7030,97 @@ mod tests {
             u32::from_le_bytes(unam[8..12].try_into().unwrap()),
             0x077EE02B
         );
+    }
+
+    #[test]
+    fn rewrites_skyrim_wgdr_nonzero_master_refs_to_all_eight_fo4_gdry_donors() {
+        use crate::formkey_mapper::MapperOptions;
+
+        let interner = StringInterner::new();
+        let update_plugin = interner.intern("Update.esm");
+        let source_entries = [
+            ("SkyrimClearSunrise", 0x000D53),
+            ("SkyrimCloudyDay", 0x000D51),
+            ("SkyrimRainSunset", 0x000D52),
+            ("SkyrimFogNight", 0x000D58),
+        ]
+        .map(|(editor_id, local)| {
+            (
+                interner.intern(editor_id),
+                FormKey {
+                    local,
+                    plugin: update_plugin,
+                },
+                SigCode(*b"VOLI"),
+            )
+        });
+        let mappings = crate::translator::pair_hooks::skyrimse_fo4::
+            skyrimse_fo4_voli_gdry_substitution_mappings(&source_entries, &interner);
+        let mut record = make_wthr_record(vec![(
+            "HNAM",
+            formid_words(&[0x01000D53, 0x01000D51, 0x01000D52, 0x01000D58]),
+        )]);
+        crate::translator::pair_hooks::skyrimse_fo4::normalize_skyrim_weather(
+            &mut record,
+            &interner,
+        );
+        let mut mapper = FormKeyMapper::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "ConvertedSkyrim.esm".into(),
+                source_plugin_name: "ConvertedSkyrim.esm".into(),
+                source_master_names: vec!["Skyrim.esm".into(), "Update.esm".into()],
+                target_master_names: vec!["Fallout4.esm".into()],
+                ..Default::default()
+            },
+            &interner,
+        );
+        for (source, target) in mappings {
+            mapper.add_mapping(source, target);
+        }
+        let target_masters = vec!["Fallout4.esm".to_string()];
+        let encoded_targets = encoded_targets_by_source_object_id(&mapper, &target_masters);
+        let expected = [
+            0x0021_6A93,
+            0x001C_855D,
+            0x0021_15D1,
+            0x001C_C192,
+            0x001C_C192,
+            0x0021_6A93,
+            0x001C_855D,
+            0x0021_15D1,
+        ];
+        let mut valid_master_formids = |raw: u32| expected.contains(&raw);
+
+        assert!(!rewrite_record_raw_template_formids(
+            &mut record,
+            &encoded_targets,
+            &target_masters,
+            &interner,
+            &target_record_sigs(),
+            &mut valid_master_formids,
+        ));
+        assert!(
+            crate::translator::pair_hooks::skyrimse_fo4::rewrite_skyrim_weather_master_refs(
+                &mut record,
+                &mut mapper,
+            )
+        );
+
+        let FieldValue::Bytes(wgdr) = &record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"WGDR")
+            .expect("WGDR")
+            .value
+        else {
+            panic!("expected WGDR bytes");
+        };
+        let actual = wgdr
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     }
 
     #[test]

@@ -13,6 +13,10 @@ class WorldViewerWorkspace(BaseWorkspace):
     id = "world_viewer"
     name = "World Viewer"
     icon = "WRLD"
+    user_guide_body = """
+Load a worldspace to browse its cells and placed references in the 3D viewport.
+Use the World panel to pick a worldspace and bounds, then inspect layers, selection, and render stats in the side panels.
+"""
 
     def __init__(self, toolkit_settings=None):
         super().__init__(toolkit_settings=toolkit_settings)

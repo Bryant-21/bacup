@@ -17,14 +17,17 @@ from bacup_ui.setup import (
     _STEAM_OWNERSHIP_CHECKBOX,
     _STEAM_REQUIREMENT_TEXT,
     AppalachiaSetup,
+    BacupProjectPicker,
     BacupProjectSetup,
     PROJECT_PROFILES,
+    _current_release_notes,
     _dir_size_bytes,
     _estimated_extract_gb,
     appalachia_setup_needed,
     clear_pending_project_setup,
     clear_project_owned_extractions,
     games_needing_extraction,
+    get_active_project,
     get_pending_project_setup,
     get_project_setup_ownership,
     project_setup_needed,
@@ -541,8 +544,65 @@ def test_project_setup_request_round_trip():
 
     request_project_setup(s, "north")
     assert get_pending_project_setup(s) == "north"
+    assert get_active_project(s) == "north"
     clear_pending_project_setup(s)
     assert get_pending_project_setup(s) is None
+
+
+def test_project_picker_persists_selected_source_set(monkeypatch):
+    s = _settings()
+    runner_params = SimpleNamespace(app_shall_exit=False)
+    monkeypatch.setattr(
+        "bacup_ui.setup.hello_imgui.get_runner_params",
+        lambda: runner_params,
+    )
+    picker = BacupProjectPicker(s)
+
+    picker.select_project("wasteland")
+    picker.confirm()
+
+    assert get_active_project(s) == "wasteland"
+    assert runner_params.app_shall_exit is True
+
+
+def test_first_run_picker_routes_to_selected_project_setup(monkeypatch):
+    calls = []
+    s = _settings()
+
+    class FakePicker:
+        def __init__(self, settings):
+            calls.append(("picker", settings))
+
+        def run(self):
+            return "north"
+
+    class FakeSetup:
+        def __init__(self, settings, project_id):
+            calls.append(("setup", settings, project_id))
+
+        def run(self):
+            return True
+
+    monkeypatch.setattr("bacup_ui.setup.BacupProjectPicker", FakePicker)
+    monkeypatch.setattr("bacup_ui.setup.BacupProjectSetup", FakeSetup)
+
+    assert _run_bacup_project_setup(s) == (True, True)
+    assert calls == [("picker", s), ("setup", s, "north")]
+
+
+def test_cancelled_first_run_picker_closes_without_setup(monkeypatch):
+    s = _settings()
+
+    class FakePicker:
+        def __init__(self, _settings):
+            pass
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr("bacup_ui.setup.BacupProjectPicker", FakePicker)
+
+    assert _run_bacup_project_setup(s) == (True, False)
 
 
 def test_pending_project_routes_to_selected_setup_and_is_consumed(monkeypatch):
@@ -608,6 +668,19 @@ def test_bacup_profile_names_and_build_constants():
         "Legends of the Wasteland",
         "Fables of the North",
     ]
+    assert [profile.conversion_id for profile in PROJECT_PROFILES.values()] == [
+        "fo76:fo4",
+        "fnvfo3:fo4",
+        "skyrimse:fo4",
+    ]
+    manifest = load_upgrade_manifest(bundled_upgrade_manifest_path())
+    current = next(
+        version for version in manifest.versions if version.id == manifest.current
+    )
+    for project_id, profile in PROJECT_PROFILES.items():
+        assert _current_release_notes(project_id) == current.notes_for_conversion(
+            profile.conversion_id
+        )
     bacup_root = Path(__file__).parents[4]
     script = (bacup_root / "build_bacup.ps1").read_text(encoding="utf-8")
     batch = (bacup_root / "build_bacup.bat").read_text(encoding="utf-8")
@@ -615,7 +688,14 @@ def test_bacup_profile_names_and_build_constants():
     assert '$ExeName  = "BACUP"' in script
     assert '$Folder   = "BACUP"' in script
     assert '"build\\bacup"' in script
-    assert '@("SeventySix", "MojaveCapital", "Skyrim")' in script
+    for mod_name in (
+        "SeventySix",
+        "FNV_FO3_Merged",
+        "MojaveCapital",
+        "Skyrim_Merged",
+        "Skyrim",
+    ):
+        assert f'    "{mod_name}"' in script
     assert '$runtimeDirs = @("data", "PrismaUI_F4")' in script
     assert '$_.Extension -ine ".pdb"' in script
     assert 'foreach ($dir in @("utils", "tools"))' not in script

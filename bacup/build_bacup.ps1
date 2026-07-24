@@ -26,7 +26,13 @@ $ExeName  = "BACUP"
 $Folder   = "BACUP"
 $Icon     = Join-Path $RepoRoot "resource\icons\modbox21-converter.ico"
 $CompanionModName = "B21_TalesFromAppalachia"
-$GeneratedModNames = @("SeventySix", "MojaveCapital", "Skyrim")
+$GeneratedModNames = @(
+    "SeventySix",
+    "FNV_FO3_Merged",
+    "MojaveCapital",
+    "Skyrim_Merged",
+    "Skyrim"
+)
 $SpecFile = Join-Path $BacupRoot "BACUP.spec"
 $WorkPath = Join-Path $RepoRoot "build\bacup"
 $OneFile  = -not $OneDir

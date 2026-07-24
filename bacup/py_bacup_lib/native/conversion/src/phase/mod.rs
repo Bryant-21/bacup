@@ -17,6 +17,7 @@ pub mod animations;
 pub mod apply_registry_mappings;
 pub mod btos;
 pub mod build_esp;
+pub mod copy_materialized_facegen;
 pub mod copy_textures;
 pub mod creatures;
 pub mod drivers;
@@ -37,9 +38,11 @@ pub mod materials_v2;
 pub mod merge_sources;
 pub mod mswp_material_paths;
 pub mod nifs;
+pub mod precombines;
 pub mod progress;
 pub mod projected_navi;
 pub mod projected_navmeshes;
+pub mod rebuild_cell_offsets;
 pub mod record_translation;
 pub mod regenerate_modt;
 pub mod scaffold;
@@ -264,6 +267,10 @@ fn build_registry() -> PhaseRegistry {
     );
     inner.insert("convert_terrain", Box::new(terrain::ConvertTerrainPhase));
     inner.insert(
+        "prepare_graft_terrain",
+        source_free(graft_terrain::PrepareGraftTerrainPhase),
+    );
+    inner.insert(
         "graft_terrain",
         source_free(graft_terrain::GraftTerrainPhase),
     );
@@ -291,6 +298,10 @@ fn build_registry() -> PhaseRegistry {
     inner.insert(
         "copy_textures",
         source_free(copy_textures::CopyTexturesPhase),
+    );
+    inner.insert(
+        "copy_materialized_facegen",
+        source_free(copy_materialized_facegen::CopyMaterializedFacegenPhase),
     );
     inner.insert(
         "merge_sources",
@@ -357,6 +368,20 @@ fn build_registry() -> PhaseRegistry {
     inner.insert(
         "emit_modt_manifest",
         source_free(emit_modt_manifest::EmitModtManifestPhase),
+    );
+
+    // CK-free precombine generation (v0 spike). Source-free: reads/writes
+    // only the open target handle. Belongs beside the post-asset MODT phases.
+    inner.insert(
+        "generate_precombines",
+        source_free(precombines::GeneratePrecombinesPhase),
+    );
+
+    // WRLD OFST/CLSZ cell seek tables. The tables encode the serialized file
+    // layout, so this must be the LAST record mutation before the final save.
+    inner.insert(
+        "rebuild_cell_offsets",
+        source_free(rebuild_cell_offsets::RebuildCellOffsetsPhase),
     );
 
     // Test-only phases (inert outside #[cfg(test)] builds).

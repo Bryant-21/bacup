@@ -61,7 +61,7 @@ class TestAttachNifAutoSubmits:
 
         with (
             patch.object(app, "_detect_game_profile", return_value=None),
-            patch.object(app, "_build_texture_dirs", return_value=[]),
+            patch.object(app, "_build_texture_dirs", return_value=([], [], [])),
         ):
             NifEditorApp.attach_nif_auto(app, "child.nif")
 
@@ -78,7 +78,7 @@ class TestAttachNifAutoSubmits:
 
         with (
             patch.object(app, "_detect_game_profile", return_value=None),
-            patch.object(app, "_build_texture_dirs", return_value=[]),
+            patch.object(app, "_build_texture_dirs", return_value=([], [], [])),
         ):
             NifEditorApp.attach_nif_auto(app, "child.nif")
 
@@ -95,7 +95,7 @@ class TestAttachNifAutoSubmits:
 
         with (
             patch.object(app, "_detect_game_profile", return_value=None),
-            patch.object(app, "_build_texture_dirs", return_value=[]),
+            patch.object(app, "_build_texture_dirs", return_value=([], [], [])),
         ):
             NifEditorApp.attach_nif_auto(app, "child.nif")
 

@@ -11,10 +11,10 @@
 //!
 //! `LVLG`/`LVMG` point at a `GLOB` whose `FLTV` holds the value (e.g.
 //! `Container_MaxCount_Medium_Tier` = 15, `LL_Container_ChanceNone_Medium_ECON`
-//! = 35). FO4 understands only the literal `LVLD`/`LVLM` bytes. The translator
-//! drops the FO76-only subrecords and seeds `LVLD`/`LVLM` to 0, so every
-//! converted list ends up with Chance-None 0 and Max-Count 0 unless the value is
-//! recovered from the source.
+//! = 35). FO4 supports `LVLG`, so the translator preserves that live global
+//! reference. FO4 does not support the other FO76 value variants, so this fixup
+//! also materializes their current values into `LVLD`/`LVLM`; for `LVLG`, the
+//! materialized `LVLD` remains only a fallback while the global stays authoritative.
 //!
 //! `clean_leveled_item_entries` recovers Chance-None from `LVLG`, but only for
 //! records it already selects for entry cleanup (missing `LVLD`/`LVLM` defaults
@@ -25,8 +25,9 @@
 //! # What
 //! Run for every LVLI/LVLN, read the FO76 source record, and write the recovered
 //! Chance-None (`LVLD`) and Max-Count (`LVLM`) onto the output record, resolving
-//! `GLOB → float → literal` in that order. Nothing is written when the source has
-//! no value for a field, so a legitimately-zero list is left untouched.
+//! `GLOB → float → literal` in that order. Existing `LVLG` references are retained.
+//! Nothing is written when the source has no value for a field, so a legitimately-zero
+//! list is left untouched.
 
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;

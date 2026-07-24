@@ -16,13 +16,15 @@ def test_changelog_entries_newest_first_with_current_flagged():
 
     entries = ws._changelog_entries()
 
-    assert [version_id for version_id, _is_current, _notes in entries] == ["alpha2", "alpha1"]
-    alpha2_current = entries[0][1]
-    alpha1_current = entries[1][1]
-    assert alpha2_current is True
-    assert alpha1_current is False
-    assert entries[0][2]  # alpha2 notes non-empty
-    assert entries[1][2]  # alpha1 notes non-empty
+    assert [version_id for version_id, _is_current, _notes in entries] == [
+        "alpha2.1",
+        "alpha2",
+        "alpha1",
+    ]
+    assert entries[0][1] is True
+    assert entries[1][1] is False
+    assert entries[2][1] is False
+    assert all(notes for _version_id, _is_current, notes in entries)
 
 
 def test_changelog_entries_empty_on_manifest_load_failure(monkeypatch):

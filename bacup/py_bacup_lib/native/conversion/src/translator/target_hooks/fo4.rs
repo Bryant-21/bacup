@@ -109,7 +109,10 @@ mod keys {
     pub const ARMA_DROP_KEYS: &[&str] = &["XFLG", "ENLT", "ENLS", "AUUV", "MODD", "ENLM"];
 }
 
-const LOST_HEAD_MIRROR_ARMA_EDITOR_ID: &str = "AAHeadwearLostHeadMirror_Storm";
+const FO76_INCOMPATIBLE_FACE_BONES_ARMA_EDITOR_IDS: &[&str] = &[
+    "AAHeadwearLostHeadMirror_Storm",
+    "AA_HeadwearSettlerWorkChief",
+];
 
 const BIPED_SLOT_33_BODY: u64 = 1 << (33 - 30);
 const BIPED_SLOT_34_LEFT_HAND: u64 = 1 << (34 - 30);
@@ -617,7 +620,7 @@ fn apply_arma(record: &mut Record, interner: &StringInterner) {
     if record
         .eid
         .and_then(|eid| interner.resolve(eid))
-        .is_some_and(|eid| eid == LOST_HEAD_MIRROR_ARMA_EDITOR_ID)
+        .is_some_and(|eid| FO76_INCOMPATIBLE_FACE_BONES_ARMA_EDITOR_IDS.contains(&eid))
     {
         drop_keys.extend([keys::MO2F, keys::MO3F]);
     }
@@ -1259,6 +1262,38 @@ mod tests {
         assert!(sigs.contains(&"MOD3"));
         assert!(!sigs.contains(&"MO2F"));
         assert!(!sigs.contains(&"MO3F"));
+    }
+
+    #[test]
+    fn settler_work_chief_arma_uses_rigid_model_in_fo4() {
+        let mut interner = StringInterner::new();
+        let has_face_bones = interner.intern("HasFaceBonesModel");
+        let mut record = make_record("ARMA", &mut interner);
+        record.eid = Some(interner.intern("AA_HeadwearSettlerWorkChief"));
+        push_field(
+            &mut record,
+            "MOD2",
+            FieldValue::String(
+                interner.intern("clothes/Settler15_WorkChief/Settler15_Workchief_Hat_M.nif"),
+            ),
+        );
+        push_field(
+            &mut record,
+            "MO2F",
+            FieldValue::List(vec![FieldValue::String(has_face_bones)]),
+        );
+
+        let hook = Fo4TargetHook;
+        let mut ctx = make_ctx(&mut interner);
+        hook.run(&mut ctx, &mut record).unwrap();
+
+        let sigs: Vec<&str> = record
+            .fields
+            .iter()
+            .map(|entry| entry.sig.as_str())
+            .collect();
+        assert!(sigs.contains(&"MOD2"));
+        assert!(!sigs.contains(&"MO2F"));
     }
 
     #[test]

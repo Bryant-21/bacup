@@ -21,3 +21,5 @@ Function SetLinkedDoorsOpen(Bool shouldOpen)
         secondDoor.SetOpen(shouldOpen)
     EndIf
 EndFunction
+
+; TODO

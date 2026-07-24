@@ -476,6 +476,9 @@ pub const FO76_FO4_DEFAULT_RELOCATION_MESH_ROOTS: &[&str] = &["meshes/landscape"
 /// landscape collision root.
 pub const FO76_FO4_DEFAULT_RELOCATION_MESH_PATHS: &[&str] = &[
     "meshes/architecture/buildings/hightech/lobby/hitextintwalltoptrimblong01.nif",
+    "meshes/effects/fxbitsleavesfromtreetops.nif",
+    "meshes/effects/fxbitsleaveswind01.nif",
+    "meshes/setdressing/acducts/acductmed2way02.nif",
     "meshes/setdressing/minutemen/flagwallminutemen01.nif",
     "meshes/setdressing/metalbarrel/metalbarrel01staticfiregrating.nif",
     "meshes/vehicles/automotive/busschool01empty.nif",
@@ -544,6 +547,9 @@ mod tests {
                 "meshes/architecture/buildings/hightech/lobby/hitextintwalltoptrimblong01.nif",
             ),
         );
+        touch(&fo76.join("meshes/effects/fxbitsleavesfromtreetops.nif"));
+        touch(&fo76.join("meshes/effects/fxbitsleaveswind01.nif"));
+        touch(&fo76.join("meshes/setdressing/acducts/acductmed2way02.nif"));
         touch(&fo76.join("meshes/setdressing/minutemen/flagwallminutemen01.nif"));
         touch(&fo76.join("meshes/setdressing/metalbarrel/metalbarrel01staticfiregrating.nif"));
         touch(&fo76.join("meshes/vehicles/automotive/busschool01empty.nif"));
@@ -553,6 +559,21 @@ mod tests {
         assert!(result.members.contains(
             "meshes/architecture/buildings/hightech/lobby/hitextintwalltoptrimblong01.nif"
         ));
+        assert!(
+            result
+                .members
+                .contains("meshes/effects/fxbitsleavesfromtreetops.nif")
+        );
+        assert!(
+            result
+                .members
+                .contains("meshes/effects/fxbitsleaveswind01.nif")
+        );
+        assert!(
+            result
+                .members
+                .contains("meshes/setdressing/acducts/acductmed2way02.nif")
+        );
         assert!(
             result
                 .members

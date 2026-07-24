@@ -96,11 +96,17 @@ def test_archives_for_labels_matches_lod_general_and_texture_archives():
     assert regen_pipeline._archives_for_labels(names, ("LOD", "LODTextures")) == names[:4]
 
 
-def test_swap_deploy_archives_deletes_and_copies_only_matching_families(tmp_path):
+def test_swap_deploy_archives_deletes_and_copies_only_matching_families(
+    monkeypatch, tmp_path
+):
     output_root = tmp_path / "mods" / "SeventySix"
     deploy_data_dir = tmp_path / "Fallout4" / "Data"
     _seed_output_dir(output_root)
     _seed_deploy_dir(deploy_data_dir)
+
+    from creation_lib.ba2 import native_runtime as archive_runtime
+
+    monkeypatch.setattr(archive_runtime, "list_archive", lambda _path: [])
 
     regen_pipeline._swap_deploy_archives(
         output_root,
@@ -134,11 +140,32 @@ def test_swap_deploy_archives_deletes_and_copies_only_matching_families(tmp_path
     assert (deploy_data_dir / "SeventySix - Materials.ba2").read_bytes() == b"new-Materials"
 
 
-def test_deploy_post_steps_selective_swap_recomputes_full_archive_list(monkeypatch, tmp_path):
+def test_selective_swap_preserves_lod_settings_and_recomputes_archive_list(
+    monkeypatch, tmp_path
+):
     output_root = tmp_path / "mods" / "SeventySix"
     deploy_data_dir = tmp_path / "Fallout4" / "Data"
     _seed_output_dir(output_root)
     _seed_deploy_dir(deploy_data_dir)
+    old_misc = deploy_data_dir / "SeventySix - Misc.ba2"
+    old_misc.write_bytes(b"old-misc-with-lodsettings")
+    (output_root / "SeventySix - Misc.ba2").write_bytes(b"new-misc")
+
+    from creation_lib.ba2 import native_runtime as archive_runtime
+
+    def fake_list_archive(path):
+        if Path(path).name == old_misc.name:
+            return ["LODSettings/APPALACHIA.lod"]
+        return []
+
+    def fake_extract_one(archive, member):
+        assert Path(archive) == old_misc
+        assert old_misc.is_file()
+        assert member == "LODSettings/APPALACHIA.lod"
+        return b"appalachia-lod"
+
+    monkeypatch.setattr(archive_runtime, "list_archive", fake_list_archive)
+    monkeypatch.setattr(archive_runtime, "extract_one", fake_extract_one)
 
     def fake_deploy_output_mods(
         output_root_name,
@@ -148,10 +175,12 @@ def test_deploy_post_steps_selective_swap_recomputes_full_archive_list(monkeypat
         game_data_dir,
         resource_dir,
         deploy_archives=True,
+        plugin_only=False,
     ):
         # Full-deploy archive copy must be off for a selective swap; the ESM
         # copy itself is unconditional inside deploy_mod and out of scope here.
         assert deploy_archives is False
+        assert plugin_only is True
         (game_data_dir / "SeventySix.esm").write_bytes((output_root / "SeventySix.esm").read_bytes())
 
     registered: dict[str, list[str]] = {}
@@ -172,20 +201,85 @@ def test_deploy_post_steps_selective_swap_recomputes_full_archive_list(monkeypat
         _paths(tmp_path, output_root=output_root, deploy_data_dir=deploy_data_dir),
         ["SeventySix.esm"],
         timing,
-        swap_labels=("Meshes", "MeshesExtra", "Materials"),
+        swap_labels=("Meshes", "MeshesExtra", "Materials", "Misc"),
     )
 
     assert (deploy_data_dir / "SeventySix.esm").read_bytes() == b"new-esm"
+    assert (
+        deploy_data_dir / "LODSettings" / "APPALACHIA.lod"
+    ).read_bytes() == b"appalachia-lod"
     # Union of untouched (Textures, Textures2, LOD, Sounds) + new (Meshes,
-    # Meshes1, Materials) -- MeshesExtra was swapped-and-discarded (no fresh
+    # Meshes1, Materials, Misc) -- MeshesExtra was swapped-and-discarded (no fresh
     # replacement packed), so it's gone from both disk and this list. No
     # orphans: every name here is a real file in deploy_data_dir.
     assert set(registered["names"]) == {
         "SeventySix - Meshes.ba2",
         "SeventySix - Meshes1.ba2",
         "SeventySix - Materials.ba2",
+        "SeventySix - Misc.ba2",
         "SeventySix - Textures.ba2",
         "SeventySix - Textures2.ba2",
         "SeventySix - LOD.ba2",
         "SeventySix - Sounds.ba2",
     }
+
+
+def test_preserve_anim_text_data_from_outgoing_mesh_archives(monkeypatch, tmp_path):
+    output_root = tmp_path / "mods" / "SeventySix"
+    destination_root = output_root / "data" / "Meshes" / "AnimTextData"
+    destination_root.mkdir(parents=True)
+    (destination_root / "stale.txt").write_bytes(b"stale")
+    archives = [
+        tmp_path / "SeventySix - Meshes.ba2",
+        tmp_path / "SeventySix - Meshes1.ba2",
+    ]
+
+    from creation_lib.ba2 import native_runtime as archive_runtime
+
+    members = {
+        archives[0].name: [
+            "Meshes/AnimTextData/AnimationFileData/graph.txt",
+            "Meshes/Actors/NotAnimTextData.nif",
+            "Meshes/AnimTextData/../unsafe.txt",
+        ],
+        archives[1].name: [
+            "meshes\\animtextdata\\AnimationFileData\\graph.txt",
+            "Meshes/AnimTextData/AnimationEventData/event.txt",
+        ],
+    }
+    payloads = {
+        (archives[0].name, "Meshes/AnimTextData/AnimationFileData/graph.txt"): b"old",
+        (
+            archives[1].name,
+            "meshes\\animtextdata\\AnimationFileData\\graph.txt",
+        ): b"new",
+        (
+            archives[1].name,
+            "Meshes/AnimTextData/AnimationEventData/event.txt",
+        ): b"event",
+    }
+
+    monkeypatch.setattr(
+        archive_runtime,
+        "list_archive",
+        lambda path: members[Path(path).name],
+    )
+    monkeypatch.setattr(
+        archive_runtime,
+        "extract_one",
+        lambda archive, member: payloads[(Path(archive).name, member)],
+    )
+
+    preserved = regen_pipeline._preserve_anim_text_data_from_archives(
+        output_root,
+        archives,
+    )
+
+    assert preserved == 2
+    assert not (destination_root / "stale.txt").exists()
+    assert (
+        destination_root / "AnimationFileData" / "graph.txt"
+    ).read_bytes() == b"new"
+    assert (
+        destination_root / "AnimationEventData" / "event.txt"
+    ).read_bytes() == b"event"

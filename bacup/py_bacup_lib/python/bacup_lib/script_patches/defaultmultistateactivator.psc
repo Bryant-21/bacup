@@ -65,6 +65,7 @@ Event OnInit()
 EndEvent
 
 Event OnSimpleNetworkStateSet()
+    ; TODO
     SetLocalState(CurrentStateIndex, True)
 EndEvent
 

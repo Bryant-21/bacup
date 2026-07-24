@@ -736,6 +736,7 @@ class ModBuilderApp:
         self._mod_list: list[str] = []
         self._mod_kinds: list[str] = []   # parallel to _mod_list: "mod" | "xse" | "combined"
         self._mod_deployed: list[bool] = []  # parallel to _mod_list
+        self._mod_display: dict[str, tuple[str, imgui.ImVec4]] = {}
         self._selected_mod_idx = 0
         self._new_mod_name = ""
         self._create_plugin_type_idx = _PLUGIN_TYPES.index("esl")
@@ -998,6 +999,7 @@ class ModBuilderApp:
                 self._loading_label = ""
                 self._runner = None
                 self._refresh_deployed_state()
+                self._refresh_mod_display(selected_only=True)
                 self._on_mod_changed()
                 cb = self._on_done_callback
                 self._on_done_callback = None
@@ -1088,15 +1090,17 @@ class ModBuilderApp:
                     is_selected = idx == self._selected_mod_idx
                     kind = self._mod_kinds[idx] if idx < len(self._mod_kinds) else "mod"
                     deployed = idx < len(self._mod_deployed) and self._mod_deployed[idx]
-                    if kind in ("xse", "combined"):
-                        plugin_label = _xse_plugin_label(mod, kind)
-                        text_color = _XSE_COLOR
-                        entry_dir = os.path.join(MODS_DIR, mod)
+                    metadata = self._mod_display.get(mod)
+                    if metadata is None:
+                        plugin_label = "N/A"
+                        text_color = (
+                            _XSE_COLOR
+                            if kind in ("xse", "combined")
+                            else imgui.ImVec4(0.22, 0.44, 0.88, 1.0)
+                        )
                     else:
-                        mod_dir = os.path.join(MODS_DIR, mod)
-                        plugin_label = _mod_plugin_type_label(mod_dir, mod)
-                        text_color = _mod_plugin_text_color(mod_dir, mod)
-                        entry_dir = mod_dir
+                        plugin_label, text_color = metadata
+                    entry_dir = os.path.join(MODS_DIR, mod)
                     imgui.push_style_color(imgui.Col_.text, text_color)
                     clicked, _ = imgui.selectable(
                         f"{_mod_list_label(mod, plugin_label, deployed=deployed)}##mod_{idx}",
@@ -2722,6 +2726,7 @@ class ModBuilderApp:
 
         self._mod_list = [e[0] for e in entries]
         self._mod_kinds = [e[1] for e in entries]
+        self._refresh_mod_display()
         self._refresh_deployed_state()
 
         try:
@@ -2731,6 +2736,29 @@ class ModBuilderApp:
         except StopIteration:
             self._selected_mod_idx = 0
         self._on_mod_changed()
+
+    def _refresh_mod_display(self, selected_only: bool = False) -> None:
+        if not selected_only:
+            self._mod_display = {}
+
+        entries = range(len(self._mod_list))
+        if selected_only:
+            entries = (self._selected_mod_idx,)
+
+        for idx in entries:
+            if not 0 <= idx < len(self._mod_list):
+                continue
+            mod = self._mod_list[idx]
+            kind = self._mod_kinds[idx] if idx < len(self._mod_kinds) else "mod"
+            if kind in ("xse", "combined"):
+                metadata = (_xse_plugin_label(mod, kind), _XSE_COLOR)
+            else:
+                mod_dir = os.path.join(MODS_DIR, mod)
+                metadata = (
+                    _mod_plugin_type_label(mod_dir, mod),
+                    _mod_plugin_text_color(mod_dir, mod),
+                )
+            self._mod_display[mod] = metadata
 
     def _refresh_deployed_state(self):
         self._mod_deployed = []

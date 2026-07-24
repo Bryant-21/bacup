@@ -67,6 +67,19 @@ def test_runner_emits_progress():
     assert len(phase_completes) == 1
 
 
+def test_runner_emits_status():
+    from bacup_lib.runner import ConversionRunner
+
+    runner = ConversionRunner(lambda active: active.emit_status("Writing reports"))
+    runner.start()
+    for _ in range(100):
+        if runner.done:
+            break
+        time.sleep(0.01)
+
+    assert runner.drain() == [{"type": "status", "message": "Writing reports"}]
+
+
 def test_runner_cancellation():
     from bacup_lib.runner import ConversionRunner
 

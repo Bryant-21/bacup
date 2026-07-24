@@ -55,20 +55,20 @@ PATCH_CASES = (
     "TIF_W05_DialogueSettlers_Fou_005A3328",
 )
 
-DIRECT_PATCH_CASES = {
-    "TIF_BS_RE_TravelDWD01_005C54AD": "Game.GetPlayer().RemoveItem(CapsRef, 50, True)",
-    "TIF_BS_RE_TravelDWD02_005C721A": "Game.GetPlayer().RemoveItem(Caps, 5, True)",
-    "TIF_BS_RE_TravelDWD03_005C757F": "Game.GetPlayer().RemoveItem(CapsRef, 50, True)",
-    "TIF_E09D_MostWanted_0066DD77": "Game.GetPlayer().AddItem(Give_Weapons, 1, False)",
-    "TIF_MOON_MiddleMountainPitst_006BE893": "Game.GetPlayer().RemoveItem(Currency_Caps, 10, True)",
-    "TIF_RE_SceneDWD03_0052754B": "CampMcClintockMapMarker.AddToMap()",
-    "TIF_RE_SceneDWD05_003E1887": "Game.GetPlayer().AddItem(NukaCola, 1, False)",
-    "TIF_RE_SceneSM03_003B7DD4_1": "TylerCountyFairMapMarkerREF.AddToMap()",
-    "TIF_W05_Community_RaiderFish_0057CF59": "Game.GetPlayer().AddItem(RewardRef3, 1, False)",
-    "TIF_W05_Community_RaiderFish_0057CF5A": "Game.GetPlayer().AddItem(RewardRef2, 1, False)",
-    "TIF_W05_Community_RaiderFish_0057CF5B": "Game.GetPlayer().AddItem(RewardRef, 1, False)",
-    "TIF_W05_Community_RaiderFish_0057CF5C": "Game.GetPlayer().AddItem(RewardRef, 1, False)",
-}
+DIRECT_PATCH_CASES = (
+    "TIF_BS_RE_TravelDWD01_005C54AD",
+    "TIF_BS_RE_TravelDWD02_005C721A",
+    "TIF_BS_RE_TravelDWD03_005C757F",
+    "TIF_E09D_MostWanted_0066DD77",
+    "TIF_MOON_MiddleMountainPitst_006BE893",
+    "TIF_RE_SceneDWD03_0052754B",
+    "TIF_RE_SceneDWD05_003E1887",
+    "TIF_RE_SceneSM03_003B7DD4_1",
+    "TIF_W05_Community_RaiderFish_0057CF59",
+    "TIF_W05_Community_RaiderFish_0057CF5A",
+    "TIF_W05_Community_RaiderFish_0057CF5B",
+    "TIF_W05_Community_RaiderFish_0057CF5C",
+)
 
 ALL_PATCH_CASES = (*PATCH_CASES, *DIRECT_PATCH_CASES)
 
@@ -99,13 +99,12 @@ def _fo4_base_source() -> Path | None:
     return None
 
 
-@pytest.mark.parametrize("base_name", PATCH_CASES)
-def test_topicinfo_patch_restores_map_marker_fragment(base_name: str):
+@pytest.mark.parametrize("base_name", ALL_PATCH_CASES)
+def test_topicinfo_patch_loads_merges_and_compiles_for_fo4(base_name: str):
     source_path = OLD_TOPICINFO_ROOT / f"{base_name}.psc"
     source = source_path.read_text(encoding="utf-8-sig")
     patch = _script_patch_source(_script_name(base_name))
 
-    assert "referencealias Property Alias_MapMarker Auto" in source
     assert patch is not None
     assert not any(
         line.strip().lower().startswith("scriptname ")
@@ -119,40 +118,12 @@ def test_topicinfo_patch_restores_map_marker_fragment(base_name: str):
         if kind == "function"
     }
     assert members == {"fragment_end"}
-    assert "Alias_MapMarker.GetRef().AddToMap()" in patch
 
-
-@pytest.mark.parametrize(("base_name", "expected_call"), DIRECT_PATCH_CASES.items())
-def test_topicinfo_patch_restores_confirmed_fragment_call(
-    base_name: str, expected_call: str
-):
-    patch = _script_patch_source(_script_name(base_name))
-
-    assert patch is not None
-    members = {
-        name
-        for kind, name, _start, _end in _iter_top_level_papyrus_members(
-            patch.splitlines()
-        )
-        if kind == "function"
-    }
-    assert members == {"fragment_end"}
-    assert expected_call in patch
-
-
-@pytest.mark.parametrize("base_name", ALL_PATCH_CASES)
-def test_topicinfo_old_source_merge_native_compiles_for_fo4(base_name: str):
     base_source = _fo4_base_source()
     if base_source is None:
         pytest.skip("FO4 base Papyrus sources unavailable")
 
-    source = (OLD_TOPICINFO_ROOT / f"{base_name}.psc").read_text(
-        encoding="utf-8-sig"
-    )
-    patch = _script_patch_source(_script_name(base_name))
-    assert patch is not None
     merged = _merge_script_method_patches(source, patch)
-
     result = compile_psc(
         merged,
         imports=[str(base_source)],

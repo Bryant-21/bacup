@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from imgui_bundle import imgui
@@ -21,7 +22,7 @@ from bacup_lib.input_preflight import (
 from bacup_lib.install_debug import audit_archive_ini, repair_archive_ini
 from bacup_lib.models import PhaseProgress
 from bacup_lib.regen_pipeline import RegenOptions, RegenPaths
-from bacup_lib.runner import ConversionRunner
+from bacup_lib.runner import ConversionRunner, emit_runner_status
 from bacup_lib.source_pairs import (
     DEFAULT_PAIR_ID,
     SOURCE_PAIRS,
@@ -43,14 +44,23 @@ from bacup_lib.lod_settings import (
 )
 from ui.toolkit.app_paths import get_code_root, get_exe_dir, get_resource_dir
 from bacup_ui.setup import (
-    _ba2_size_bytes,
-    _dir_size_bytes,
     _format_gb,
     clear_project_owned_extractions,
     get_project_profile,
     get_project_setup_ownership,
     project_owns_extracted_path,
 )
+from bacup_ui.storage_cleanup import (
+    CleanupResult,
+    CleanupTarget,
+    delete_cleanup_targets,
+    discover_cleanup_targets,
+    is_running_as_admin,
+    measure_cleanup_targets,
+    restart_as_admin,
+    windows_temp_dir,
+)
+from bacup_ui.conversion.widgets.runner_overlay import draw_runner_overlay
 from creation_lib.core.fo4_version import detect_ba2_target
 from ui.toolkit.steam_install import SteamInstallResult, validate_steam_install_for_game
 
@@ -75,6 +85,7 @@ _PHASE_ROWS = [
     ("scaffold_mod", "Scaffold Mod"),
     ("build_esp", "Build ESP"),
     ("regenerate_modt", "Regenerate MODT"),
+    ("rebuild_cell_offsets", "Rebuild Cell Offsets"),
     ("generate_anim_text_data", "Generate AnimTextData"),
     ("lodgen", "Generate LOD"),
     ("pack", "Pack BA2"),
@@ -98,6 +109,8 @@ _PHASE_ALIASES = {
     "generate_animtextdata": ("generate_anim_text_data", "Generate AnimTextData"),
     "lod": ("lodgen", "Generate LOD"),
     "lodgen": ("lodgen", "Generate LOD"),
+    "offsets": ("rebuild_cell_offsets", "Rebuild Cell Offsets"),
+    "cell_offsets": ("rebuild_cell_offsets", "Rebuild Cell Offsets"),
     "pack_ba2": ("pack", "Pack BA2"),
     "postprocess_havok_assets": ("postprocess_havok_assets", "Postprocess Havok Assets"),
     "scaffold_mod": ("scaffold_mod", "Scaffold Mod"),
@@ -117,6 +130,7 @@ _BA2_TARGET_VALUES = ["auto", "og", "nextgen"]
 _BA2_TARGET_LABELS = ["Auto (detect FO4)", "Force OG (v1)", "Force Next-Gen (v8)"]
 _ATLAS_MIP_FLOODING_KEY = "atlas_mip_flooding"
 _TEXTURE_LANDSCAPE_MIP_FLOODING_KEY = "texture_landscape_mip_flooding"
+_GENERATE_PRECOMBINES_KEY = "generate_precombines"
 _WORKERS_KEY = "workers"
 _LOD_PROFILE_KEY = "lod_profile"
 _INSTALL_LOCATION_KEY = "install_location"
@@ -138,6 +152,7 @@ _RECOVERY_PHASE_VALUES = [
     "scaffold",
     "build",
     "modt",
+    "offsets",
     "animtext",
     "lodgen",
     "pack",
@@ -158,6 +173,7 @@ _RECOVERY_PHASE_LABELS = [
     "Scaffold Mod (full rebuild)",
     "Build ESP (full rebuild)",
     "Regenerate MODT",
+    "Rebuild Cell Offsets",
     "Generate AnimTextData",
     "Generate LOD",
     "Pack BA2",
@@ -187,13 +203,168 @@ _WORKSPACE_SETTINGS_ID = "appalachia"
 _PROJECT_BY_PAIR = {
     "fo76:fo4": ("appalachia", "Tales From Appalachia"),
     "fnvfo3:fo4": ("wasteland", "Legends of the Wasteland"),
-    "skyrimse:fo4": ("north", "Fables of the North"),
+    "skyrimse:fo4": ("north", "Northern Lands"),
 }
+_GIB = 1024**3
+_FO76_INSTALL_REFERENCE_BYTES = 180 * _GIB
+_LOOSE_WORKSPACE_PEAK_BYTES = 120 * _GIB
+_PACKED_MOD_PEAK_BYTES = 60 * _GIB
+_DISK_SPACE_MIN_HEADROOM_BYTES = 20 * _GIB
+
+
+@dataclass(frozen=True)
+class _DiskSpaceVolume:
+    key: str
+    path: Path
+    labels: tuple[str, ...]
+    required_bytes: int
+    total_bytes: int
+    free_bytes: int
+
+    @property
+    def insufficient(self) -> bool:
+        return self.free_bytes < 0 or self.free_bytes < self.required_bytes
+
+    @property
+    def unavailable(self) -> bool:
+        return self.free_bytes < 0
+
+    @property
+    def projected_fill_fraction(self) -> float:
+        if self.unavailable or self.total_bytes <= 0:
+            return 0.0
+        projected_used = self.total_bytes - self.free_bytes + self.required_bytes
+        return min(1.0, max(0.0, projected_used / self.total_bytes))
+
+    @property
+    def space_level(self) -> str:
+        if self.unavailable:
+            return "yellow"
+        if self.insufficient:
+            return "red"
+        remaining_bytes = self.free_bytes - self.required_bytes
+        warning_headroom = max(
+            _DISK_SPACE_MIN_HEADROOM_BYTES,
+            self.required_bytes // 4,
+        )
+        if remaining_bytes < warning_headroom:
+            return "yellow"
+        return "green"
+
+
+def _volume_key(path: Path) -> str:
+    absolute = os.path.abspath(path)
+    drive, _tail = os.path.splitdrive(absolute)
+    return os.path.normcase(drive or Path(absolute).anchor or absolute)
+
+
+def _disk_usage_for_target(path: Path):
+    candidate = Path(os.path.abspath(path))
+    while not candidate.exists():
+        parent = candidate.parent
+        if parent == candidate:
+            return None
+        candidate = parent
+    try:
+        return shutil.disk_usage(candidate)
+    except OSError:
+        return None
+
+
+def _project_disk_space(
+    *,
+    output_root: Path,
+    archive_root: Path,
+    loose_bytes: int = _LOOSE_WORKSPACE_PEAK_BYTES,
+    packed_bytes: int = _PACKED_MOD_PEAK_BYTES,
+    volume_key=_volume_key,
+    disk_usage=None,
+) -> tuple[_DiskSpaceVolume, ...]:
+    disk_usage = disk_usage or _disk_usage_for_target
+    grouped: dict[str, dict] = {}
+    for path, label, required_bytes in (
+        (output_root, "loose workspace", loose_bytes),
+        (archive_root, "packed BA2s", packed_bytes),
+    ):
+        key = volume_key(path)
+        entry = grouped.setdefault(
+            key,
+            {"path": path, "labels": [], "required_bytes": 0},
+        )
+        entry["labels"].append(label)
+        entry["required_bytes"] += required_bytes
+
+    volumes = []
+    for key, entry in grouped.items():
+        usage = disk_usage(entry["path"])
+        volumes.append(
+            _DiskSpaceVolume(
+                key=key,
+                path=entry["path"],
+                labels=tuple(entry["labels"]),
+                required_bytes=entry["required_bytes"],
+                total_bytes=usage.total if usage is not None else 0,
+                free_bytes=usage.free if usage is not None else -1,
+            )
+        )
+    return tuple(volumes)
+
+
+def _mod_archive_sizes(
+    output_root: Path,
+    deploy_root: Path,
+    mod_name: str,
+) -> tuple[int, int]:
+    seen_roots: set[str] = set()
+    seen_archives: set[str] = set()
+    totals = []
+    for root in (output_root, deploy_root):
+        root_key = os.path.normcase(os.path.abspath(root))
+        if root_key in seen_roots:
+            totals.append(0)
+            continue
+        seen_roots.add(root_key)
+        total = 0
+        for archive in discover_mod_archives(root, mod_name):
+            archive_key = os.path.normcase(os.path.abspath(archive))
+            if archive_key in seen_archives:
+                continue
+            seen_archives.add(archive_key)
+            try:
+                total += archive.stat().st_size
+            except OSError:
+                continue
+        totals.append(total)
+    return totals[0], totals[1]
 
 
 def _data_dir(root_dir: str) -> Path:
     p = Path(root_dir)
     return p if p.name.lower() == "data" else p / "Data"
+
+
+def _conversion_output_root(
+    exe_dir: Path,
+    mod_name: str,
+    protected_paths: tuple[Path, ...],
+) -> Path:
+    def overlaps(candidate: Path) -> bool:
+        resolved_candidate = candidate.resolve()
+        return any(
+            resolved_candidate == protected
+            or resolved_candidate in protected.parents
+            or protected in resolved_candidate.parents
+            for protected in (path.resolve() for path in protected_paths)
+        )
+
+    output_root = exe_dir / "mods" / mod_name
+    if not overlaps(output_root):
+        return output_root
+    for parent in (exe_dir, *exe_dir.parents):
+        output_root = parent / "BACUP Workspace" / "mods" / mod_name
+        if not overlaps(output_root):
+            return output_root
+    raise ValueError("could not find a conversion workspace outside protected game paths")
 
 
 def _archive_max_gb(value) -> int:
@@ -298,6 +469,11 @@ class RegenPanel:
         self.texture_landscape_mip_flooding = bool(
             workspace_settings.get(_TEXTURE_LANDSCAPE_MIP_FLOODING_KEY, False)
         )
+        # Experimental precombine generation — default off (see
+        # models.PhaseSelection.generate_precombines).
+        self.generate_precombines = bool(
+            workspace_settings.get(_GENERATE_PRECOMBINES_KEY, False)
+        )
         self.re_use_land = False
         self.recovery_phase = _recovery_phase(
             workspace_settings.get(_RECOVERY_PHASE_KEY, "lodgen")
@@ -305,12 +481,30 @@ class RegenPanel:
         self._upgrade_manifest_cache: tuple[str, object] | None = None
         self._snam_cache: tuple[tuple, str] | None = None
         self._phases: list[dict] = []
+        self._runner_status = "Starting conversion"
         self._summary: dict | None = None
         self._completion: dict | None = None
         self._disk_usage_cache: tuple[float, dict[str, int]] | None = None
+        self._disk_usage_cache_key: tuple[str, str] | None = None
+        self._disk_space_cache: tuple[
+            tuple[str, str], tuple[_DiskSpaceVolume, ...]
+        ] | None = None
         self._disk_usage_lock = threading.Lock()
         self._disk_usage_running = False
         self._disk_usage_thread: threading.Thread | None = None
+        self._waiting_for_space_check = False
+        self._low_space_warning: tuple[_DiskSpaceVolume, ...] | None = None
+        self._cleanup_lock = threading.Lock()
+        self._cleanup_dialog_open = False
+        self._cleanup_status = "idle"
+        self._cleanup_targets: tuple[CleanupTarget, ...] = ()
+        self._cleanup_selected: set[str] = set()
+        self._cleanup_pending_result: CleanupResult | None = None
+        self._cleanup_disk_refresh_pending = False
+        self._cleanup_message: str | None = None
+        self._cleanup_error: str | None = None
+        self._admin_restart_error: str | None = None
+        self._is_admin = is_running_as_admin()
         self._steam_install_cache: dict[str, tuple[str, SteamInstallResult]] = {}
         self._status_log_frac = 0.30
         self.upgrade = False
@@ -446,6 +640,7 @@ class RegenPanel:
         cls,
         phases: list[dict],
         phase_rows: list[tuple[str, str]],
+        status_message: str = "",
     ) -> tuple[float, str]:
         total_phases = max(len(phase_rows), 1)
         row_index = {key: index for index, (key, _label) in enumerate(phase_rows)}
@@ -478,7 +673,11 @@ class RegenPanel:
             progress_slots = float(
                 sum(1 for key, _label in phase_rows if key in completed_keys)
             )
-            message = "Starting conversion..." if not completed_keys else "Finalizing..."
+            message = (
+                "Starting conversion"
+                if not completed_keys
+                else status_message or "Completing post-conversion work"
+            )
 
         fraction = max(0.0, min(progress_slots / total_phases, 1.0))
         return fraction, message
@@ -490,9 +689,11 @@ class RegenPanel:
         target_game = s.get_game_paths(pair.target_game)
         source_root = source.get("root_dir", "") or ""
         target_root = target_game.get("root_dir", "") or ""
+        source_extracted = str(source.get("extracted_dir", "") or "")
         target_extracted = target_game.get("extracted_dir", "") or ""
         source_data_dir = _data_dir(source_root)
         target_data_dir = _data_dir(target_root)
+        target_asset_root = get_exe_dir() / "cache" / "conversion"
         docs = Path.home() / "Documents" / "My Games" / "Fallout4"
         install_target = self._resolve_install_target(
             target_data_dir, docs / "Fallout4Custom.ini"
@@ -519,8 +720,16 @@ class RegenPanel:
                 grafted_extracted = str(grafted.get("extracted_dir", "") or "")
                 if grafted_extracted:
                     additional_source_asset_roots = (Path(grafted_extracted),)
+        protected_output_paths = (
+            *((source_data_dir,) if source_root else ()),
+            *((Path(source_extracted),) if source_extracted else ()),
+            *((target_data_dir,) if target_root else ()),
+            *((Path(target_extracted),) if target_extracted else ()),
+            *((install_target.deploy_data_dir,) if install_target.deploy_data_dir else ()),
+            *additional_source_asset_roots,
+        )
         return RegenPaths(
-            source_extracted_dir=Path(source.get("extracted_dir", "") or ""),
+            source_extracted_dir=Path(source_extracted),
             source_data_dir=source_data_dir,
             target_extracted_dir=(
                 Path(target_extracted) if target_extracted else None
@@ -529,7 +738,11 @@ class RegenPanel:
             target_ck_ini_path=Path(target_root) / "CreationKitCustom.ini",
             target_custom_ini_path=docs / "Fallout4Custom.ini",
             target_game_ini_path=docs / "Fallout4.ini",
-            output_root=get_exe_dir() / "mods" / pair.output_mod_name,
+            output_root=_conversion_output_root(
+                get_exe_dir(),
+                pair.output_mod_name,
+                protected_output_paths,
+            ),
             mod_name=pair.output_mod_name,
             resource_dir=get_resource_dir(),
             deploy_data_dir=install_target.deploy_data_dir,
@@ -537,6 +750,10 @@ class RegenPanel:
             merge_primary_plugin_paths=merge_primary_plugin_paths,
             merge_grafted_plugin_paths=merge_grafted_plugin_paths,
             additional_source_asset_roots=additional_source_asset_roots,
+            target_asset_catalog_path=(
+                target_asset_root / "fo4_target_assets.sqlite3"
+            ),
+            target_asset_cache_dir=target_asset_root / "target_assets",
         )
 
     def _resolve_install_target(self, fo4_data_dir, docs_custom_ini):
@@ -561,6 +778,9 @@ class RegenPanel:
             texture_landscape_mip_flooding=bool(
                 getattr(self, "texture_landscape_mip_flooding", False)
             ),
+            generate_precombines=bool(
+                getattr(self, "generate_precombines", False)
+            ),
             re_use_land=self.re_use_land,
             write_land_cache=False,
             include_interior=True,
@@ -583,8 +803,8 @@ class RegenPanel:
                 options.upgrade_manifest_path = self.upgrade_manifest_path()
         return options
 
-    @staticmethod
     def load_lod_settings(
+        self,
         profile: str = PROFILE_HIGH_QUALITY,
         lod_mode: str = "hybrid-atlas",
     ) -> dict:
@@ -592,7 +812,12 @@ class RegenPanel:
             get_code_root(),
             Path(__file__).resolve().parents[3],
         ]
-        return load_profile_settings(candidates, profile=profile, lod_mode=lod_mode)
+        return load_profile_settings(
+            candidates,
+            profile=profile,
+            lod_mode=lod_mode,
+            pair_id=self._pair().pair_id,
+        )
 
     def _selected_lod_settings(self, lod_mode: str) -> dict:
         settings = self.load_lod_settings(self.lod_profile, lod_mode)
@@ -602,7 +827,7 @@ class RegenPanel:
         return settings
 
     def can_convert(self) -> bool:
-        if self._runner_running():
+        if self._runner_running() or getattr(self, "_cleanup_status", "idle") == "deleting":
             return False
         s = self._settings()
         for g in self._required_game_ids():
@@ -623,7 +848,7 @@ class RegenPanel:
         return self.build_paths().output_root / self._pair().output_plugin_name
 
     def can_deploy_existing(self) -> bool:
-        if self._runner_running():
+        if self._runner_running() or getattr(self, "_cleanup_status", "idle") == "deleting":
             return False
         fo4 = self._settings().get_game_paths("fo4")
         if not fo4.get("root_dir"):
@@ -793,6 +1018,7 @@ class RegenPanel:
 
     def start_conversion(self) -> None:
         self._phases = []
+        self._runner_status = "Starting conversion"
         self._summary = None
         self._completion = None
         self._preflight_report = None
@@ -871,6 +1097,8 @@ class RegenPanel:
                 if result.deployed and self._is_default_pair()
                 else []
             )
+            if result.deployed:
+                emit_runner_status(runner, "Removing temporary conversion data")
             cleanup_removed = self._cleanup_after_deploy(paths, result.deployed)
             runner.emit_complete(
                 str(result.output_root),
@@ -890,12 +1118,14 @@ class RegenPanel:
         self._require_steam_installs()
 
         self._phases = []
+        self._runner_status = "Preparing existing mod deployment"
         self._summary = None
         self._completion = None
         paths = self.build_paths()
         options = self.build_options()
 
         def work(runner: ConversionRunner) -> None:
+            emit_runner_status(runner, "Deploying existing converted mod")
             runner.emit_log("INFO", f"Deploying existing {self._project_label()} output...")
             result = regen_pipeline.deploy_existing(
                 paths,
@@ -908,6 +1138,8 @@ class RegenPanel:
                 if result.deployed and self._is_default_pair()
                 else []
             )
+            if result.deployed:
+                emit_runner_status(runner, "Removing temporary conversion data")
             cleanup_removed = self._cleanup_after_deploy(paths, result.deployed)
             runner.emit_complete(
                 str(result.output_root),
@@ -928,6 +1160,7 @@ class RegenPanel:
         self._require_steam_installs()
 
         self._phases = []
+        self._runner_status = "Preparing conversion recovery"
         self._summary = None
         self._completion = None
         paths = self.build_paths()
@@ -957,6 +1190,8 @@ class RegenPanel:
                 if result.deployed and self._is_default_pair()
                 else []
             )
+            if result.deployed:
+                emit_runner_status(runner, "Removing temporary conversion data")
             cleanup_removed = self._cleanup_after_deploy(paths, result.deployed)
             runner.emit_complete(
                 str(result.output_root),
@@ -973,7 +1208,9 @@ class RegenPanel:
 
     def handle_event(self, event: dict) -> None:
         etype = event.get("type", "")
-        if etype in ("phase_start", "item_progress", "phase_complete"):
+        if etype == "status":
+            self._runner_status = str(event.get("message", "") or "")
+        elif etype in ("phase_start", "item_progress", "phase_complete"):
             data = self._normalize_phase_data(event.get("data", {}) or {})
             phase_key = data.get("ui_key", "")
             existing = next(
@@ -1028,53 +1265,128 @@ class RegenPanel:
     def _same_path(left: Path, right: Path) -> bool:
         return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
 
-    def _compute_disk_usage_summary(self) -> dict[str, int]:
-        paths = self.build_paths()
+    def _compute_disk_usage_summary(
+        self,
+        paths: RegenPaths | None = None,
+    ) -> dict[str, int]:
+        paths = paths or self.build_paths()
         output_root = paths.output_root
         deploy_data_dir = paths.deploy_data_dir or paths.target_data_dir
-        source_extracted = str(
-            self._settings()
-            .get_game_paths(self._pair().source_game)
-            .get("extracted_dir", "")
-            or ""
+        mod_ba2, deployed_ba2 = _mod_archive_sizes(
+            output_root,
+            deploy_data_dir,
+            paths.mod_name,
         )
-        extracted_paths = (
-            *((paths.target_extracted_dir,) if paths.target_extracted_dir else ()),
-            *((paths.source_extracted_dir,) if source_extracted else ()),
-            *paths.additional_source_asset_roots,
-        )
-        unique_extracted_paths = {
-            os.path.normcase(os.path.abspath(path)): path
-            for path in extracted_paths
-        }
         return {
-            "extracted": sum(
-                _dir_size_bytes(path) for path in unique_extracted_paths.values()
-            ),
-            "mod_output": _dir_size_bytes(output_root),
-            "mod_ba2": _ba2_size_bytes(output_root),
-            "deployed_ba2": _ba2_size_bytes(deploy_data_dir),
+            "extracted": 0,
+            "mod_output": mod_ba2,
+            "mod_ba2": mod_ba2,
+            "deployed_ba2": deployed_ba2,
         }
 
-    def _start_disk_usage_worker(self) -> None:
+    def _disk_space_target(
+        self,
+        paths: RegenPaths,
+        options: RegenOptions | None = None,
+    ) -> tuple[tuple[str, str], Path]:
+        deploy = (
+            options.deploy
+            if options is not None
+            else self.install_location.strip().lower() != "none"
+        )
+        direct_deploy_archives = (
+            options.direct_deploy_archives if options is not None else True
+        )
+        archive_root = (
+            paths.deploy_data_dir or paths.target_data_dir
+            if deploy and direct_deploy_archives
+            else paths.output_root
+        )
+        key = (
+            os.path.normcase(os.path.abspath(paths.output_root)),
+            os.path.normcase(os.path.abspath(archive_root)),
+        )
+        return key, archive_root
+
+    def _start_disk_usage_worker(
+        self,
+        *,
+        paths: RegenPaths | None = None,
+        options: RegenOptions | None = None,
+    ) -> None:
+        paths = paths or self.build_paths()
+        space_key, archive_root = self._disk_space_target(paths, options)
         with self._disk_usage_lock:
-            if self._disk_usage_running or self._disk_usage_cache is not None:
+            cached_space = getattr(self, "_disk_space_cache", None)
+            cached_summary = (
+                dict(self._disk_usage_cache[1])
+                if self._disk_usage_cache is not None
+                and getattr(self, "_disk_usage_cache_key", None) == space_key
+                else None
+            )
+            if self._disk_usage_running:
+                return
+            if (
+                cached_summary is not None
+                and cached_space is not None
+                and cached_space[0] == space_key
+            ):
                 return
             self._disk_usage_running = True
 
         def worker() -> None:
+            fallback_summary = cached_summary or {
+                "extracted": 0,
+                "mod_output": 0,
+                "mod_ba2": 0,
+                "deployed_ba2": 0,
+            }
+
+            def estimates(summary: dict[str, int]) -> tuple[int, int]:
+                return (
+                    max(
+                        _LOOSE_WORKSPACE_PEAK_BYTES,
+                        summary["mod_output"] - summary["mod_ba2"],
+                    ),
+                    max(
+                        _PACKED_MOD_PEAK_BYTES,
+                        summary["mod_ba2"],
+                        summary["deployed_ba2"],
+                    ),
+                )
+
+            def project(summary: dict[str, int]) -> tuple[_DiskSpaceVolume, ...]:
+                loose_bytes, packed_bytes = estimates(summary)
+                return _project_disk_space(
+                    output_root=paths.output_root,
+                    archive_root=archive_root,
+                    loose_bytes=loose_bytes,
+                    packed_bytes=packed_bytes,
+                )
+
+            summary = cached_summary
+            if summary is None:
+                try:
+                    summary = self._compute_disk_usage_summary(paths)
+                except Exception:
+                    _log.warning("Disk usage scan failed", exc_info=True)
+                    summary = fallback_summary
             try:
-                summary = self._compute_disk_usage_summary()
+                projection = project(summary)
             except Exception:
-                _log.warning("Disk usage scan failed", exc_info=True)
-                summary = {
-                    "extracted": 0,
-                    "mod_output": 0,
-                    "mod_ba2": 0,
-                    "deployed_ba2": 0,
-                }
+                _log.warning("Available disk space scan failed", exc_info=True)
+                loose_bytes, packed_bytes = estimates(summary)
+                projection = _project_disk_space(
+                    output_root=paths.output_root,
+                    archive_root=archive_root,
+                    loose_bytes=loose_bytes,
+                    packed_bytes=packed_bytes,
+                    disk_usage=lambda _path: None,
+                )
             with self._disk_usage_lock:
                 self._disk_usage_cache = (time.monotonic(), summary)
+                self._disk_usage_cache_key = space_key
+                self._disk_space_cache = (space_key, projection)
                 self._disk_usage_running = False
 
         self._disk_usage_thread = threading.Thread(
@@ -1085,16 +1397,70 @@ class RegenPanel:
         self._disk_usage_thread.start()
 
     def disk_usage_summary(self) -> dict[str, int]:
+        paths = self.build_paths()
+        space_key, _archive_root = self._disk_space_target(paths)
         with self._disk_usage_lock:
             cached = self._disk_usage_cache
-        if cached is not None:
+            cached_key = getattr(self, "_disk_usage_cache_key", None)
+        if cached is not None and cached_key == space_key:
             return dict(cached[1])
-        self._start_disk_usage_worker()
+        self._start_disk_usage_worker(paths=paths)
         return {"extracted": 0, "mod_output": 0, "mod_ba2": 0, "deployed_ba2": 0}
 
     def disk_usage_loading(self) -> bool:
         with self._disk_usage_lock:
-            return self._disk_usage_running and self._disk_usage_cache is None
+            return self._disk_usage_running
+
+    def _disk_space_projection(
+        self,
+        *,
+        paths: RegenPaths | None = None,
+        options: RegenOptions | None = None,
+    ) -> tuple[_DiskSpaceVolume, ...] | None:
+        paths = paths or self.build_paths()
+        space_key, _archive_root = self._disk_space_target(paths, options)
+        with self._disk_usage_lock:
+            cached = getattr(self, "_disk_space_cache", None)
+        if cached is not None and cached[0] == space_key:
+            return cached[1]
+        self._start_disk_usage_worker(paths=paths, options=options)
+        return None
+
+    def _finish_space_check(
+        self,
+        projection: tuple[_DiskSpaceVolume, ...],
+    ) -> None:
+        self._waiting_for_space_check = False
+        low_space = tuple(volume for volume in projection if volume.insufficient)
+        if low_space:
+            self._low_space_warning = low_space
+            return
+        self._low_space_warning = None
+        self.start_conversion()
+
+    def _request_conversion(self) -> None:
+        if not self._is_default_pair():
+            self._waiting_for_space_check = False
+            self._low_space_warning = None
+            self.start_conversion()
+            return
+        self._waiting_for_space_check = True
+        self._low_space_warning = None
+        with self._disk_usage_lock:
+            self._disk_space_cache = None
+        self._start_disk_usage_worker()
+
+    def _resolve_pending_space_check(self) -> None:
+        if not getattr(self, "_waiting_for_space_check", False):
+            return
+        projection = self._disk_space_projection()
+        if projection is not None:
+            self._finish_space_check(projection)
+
+    def _continue_conversion_with_low_space(self) -> None:
+        self._waiting_for_space_check = False
+        self._low_space_warning = None
+        self.start_conversion()
 
     def _deploy_companion_mod(
         self,
@@ -1116,6 +1482,7 @@ class RegenPanel:
         deployed: list[str] = []
 
         if runner is not None:
+            emit_runner_status(runner, "Packing companion mod")
             runner.emit_log("INFO", f"Packing companion mod {_COMPANION_MOD_NAME}...")
 
         pack_mod(
@@ -1131,6 +1498,7 @@ class RegenPanel:
                 f"Companion mod archive not found after packing: {companion_root}"
             )
         if runner is not None:
+            emit_runner_status(runner, "Deploying companion mod")
             runner.emit_log("INFO", f"Deploying companion mod {_COMPANION_MOD_NAME}...")
 
         for filename in _COMPANION_ROOT_FILES:
@@ -1185,7 +1553,7 @@ class RegenPanel:
         exe_dir = get_exe_dir()
         if ownership.cleanup_mod_output:
             output_root = Path(paths.output_root)
-            expected = exe_dir / "mods" / self._pair().output_mod_name
+            expected = self.build_paths().output_root
             if output_root.is_dir() and self._same_path(output_root, expected):
                 shutil.rmtree(output_root)
                 removed.append(str(output_root))
@@ -1216,6 +1584,140 @@ class RegenPanel:
             )
         return removed
 
+    def _ensure_cleanup_state(self) -> None:
+        if hasattr(self, "_cleanup_lock"):
+            return
+        self._cleanup_lock = threading.Lock()
+        self._cleanup_dialog_open = False
+        self._cleanup_status = "idle"
+        self._cleanup_targets = ()
+        self._cleanup_selected = set()
+        self._cleanup_pending_result = None
+        self._cleanup_disk_refresh_pending = False
+        self._cleanup_message = None
+        self._cleanup_error = None
+        self._admin_restart_error = None
+        self._is_admin = is_running_as_admin()
+
+    def _open_cleanup_dialog(self) -> None:
+        self._ensure_cleanup_state()
+        if self._runner_running() or self._cleanup_status != "idle":
+            return
+        settings = self._settings()
+        fo4 = settings.get_game_paths("fo4")
+        fo76 = settings.get_game_paths("fo76")
+        fo4_root = str(fo4.get("root_dir", "") or "")
+        fo76_root = str(fo76.get("root_dir", "") or "")
+        forbidden = [get_exe_dir(), Path.home()]
+        for root in (fo4_root, fo76_root):
+            if root:
+                forbidden.extend((Path(root), _data_dir(root)))
+        fo4_extracted = str(fo4.get("extracted_dir", "") or "")
+        fo76_extracted = str(fo76.get("extracted_dir", "") or "")
+
+        with self._cleanup_lock:
+            self._cleanup_dialog_open = True
+            self._cleanup_status = "scanning"
+            self._cleanup_targets = ()
+            self._cleanup_selected.clear()
+            self._cleanup_message = None
+            self._cleanup_error = None
+
+        def worker() -> None:
+            try:
+                targets = discover_cleanup_targets(
+                    fo4_extracted_dir=(Path(fo4_extracted) if fo4_extracted else None),
+                    fo76_extracted_dir=(Path(fo76_extracted) if fo76_extracted else None),
+                    forbidden_roots=forbidden,
+                )
+                targets = measure_cleanup_targets(targets)
+                error = None
+            except Exception as exc:
+                _log.warning("Cleanup target scan failed", exc_info=True)
+                targets = ()
+                error = str(exc)
+            with self._cleanup_lock:
+                self._cleanup_targets = targets
+                self._cleanup_error = error
+                self._cleanup_status = "idle"
+
+        threading.Thread(
+            target=worker,
+            name="bacup-cleanup-scan",
+            daemon=True,
+        ).start()
+
+    def _start_cleanup_delete(self) -> None:
+        self._ensure_cleanup_state()
+        if self._runner_running() or self._cleanup_status != "idle":
+            return
+        with self._cleanup_lock:
+            selected = tuple(
+                target
+                for target in self._cleanup_targets
+                if target.key in self._cleanup_selected
+            )
+            if not selected:
+                return
+            self._cleanup_status = "deleting"
+            self._cleanup_message = None
+            self._cleanup_error = None
+
+        def worker() -> None:
+            result = delete_cleanup_targets(selected)
+            with self._cleanup_lock:
+                self._cleanup_pending_result = result
+                self._cleanup_status = "idle"
+
+        threading.Thread(
+            target=worker,
+            name="bacup-cleanup-delete",
+            daemon=True,
+        ).start()
+
+    def _poll_cleanup_result(self) -> None:
+        self._ensure_cleanup_state()
+        if self._cleanup_disk_refresh_pending:
+            with self._disk_usage_lock:
+                disk_scan_running = self._disk_usage_running
+                if not disk_scan_running:
+                    self._disk_usage_cache = None
+                    self._disk_usage_cache_key = None
+                    self._disk_space_cache = None
+                    self._cleanup_disk_refresh_pending = False
+            if not disk_scan_running:
+                self._start_disk_usage_worker()
+        with self._cleanup_lock:
+            result = self._cleanup_pending_result
+            self._cleanup_pending_result = None
+        if result is None:
+            return
+        if "fo4_extracted" in result.deleted_keys:
+            self._settings().set_game_extracted_dir("fo4", "")
+        with self._cleanup_lock:
+            deleted = set(result.deleted_keys)
+            self._cleanup_targets = tuple(
+                target for target in self._cleanup_targets if target.key not in deleted
+            )
+            self._cleanup_selected.clear()
+            self._cleanup_message = (
+                f"Freed {_format_gb(result.freed_bytes)} from "
+                f"{len(result.removed_paths)} path(s)."
+            )
+            self._cleanup_error = "\n".join(result.failures) or None
+        self._cleanup_disk_refresh_pending = True
+
+    def _restart_elevated(self) -> None:
+        self._ensure_cleanup_state()
+        try:
+            restart_as_admin()
+        except OSError as exc:
+            self._admin_restart_error = str(exc)
+            return
+        from imgui_bundle import hello_imgui
+
+        hello_imgui.get_runner_params().app_shall_exit = True
+
     def draw(self) -> None:  # imgui rendering; covered by launch smoke, not unit tests
         if not imgui.begin(f"B.A.C.U.P.{_NS}"):
             imgui.end()
@@ -1225,9 +1727,13 @@ class RegenPanel:
         imgui.end()
 
     def draw_project(self) -> None:
+        self._poll_cleanup_result()
+        self._resolve_pending_space_check()
         self._draw_header()
         self._draw_split()
         self._draw_preflight_modal()
+        self._draw_low_space_modal()
+        self._draw_cleanup_dialog()
         self._draw_completion_popup()
 
     def _draw_header(self) -> None:
@@ -1302,12 +1808,14 @@ class RegenPanel:
             progress_fraction, progress_message = self._runner_progress(
                 self._phases,
                 phase_rows,
+                getattr(self, "_runner_status", ""),
             )
             imgui.text(
                 f"Converting {self._project_label()} — "
                 f"{int(round(progress_fraction * 100))}%"
             )
-            imgui.text_disabled(progress_message)
+            spinner = "|/-\\"[int(imgui.get_time() * 8.0) % 4]
+            imgui.text_disabled(f"{spinner}  {progress_message}")
             imgui.separator()
         draw_phase_progress(_NS, phase_rows, self._phases)
         imgui.end_child()
@@ -1385,22 +1893,110 @@ class RegenPanel:
             sizes = self.disk_usage_summary()
             _form_row_label("Disk use")
             if self.disk_usage_loading():
-                imgui.text_disabled("calculating in background...")
+                imgui.text_disabled("checking built archives...")
             else:
-                imgui.text_colored(_COL_ACCENT, _format_gb(sizes["extracted"]))
-                imgui.same_line()
-                imgui.text_disabled("extracted  ·")
-                imgui.same_line()
-                imgui.text_colored(_COL_ACCENT, _format_gb(sizes["mod_output"]))
-                imgui.same_line()
-                imgui.text_disabled("mod  ·")
-                imgui.same_line()
-                imgui.text_colored(
-                    _COL_ACCENT, _format_gb(sizes["mod_ba2"] + sizes["deployed_ba2"])
+                packed_now = sizes["mod_ba2"] + sizes["deployed_ba2"]
+                imgui.text_disabled(
+                    f"Built BA2s: {_format_gb(packed_now)} · planning reserves "
+                    f"~{_format_gb(_LOOSE_WORKSPACE_PEAK_BYTES)} for loose workspace"
                 )
-                imgui.same_line()
-                imgui.text_disabled("BA2")
+            if self._is_default_pair():
+                _form_row_label("Footprint guide")
+                imgui.text_wrapped(
+                    f"FO76 ~{_format_gb(_FO76_INSTALL_REFERENCE_BYTES)} already installed · "
+                    f"loose workspace ~{_format_gb(_LOOSE_WORKSPACE_PEAK_BYTES)} · "
+                    f"packed mod ~{_format_gb(_PACKED_MOD_PEAK_BYTES)}"
+                )
+                projection = self._disk_space_projection(
+                    paths=paths,
+                )
+                if projection is None:
+                    _form_row_label("Available space")
+                    imgui.text_disabled("measuring in background...")
+                else:
+                    for volume in projection:
+                        _form_row_label(f"Space {volume.key or volume.path.anchor}")
+                        bar_color = {
+                            "green": _COL_OK,
+                            "yellow": _COL_WARN,
+                            "red": _COL_ERR,
+                        }[volume.space_level]
+                        imgui.push_style_color(imgui.Col_.plot_histogram, bar_color)
+                        imgui.push_style_color(
+                            imgui.Col_.plot_histogram_hovered, bar_color
+                        )
+                        if volume.unavailable:
+                            imgui.progress_bar(
+                                0.0,
+                                imgui.ImVec2(-1, 0),
+                                "available space could not be measured",
+                            )
+                            imgui.pop_style_color(2)
+                            continue
+                        status = {
+                            "green": "",
+                            "yellow": "TIGHT — ",
+                            "red": "LOW — ",
+                        }[volume.space_level]
+                        imgui.progress_bar(
+                            volume.projected_fill_fraction,
+                            imgui.ImVec2(-1, 0),
+                            f"{status}{_format_gb(volume.required_bytes)} needed · "
+                            f"{_format_gb(volume.free_bytes)} free",
+                        )
+                        imgui.pop_style_color(2)
+            self._ensure_cleanup_state()
+            cleanup_status = self._cleanup_status
+            cleanup_busy = cleanup_status != "idle"
+            restart_disabled = running or cleanup_status == "deleting"
+            repair_disabled = running
+            cleanup_disabled = running or cleanup_busy
+            _form_row_label("Maintenance")
+            if imgui.begin_table(
+                f"{_NS}_install_maintenance",
+                3,
+                imgui.TableFlags_.sizing_stretch_same.value,
+            ):
+                imgui.table_next_row()
+                imgui.table_next_column()
+                if self._is_admin:
+                    imgui.begin_disabled()
+                    imgui.button(
+                        f"Running as administrator{_NS}", imgui.ImVec2(-1, 0)
+                    )
+                    imgui.end_disabled()
+                else:
+                    if restart_disabled:
+                        imgui.begin_disabled()
+                    if imgui.button(
+                        f"Restart as administrator{_NS}", imgui.ImVec2(-1, 0)
+                    ):
+                        self._restart_elevated()
+                    if restart_disabled:
+                        imgui.end_disabled()
+                imgui.table_next_column()
+                if repair_disabled:
+                    imgui.begin_disabled()
+                if imgui.button(
+                    f"Check / repair INI{_NS}_audit", imgui.ImVec2(-1, 0)
+                ):
+                    self._run_install_audit()
+                if repair_disabled:
+                    imgui.end_disabled()
+                imgui.table_next_column()
+                if cleanup_disabled:
+                    imgui.begin_disabled()
+                if imgui.button(
+                    f"Free up space...{_NS}", imgui.ImVec2(-1, 0)
+                ):
+                    self._open_cleanup_dialog()
+                if cleanup_disabled:
+                    imgui.end_disabled()
+                imgui.end_table()
             end_form()
+            if self._admin_restart_error:
+                imgui.text_colored(_COL_ERR, self._admin_restart_error)
+            self._draw_install_audit()
         imgui.separator()
 
         if running:
@@ -1510,31 +2106,29 @@ class RegenPanel:
                 self._set_workspace_settings({_WORKERS_KEY: self.workers})
             _form_row_label("")
             imgui.text_disabled(self._worker_rec.note)
+            if not self._upgrade_user_toggled:
+                self.upgrade = self._deployed_esm_exists()
+            _form_row_label("Upgrade mode")
+            changed, self.upgrade = imgui.checkbox(
+                f"Upgrade existing deployment{_NS}", self.upgrade
+            )
+            if changed:
+                self._upgrade_user_toggled = True
+            manifest = self._load_upgrade_manifest_cached()
+            _form_row_label("")
+            if manifest is None:
+                imgui.text_disabled("No upgrade manifest found - full build only.")
+            else:
+                detected = self._detected_installed_version()
+                imgui.text_disabled(f"Detected installed: {detected}")
+                if self.upgrade:
+                    imgui.text_disabled(f"Target: {manifest.current} (this build)")
+                    imgui.text_disabled(self.upgrade_plan_preview())
             end_form()
-
-        # -- C. Upgrade mode --------------------------------------------------
-        imgui.separator()
-        imgui.text_colored(_COL_ACCENT, "Upgrade mode")
-        if not self._upgrade_user_toggled:
-            self.upgrade = self._deployed_esm_exists()
-        changed, self.upgrade = imgui.checkbox(
-            f"Upgrade existing deployment{_NS}", self.upgrade
-        )
-        if changed:
-            self._upgrade_user_toggled = True
-        manifest = self._load_upgrade_manifest_cached()
-        if manifest is None:
-            imgui.text_disabled("No upgrade manifest found - full build only.")
-        else:
-            detected = self._detected_installed_version()
-            imgui.text_disabled(f"Detected installed: {detected}")
-            if self.upgrade:
-                imgui.text_disabled(f"Target: {manifest.current} (this build)")
-                imgui.text_disabled(self.upgrade_plan_preview())
         if running:
             imgui.end_disabled()
 
-        # -- D. Actions -------------------------------------------------------
+        # -- C. Actions -------------------------------------------------------
         imgui.separator()
         can_start_conversion = self.can_convert()
         can_deploy_existing = self.can_deploy_existing()
@@ -1548,7 +2142,7 @@ class RegenPanel:
             if imgui.button(
                 f"Convert {self._project_label()}{_NS}", imgui.ImVec2(-1, 0)
             ):
-                self.start_conversion()
+                self._request_conversion()
             if not can_start_conversion:
                 imgui.end_disabled()
             imgui.table_next_column()
@@ -1569,7 +2163,7 @@ class RegenPanel:
                 f"{self._pair().output_plugin_name} exists."
             )
 
-        # -- E. Advanced ------------------------------------------------------
+        # -- D. Advanced ------------------------------------------------------
         imgui.separator()
         expanded = imgui.collapsing_header(f"Advanced{_NS}")
         if isinstance(expanded, tuple):
@@ -1609,6 +2203,20 @@ class RegenPanel:
                         )
                     }
                 )
+            changed, self.generate_precombines = imgui.checkbox(
+                f"Generate precombines (experimental){_NS}",
+                self.generate_precombines,
+            )
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "EXPERIMENTAL. Bake interior precombined meshes (*_OC.nif) and "
+                    "stamp CELL PCMB/XCRI + REFR VC into the built ESM after the "
+                    "asset waves. Off by default; leave unchecked unless testing."
+                )
+            if changed:
+                self._set_workspace_settings(
+                    {_GENERATE_PRECOMBINES_KEY: self.generate_precombines}
+                )
             imgui.separator()
             recovery_idx = (
                 _RECOVERY_PHASE_VALUES.index(self.recovery_phase)
@@ -1645,10 +2253,6 @@ class RegenPanel:
                 )
             if running:
                 imgui.end_disabled()
-            imgui.separator()
-            if imgui.button(f"Check / repair install (INI){_NS}_audit"):
-                self._run_install_audit()
-            self._draw_install_audit()
 
     def _run_install_audit(self):
         try:
@@ -1754,6 +2358,171 @@ class RegenPanel:
             if imgui.button(f"Close{_NS}_pf_close"):
                 self._preflight_report = None
                 self._preflight_cache = None
+        imgui.end()
+
+    def _draw_low_space_modal(self) -> None:
+        if getattr(self, "_waiting_for_space_check", False):
+            if imgui.begin(f"Measuring available disk space{_NS}_disk_space_wait"):
+                imgui.text_wrapped(
+                    "Checking the conversion and install drives before starting."
+                )
+                imgui.text_disabled("This runs in the background.")
+                if imgui.button(f"Go back{_NS}_disk_wait_back"):
+                    self._waiting_for_space_check = False
+            imgui.end()
+            return
+        volumes = getattr(self, "_low_space_warning", None)
+        if not volumes:
+            return
+        if imgui.begin(f"Not enough free space{_NS}_disk_space"):
+            imgui.text_wrapped(
+                "The conversion may run out of disk space. The estimate includes the "
+                "loose conversion workspace and the packed BA2 output. Fallout 76's "
+                "existing install is not counted again."
+            )
+            imgui.separator()
+            for volume in volumes:
+                if volume.unavailable:
+                    imgui.text_colored(
+                        _COL_WARN,
+                        f"{volume.key or volume.path.anchor}: available space "
+                        "could not be measured",
+                    )
+                    imgui.text_disabled(" + ".join(volume.labels))
+                    imgui.text_wrapped(str(volume.path))
+                    imgui.separator()
+                    continue
+                imgui.text_colored(
+                    _COL_WARN,
+                    f"{volume.key or volume.path.anchor}: "
+                    f"{_format_gb(volume.required_bytes)} needed, "
+                    f"{_format_gb(volume.free_bytes)} free",
+                )
+                imgui.text_disabled(" + ".join(volume.labels))
+                imgui.text_wrapped(str(volume.path))
+                imgui.separator()
+            if imgui.button(f"Go back{_NS}_disk_back"):
+                self._low_space_warning = None
+            imgui.same_line()
+            if imgui.button(f"Continue anyway{_NS}_disk_continue"):
+                self._continue_conversion_with_low_space()
+        imgui.end()
+
+    def _draw_cleanup_dialog(self) -> None:
+        self._ensure_cleanup_state()
+        if not self._cleanup_dialog_open:
+            return
+        with self._cleanup_lock:
+            status = self._cleanup_status
+            targets = self._cleanup_targets
+            selected = set(self._cleanup_selected)
+            message = self._cleanup_message
+            error = self._cleanup_error
+        imgui.set_next_window_size(imgui.ImVec2(720, 430), imgui.Cond_.appearing)
+        window_flags = (
+            imgui.WindowFlags_.no_scrollbar.value
+            | imgui.WindowFlags_.no_scroll_with_mouse.value
+        )
+        if imgui.begin(f"Free up disk space{_NS}_cleanup", flags=window_flags):
+            busy = status != "idle"
+            if busy:
+                imgui.begin_disabled()
+            imgui.text_wrapped(
+                "Select the cache categories to remove. Deleted extracted data must "
+                "be recreated if it is needed later."
+            )
+            imgui.separator()
+            if not targets and status == "idle":
+                imgui.text_disabled("No safe BACUP cleanup targets were found.")
+
+            table_flags = (
+                imgui.TableFlags_.borders.value
+                | imgui.TableFlags_.row_bg.value
+                | imgui.TableFlags_.scroll_y.value
+                | imgui.TableFlags_.sizing_stretch_prop.value
+            )
+            table_height = max(
+                120.0,
+                min(240.0, imgui.get_content_region_avail().y - 82.0),
+            )
+            if imgui.begin_table(
+                f"{_NS}_cleanup_grid",
+                3,
+                table_flags,
+                imgui.ImVec2(0, table_height),
+            ):
+                fixed = imgui.TableColumnFlags_.width_fixed.value
+                stretch = imgui.TableColumnFlags_.width_stretch.value
+                no_resize = imgui.TableColumnFlags_.no_resize.value
+                imgui.table_setup_column("", fixed | no_resize, 34.0)
+                imgui.table_setup_column("Cleanup category", stretch | no_resize)
+                imgui.table_setup_column("Space saved", fixed | no_resize, 120.0)
+                imgui.table_headers_row()
+                for target in targets:
+                    imgui.table_next_row()
+                    imgui.table_set_column_index(0)
+                    checked = target.key in selected
+                    changed, checked = imgui.checkbox(
+                        f"##cleanup_select_{target.key}", checked
+                    )
+                    if changed:
+                        with self._cleanup_lock:
+                            if checked:
+                                self._cleanup_selected.add(target.key)
+                            else:
+                                self._cleanup_selected.discard(target.key)
+                        if checked:
+                            selected.add(target.key)
+                        else:
+                            selected.discard(target.key)
+                    imgui.table_set_column_index(1)
+                    imgui.text(target.label)
+                    imgui.table_set_column_index(2)
+                    if target.size_bytes > 0:
+                        imgui.text_colored(_COL_OK, _format_gb(target.size_bytes))
+                    else:
+                        imgui.text_disabled(_format_gb(0))
+                imgui.end_table()
+
+            selected_size = sum(
+                target.size_bytes for target in targets if target.key in selected
+            )
+            cannot_delete = not selected or busy or self._runner_running()
+            if cannot_delete:
+                imgui.begin_disabled()
+            if imgui.button(
+                f"Delete selected ({_format_gb(selected_size)}){_NS}_cleanup_delete"
+            ):
+                self._start_cleanup_delete()
+            if cannot_delete:
+                imgui.end_disabled()
+            imgui.same_line()
+            if imgui.button(f"Close{_NS}_cleanup_close"):
+                self._cleanup_dialog_open = False
+            imgui.same_line()
+            if imgui.button(f"Open Windows Temp{_NS}_cleanup_temp"):
+                try:
+                    os.startfile(windows_temp_dir())
+                except OSError as exc:
+                    self._cleanup_error = str(exc)
+            if message:
+                imgui.text_colored(_COL_OK, message)
+            if error:
+                imgui.text_colored(_COL_ERR, error)
+            if busy:
+                imgui.end_disabled()
+            if status == "scanning":
+                draw_runner_overlay(
+                    "Calculating cleanup space",
+                    "Measuring reclaimable data...",
+                    None,
+                )
+            elif status == "deleting":
+                draw_runner_overlay(
+                    "Deleting selected data",
+                    "Removing cleanup categories...",
+                    None,
+                )
         imgui.end()
 
     def _draw_completion_popup(self) -> None:

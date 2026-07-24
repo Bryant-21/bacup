@@ -222,6 +222,9 @@ class _ConversionNativeProxy:
     def conversion_run_translate_all(self, run_id: int, progress_callback: Any = None) -> dict[str, Any]:
         return _stats_from_raw(self._raw.conversion_run_translate_all(run_id, progress_callback))
 
+    def conversion_run_preflight_legacy_packs(self, run_id: int) -> None:
+        self._raw.conversion_run_preflight_legacy_packs(run_id)
+
     def conversion_run_translate_records(
         self,
         run_id: int,

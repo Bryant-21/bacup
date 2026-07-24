@@ -1,5 +1,9 @@
 skip_records:
   - GMST
+  # DOBJ is the game-wide Default Object Manager singleton. FO76 and FO4 both
+  # own local 000800; copying the FO76 record as a new SeventySix.esm form lets
+  # it replace Fallout 4 defaults globally.
+  - DOBJ
   # These require non-flat group placement. This only disables the generic
   # top-level writer; structured phases must still emit these under their
   # legal parent groups (for example CELL/LAND/NAVM under WRLD,
@@ -1014,7 +1018,6 @@ STAT:
       source_esm: SeventySix.esm
       target_esm: Fallout4.esm
   drop:
-  - PRPS
   - ObjectPlacementDefault
   - group_lod_level_override
   - MODT
@@ -1427,7 +1430,6 @@ LVLI:
   - ENLM
   - FormTag
   - LVCT
-  - LVLG
   - LVOC
   - LVOT
   - LeveledItemData
@@ -1902,7 +1904,6 @@ FACT:
   - Location
   - MerchantContainer
   - Quest
-  - VENV
   - VendorBuyCurrency
   - BlockedMessage
   - CITC
@@ -2105,7 +2106,6 @@ FURN:
   - Description
   - Destructibles
   - FFEF
-  - FNAM
   - FNPR
   - KeywordCount
   - MODT

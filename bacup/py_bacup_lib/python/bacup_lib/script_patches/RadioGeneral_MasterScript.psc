@@ -49,6 +49,16 @@ Function QueueNextScene()
     StartTimer(fFailsafeTimerSeconds, iFailSafeTimerID)
 EndFunction
 
+Scene Function ResolveScene(Int index)
+    If songFormIDs != None && index >= 0 && index < songFormIDs.Length && songFormIDs[index] != 0
+        Scene resolvedScene = Game.GetFormFromFile(songFormIDs[index], "SeventySix.esm") as Scene
+        If resolvedScene != None
+            Return resolvedScene
+        EndIf
+    EndIf
+    Return songsData[index].Track
+EndFunction
+
 Scene Function PickNextScene()
     If songsData == None || songsData.Length == 0
         Return None
@@ -58,7 +68,7 @@ Scene Function PickNextScene()
     Int checked = 0
     Scene fallbackScene = None
     While checked < songsData.Length
-        Scene candidate = songsData[index].Track
+        Scene candidate = ResolveScene(index)
         If candidate != None
             If fallbackScene == None
                 fallbackScene = candidate

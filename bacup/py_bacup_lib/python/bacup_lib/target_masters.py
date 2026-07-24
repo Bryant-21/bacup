@@ -193,6 +193,42 @@ def resolve_target_master_plugin_paths(
     return paths, missing
 
 
+def resolve_required_target_master_path(
+    name: str,
+    *,
+    target_master_paths: Iterable[str | Path] = (),
+    target_data_dir: str | Path | None = None,
+    target_extracted_dir: str | Path | None = None,
+) -> Path:
+    """Resolve one required non-official master or raise with its search scope."""
+    search_dirs: list[Path] = []
+    nested_search_dirs: list[Path] = []
+    for value in target_master_paths or ():
+        path = Path(value)
+        if path.is_file() and path.name.casefold() == name.casefold():
+            return path
+        if path.is_dir():
+            search_dirs.append(path)
+            nested_search_dirs.append(path)
+    for value in (target_data_dir, target_extracted_dir):
+        if value:
+            path = Path(value)
+            if path.is_dir():
+                search_dirs.append(path)
+    found = _find_named_file(name, search_dirs)
+    if found is None:
+        found = _find_named_file_in_child_dirs(name, nested_search_dirs)
+    if found is not None:
+        return found
+    searched = (
+        ", ".join(str(path) for path in search_dirs)
+        or "no configured target directories"
+    )
+    raise FileNotFoundError(
+        f"required target master {name} was not found (searched {searched})"
+    )
+
+
 def open_target_master_handles(
     target_game: str,
     *,
@@ -260,6 +296,23 @@ def _find_named_file(name: str, search_dirs: Iterable[Path]) -> Path | None:
             for child in children:
                 if child.is_file() and child.name.casefold() == lowered:
                     return child
+    return None
+
+
+def _find_named_file_in_child_dirs(
+    name: str, search_dirs: Iterable[Path]
+) -> Path | None:
+    for search_dir in search_dirs:
+        try:
+            child_dirs = sorted(
+                (child for child in search_dir.iterdir() if child.is_dir()),
+                key=lambda path: path.name.casefold(),
+            )
+        except OSError:
+            continue
+        found = _find_named_file(name, child_dirs)
+        if found is not None:
+            return found
     return None
 
 

@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 import threading
 import time
 
@@ -45,7 +46,7 @@ def _prepare_game_root(tmp_path: Path, archive_names: list[str]) -> tuple[Path, 
     return game_root, output_dir
 
 
-def test_extraction_only_section_has_no_yaml_or_index_actions(tmp_path):
+def test_extraction_only_section_has_no_yaml_or_index_actions(tmp_path, monkeypatch):
     from creation_lib.ui.settings import indexes_section
 
     settings = SimpleNamespace(
@@ -55,8 +56,8 @@ def test_extraction_only_section_has_no_yaml_or_index_actions(tmp_path):
         }
     )
     ctx = SimpleNamespace(settings=settings)
-    imgui = indexes_section.imgui
-    imgui.reset_mock()
+    imgui = MagicMock()
+    monkeypatch.setattr(indexes_section, "imgui", imgui)
     imgui.combo.return_value = (False, 0)
     imgui.input_int.return_value = (False, 8)
     imgui.is_item_hovered.return_value = False

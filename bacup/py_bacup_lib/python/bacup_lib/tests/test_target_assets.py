@@ -1,17 +1,30 @@
 from __future__ import annotations
 
 import gc
+import shutil
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
+import bacup_lib.target_assets as target_assets
 from bacup_lib.target_assets import (
     TargetAssetStore,
+    default_target_asset_cache_dir,
     default_target_asset_catalog,
     normalize_target_asset_path,
 )
+
+
+def test_frozen_target_asset_storage_is_exe_local(monkeypatch, tmp_path):
+    executable = tmp_path / "standalone" / "B.A.C.U.P.exe"
+    monkeypatch.setattr(target_assets.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(target_assets.sys, "executable", str(executable))
+
+    expected = executable.parent / "cache" / "conversion"
+    assert default_target_asset_catalog() == expected / "fo4_target_assets.sqlite3"
+    assert default_target_asset_cache_dir() == expected / "target_assets"
 
 
 def _write_catalog(
@@ -121,6 +134,7 @@ def test_membership_listing_dependencies_and_case_insensitive_overlay(tmp_path):
         "materials/actors/head.bgsm",
         "meshes/actors/head.nif",
     ]
+    assert store.archive_paths == (data / "Fallout4 - Test.ba2",)
 
 
 def test_materialization_is_persistent_and_atomic(tmp_path):
@@ -321,7 +335,7 @@ def test_release_builder_publishes_catalog_without_preextracting(tmp_path):
     output = tmp_path / "built.sqlite3"
 
     load_native_module().conversion_build_target_asset_catalog(
-        str(data), str(output), "test-build"
+        str(data), str(output), "test-build", 2
     )
 
     assert output.is_file()
@@ -333,3 +347,51 @@ def test_release_builder_publishes_catalog_without_preextracting(tmp_path):
         assert db.execute(
             "SELECT path_key FROM catalog_assets"
         ).fetchone()[0] == "scripts/base/example.pex"
+
+
+def test_parallel_builder_records_material_texture_dependencies(tmp_path):
+    from creation_lib.ba2.native_runtime import pack_archive
+    from bacup_lib.native_runtime import load_native_module
+
+    data = tmp_path / "Data"
+    source = tmp_path / "source"
+    fixture = (
+        Path(__file__).parent
+        / "fixtures"
+        / "fo76"
+        / "materials"
+        / "sample_v22.bgsm"
+    )
+    material = source / "Materials" / "Test" / "sample.bgsm"
+    material.parent.mkdir(parents=True)
+    shutil.copyfile(fixture, material)
+    expected_targets = {
+        "textures/actors/alien/alien_01_d.dds",
+        "textures/actors/alien/alien_01_n.dds",
+        "textures/actors/alien/alien_01_r.dds",
+        "textures/actors/alien/alien_01_l.dds",
+    }
+    for target in expected_targets:
+        texture = source / Path(target)
+        texture.parent.mkdir(parents=True, exist_ok=True)
+        texture.write_bytes(b"dds")
+    data.mkdir()
+    archive = data / "Fallout4 - Test.ba2"
+    pack_archive(str(source), str(archive), "fo4", compress=False)
+    output = tmp_path / "built.sqlite3"
+
+    load_native_module().conversion_build_target_asset_catalog(
+        str(data), str(output), "test-build", 2
+    )
+
+    with sqlite3.connect(output) as db:
+        dependencies = {
+            (source_key, target_key, ref_kind)
+            for source_key, target_key, ref_kind in db.execute(
+                "SELECT source_key, target_key, ref_kind FROM catalog_dependencies"
+            )
+        }
+    assert dependencies == {
+        ("materials/test/sample.bgsm", target, "material_texture")
+        for target in expected_targets
+    }

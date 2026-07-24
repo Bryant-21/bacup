@@ -32,9 +32,8 @@ def _set_taskbar_identity() -> None:
 
 def _run_bacup_project_setup(settings: ToolkitSettings) -> tuple[bool, bool]:
     from bacup_ui.setup import (
-        AppalachiaSetup,
+        BacupProjectPicker,
         BacupProjectSetup,
-        appalachia_setup_needed,
         clear_pending_project_setup,
         get_pending_project_setup,
     )
@@ -42,10 +41,11 @@ def _run_bacup_project_setup(settings: ToolkitSettings) -> tuple[bool, bool]:
     pending_project_id = get_pending_project_setup(settings)
     if pending_project_id is not None:
         setup = BacupProjectSetup(settings, pending_project_id)
-    elif not getattr(settings, "setup_complete", False) and appalachia_setup_needed(
-        settings
-    ):
-        setup = AppalachiaSetup(settings)
+    elif not getattr(settings, "setup_complete", False):
+        selected_project_id = BacupProjectPicker(settings).run()
+        if selected_project_id is None:
+            return True, False
+        setup = BacupProjectSetup(settings, selected_project_id)
     else:
         return False, True
 

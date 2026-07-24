@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from creation_lib.ui.widgets.user_guide import UserGuide
 
@@ -256,7 +257,12 @@ def test_toolkit_gui_draws_workspace_user_guide_window(monkeypatch):
     app._apply_tab_style = lambda: None
 
     monkeypatch.setattr("ui.toolkit.app._log", SimpleNamespace(error=lambda *args, **kwargs: None))
-    monkeypatch.setattr("ui.toolkit.app.imgui.begin_popup_modal", lambda *args, **kwargs: (False, False))
+    # Replace the whole imgui reference rather than patching individual calls —
+    # under the real imgui_bundle (no ambient test stub, no GL context) the
+    # untouched calls (open_popup, get_main_viewport, ...) segfault the process.
+    mock_imgui = MagicMock()
+    mock_imgui.begin_popup_modal.return_value = (False, False)
+    monkeypatch.setattr("ui.toolkit.app.imgui", mock_imgui)
 
     app._gui()
 
@@ -280,6 +286,10 @@ def test_toolkit_docking_params_adds_generic_help_window_for_guided_workspace(mo
     app._workspaces = [ws]
     app._log_panel = SimpleNamespace(draw=lambda: None)
 
+    # Real hello_imgui.DockingParams() type-checks its dockable_windows setter
+    # against the real DockableWindow class, which the fake below isn't — so
+    # the whole hello_imgui reference must be replaced, not just DockableWindow.
+    monkeypatch.setattr("ui.toolkit.app.hello_imgui", MagicMock())
     monkeypatch.setattr("ui.toolkit.app.hello_imgui.DockableWindow", DockableWindow)
     monkeypatch.setattr("ui.toolkit.app.has_user_guide", lambda provider: True)
 
@@ -312,6 +322,10 @@ def test_toolkit_docking_params_does_not_duplicate_existing_help_window(monkeypa
     app._workspaces = [ws]
     app._log_panel = SimpleNamespace(draw=lambda: None)
 
+    # Real hello_imgui.DockingParams() type-checks its dockable_windows setter
+    # against the real DockableWindow class, which the fake below isn't — so
+    # the whole hello_imgui reference must be replaced, not just DockableWindow.
+    monkeypatch.setattr("ui.toolkit.app.hello_imgui", MagicMock())
     monkeypatch.setattr("ui.toolkit.app.hello_imgui.DockableWindow", DockableWindow)
     monkeypatch.setattr("creation_lib.ui.shell.base_workspace.hello_imgui.DockableWindow", DockableWindow)
     monkeypatch.setattr("ui.toolkit.app.has_user_guide", lambda provider: True)

@@ -62,9 +62,10 @@ from bacup_lib.native_runtime import load_native_module
 from bacup_lib.record.translation_map_data import (
     load_translation_map_overrides,
 )
-from bacup_lib.runner import Drainer
+from bacup_lib.runner import Drainer, emit_runner_status
 from bacup_lib.target_masters import (
     close_plugin_handles,
+    resolve_required_target_master_path,
     resolve_target_master_paths,
     resolve_target_master_plugin_paths,
 )
@@ -85,6 +86,42 @@ _FO76_WEB_MAP_PNG_REL = Path(
     "PrismaUI_F4/views/B21_FullScreenMap/maps/appalachia/map.png"
 )
 _FO4_PIPBOY_MAP_SIZE = (2048, 2048)
+_FO76_VAULTBOY_SWF_TREES = (
+    (
+        Path("interface/components/vaultboys"),
+        Path("Interface/Components/VaultBoys"),
+    ),
+    (
+        Path("interface/components/quest vault boys"),
+        Path("Interface/Components/Quest Vault Boys"),
+    ),
+)
+
+
+def _conversion_target_master_inputs(request: PluginPortRequest) -> list[Path]:
+    paths = [Path(path) for path in request.target_master_paths]
+    if (
+        request.source_game == "fo76"
+        and request.target_game == "fo4"
+        and request.options.translate_records
+    ):
+        try:
+            xdi_master = resolve_required_target_master_path(
+                "XDI.esm",
+                target_master_paths=paths,
+                target_data_dir=request.target_data_dir,
+                target_extracted_dir=None,
+            )
+        except FileNotFoundError as error:
+            raise FileNotFoundError(
+                "FO76→FO4 record conversion requires XDI.esm as a master; "
+                "install Extended Dialogue Interface in Fallout 4 Data or "
+                "another mod in the selected mod manager's mods directory"
+            ) from error
+        known = {str(path.resolve()).casefold() for path in paths if path.is_file()}
+        if str(xdi_master.resolve()).casefold() not in known:
+            paths.append(xdi_master)
+    return paths
 
 
 def _terrain_graft_source(opts: "PluginPortOptions", mod_path: str) -> Path:
@@ -239,9 +276,79 @@ def _finalize_fo76_pipboy_map_texture(
     )
 
 
+def _copy_fo76_vaultboy_swfs(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (
+        request.source_game.lower(),
+        request.target_game.lower(),
+    ) != ("fo76", "fo4"):
+        return 0
+
+    source_root = Path(ctx.source_data_dir)
+    output_root = Path(ctx.mod_path) / "data"
+    copied = 0
+    for source_relative, output_relative in _FO76_VAULTBOY_SWF_TREES:
+        source_tree = source_root / source_relative
+        if not source_tree.is_dir():
+            _safe_emit_log(
+                runner,
+                "WARN",
+                f"FO76 VaultBoy SWF tree not found: {source_tree}",
+            )
+            continue
+        for source_file in sorted(source_tree.rglob("*.swf")):
+            if not source_file.is_file():
+                continue
+            output_file = output_root / output_relative / source_file.relative_to(
+                source_tree
+            )
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_file, output_file)
+            copied += 1
+
+    _safe_emit_log(runner, "INFO", f"Copied {copied} FO76 VaultBoy SWF asset(s)")
+    return copied
+
+
 def _normalize_streamed_rel(rel: str) -> str:
     """The Rust spill writers key entries by lowercase forward-slash rels."""
     return rel.replace("\\", "/").lstrip("/").lower()
+
+
+def _cleanup_temp_save_strings(temp_plugin_path: Path) -> None:
+    """The native plugin save derives localized-strings filenames from the
+    output plugin's stem, so saving to a mkstemp path emits orphaned
+    ``Strings/<temp stem>_<lang>.*`` tables that ``os.replace`` never moves."""
+    strings_dir = temp_plugin_path.parent / "Strings"
+    if not strings_dir.is_dir():
+        return
+    for orphan in strings_dir.glob(f"{temp_plugin_path.stem}_*"):
+        try:
+            orphan.unlink()
+        except OSError:
+            pass
+
+
+def _resolve_source_strings_dir(
+    source_plugin: Path,
+    *configured_roots: Path | str | None,
+) -> str | None:
+    candidates = [source_plugin.parent / "Strings"]
+    for configured_root in configured_roots:
+        if not configured_root:
+            continue
+        root = Path(configured_root)
+        candidates.append(
+            root if root.name.casefold() == "strings" else root / "Strings"
+        )
+
+    for candidate in candidates:
+        if candidate.is_dir():
+            return str(candidate)
+    return None
 
 
 def _apply_placed_record_position_offset(
@@ -284,6 +391,19 @@ def inventory_packable_entries(mod_root: Path) -> list:
     return entries
 
 
+def _archive_label_selected(label: str, labels: tuple[str, ...]) -> bool:
+    return any(
+        label == wanted
+        or (label.startswith(wanted) and label[len(wanted) :].isdigit())
+        for wanted in labels
+    )
+
+
+def _archive_file_label(path: Path, mod_name: str) -> str:
+    label = path.stem[len(f"{mod_name} - ") :]
+    return label.removesuffix("_xbox")
+
+
 def finalize_sinks_for_mod(
     sink_id: int,
     mod_root: Path,
@@ -298,6 +418,7 @@ def finalize_sinks_for_mod(
     expanded_archives: bool = True,
     archive_output_dir: Path | None = None,
     fo4_ba2_target: str = "nextgen",
+    archive_labels: tuple[str, ...] | None = None,
     pack_progress: Callable[[dict], bool | None] | None = None,
 ) -> list[PlannedArchive]:
     """The sink join: reconcile the loose tree into the spills, plan shards with
@@ -308,14 +429,15 @@ def finalize_sinks_for_mod(
 
     On any error: spills are aborted and every archive written by THIS call
     (including the partial in-flight one) is deleted.
+
+    ``archive_labels`` limits reconciliation, packing, and stale-output cleanup
+    to the selected BA2 labels. Unselected archives remain untouched.
     """
     native = load_native_module()
     mod_root = Path(mod_root)
     archive_root = Path(archive_output_dir) if archive_output_dir is not None else mod_root
     archive_root.mkdir(parents=True, exist_ok=True)
-    use_temp_outputs = os.path.normcase(os.path.abspath(archive_root)) != os.path.normcase(
-        os.path.abspath(mod_root)
-    )
+    use_temp_outputs = not os.path.samefile(archive_root, mod_root)
     entries = inventory_packable_entries(mod_root)
 
     # The shard plan uses the shared archive planner so the sink join and
@@ -329,6 +451,17 @@ def finalize_sinks_for_mod(
         game=game,
         expanded_archives=expanded_archives,
     )
+    if archive_labels is not None:
+        plans = [
+            planned
+            for planned in plans
+            if _archive_label_selected(planned.label, archive_labels)
+        ]
+    selected_rels = {
+        _normalize_streamed_rel(entry.relative_path)
+        for planned in plans
+        for entry in planned.entries
+    }
     direct_pack_rels = {
         _normalize_streamed_rel(entry.relative_path)
         for planned in plans
@@ -343,6 +476,8 @@ def finalize_sinks_for_mod(
     missing: list[tuple[str, str]] = []
     for entry in entries:
         normalized_rel = _normalize_streamed_rel(entry.relative_path)
+        if archive_labels is not None and normalized_rel not in selected_rels:
+            continue
         if normalized_rel in streamed or normalized_rel in direct_pack_rels:
             continue
         missing.append((str(entry.source_path), entry.relative_path))
@@ -424,8 +559,23 @@ def finalize_sinks_for_mod(
 
     expected_names = {planned.output_name for planned in plans}
     for archive in discover_mod_archives(archive_root, mod_name, extensions=(".ba2",)):
-        if archive.name not in expected_names:
+        selected = archive_labels is None or _archive_label_selected(
+            _archive_file_label(archive, mod_name), archive_labels
+        )
+        if selected and archive.name not in expected_names:
             archive.unlink()
+    if use_temp_outputs:
+        for archive in discover_mod_archives(mod_root, mod_name, extensions=(".ba2",)):
+            if archive_labels is not None and not _archive_label_selected(
+                _archive_file_label(archive, mod_name), archive_labels
+            ):
+                continue
+            try:
+                archive.unlink()
+            except OSError as exc:
+                _log.warning(
+                    "Could not remove local archive duplicate %s: %s", archive, exc
+                )
 
     native.sinks_cleanup_spills(sink_id)
     return plans
@@ -447,7 +597,7 @@ CONVERTER_VERSIONS: dict[str, str] = {
     "havok": "1",
     "animations": "1",
     "drivers": "1",
-    "scripts": "1",
+    "scripts": "3",
 }
 
 MANIFEST_NAME = "manifest.json"
@@ -774,6 +924,29 @@ def _script_relative_path(script_name: str, suffix: str) -> Path:
 # this directory holds ONLY original code — never Papyrus decompiled from the game.
 _SCRIPT_PATCH_DIR = Path(__file__).resolve().parents[1] / "script_patches"
 
+_FO76_TO_FO4_SCRIPT_VARIABLE_ADDITIONS = {
+    _script_key("DefaultAliasInventoryManagement"): (
+        ("ObjectReference", "ShutdownReferenceCache"),
+    ),
+}
+
+_FO76_TO_FO4_SCRIPT_PROPERTY_ADDITIONS = {
+    _script_key("RadioGeneral_MasterScript"): (
+        ("Int[]", "songFormIDs", "Int[] Property songFormIDs Auto Const Mandatory"),
+    ),
+}
+
+_PAPYRUS_SCRIPT_HEADER = re.compile(r"^\s*Scriptname\s+", re.IGNORECASE)
+_PAPYRUS_TOP_LEVEL_VARIABLE = re.compile(
+    r"^\s*(?P<type>[A-Za-z_][\w:]*(?:\[\])*)\s+(?P<name>[A-Za-z_]\w*)\b",
+    re.IGNORECASE,
+)
+_PAPYRUS_TOP_LEVEL_PROPERTY = re.compile(
+    r"^\s*(?P<type>[A-Za-z_][\w:]*(?:\[\])*)\s+Property\s+"
+    r"(?P<name>[A-Za-z_]\w*)\b",
+    re.IGNORECASE,
+)
+
 _PAPYRUS_MEMBER_START = re.compile(
     r"^\s*(?:(?P<ret>[A-Za-z_][\w\[\]]*)\s+)?(?P<kind>Function|Event)\s+"
     r"(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*\(",
@@ -798,6 +971,143 @@ def _script_patch_source(script_name: str) -> str | None:
     if patch_path.is_file():
         return patch_path.read_text(encoding="utf-8")
     return None
+
+
+def _augment_fo76_to_fo4_script_skeleton(script_name: str, skeleton: str) -> str:
+    script_key = _script_key(script_name)
+    variable_additions = _FO76_TO_FO4_SCRIPT_VARIABLE_ADDITIONS.get(script_key, ())
+    property_additions = _FO76_TO_FO4_SCRIPT_PROPERTY_ADDITIONS.get(script_key, ())
+    if not variable_additions and not property_additions:
+        return skeleton
+
+    lines = skeleton.splitlines()
+    header_indexes = [
+        index for index, line in enumerate(lines) if _PAPYRUS_SCRIPT_HEADER.match(line)
+    ]
+    if len(header_indexes) != 1:
+        raise ValueError(
+            f"Papyrus skeleton augmentation requires exactly one Scriptname header; "
+            f"found {len(header_indexes)} for {script_name}"
+        )
+
+    insert_at = header_indexes[0] + 1
+    for type_name, variable_name in variable_additions:
+        variable_key = variable_name.lower()
+        top_level_members = _iter_top_level_papyrus_members(lines)
+        member_collisions = [
+            lines[start]
+            for _kind, name, start, _end in top_level_members
+            if name == variable_key
+        ]
+        if member_collisions:
+            found = ", ".join(member_collisions)
+            raise ValueError(
+                f"conflicting Papyrus member for {variable_name} in "
+                f"{script_name}: {found}"
+            )
+
+        excluded_lines: set[int] = set()
+        for _name, start, end in _iter_papyrus_states(lines):
+            excluded_lines.update(range(start, end + 1))
+        for _kind, _name, start, end in top_level_members:
+            excluded_lines.update(range(start, end + 1))
+
+        declarations: list[tuple[str, str]] = []
+        properties: list[str] = []
+        for index, line in enumerate(lines):
+            if index in excluded_lines:
+                continue
+            property_match = _PAPYRUS_TOP_LEVEL_PROPERTY.match(line)
+            if (
+                property_match is not None
+                and property_match.group("name").lower() == variable_key
+            ):
+                properties.append(line)
+                continue
+            match = _PAPYRUS_TOP_LEVEL_VARIABLE.match(line)
+            if match is None or match.group("name").lower() != variable_key:
+                continue
+            declarations.append((match.group("type"), line))
+
+        if properties:
+            found = ", ".join(properties)
+            raise ValueError(
+                f"conflicting Papyrus property for {variable_name} in "
+                f"{script_name}: {found}"
+            )
+
+        if declarations:
+            if len(declarations) != 1 or declarations[0][0].lower() != type_name.lower():
+                found = ", ".join(line for _found_type, line in declarations)
+                raise ValueError(
+                    f"conflicting Papyrus declaration for {variable_name} in "
+                    f"{script_name}: {found}"
+                )
+            continue
+
+        lines.insert(insert_at, f"{type_name} {variable_name}")
+        insert_at += 1
+
+    for type_name, property_name, declaration in property_additions:
+        property_key = property_name.lower()
+        top_level_members = _iter_top_level_papyrus_members(lines)
+        member_collisions = [
+            lines[start]
+            for _kind, name, start, _end in top_level_members
+            if name == property_key
+        ]
+        if member_collisions:
+            found = ", ".join(member_collisions)
+            raise ValueError(
+                f"conflicting Papyrus member for {property_name} in "
+                f"{script_name}: {found}"
+            )
+
+        excluded_lines: set[int] = set()
+        for _name, start, end in _iter_papyrus_states(lines):
+            excluded_lines.update(range(start, end + 1))
+        for _kind, _name, start, end in top_level_members:
+            excluded_lines.update(range(start, end + 1))
+
+        variables: list[str] = []
+        properties: list[tuple[str, str]] = []
+        for index, line in enumerate(lines):
+            if index in excluded_lines:
+                continue
+            property_match = _PAPYRUS_TOP_LEVEL_PROPERTY.match(line)
+            if (
+                property_match is not None
+                and property_match.group("name").lower() == property_key
+            ):
+                properties.append((property_match.group("type"), line))
+                continue
+            variable_match = _PAPYRUS_TOP_LEVEL_VARIABLE.match(line)
+            if (
+                variable_match is not None
+                and variable_match.group("name").lower() == property_key
+            ):
+                variables.append(line)
+
+        if variables:
+            found = ", ".join(variables)
+            raise ValueError(
+                f"conflicting Papyrus declaration for {property_name} in "
+                f"{script_name}: {found}"
+            )
+        if properties:
+            if len(properties) != 1 or properties[0][0].lower() != type_name.lower():
+                found = ", ".join(line for _found_type, line in properties)
+                raise ValueError(
+                    f"conflicting Papyrus property for {property_name} in "
+                    f"{script_name}: {found}"
+                )
+            continue
+
+        lines.insert(insert_at, declaration)
+        insert_at += 1
+
+    merged = "\n".join(lines)
+    return f"{merged}\n" if skeleton.endswith(("\n", "\r")) else merged
 
 
 def _script_body_is_hollow(psc_source: str) -> bool:
@@ -1487,6 +1797,65 @@ def _skip_fo76_to_fo4_source_script(
     )
 
 
+def _script_parent_name(pex_path: Path) -> str | None:
+    """Return the immediate ``Extends`` parent declared on the compiled script at
+    `pex_path`, or None if it has none (a native root) or the PEX can't be parsed."""
+    from creation_lib.pex import parse_pex
+
+    try:
+        pex = parse_pex(pex_path)
+    except Exception:
+        return None
+    if not pex.objects:
+        return None
+    parent = getattr(pex.objects[0], "parent", None)
+    return str(parent) if parent else None
+
+
+def _extend_script_names_with_ancestor_closure(
+    script_names_by_key: dict[str, str],
+    *,
+    source_index: dict[str, Path],
+    target_index: dict[str, Path | None],
+    runner: "ConversionRunner",
+) -> None:
+    """Walk the `Extends` chain of every script already in `script_names_by_key`
+    and add record-unbound ancestors so children that extend them can compile.
+
+    An ancestor already resolvable in `target_index` is FO4-native (or already
+    shadowed) and is left alone -- never emitted. An ancestor found in
+    `source_index` is added and its own ancestors are queued in turn. An ancestor
+    with no PEX in either index is logged and left unemitted.
+    """
+    queue: list[str] = list(script_names_by_key.values())
+    warned_missing: set[str] = set()
+    while queue:
+        script_name = queue.pop()
+        pex_path = source_index.get(_script_key(script_name)) or target_index.get(
+            _script_key(script_name)
+        )
+        if pex_path is None:
+            continue
+        parent_name = _script_parent_name(pex_path)
+        if not parent_name:
+            continue
+        parent_key = _script_key(parent_name)
+        if parent_key in target_index or parent_key in script_names_by_key:
+            continue
+        parent_pex = source_index.get(parent_key)
+        if parent_pex is None:
+            if parent_key not in warned_missing:
+                warned_missing.add(parent_key)
+                runner.emit_log(
+                    "WARN",
+                    f"[Scripts] {script_name} extends {parent_name}, which has no "
+                    "PEX in the source tree; leaving unemitted",
+                )
+            continue
+        script_names_by_key[parent_key] = parent_name
+        queue.append(parent_name)
+
+
 def _pex_member_names(path: Path) -> set[str]:
     from creation_lib.pex import parse_pex
 
@@ -1857,6 +2226,7 @@ class _UnifiedRecordRuntime:
         runner: "ConversionRunner | None" = None,
     ) -> ConversionContext:
         timing_report = getattr(self._req, "timing_report", None)
+        target_master_paths = _conversion_target_master_inputs(self._req)
 
         def record_setup_timing(
             name: str,
@@ -1946,7 +2316,7 @@ class _UnifiedRecordRuntime:
                 )
                 record_preflight = build_target_record_preflight(
                     self._req.target_game,
-                    target_master_paths=self._req.target_master_paths,
+                    target_master_paths=target_master_paths,
                     target_data_dir=self._req.target_data_dir,
                     target_extracted_dir=None,
                     target_master_handles=target_master_handles,
@@ -2048,7 +2418,7 @@ class _UnifiedRecordRuntime:
             # explicit paths alone are usually empty.
             target_master_plugin_paths, _ = resolve_target_master_plugin_paths(
                 self._req.target_game,
-                target_master_paths=self._req.target_master_paths,
+                target_master_paths=target_master_paths,
                 target_data_dir=self._req.target_data_dir,
                 target_extracted_dir=None,
             )
@@ -3254,6 +3624,20 @@ class _UnifiedRecordRuntime:
                 exclude_signatures=getattr(opts, "exclude_signatures", frozenset()),
             ),
             "defer_placed_child_ref_class": self._defers_placed_child_ref_class(ctx),
+            "legacy_pack_origins": [
+                row.to_dict() for row in self._req.legacy_pack_origins
+            ],
+            "legacy_pack_raw_source_counts": (
+                self._req.legacy_pack_raw_source_counts.to_dict()
+                if self._req.legacy_pack_raw_source_counts is not None
+                else None
+            ),
+            "legacy_pack_expected_counts": (
+                self._req.legacy_pack_expected_counts.to_dict()
+                if self._req.legacy_pack_expected_counts is not None
+                else None
+            ),
+            "legacy_pack_provenance_required": self._req.legacy_pack_provenance_required,
             "asset_phases": {
                 "terrain": bool(opts.convert_terrain),
                 "nifs": bool(opts.convert_nifs),
@@ -3306,18 +3690,30 @@ class _UnifiedRecordRuntime:
             master_plugin_paths=[
                 str(path) for path in getattr(ctx, "target_master_plugin_paths", [])
             ],
-            source_strings_dir=str(
-                getattr(ctx, "source_extracted_dir", None)
-                or getattr(ctx, "source_data_dir", None)
-                or getattr(ctx, "extracted_dir", None)
-                or ""
-            )
-            or None,
+            source_strings_dir=_resolve_source_strings_dir(
+                Path(source_plugin_path),
+                getattr(ctx, "source_extracted_dir", None),
+                getattr(ctx, "source_data_dir", None),
+                getattr(ctx, "extracted_dir", None),
+            ),
             config=config,
         )
         ctx._rust_conversion_run = run  # type: ignore[attr-defined]
         ctx._event_drainer = Drainer(run, runner)  # type: ignore[attr-defined]
         ctx._event_drainer.start()
+        terrain_graft_source = getattr(ctx, "_terrain_graft_source", None)
+        if terrain_graft_source is not None:
+            prepare_report = run.run_phase(
+                "prepare_graft_terrain",
+                mod_path="",
+                params={"prior_plugin_path": str(terrain_graft_source)},
+            )
+            runner.emit_log(
+                "INFO",
+                "Reserved "
+                f"{int(prepare_report.get('records_deferred', 0))} "
+                "reused terrain/navmesh FormIDs from generated allocation",
+            )
         maps_started = time.perf_counter()
         run.run_phase(
             "record_translation_maps", mod_path="", params={"validate_only": False}
@@ -3473,7 +3869,11 @@ class _UnifiedRecordRuntime:
                     str(path)
                     for path in getattr(ctx, "target_master_plugin_paths", [])
                 ],
-                source_strings_dir=source_extracted or None,
+                source_strings_dir=_resolve_source_strings_dir(
+                    source_plugin,
+                    getattr(ctx, "source_data_dir", None),
+                    self._req.source_data_dir,
+                ),
                 config=self._native_run_config(ctx),
             ) as run:
                 report = run.run_phase(
@@ -3496,6 +3896,7 @@ class _UnifiedRecordRuntime:
                 os.close(temp_fd)
                 run.save_target(str(temp_output_path), run_nvnm_validator=False)
             os.replace(temp_output_path, output_path)
+            _cleanup_temp_save_strings(temp_output_path)
             temp_output_path = None
             runner.emit_log(
                 "INFO",
@@ -3506,6 +3907,7 @@ class _UnifiedRecordRuntime:
             )
         finally:
             if temp_output_path is not None:
+                _cleanup_temp_save_strings(temp_output_path)
                 try:
                     temp_output_path.unlink(missing_ok=True)
                 except OSError:
@@ -4339,6 +4741,12 @@ class _UnifiedRecordRuntime:
                 "INFO",
                 f"[Scripts] including all {len(source_index)} indexed source script(s)",
             )
+        _extend_script_names_with_ancestor_closure(
+            script_names_by_key,
+            source_index=source_index,
+            target_index=target_index,
+            runner=runner,
+        )
         for script_name in sorted(script_names_by_key.values(), key=str.lower):
             key = _script_key(script_name)
             if _skip_fo76_to_fo4_source_script(
@@ -5018,6 +5426,10 @@ class _UnifiedRecordRuntime:
                 skip_internal_functions=skip_internal_functions,
                 fo4_api_compat=fo4_api_compat,
             )
+            if fo4_api_compat:
+                decompiled = _augment_fo76_to_fo4_script_skeleton(
+                    script_name, decompiled
+                )
         except Exception as exc:
             for error in _remove_generated_script_outputs(
                 Path(ctx.mod_path), script_name
@@ -5969,6 +6381,65 @@ def _resolved_mod_root(request: PluginPortRequest) -> Path:
     return Path(request.output_root) / mod_name
 
 
+def _preflight_legacy_packs(
+    request: PluginPortRequest,
+    runner: "ConversionRunner",
+) -> None:
+    if (
+        not request.options.translate_records
+        or request.source_game.lower() not in {"fnv", "fo3"}
+        or request.target_game.lower() != "fo4"
+    ):
+        return
+
+    from bacup_lib.run import ConversionRun
+
+    source_plugin = Path(request.source_plugins[0])
+    config = {
+        "output_plugin_name": source_plugin.name,
+        "is_whole_plugin": True,
+        "legacy_pack_origins": [
+            row.to_dict() for row in request.legacy_pack_origins
+        ],
+        "legacy_pack_raw_source_counts": (
+            request.legacy_pack_raw_source_counts.to_dict()
+            if request.legacy_pack_raw_source_counts is not None
+            else None
+        ),
+        "legacy_pack_expected_counts": (
+            request.legacy_pack_expected_counts.to_dict()
+            if request.legacy_pack_expected_counts is not None
+            else None
+        ),
+        "legacy_pack_provenance_required": request.legacy_pack_provenance_required,
+        "skip_record_signatures": _skip_record_signatures_payload(
+            convert_placed_records=request.options.convert_placed_records,
+            exclude_signatures=request.options.exclude_signatures,
+        ),
+    }
+    runner.emit_log("INFO", "Running fatal legacy PACK record preflight")
+    with ConversionRun.create_new(
+        request.source_game,
+        request.target_game,
+        str(source_plugin),
+        source_plugin.name,
+        source_strings_dir=_resolve_source_strings_dir(
+            source_plugin,
+            request.source_data_dir,
+        ),
+        config=config,
+    ) as run:
+        try:
+            run.preflight_legacy_packs()
+        finally:
+            for event in run.drain_events(256):
+                if event.get("kind") == "log":
+                    runner.emit_log(
+                        str(event.get("level", "INFO")).upper(),
+                        str(event.get("message", "")),
+                    )
+
+
 class UnifiedDriver:
     """Unified regen driver.
 
@@ -6214,6 +6685,9 @@ class UnifiedDriver:
             self.assets = assets
             self.signals.assets_ready.set()
 
+            if opts.convert_terrain and opts.reuse_terrain_navmesh:
+                ctx._terrain_graft_source = _terrain_graft_source(opts, mod_path)
+
             # translate records + registry maps
             if opts.translate_records:
                 self._record_phase(
@@ -6222,6 +6696,7 @@ class UnifiedDriver:
                     lambda p: orch._translate_records_rust([], ctx, runner, p),
                     runner,
                     timing_ctx=ctx,
+                    raise_on_error=True,
                 )
                 _memory_mark(ctx, "after:translate")
                 orch._apply_registry_mappings(ctx)
@@ -6251,7 +6726,7 @@ class UnifiedDriver:
                     # Terrain and Emit Projected NavMeshes (below). Source is the
                     # live deployed ESM in upgrade mode, else the --re-use-land
                     # run-local .regen_land_cache.esm.
-                    cache_path = _terrain_graft_source(opts, mod_path)
+                    cache_path = ctx._terrain_graft_source
                     self._record_phase(
                         3 + phase_offset,
                         "Graft Terrain + Navmesh (reuse)",
@@ -6668,6 +7143,9 @@ class _AssetWavePlan:
     material_phase: str | None = "convert_materials_v2"
     grass_topup: bool = True
     wave_a4: bool = True
+    # FO76 runs enumerate the whole extracted tree; legacy sources have no
+    # extracted tree to walk and convert the referenced set instead.
+    textures_from_graph: bool = False
 
 
 def _wave_plan_for(source_game: str) -> _AssetWavePlan:
@@ -6677,37 +7155,48 @@ def _wave_plan_for(source_game: str) -> _AssetWavePlan:
         return _AssetWavePlan(
             nif_phase="convert_nifs_v2",
             bto_phase=None,
-            texture_phase="copy_textures",
+            texture_phase="convert_textures_v2",
             material_phase=None,
             grass_topup=True,
             wave_a4=False,
+            textures_from_graph=True,
         )
     if get_profile(source_game).engine == "gamebryo":
         return _AssetWavePlan(
             nif_phase="convert_gamebryo_nifs",
             bto_phase=None,
-            texture_phase="copy_textures",
+            texture_phase="convert_textures_v2",
             material_phase=None,
             grass_topup=False,
             wave_a4=False,
+            textures_from_graph=True,
         )
     return _AssetWavePlan()
 
 
-def _is_skyrim_mvp(driver: "UnifiedDriver") -> bool:
-    if str(driver.ctx.source_game).lower() != "skyrimse":
-        return False
-
-    from bacup_lib.source_pairs import SKYRIM_MVP_EXCLUDE_SIGNATURES
+def _mvp_exclude_signatures(driver: "UnifiedDriver") -> frozenset[str]:
+    from bacup_lib.source_pairs import MVP_EXCLUDE_SIGNATURES_BY_PAIR
 
     excluded = frozenset(
         signature.upper()
         for signature in getattr(driver._req.options, "exclude_signatures", ())
     )
-    return SKYRIM_MVP_EXCLUDE_SIGNATURES <= excluded
+    pair_id = {
+        "fnv": "fnvfo3:fo4",
+        "skyrimse": "skyrimse:fo4",
+    }.get(str(driver.ctx.source_game).lower())
+    expected = MVP_EXCLUDE_SIGNATURES_BY_PAIR.get(pair_id or "", frozenset())
+    return expected if expected and expected <= excluded else frozenset()
 
 
-def _is_skyrim_mvp_audio_path(path: str) -> bool:
+def _is_skyrim_mvp(driver: "UnifiedDriver") -> bool:
+    return (
+        str(driver.ctx.source_game).lower() == "skyrimse"
+        and bool(_mvp_exclude_signatures(driver))
+    )
+
+
+def _is_world_only_mvp_audio_path(path: str) -> bool:
     parts = [part for part in path.replace("\\", "/").lower().split("/") if part]
     if parts and parts[0] == "data":
         parts = parts[1:]
@@ -6721,11 +7210,100 @@ def _is_skyrim_mvp_audio_path(path: str) -> bool:
         len(parts) >= 3
         and parts[0] == "sound"
         and parts[1] == "fx"
-        and parts[2].startswith(("amb", "mus"))
+        and not _is_skyrim_mvp_loadscreen_asset_path(path, "sound")
     )
 
 
-def _is_skyrim_mvp_world_asset_path(path: str, asset_type: str = "") -> bool:
+def _is_skyrim_mvp_audio_path(path: str) -> bool:
+    return _is_world_only_mvp_audio_path(path)
+
+
+def _is_skyrim_mvp_loadscreen_asset_path(
+    path: str, asset_type: str = ""
+) -> bool:
+    normalized_type = str(asset_type).lower()
+    parts = [part for part in path.replace("\\", "/").lower().split("/") if part]
+    if parts and parts[0] == "data":
+        parts = parts[1:]
+    inferred_root = {
+        "audio": "sound",
+        "material": "materials",
+        "nif": "meshes",
+        "sound": "sound",
+        "texture": "textures",
+    }.get(normalized_type)
+    if inferred_root and parts and parts[0] != inferred_root:
+        parts.insert(0, inferred_root)
+    if not parts:
+        return False
+
+    filename = parts[-1]
+    if (
+        parts[0] in {"materials", "meshes"}
+        and parts[1:3] == ["_byoh", "loadsscreens"]
+    ):
+        return filename.endswith((".bgsm", ".nif"))
+    if parts[:2] == ["textures", "clutter"]:
+        return filename.startswith("loadscreen") and filename.endswith(".dds")
+    if parts[:3] == ["sound", "fx", "ui"]:
+        return filename.startswith(("loadscreen", "ui_loadscreen")) and filename.endswith(
+            ".wav"
+        )
+    return (
+        parts[0] in {"materials", "meshes"}
+        and "loadscreenart" in parts[1:]
+        and filename.endswith((".bgsm", ".nif"))
+    )
+
+
+def _is_skyrim_mvp_loadscreen_mesh_path(
+    path: str, asset_type: str = ""
+) -> bool:
+    normalized_type = str(asset_type).lower()
+    if normalized_type and normalized_type != "nif":
+        return False
+    if not normalized_type and not path.lower().endswith(".nif"):
+        return False
+    return _is_skyrim_mvp_loadscreen_asset_path(path, "nif")
+
+
+def _remove_skyrim_mvp_loadscreen_material_outputs(mod_path: str) -> int:
+    materials_root = Path(mod_path) / "data" / "Materials"
+    if not materials_root.is_dir():
+        return 0
+    stale_outputs = [
+        path
+        for path in materials_root.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() == ".bgsm"
+        and _is_skyrim_mvp_loadscreen_asset_path(
+            path.relative_to(materials_root).as_posix(), "material"
+        )
+    ]
+    for path in stale_outputs:
+        path.unlink()
+    return len(stale_outputs)
+
+
+def _remove_skyrim_mvp_loadscreen_asset_outputs(mod_path: str) -> int:
+    data_root = Path(mod_path) / "data"
+    removed = _remove_skyrim_mvp_loadscreen_material_outputs(mod_path)
+    for relative_root in ("Meshes/_BYOH/LoadsScreens", "Sound/FX/UI", "Textures/Clutter"):
+        root = data_root / relative_root
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            if path.is_file() and _is_skyrim_mvp_loadscreen_asset_path(
+                path.relative_to(data_root).as_posix()
+            ):
+                path.unlink()
+                removed += 1
+    return removed
+
+
+def _is_world_only_mvp_asset_path(path: str, asset_type: str = "") -> bool:
+    if _is_skyrim_mvp_loadscreen_asset_path(path, asset_type):
+        return False
     parts = [part for part in path.replace("\\", "/").lower().split("/") if part]
     if parts and parts[0] == "data":
         parts = parts[1:]
@@ -6750,17 +7328,29 @@ def _is_skyrim_mvp_world_asset_path(path: str, asset_type: str = "") -> bool:
         "armor",
         "characters",
         "clothes",
+        "creatures",
         "weapons",
     }
 
 
-def _is_skyrim_mvp_world_asset(asset: AssetRef) -> bool:
+def _is_world_only_mvp_asset(
+    asset: AssetRef, exclude_signatures: frozenset[str]
+) -> bool:
     from bacup_lib.base_asset_dedupe import asset_owner_signature
+
+    if asset_owner_signature(asset) in exclude_signatures:
+        return False
+    return _is_world_only_mvp_asset_path(asset.source_path, asset.asset_type)
+
+
+def _is_skyrim_mvp_world_asset_path(path: str, asset_type: str = "") -> bool:
+    return _is_world_only_mvp_asset_path(path, asset_type)
+
+
+def _is_skyrim_mvp_world_asset(asset: AssetRef) -> bool:
     from bacup_lib.source_pairs import SKYRIM_MVP_EXCLUDE_SIGNATURES
 
-    if asset_owner_signature(asset) in SKYRIM_MVP_EXCLUDE_SIGNATURES:
-        return False
-    return _is_skyrim_mvp_world_asset_path(asset.source_path, asset.asset_type)
+    return _is_world_only_mvp_asset(asset, SKYRIM_MVP_EXCLUDE_SIGNATURES)
 
 
 @dataclass
@@ -6926,6 +7516,14 @@ class AssetWaveBuilder:
     def build_wave_a1(self) -> list["WaveStage"]:
         shim = self._shim()
         stages: list[WaveStage] = []
+        mvp_exclusions = _mvp_exclude_signatures(self.driver)
+        if _is_skyrim_mvp(self.driver):
+            removed = _remove_skyrim_mvp_loadscreen_asset_outputs(shim.mod_path)
+            if removed:
+                self.runner.emit_log(
+                    "INFO",
+                    f"[Assets] Skyrim MVP removed {removed} stale loadscreen asset(s)",
+                )
         if self.toggles.sounds and self.runs.sounds:
             # Mirror of pipeline/sounds.py::copy_sounds_native.
             sound_assets = [
@@ -6933,16 +7531,16 @@ class AssetWaveBuilder:
                 for a in list(self.driver.ctx.assets)
                 if a.asset_type in {"sound", "audio"}
             ]
-            if _is_skyrim_mvp(self.driver):
+            if mvp_exclusions:
                 all_sound_count = len(sound_assets)
                 sound_assets = [
                     asset
                     for asset in sound_assets
-                    if _is_skyrim_mvp_audio_path(asset.source_path)
+                    if _is_world_only_mvp_audio_path(asset.source_path)
                 ]
                 self.runner.emit_log(
                     "INFO",
-                    "[Sound] Skyrim MVP ambient/music filter: "
+                    f"[Sound] {str(self.driver.ctx.source_game).upper()} MVP FX/music filter: "
                     f"kept={len(sound_assets)} omitted={all_sound_count - len(sound_assets)}",
                 )
             shim._summary.audio_total = len(sound_assets)
@@ -7017,12 +7615,47 @@ class AssetWaveBuilder:
         )
 
         nif_assets = [a for a in shim.graph.all_assets if a.asset_type == "nif"]
-        skyrim_mvp = _is_skyrim_mvp(self.driver)
-        if skyrim_mvp:
+        if self._wave_plan.nif_phase == "convert_gamebryo_nifs":
             nif_assets = [
                 asset
                 for asset in nif_assets
-                if _is_skyrim_mvp_world_asset(asset)
+                if asset.source_path.lower().endswith(".nif")
+            ]
+        mvp_exclusions = _mvp_exclude_signatures(self.driver)
+        skyrim_mvp = _is_skyrim_mvp(self.driver)
+        if skyrim_mvp:
+            stale_loadscreen_materials_removed = (
+                _remove_skyrim_mvp_loadscreen_material_outputs(shim.mod_path)
+            )
+            loadscreen_assets = [
+                asset
+                for asset in nif_assets
+                if _is_skyrim_mvp_loadscreen_mesh_path(
+                    asset.source_path, asset.asset_type
+                )
+            ]
+            stale_loadscreen_outputs_removed = 0
+            for asset in loadscreen_assets:
+                if shim._remove_stale_asset_output(asset):
+                    stale_loadscreen_outputs_removed += 1
+                shim._track_asset(
+                    asset,
+                    "mvp_runtime_skip",
+                    "Skyrim LoadScreenArt meshes are not FO4-runtime compatible",
+                )
+            if loadscreen_assets or stale_loadscreen_materials_removed:
+                self.runner.emit_log(
+                    "INFO",
+                    f"[NIF] Skyrim MVP skipped {len(loadscreen_assets)} "
+                    "LoadScreenArt NIF(s); removed "
+                    f"{stale_loadscreen_outputs_removed} stale NIF output(s) and "
+                    f"{stale_loadscreen_materials_removed} generated BGSM output(s)",
+                )
+        if mvp_exclusions:
+            nif_assets = [
+                asset
+                for asset in nif_assets
+                if _is_world_only_mvp_asset(asset, mvp_exclusions)
             ]
         self._a2_nif_keys = {_asset_key_pair(a) for a in nif_assets}
         if not getattr(shim, "convert_precombined_nifs", True):
@@ -7095,11 +7728,12 @@ class AssetWaveBuilder:
     def build_wave_a3(self) -> list["WaveStage"]:
         shim = self._shim()
         stages: list[WaveStage] = []
-        skyrim_mvp = _is_skyrim_mvp(self.driver)
+        mvp_exclusions = _mvp_exclude_signatures(self.driver)
         if self.toggles.textures and self.runs.textures:
-            if self._wave_plan.texture_phase == "copy_textures":
+            if self._wave_plan.textures_from_graph:
                 from bacup_lib.workflows.asset_phases import (
                     _is_precombined_nif_asset,
+                    _params_for_convert_textures,
                 )
 
                 referenced_textures = [
@@ -7108,8 +7742,8 @@ class AssetWaveBuilder:
                     if asset.asset_type == "texture"
                     and asset.source_path.lower().endswith(".dds")
                     and (
-                        not skyrim_mvp
-                        or _is_skyrim_mvp_world_asset(asset)
+                        not mvp_exclusions
+                        or _is_world_only_mvp_asset(asset, mvp_exclusions)
                     )
                 ]
                 texture_assets = []
@@ -7130,6 +7764,7 @@ class AssetWaveBuilder:
                     asset
                     for asset in shim.graph.all_assets
                     if asset.asset_type == "nif"
+                    and asset.source_path.lower().endswith(".nif")
                     and asset.resolved_path
                     and not shim._target_has_asset(asset)
                     and (
@@ -7137,32 +7772,43 @@ class AssetWaveBuilder:
                         or not _is_precombined_nif_asset(asset)
                     )
                     and (
-                        not skyrim_mvp
-                        or _is_skyrim_mvp_world_asset(asset)
+                        not mvp_exclusions
+                        or _is_world_only_mvp_asset(asset, mvp_exclusions)
                     )
+                ]
+                # Grouping textures by role needs every member on disk, so an
+                # unresolved path is dropped here rather than poisoning the
+                # group it belongs to.
+                unresolved = [a for a in texture_assets if not a.resolved_path]
+                if unresolved:
+                    self.runner.emit_log(
+                        "WARN",
+                        f"[Textures] {len(unresolved)} referenced texture(s) did not "
+                        f"resolve and were skipped, first: {unresolved[0].source_path}",
+                    )
+                params = _params_for_convert_textures(
+                    shim, [a for a in texture_assets if a.resolved_path]
+                )
+                params["convert_all"] = False
+                params["nif_paths"] = [
+                    {
+                        "source_path": asset.source_path,
+                        "resolved_path": asset.resolved_path,
+                    }
+                    for asset in nif_assets
                 ]
                 stages.append(
                     WaveStage(
-                        phase="copy_textures",
+                        phase=self._wave_plan.texture_phase,
                         run_id=self.runs.textures.id,
                         mod_path=str(shim.mod_path),
-                        source_extracted_dir="",
-                        params={
-                            "texture_paths": [
-                                {
-                                    "source_path": asset.source_path,
-                                    "resolved_path": asset.resolved_path or "",
-                                }
-                                for asset in texture_assets
-                            ],
-                            "nif_paths": [
-                                {
-                                    "source_path": asset.source_path,
-                                    "resolved_path": asset.resolved_path,
-                                }
-                                for asset in nif_assets
-                            ],
-                        },
+                        source_extracted_dir=str(
+                            getattr(shim, "source_data_dir", "") or ""
+                        ),
+                        target_extracted_dir=str(shim.target_extracted_dir or "")
+                        or None,
+                        target_data_dir=str(shim.target_data_dir or "") or None,
+                        params=params,
                     )
                 )
             else:
@@ -7234,8 +7880,8 @@ class AssetWaveBuilder:
                 for a in list(self.driver.ctx.assets)
                 if a.asset_type == "nif" and _asset_key_pair(a) not in self._a2_nif_keys
                 and (
-                    not skyrim_mvp
-                    or _is_skyrim_mvp_world_asset(a)
+                    not mvp_exclusions
+                    or _is_world_only_mvp_asset(a, mvp_exclusions)
                 )
             ]
             if delta:
@@ -7383,6 +8029,20 @@ class AssetWaveBuilder:
                     source_extracted_dir=source_extracted,
                     params={},
                     after=after,
+                )
+            )
+        facegen_run = self.runs.nifs or self.runs.textures or self.runs.havok
+        if facegen_run:
+            stages.append(
+                WaveStage(
+                    phase="copy_materialized_facegen",
+                    run_id=facegen_run.id,
+                    mod_path=str(shim.mod_path),
+                    source_extracted_dir=source_extracted,
+                    target_extracted_dir=str(shim.target_extracted_dir or "") or None,
+                    target_data_dir=str(shim.target_data_dir or "") or None,
+                    params={},
+                    after=(stages[-1].phase,) if stages else (),
                 )
             )
         return stages
@@ -7971,6 +8631,22 @@ def _run_post_phase(label: str, body, runner: "ConversionRunner") -> None:
     runner.emit_phase_complete(progress)
 
 
+def _remove_existing_anim_text_data(mod_dir: Path) -> int:
+    data_root = mod_dir / "data"
+    if not data_root.is_dir():
+        return 0
+
+    removed = 0
+    for meshes_root in data_root.iterdir():
+        if not meshes_root.is_dir() or meshes_root.name.casefold() != "meshes":
+            continue
+        for candidate in meshes_root.iterdir():
+            if candidate.is_dir() and candidate.name.casefold() == "animtextdata":
+                shutil.rmtree(candidate)
+                removed += 1
+    return removed
+
+
 def _run_anim_text_data_generation(
     ctx: ConversionContext,
     runner: "ConversionRunner",
@@ -7991,6 +8667,13 @@ def _run_anim_text_data_generation(
     plugin_path = mod_dir / plugin_name
     if not plugin_path.is_file():
         raise FileNotFoundError(f"{plugin_path} not found. Build the mod first.")
+
+    removed = _remove_existing_anim_text_data(mod_dir)
+    if removed:
+        runner.emit_log(
+            "INFO",
+            f"animtext: removed {removed} stale AnimTextData tree(s)",
+        )
 
     # Prefer CK when it is present (full-fidelity, all buckets). End users who lack
     # CK get the native CK-free generator. `force_native` overrides CK detection to
@@ -8224,10 +8907,12 @@ def _regenerate_modt_after_asset_waves(
             os.close(temp_fd)
             run.save_target(str(temp_output_path), run_nvnm_validator=False)
         os.replace(temp_output_path, output_path)
+        _cleanup_temp_save_strings(temp_output_path)
         temp_output_path = None
         update_progress(3, "")
     finally:
         if temp_output_path is not None:
+            _cleanup_temp_save_strings(temp_output_path)
             try:
                 temp_output_path.unlink(missing_ok=True)
             except OSError:
@@ -8238,6 +8923,199 @@ def _regenerate_modt_after_asset_waves(
         "post-asset MODT regeneration: "
         f"manifest_entries={manifest_report.get('records_changed', 0)} "
         f"records_changed={modt_report.get('records_changed', 0)}",
+    )
+
+
+def _generate_precombines_after_asset_waves(
+    driver: "UnifiedDriver",
+    runner: "ConversionRunner",
+    mod_root: Path,
+    *,
+    progress: PhaseProgress | None = None,
+) -> None:
+    """EXPERIMENTAL post-asset precombine generation (gated off by default; see
+    models.PhaseSelection.generate_precombines).
+
+    Runs in the same post-asset stage as MODT regeneration, reopening the freshly
+    built ESM to bake `*_OC.nif` and stamp CELL PCMB/XCRI + REFR VC. A phase
+    failure is logged and swallowed â€” it must NOT abort the run, and the MODT
+    results (which already saved in their own window) still stand.
+    """
+    ctx = driver.ctx
+    if (
+        ctx is None
+        or driver._req.target_game.lower() != "fo4"
+        or not driver._req.options.build_esp
+        or not getattr(driver._req.options, "generate_precombines", False)
+    ):
+        return
+
+    output_path = mod_root / ctx.output_plugin_name
+    if not output_path.is_file():
+        runner.emit_log(
+            "WARN",
+            f"generate_precombines skipped: built output plugin missing: {output_path}",
+        )
+        return
+
+    from bacup_lib.run import ConversionRun
+
+    temp_output_path: Path | None = None
+
+    def update_progress(completed_items: int, current_item: str) -> None:
+        if progress is None:
+            return
+        progress.total_items = 2
+        progress.completed_items = completed_items
+        progress.current_item = current_item
+        runner.emit_item_progress(progress)
+
+    update_progress(0, "Baking precombines")
+    try:
+        with ConversionRun.open_existing(
+            driver._req.source_game,
+            driver._req.target_game,
+            None,
+            str(output_path),
+            config=driver.record_runtime._native_run_config(ctx),
+        ) as run:
+            try:
+                report = run.run_phase(
+                    "generate_precombines",
+                    mod_path=str(mod_root),
+                    params={
+                        # TODO(precombine-v1): enrich phase params here. V1.6 makes an
+                        # empty include_cells mean "all eligible interior cells"; the
+                        # mesh source roots (mesh_extract_roots / mesh_archives) are
+                        # supplied by the runner-path work stream and must NOT be
+                        # handed to the phase from the pipeline yet.
+                        "include_cells": [],
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 â€” non-fatal by contract
+                runner.emit_log("WARN", f"generate_precombines failed: {exc}")
+                return
+            if not report.get("assets_written"):
+                runner.emit_log(
+                    "INFO",
+                    "generate_precombines: no precombines written "
+                    f"(records_changed={report.get('records_changed', 0)}, "
+                    f"warnings={report.get('warnings', 0)})",
+                )
+                return
+            update_progress(1, "Saving updated plugin")
+            temp_fd, temp_name = tempfile.mkstemp(
+                dir=output_path.parent,
+                prefix=f".{output_path.name}.",
+                suffix=".tmp",
+            )
+            temp_output_path = Path(temp_name)
+            os.close(temp_fd)
+            run.save_target(str(temp_output_path), run_nvnm_validator=False)
+        os.replace(temp_output_path, output_path)
+        temp_output_path = None
+        update_progress(2, "")
+    finally:
+        if temp_output_path is not None:
+            try:
+                temp_output_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    runner.emit_log(
+        "INFO",
+        "post-asset precombine generation: "
+        f"assets_written={report.get('assets_written', 0)} "
+        f"records_changed={report.get('records_changed', 0)}",
+    )
+
+
+def _rebuild_cell_offsets_after_build(
+    driver: "UnifiedDriver",
+    runner: "ConversionRunner",
+    mod_root: Path,
+    *,
+    progress: PhaseProgress | None = None,
+) -> None:
+    """Regenerate WRLD OFST/CLSZ cell seek tables on the built ESM.
+
+    The tables encode the serialized byte layout of each worldspace group, so
+    this must run after every other ESM-record mutation: precombine stamping
+    (when enabled), MODT regeneration and the term-marker repair all rewrite the
+    plugin before this point, so CELL sizes are final before the offsets rebuild.
+    """
+    ctx = driver.ctx
+    if (
+        ctx is None
+        or driver._req.target_game.lower() != "fo4"
+        or not driver._req.options.build_esp
+        or not getattr(driver._req.options, "rebuild_cell_offsets", True)
+    ):
+        return
+
+    output_path = mod_root / ctx.output_plugin_name
+    if not output_path.is_file():
+        raise FileNotFoundError(
+            f"cell offset rebuild requires the built output plugin: {output_path}"
+        )
+
+    from bacup_lib.run import ConversionRun
+
+    temp_output_path: Path | None = None
+
+    def update_progress(completed_items: int, current_item: str) -> None:
+        if progress is None:
+            return
+        progress.total_items = 2
+        progress.completed_items = completed_items
+        progress.current_item = current_item
+        runner.emit_item_progress(progress)
+
+    update_progress(0, "Rebuilding WRLD cell offset tables")
+    try:
+        with ConversionRun.open_existing(
+            driver._req.source_game,
+            driver._req.target_game,
+            None,
+            str(output_path),
+            config=driver.record_runtime._native_run_config(ctx),
+        ) as run:
+            report = run.run_phase(
+                "rebuild_cell_offsets",
+                mod_path=str(mod_root),
+            )
+            for event in run.drain_events(256):
+                if event.get("kind") == "log":
+                    runner.emit_log(
+                        str(event.get("level", "INFO")).upper(),
+                        str(event.get("message", "")),
+                    )
+            update_progress(1, "Saving updated plugin")
+            temp_fd, temp_name = tempfile.mkstemp(
+                dir=output_path.parent,
+                prefix=f".{output_path.name}.",
+                suffix=".tmp",
+            )
+            temp_output_path = Path(temp_name)
+            os.close(temp_fd)
+            run.save_target(str(temp_output_path), run_nvnm_validator=False)
+        os.replace(temp_output_path, output_path)
+        _cleanup_temp_save_strings(temp_output_path)
+        temp_output_path = None
+        update_progress(2, "")
+    finally:
+        if temp_output_path is not None:
+            _cleanup_temp_save_strings(temp_output_path)
+            try:
+                temp_output_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    runner.emit_log(
+        "INFO",
+        "cell offset tables rebuilt: "
+        f"worldspaces={report.get('records_changed', 0)} "
+        f"warnings={report.get('warnings', 0)}",
     )
 
 
@@ -8253,12 +9131,16 @@ def run_unified(
     expanded_archives: bool = True,
     archive_output_dir: Path | None = None,
     fo4_ba2_target: str = "nextgen",
+    archive_labels: tuple[str, ...] | None = None,
     lod_hook: "Callable[[Path], None] | None" = None,
     land_cache_hook: "Callable[[ConversionContext], bool] | None" = None,
+    record_preflight_complete: bool = False,
 ) -> "UnifiedRunResult":
     """The unified driver: record track + asset waves + sink join
     + cache manifest. `request.options` = the legacy full-run options (asset
     toggles ON; see UnifiedDriver.__init__)."""
+    if not record_preflight_complete:
+        _preflight_legacy_packs(request, runner)
     toggles = AssetWaveToggles.from_options(request.options)
     mod_root = _resolved_mod_root(request)
     mod_root.mkdir(parents=True, exist_ok=True)
@@ -8360,6 +9242,23 @@ def run_unified(
             runner,
         )
 
+        # EXPERIMENTAL, gated off: only schedule (and surface) the precombine phase
+        # when explicitly enabled, so the default full build is byte-unchanged.
+        if (
+            request.target_game.lower() == "fo4"
+            and getattr(request.options, "generate_precombines", False)
+        ):
+            _run_post_phase(
+                "Generate precombines",
+                lambda progress: _generate_precombines_after_asset_waves(
+                    driver,
+                    runner,
+                    mod_root,
+                    progress=progress,
+                ),
+                runner,
+            )
+
         if driver.ctx is not None:
             driver.record_runtime._repair_term_marker_parameters_final(
                 driver.ctx,
@@ -8367,8 +9266,30 @@ def run_unified(
                 request.source_plugins[0],
             )
 
+        # Last ESM-record mutation: OFST/CLSZ encode the serialized layout, so
+        # every earlier step that rewrites the plugin must already have run.
+        _run_post_phase(
+            "Rebuild Cell Offsets",
+            lambda progress: _rebuild_cell_offsets_after_build(
+                driver,
+                runner,
+                mod_root,
+                progress=progress,
+            ),
+            runner,
+        )
+
         if driver.ctx is not None:
             _finalize_fo76_pipboy_map_texture(request, driver.ctx, runner)
+            _run_post_phase(
+                "Copy VaultBoy SWFs",
+                lambda _progress: _copy_fo76_vaultboy_swfs(
+                    request,
+                    driver.ctx,
+                    runner,
+                ),
+                runner,
+            )
 
         if getattr(request.options, "generate_anim_text_data", False):
             if driver.ctx is None:
@@ -8413,6 +9334,7 @@ def run_unified(
             )
 
         cache_manifest_started = time.perf_counter()
+        emit_runner_status(runner, "Building conversion cache manifest")
         runner.emit_log("INFO", "postflight: hashing conversion cache manifest")
         write_cache_manifest(
             mod_root,
@@ -8489,6 +9411,7 @@ def run_unified(
                         expanded_archives=expanded_archives,
                         archive_output_dir=archive_output_dir,
                         fo4_ba2_target=fo4_ba2_target,
+                        archive_labels=archive_labels,
                         pack_progress=emit_pack_progress,
                     )
                 )

@@ -331,12 +331,12 @@ pub(crate) fn decode_record_from_parsed(
     )
 }
 
-/// Same as [`decode_record_from_parsed`], plus an optional FO76→FO4 struct
+/// Same as [`decode_record_from_parsed`], plus an optional source→FO4 struct
 /// byte-relayout context. When `relayout` is `Some`, every `struct:` codec
 /// subrecord whose source/target field layouts diverge is rewritten from the
 /// source layout into the target layout before being emitted as `Bytes` (see
-/// `crate::struct_relayout`). Only the whole-plugin / asset FO76→FO4 translate
-/// path passes `Some`; every other caller keeps the verbatim-bytes behaviour.
+/// `crate::struct_relayout`). The context controls whether all divergent FO76
+/// structs or only legacy Fallout BPTD.BPND rows are eligible.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_record_from_parsed_relayout(
     raw_record: &ParsedRecord,
@@ -373,6 +373,7 @@ pub(crate) fn decode_record_from_parsed_relayout(
     };
 
     let is_pack_record = raw_record.signature.as_str() == "PACK";
+    let is_qust_record = raw_record.signature.as_str() == "QUST";
     let is_scen_record = raw_record.signature.as_str() == "SCEN";
     let is_term_record = raw_record.signature.as_str() == "TERM";
     let mut in_pack_package_data = false;
@@ -432,9 +433,13 @@ pub(crate) fn decode_record_from_parsed_relayout(
 
         // TERM reuses SNAM: the pre-XMRK row is a sound FormID, while the
         // post-XMRK rows are 24-byte marker structs.
+        // QUST overloads SNAM: the record-level and alias forms are zstrings,
+        // while objective-scope SNAM is uint16. Preserve all three until the
+        // pair hook removes the incompatible objective form by scope.
         let force_raw_bytes = (is_pack_record
             && ((in_pack_package_data && subrec_sig_str == "CNAM")
                 || (after_pack_procedure_marker && subrec_sig_str == "PNAM")))
+            || (is_qust_record && subrec_sig_str == "SNAM")
             || (is_term_record
                 && !sr.data.is_empty()
                 && sr.data.len() % 24 == 0
@@ -458,10 +463,10 @@ pub(crate) fn decode_record_from_parsed_relayout(
                     FieldValue::Bytes(bytes)
                 }
                 Some(codec_name) => {
-                    // FO76→FO4 struct relayout: for a divergent `struct:` codec,
+                    // Source→FO4 struct relayout: for an eligible divergent codec,
                     // rewrite the source-laid-out bytes into the target layout and
                     // emit them directly (the generic struct decode would emit the
-                    // raw FO76-laid-out bytes, which the FO4 game reads at wrong
+                    // raw source-laid-out bytes, which the FO4 game reads at wrong
                     // offsets). Only active when a relayout ctx is supplied.
                     let relaid = relayout
                         .filter(|_| codec_name.starts_with("struct:"))
@@ -769,20 +774,19 @@ pub(crate) fn decode_subrecord(
             // for conversion outputs; keep the numeric fallback when the
             // string table is unavailable.
             if data.len() == 4 {
-                let id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                 if let Some(strings) = localized_strings {
+                    let id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                     if id == 0 {
                         return Ok(FieldValue::String(interner.intern("")));
                     }
                     if let Some(text) = resolve_localized_string(strings, id) {
                         return Ok(FieldValue::String(interner.intern(text)));
                     }
+                    return Ok(FieldValue::Uint(id as u64));
                 }
-                Ok(FieldValue::Uint(id as u64))
-            } else {
-                let s = decode_zstring(data)?;
-                Ok(FieldValue::String(interner.intern(&s)))
             }
+            let s = decode_zstring(data)?;
+            Ok(FieldValue::String(interner.intern(&s)))
         }
         "bool" => {
             if data.is_empty() {
@@ -1752,6 +1756,28 @@ mod tests {
                 assert_eq!(interner.resolve(sym), Some("Resolved Name"));
             }
             other => panic!("expected resolved string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_nonlocalized_four_byte_lstring_as_inline_text() {
+        let mut interner = StringInterner::new();
+
+        let value = decode_subrecord(
+            "MISC",
+            "FULL",
+            "lstring",
+            b"Cup\0",
+            &[],
+            "FalloutNV.esm",
+            None,
+            &mut interner,
+        )
+        .unwrap();
+
+        match value {
+            FieldValue::String(sym) => assert_eq!(interner.resolve(sym), Some("Cup")),
+            other => panic!("expected inline string, got {other:?}"),
         }
     }
 

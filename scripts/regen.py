@@ -11,12 +11,18 @@ import argparse
 import contextlib
 import datetime
 import logging
+import multiprocessing
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent.parent
+)
+BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", REPO_ROOT)).resolve()
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "py_creation_lib" / "python"))
 
@@ -33,7 +39,6 @@ from bacup_lib.source_pairs import (
     SourcePair,
     get_pair,
 )
-from bacup_lib.target_assets import default_target_asset_catalog
 from bacup_lib.lod_settings import load_profile_settings
 from bacup_lib.upgrade_manifest import bundled_upgrade_manifest_path
 
@@ -43,7 +48,7 @@ _FO4_CK_CUSTOM_INI_NAME = "CreationKitCustom.ini"
 # source) plus a small staleness marker, written next to the output plugin.
 # Backward-compatible high-quality settings alias. New profiles live in
 # bacup/scripts/lod_settings/.
-_LOD_SETTINGS_OVERRIDE = REPO_ROOT / "bacup" / "scripts" / "lod_settings.fo76fo4.json"
+_LOD_SETTINGS_OVERRIDE = BUNDLE_ROOT / "bacup" / "scripts" / "lod_settings.fo76fo4.json"
 
 
 class _TeeStream:
@@ -269,6 +274,10 @@ def _positive_worker_count(value: str) -> int:
 
 
 def _ensure_native_current(args) -> int:
+    if getattr(sys, "frozen", False):
+        return 0
+    if getattr(args, "skip_ensure_native", False):
+        return 0
     if getattr(args, "deploy_only", False) or getattr(args, "undeploy", False):
         return 0
 
@@ -277,6 +286,36 @@ def _ensure_native_current(args) -> int:
         cmd.append("--dhat-heap")
     result = subprocess.run(cmd, cwd=REPO_ROOT)
     return result.returncode
+
+
+def _check_native_runtime() -> int:
+    from importlib import import_module
+
+    from bacup_lib.native_runtime import load_native_module as load_bacup_native
+    from creation_lib.esp.native_runtime import (
+        load_native_module as load_creation_native,
+    )
+
+    load_creation_native()
+    load_bacup_native()
+    print(f"creation_lib native: {import_module('creation_lib._native').__file__}")
+    print(f"bacup_lib native: {import_module('bacup_lib._native').__file__}")
+    return 0
+
+
+def _lod_search_roots() -> list[Path]:
+    roots = [BUNDLE_ROOT]
+    if REPO_ROOT != BUNDLE_ROOT:
+        roots.append(REPO_ROOT)
+    return roots
+
+
+def _resolve_resource_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        from creation_lib.paths import get_resource_dir
+
+        return get_resource_dir()
+    return REPO_ROOT / "resource"
 
 
 
@@ -293,39 +332,44 @@ def _load_lod_settings(
     if pair_id != DEFAULT_PAIR_ID:
         from creation_lib.lod.default_settings import fo4_default_settings
 
-        defaults = fo4_default_settings()
         normalized_profile = (profile or "auto").strip().lower().replace("_", "-")
-        if normalized_profile == "performance":
+        if pair_id == "skyrimse:fo4" and normalized_profile == "high-quality":
+            settings = load_profile_settings(
+                _lod_search_roots(),
+                profile=normalized_profile,
+                lod_mode=lod_mode,
+                pair_id=pair_id,
+            )
+        elif normalized_profile in {"high-quality", "performance"}:
             raise ValueError(
-                "The performance LOD profile is FO76-specific; use auto, native, "
-                "or high-quality for cross-game record LOD"
+                f"The {normalized_profile} LOD profile is not available for {pair_id}; "
+                "use auto or native"
             )
-        settings = (
-            load_profile_settings(
-                [REPO_ROOT], profile="high-quality", lod_mode=lod_mode
+        else:
+            defaults = fo4_default_settings()
+            settings = defaults
+            settings["global"].update(
+                {
+                    "worldspaces": [],
+                    "stride": None,
+                    "southwest_cell": None,
+                    "bounds": None,
+                    "generate_terrain": True,
+                    "generate_objects": True,
+                    "generate_trees": True,
+                }
             )
-            if normalized_profile == "high-quality"
-            else defaults
-        )
-        settings["global"].update(
-            {
-                "worldspaces": [],
-                "stride": None,
-                "southwest_cell": None,
-                "bounds": None,
-                "generate_terrain": True,
-                "generate_objects": True,
-                "generate_trees": True,
-            }
-        )
-        settings["objects"]["source"] = "records"
-        for key, value in defaults["objects"].items():
-            if key.startswith("fo76_bto_"):
-                settings["objects"][key] = value
-        settings.setdefault("trees", {})["trees_3d"] = True
+            settings["objects"]["source"] = "records"
+            for key, value in defaults["objects"].items():
+                if key.startswith("fo76_bto_"):
+                    settings["objects"][key] = value
+            settings.setdefault("trees", {})["trees_3d"] = True
     else:
         settings = load_profile_settings(
-            [REPO_ROOT], profile=profile, lod_mode=lod_mode
+            _lod_search_roots(),
+            profile=profile,
+            lod_mode=lod_mode,
+            pair_id=pair_id,
         )
     if atlas_mip_flooding is not None:
         settings.setdefault("objects", {})["atlas_mip_flooding"] = atlas_mip_flooding
@@ -466,10 +510,15 @@ def _resolve_regen_paths(
         target_game_ini_path=_resolve_fo4_game_ini_path(),
         output_root=REPO_ROOT / "mods" / mod_name,
         mod_name=mod_name,
-        resource_dir=REPO_ROOT / "resource",
+        resource_dir=_resolve_resource_dir(),
         deploy_data_dir=deploy_data_dir,
         diagnostics_root=diagnostics_root,
-        target_asset_catalog_path=default_target_asset_catalog(),
+        target_asset_catalog_path=(
+            REPO_ROOT / "cache" / "conversion" / "fo4_target_assets.sqlite3"
+        ),
+        target_asset_cache_dir=(
+            REPO_ROOT / "cache" / "conversion" / "target_assets"
+        ),
         merge_primary_plugin_paths=merge_primary_plugin_paths,
         merge_grafted_plugin_paths=merge_grafted_plugin_paths,
         additional_source_asset_roots=additional_source_asset_roots,
@@ -583,11 +632,46 @@ def run_full_mode(
         ).exit_code
 
     if args.deploy_only:
-        from bacup_lib.timing_report import TimingReport
+        result = regen_pipeline.deploy_existing(
+            paths, plugin_names=output_plugin_names
+        )
+        if result.exit_code == 0:
+            LOG.info("deploy-only done")
+        else:
+            for failure in result.failures:
+                LOG.error(failure)
+        return result.exit_code
 
-        regen_pipeline._deploy_post_steps(paths, output_plugin_names, TimingReport())
-        LOG.info("deploy-only done")
-        return 0
+    if args.pack_only:
+        phases = conv_cli.phase_selection_from_args(args)
+        options = _args_to_regen_options(args)
+        options.deploy = False
+        options.workers = conv_cli.resolve_workers(args.workers)
+        with _progress_runner(log_handler.stream) as runner:
+            try:
+                result = regen_pipeline.run_resume_from_phase(
+                    paths,
+                    options,
+                    start_phase="pack",
+                    phases=phases,
+                    runner=runner,
+                    plugin_names=output_plugin_names,
+                )
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                LOG.error("%s", exc)
+                return 2
+        for warning in result.warnings[:25]:
+            LOG.warning("%s", warning)
+        for failure in result.failures:
+            LOG.error("%s", failure)
+        LOG.info(
+            "pack-only elapsed_seconds=%.3f exit_code=%s",
+            result.elapsed_seconds,
+            result.exit_code,
+        )
+        if result.exit_code == 0:
+            LOG.info("pack-only done")
+        return result.exit_code
 
     phases = conv_cli.phase_selection_from_args(args)
     options = _args_to_regen_options(args)
@@ -675,8 +759,21 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
         "--mvp",
         action="store_true",
         help=(
-            "Build the Skyrim world-only MVP: no actors, weapons, quests, "
+            "Build the FNV/FO3 or Skyrim world-only MVP: no actors, weapons, quests, "
             "scripts, voice, skeletons, animations, or behaviors."
+        ),
+    )
+    parser.add_argument(
+        "--check-native",
+        action="store_true",
+        help="Load both native extensions, print their paths, and exit.",
+    )
+    parser.add_argument(
+        "--skip-ensure-native",
+        action="store_true",
+        help=(
+            "Skip the editable native-extension freshness check and rebuild. "
+            "Use only when the installed native extensions are known to be current."
         ),
     )
     parser.add_argument(
@@ -695,6 +792,11 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
         "--deploy-only",
         action="store_true",
         help="Deploy the existing mods/<mod> outputs without converting.",
+    )
+    deploy.add_argument(
+        "--pack-only",
+        action="store_true",
+        help="Pack the existing mods/<mod> loose assets into BA2 archives without deploying.",
     )
     parser.add_argument(
         "--deploy-to-mo2",
@@ -898,9 +1000,12 @@ def _resolve_pair_args(parser: argparse.ArgumentParser, args) -> SourcePair:
     if args.mod_name is None:
         args.mod_name = pair.output_mod_name
     if pair.pair_id != DEFAULT_PAIR_ID:
-        if getattr(args, "lod_profile", "auto") == "performance":
+        lod_profile = getattr(args, "lod_profile", "auto")
+        if lod_profile == "performance" or (
+            lod_profile == "high-quality" and pair.pair_id != "skyrimse:fo4"
+        ):
             parser.error(
-                f"{pair.pair_id} does not support the FO76-only performance LOD profile"
+                f"{pair.pair_id} does not support the {lod_profile} LOD profile"
             )
         if not getattr(args, "_lod_mode_explicit", False):
             args.lod_mode = "generate"
@@ -909,12 +1014,12 @@ def _resolve_pair_args(parser: argparse.ArgumentParser, args) -> SourcePair:
                 f"{pair.pair_id} supports only --lod-mode generate or none"
             )
     if getattr(args, "mvp", False):
-        if pair.pair_id != "skyrimse:fo4":
-            parser.error("--mvp currently supports only skyrimse:fo4")
+        if pair.pair_id not in {"fnvfo3:fo4", "skyrimse:fo4"}:
+            parser.error("--mvp currently supports only fnvfo3:fo4 and skyrimse:fo4")
         if not getattr(args, "_lod_mode_explicit", False):
             args.lod_mode = "generate"
         if args.lod_mode not in {"generate", "none"}:
-            parser.error("Skyrim MVP LOD supports only --lod-mode generate or none")
+            parser.error("MVP LOD supports only --lod-mode generate or none")
     return pair
 
 
@@ -923,6 +1028,8 @@ def _validate_output_mode(parser: argparse.ArgumentParser, args) -> None:
         _archive_max_bytes_from_args(args)
     except ValueError as exc:
         parser.error(str(exc))
+    if getattr(args, "pack_only", False) and getattr(args, "deploy_to_mo2", None):
+        parser.error("--pack-only cannot be combined with --deploy-to-mo2")
     if getattr(args, "scripts_only", False):
         if getattr(args, "pair", DEFAULT_PAIR_ID) != DEFAULT_PAIR_ID:
             parser.error("--scripts-only currently supports only fo76:fo4")
@@ -954,9 +1061,16 @@ def main(argv: list[str] | None = None) -> int:
     native_status = _ensure_native_current(args)
     if native_status != 0:
         return native_status
+    if args.check_native:
+        return _check_native_runtime()
     args.run_logs_dir = _create_run_logs_dir(args.mod_name)
     return run_full_mode(args, conv_cli, parser=parser)
 
 
+def _prepare_multiprocessing() -> None:
+    multiprocessing.freeze_support()
+
+
 if __name__ == "__main__":
+    _prepare_multiprocessing()
     raise SystemExit(main())

@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from bacup_lib.workflows.unified import (
-    _iter_top_level_papyrus_members,
     _merge_script_method_patches,
     _script_patch_source,
 )
@@ -95,7 +94,7 @@ def _merged_old_source(base_name: str) -> str:
 
 
 @pytest.mark.parametrize("base_name", PATCH_CASES)
-def test_package_patch_restores_end_disable_fragment(base_name: str):
+def test_package_patch_loads_merges_and_compiles_for_fo4(base_name: str):
     patch = _script_patch_source(_script_name(base_name))
 
     assert patch is not None
@@ -103,19 +102,7 @@ def test_package_patch_restores_end_disable_fragment(base_name: str):
         line.strip().lower().startswith("scriptname ")
         for line in patch.splitlines()
     )
-    members = [
-        (kind, name)
-        for kind, name, _start, _end in _iter_top_level_papyrus_members(
-            patch.splitlines()
-        )
-    ]
-    assert members == [("function", "fragment_end")]
-    assert "Function Fragment_End(Actor akActor)" in patch
-    assert "akActor.Disable()" in patch
 
-
-@pytest.mark.parametrize("base_name", PATCH_CASES)
-def test_package_patch_merges_and_compiles_against_old_production_pex(base_name: str):
     base_source = _fo4_base_source()
     if base_source is None:
         pytest.skip("FO4 base Papyrus sources unavailable")

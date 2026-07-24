@@ -61,6 +61,8 @@ impl<'a> TargetRecordNormalizer<'a> {
             return TargetRecordNormalization::DropUnsupportedRecord;
         };
 
+        normalize_legacy_actor_core(&mut record, self.source_record_def, self.interner);
+        normalize_legacy_armor_core(&mut record, self.source_record_def, self.interner);
         normalize_target_form_version_union_bytes(
             &mut record,
             self.target_schema,
@@ -163,7 +165,15 @@ impl<'a> TargetRecordNormalizer<'a> {
                     schema_index += 1;
                 }
                 let segment = &target_record_def.subrecords[start..schema_index];
-                if scope_id == "object_template" {
+                if target_record_def.id == "PERK" && scope_id == "conditions" {
+                    self.emit_perk_top_conditions_segment(
+                        segment,
+                        &mut fields_by_sig,
+                        &mut ordered,
+                    );
+                } else if target_record_def.id == "PERK" && scope_id == "effects" {
+                    self.emit_perk_effects_segment(segment, &mut fields_by_sig, &mut ordered);
+                } else if scope_id == "object_template" {
                     self.emit_object_template_segment(segment, &mut fields_by_sig, &mut ordered);
                 } else if target_record_def.id == "SCEN" && scope_id == "phases" {
                     self.emit_scen_phases_segment(segment, &mut fields_by_sig, &mut ordered);
@@ -171,6 +181,8 @@ impl<'a> TargetRecordNormalizer<'a> {
                     self.emit_scen_actors_segment(segment, &mut fields_by_sig, &mut ordered);
                 } else if target_record_def.id == "SCEN" && scope_id == "actions" {
                     self.emit_scen_actions_segment(segment, &mut fields_by_sig, &mut ordered);
+                } else if target_record_def.id == "PACK" && scope_id == "conditions" {
+                    self.emit_pack_conditions_segment(segment, &mut fields_by_sig, &mut ordered);
                 } else if target_record_def.id == "PACK" && scope_id == "package_data" {
                     self.emit_pack_package_data_segment(segment, &mut fields_by_sig, &mut ordered);
                 } else if target_record_def.id == "PACK" && scope_id == "procedure_tree" {
@@ -315,6 +327,9 @@ impl<'a> TargetRecordNormalizer<'a> {
         }
 
         record.fields = SmallVec::from_vec(ordered);
+        if uses_legacy_gamebryo_patrol_layout(self.source_record_def, target_record_def) {
+            synthesize_missing_patrol_placeholders(&mut record);
+        }
         drop_empty_imad_runtime_unsafe_subrecords(&mut record);
         coalesce_scol_duplicate_static_groups(&mut record);
         normalize_translated_cont_data(&mut record, self.source_record_def);
@@ -1023,6 +1038,48 @@ impl<'a> TargetRecordNormalizer<'a> {
             }
             conditions.sort_by_key(|(entry, _)| entry.original_index);
             for (entry, target_subrecord_def) in conditions {
+                self.push_normalized_entry(entry.entry, target_subrecord_def, ordered);
+            }
+        }
+    }
+
+    fn emit_perk_top_conditions_segment(
+        &self,
+        segment: &[SubrecordDef],
+        fields_by_sig: &mut HashMap<crate::ids::SubrecordSig, VecDeque<IndexedFieldEntry>>,
+        ordered: &mut Vec<FieldEntry>,
+    ) {
+        let boundary = ["DATA", "PRKE"]
+            .into_iter()
+            .filter_map(|id| crate::ids::SubrecordSig::from_str(id).ok())
+            .filter_map(|sig| first_index_for_sig(fields_by_sig, sig))
+            .min()
+            .unwrap_or(usize::MAX);
+        for (entry, target_subrecord_def) in
+            pop_all_segment_entries_in_original_range(fields_by_sig, segment, 0, boundary)
+        {
+            self.push_normalized_entry(entry.entry, target_subrecord_def, ordered);
+        }
+    }
+
+    fn emit_perk_effects_segment(
+        &self,
+        segment: &[SubrecordDef],
+        fields_by_sig: &mut HashMap<crate::ids::SubrecordSig, VecDeque<IndexedFieldEntry>>,
+        ordered: &mut Vec<FieldEntry>,
+    ) {
+        let Ok(anchor_sig) = crate::ids::SubrecordSig::from_str("PRKE") else {
+            return;
+        };
+        while let Some(start) = first_index_for_sig(fields_by_sig, anchor_sig) {
+            let end = fields_by_sig
+                .get(&anchor_sig)
+                .and_then(|entries| entries.get(1))
+                .map(|entry| entry.original_index)
+                .unwrap_or(usize::MAX);
+            for (entry, target_subrecord_def) in
+                pop_all_segment_entries_in_original_range(fields_by_sig, segment, start, end)
+            {
                 self.push_normalized_entry(entry.entry, target_subrecord_def, ordered);
             }
         }
@@ -1799,6 +1856,37 @@ impl<'a> TargetRecordNormalizer<'a> {
         }
     }
 
+    /// PACK package-level conditions (`CTDA`/`CIS1`/`CIS2`) share their signatures
+    /// with the per-branch conditions inside each procedure tree (`procedure_tree`
+    /// scope). The generic scoped emit drains a signature's whole queue, so it would
+    /// pull the branch conditions up into package scope — leaving each procedure
+    /// branch's `CITC` count with zero `CTDA`s. FO4 then reads N branch conditions
+    /// that are not there, mis-builds the procedure tree, and null-derefs in
+    /// `BGSProcedureTreeProcedure::InitItem`. Bound this emit to the original range
+    /// before the procedure-tree region (`PKCU`, else the first package-data /
+    /// procedure-tree `ANAM`/`PRCB`) so the branch conditions stay in the tree.
+    fn emit_pack_conditions_segment(
+        &self,
+        segment: &[SubrecordDef],
+        fields_by_sig: &mut HashMap<crate::ids::SubrecordSig, VecDeque<IndexedFieldEntry>>,
+        ordered: &mut Vec<FieldEntry>,
+    ) {
+        let boundary = ["PKCU", "ANAM", "PRCB"]
+            .into_iter()
+            .filter_map(|sig| crate::ids::SubrecordSig::from_str(sig).ok())
+            .filter_map(|sig| first_index_for_sig(fields_by_sig, sig))
+            .min()
+            .unwrap_or(usize::MAX);
+        let Some(start) = first_segment_entry_index_before(fields_by_sig, segment, boundary) else {
+            return;
+        };
+        for (entry, target_subrecord_def) in
+            pop_all_segment_entries_in_original_range(fields_by_sig, segment, start, boundary)
+        {
+            self.push_normalized_entry(entry.entry, target_subrecord_def, ordered);
+        }
+    }
+
     fn emit_pack_procedure_tree_segment(
         &self,
         segment: &[SubrecordDef],
@@ -1940,6 +2028,89 @@ impl<'a> TargetRecordNormalizer<'a> {
             target_subrecord_def,
             self.interner,
         )
+    }
+}
+
+fn uses_legacy_gamebryo_patrol_layout(
+    source_record_def: Option<&RecordDef>,
+    target_record_def: &RecordDef,
+) -> bool {
+    matches!(target_record_def.id.as_str(), "ACHR" | "REFR")
+        && source_record_def.is_some_and(|record_def| {
+            record_def.subrecords.iter().any(|subrecord| {
+                subrecord.id == "SCHR" && subrecord.scope_id.as_deref() == Some("patrol_data")
+            })
+        })
+        && target_record_def.subrecords.iter().any(|subrecord| {
+            subrecord.id == "PDTO"
+                && matches!(
+                    subrecord.scope_id.as_deref(),
+                    Some("patrol" | "patrol_data")
+                )
+        })
+}
+
+fn synthesize_missing_patrol_placeholders(record: &mut Record) {
+    let mut row_start = 0;
+    while row_start < record.fields.len() {
+        if record.fields[row_start].sig.as_str() != "XPRD" {
+            row_start += 1;
+            continue;
+        }
+
+        let mut row_end = row_start + 1;
+        while row_end < record.fields.len()
+            && matches!(
+                record.fields[row_end].sig.as_str(),
+                "XPPA" | "INAM" | "PDTO"
+            )
+        {
+            row_end += 1;
+        }
+        if !record.fields[row_start..row_end]
+            .iter()
+            .any(|field| field.sig.as_str() == "XPPA")
+        {
+            row_start = row_end;
+            continue;
+        }
+
+        if !record.fields[row_start..row_end]
+            .iter()
+            .any(|field| field.sig.as_str() == "INAM")
+        {
+            let insert_at = record.fields[row_start..row_end]
+                .iter()
+                .position(|field| field.sig.as_str() == "PDTO")
+                .map(|index| row_start + index)
+                .unwrap_or(row_end);
+            record.fields.insert(
+                insert_at,
+                FieldEntry {
+                    sig: crate::ids::SubrecordSig::from_str("INAM")
+                        .expect("INAM is a valid signature"),
+                    value: FieldValue::Bytes(SmallVec::from_slice(&[0; 4])),
+                },
+            );
+            row_end += 1;
+        }
+
+        if !record.fields[row_start..row_end]
+            .iter()
+            .any(|field| field.sig.as_str() == "PDTO")
+        {
+            record.fields.insert(
+                row_end,
+                FieldEntry {
+                    sig: crate::ids::SubrecordSig::from_str("PDTO")
+                        .expect("PDTO is a valid signature"),
+                    value: FieldValue::Bytes(SmallVec::from_slice(&[0; 8])),
+                },
+            );
+            row_end += 1;
+        }
+
+        row_start = row_end;
     }
 }
 
@@ -3482,6 +3653,28 @@ const NPC_ACBS_FLAG_UNKNOWN_25: u32 = 0x0200_0000;
 const NPC_ACBS_FLAG_IS_GHOST: u32 = 0x2000_0000;
 const NPC_ACBS_FLAG_INVULNERABLE: u32 = 0x8000_0000;
 const NPC_ACBS_FLAGS_STRIPPED_FOR_FO4: u32 = NPC_ACBS_FLAG_IS_GHOST | NPC_ACBS_FLAG_INVULNERABLE;
+const LEGACY_ACTOR_FLAG_FEMALE: u32 = 0x0000_0001;
+const LEGACY_ACTOR_FLAG_ESSENTIAL: u32 = 0x0000_0002;
+const LEGACY_ACTOR_FLAG_CHARGEN_PRESET: u32 = 0x0000_0004;
+const LEGACY_ACTOR_FLAG_RESPAWN: u32 = 0x0000_0008;
+const LEGACY_ACTOR_FLAG_AUTO_CALC: u32 = 0x0000_0010;
+const LEGACY_ACTOR_FLAG_PC_LEVEL_MULT: u32 = 0x0000_0080;
+#[cfg(test)]
+const LEGACY_ACTOR_FLAG_NO_BLOOD_SPRAY: u32 = 0x0000_0800;
+const LEGACY_ACTOR_FLAG_NO_BLOOD_DECAL: u32 = 0x0000_1000;
+const FO4_ACTOR_FLAG_DOES_NOT_BLEED: u32 = 0x0001_0000;
+#[cfg(test)]
+const FO4_ACTOR_FLAG_HAS_BLEEDOUT_OVERRIDE: u32 = 0x0004_0000;
+const LEGACY_ACTOR_ACBS_SIZE: usize = 24;
+const LEGACY_ACTOR_AIDT_SIZE: usize = 20;
+const LEGACY_FALLOUT_ACTOR_ACBS_CODEC: &str = "struct:I,H,H,H,H,H,H,f,h,H";
+const LEGACY_FALLOUT_ACTOR_AIDT_CODEC: &str = "struct:B,B,B,B,B,B,B,B,I,b,B,b,B,i";
+const FO4_ACTOR_ACBS_SIZE: usize = 20;
+const FO4_ACTOR_AIDT_SIZE: usize = 24;
+const LEGACY_NPC_DATA_ATTRIBUTE_OFFSET: usize = 4;
+const LEGACY_CREA_DATA_ATTRIBUTE_OFFSET: usize = 10;
+const LEGACY_ACTOR_ATTRIBUTE_COUNT: usize = 7;
+const FO4_SPECIAL_AVIF_FIRST_LOCAL: u32 = 0x0002_C2;
 const NPC_TEMPLATE_TRAITS: u16 = 0x0001;
 const NPC_TEMPLATE_STATS: u16 = 0x0002;
 const NPC_TEMPLATE_FACTIONS: u16 = 0x0004;
@@ -3512,6 +3705,580 @@ const NPC_TPTA_SLOT_TEMPLATE_FLAGS: [u16; 13] = [
 ];
 
 const FO4_CONT_DATA_FLAGS: u8 = 0x07;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LegacyActorSourceKind {
+    Npc,
+    Creature,
+}
+
+fn legacy_actor_source_kind(
+    source_record_def: Option<&RecordDef>,
+) -> Option<LegacyActorSourceKind> {
+    let source_record_def = source_record_def?;
+    let acbs_codec = source_record_def
+        .subrecord_def("ACBS")
+        .and_then(|def| def.codec.as_deref());
+    let aidt_codec = source_record_def
+        .subrecord_def("AIDT")
+        .and_then(|def| def.codec.as_deref());
+    if acbs_codec != Some(LEGACY_FALLOUT_ACTOR_ACBS_CODEC)
+        || aidt_codec != Some(LEGACY_FALLOUT_ACTOR_AIDT_CODEC)
+    {
+        return None;
+    }
+
+    match source_record_def.id.as_str() {
+        "NPC_" => Some(LegacyActorSourceKind::Npc),
+        "CREA" => Some(LegacyActorSourceKind::Creature),
+        _ => None,
+    }
+}
+
+fn normalize_legacy_actor_core(
+    record: &mut Record,
+    source_record_def: Option<&RecordDef>,
+    interner: Option<&StringInterner>,
+) {
+    if record.sig.as_str() != "NPC_" {
+        return;
+    }
+    let Some(source_kind) = legacy_actor_source_kind(source_record_def) else {
+        return;
+    };
+
+    for entry in &mut record.fields {
+        let FieldValue::Bytes(bytes) = &mut entry.value else {
+            continue;
+        };
+        let normalized = match entry.sig.as_str() {
+            "ACBS" if bytes.len() == LEGACY_ACTOR_ACBS_SIZE => {
+                Some(relayout_legacy_actor_acbs(bytes.as_slice(), source_kind))
+            }
+            "AIDT" if bytes.len() == LEGACY_ACTOR_AIDT_SIZE => {
+                Some(relayout_legacy_actor_aidt(bytes.as_slice()))
+            }
+            _ => None,
+        };
+        if let Some(normalized) = normalized {
+            *bytes = SmallVec::from_vec(normalized);
+        }
+    }
+
+    if record
+        .fields
+        .iter()
+        .any(|entry| entry.sig.as_str() == "PRPS")
+    {
+        return;
+    }
+    let Some(interner) = interner else {
+        return;
+    };
+    let attribute_offset = match source_kind {
+        LegacyActorSourceKind::Npc => LEGACY_NPC_DATA_ATTRIBUTE_OFFSET,
+        LegacyActorSourceKind::Creature => LEGACY_CREA_DATA_ATTRIBUTE_OFFSET,
+    };
+    let Some(attributes) = record.fields.iter().find_map(|entry| {
+        if entry.sig.as_str() != "DATA" {
+            return None;
+        }
+        let FieldValue::Bytes(bytes) = &entry.value else {
+            return None;
+        };
+        bytes
+            .get(attribute_offset..attribute_offset + LEGACY_ACTOR_ATTRIBUTE_COUNT)
+            .map(<[u8]>::to_vec)
+    }) else {
+        return;
+    };
+
+    let fallout4 = interner.intern("Fallout4.esm");
+    let actor_value = interner.intern("properties_actor_value");
+    let property_value = interner.intern("properties_value");
+    let rows = attributes
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            FieldValue::Struct(vec![
+                (
+                    actor_value,
+                    FieldValue::FormKey(crate::ids::FormKey {
+                        local: FO4_SPECIAL_AVIF_FIRST_LOCAL + index as u32,
+                        plugin: fallout4,
+                    }),
+                ),
+                (property_value, FieldValue::Float(f32::from(value))),
+            ])
+        })
+        .collect();
+    record.fields.push(FieldEntry {
+        sig: crate::ids::SubrecordSig::from_str("PRPS").expect("PRPS is a valid signature"),
+        value: FieldValue::List(rows),
+    });
+}
+
+fn relayout_legacy_actor_acbs(raw: &[u8], source_kind: LegacyActorSourceKind) -> Vec<u8> {
+    let source_flags = u32::from_le_bytes(raw[0..4].try_into().unwrap());
+    let shared_flags =
+        LEGACY_ACTOR_FLAG_ESSENTIAL | LEGACY_ACTOR_FLAG_RESPAWN | LEGACY_ACTOR_FLAG_PC_LEVEL_MULT;
+    let mut target_flags = source_flags & shared_flags;
+    match source_kind {
+        LegacyActorSourceKind::Npc => {
+            target_flags |= source_flags
+                & (LEGACY_ACTOR_FLAG_FEMALE
+                    | LEGACY_ACTOR_FLAG_CHARGEN_PRESET
+                    | LEGACY_ACTOR_FLAG_AUTO_CALC);
+        }
+        LegacyActorSourceKind::Creature => {
+            target_flags |= source_flags & (NPC_ACBS_FLAG_IS_GHOST | NPC_ACBS_FLAG_INVULNERABLE);
+        }
+    }
+    if source_flags & LEGACY_ACTOR_FLAG_NO_BLOOD_DECAL != 0 {
+        target_flags |= FO4_ACTOR_FLAG_DOES_NOT_BLEED;
+    }
+
+    let mut target = vec![0_u8; FO4_ACTOR_ACBS_SIZE];
+    target[0..4].copy_from_slice(&target_flags.to_le_bytes());
+    target[6..8].copy_from_slice(&raw[8..10]);
+    target[8..10].copy_from_slice(&raw[10..12]);
+    target[10..12].copy_from_slice(&raw[12..14]);
+    target[12..14].copy_from_slice(&raw[20..22]);
+    let template_flags = u16::from_le_bytes(raw[22..24].try_into().unwrap()) & 0x03FF;
+    target[14..16].copy_from_slice(&template_flags.to_le_bytes());
+    target
+}
+
+fn relayout_legacy_actor_aidt(raw: &[u8]) -> Vec<u8> {
+    let mut target = vec![0_u8; FO4_ACTOR_AIDT_SIZE];
+    target[0] = raw[0].min(3);
+    target[1] = raw[1].min(4);
+    target[2] = raw[2];
+    target[3] = 3;
+    target[5] = i8::from_le_bytes([raw[14]]).clamp(0, 2) as u8;
+    target[6] = u8::from(raw[15] != 0);
+    let aggro_radius = i32::from_le_bytes(raw[16..20].try_into().unwrap()).max(0) as u32;
+    for offset in [8, 12, 16] {
+        target[offset..offset + 4].copy_from_slice(&aggro_radius.to_le_bytes());
+    }
+    target
+}
+
+const LEGACY_ARMOR_BMDT_CODEC: &str = "struct:I,B,B,B,B";
+const LEGACY_ARMOR_DATA_CODEC: &str = "struct:i,i,f";
+const FNV_ARMOR_DNAM_CODEC: &str = "struct:h,B,B,f,H,B,B";
+const FO3_ARMOR_DNAM_CODEC: &str = "struct:h,H";
+const FO4_HUMAN_RACE_LOCAL: u32 = 0x0001_3746;
+const FO4_PHYSICAL_DAMAGE_TYPE_LOCAL: u32 = 0x0006_0A87;
+const FO4_ARMA_DEFAULT_DNAM: [u8; 12] = [0; 12];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LegacyArmorRecordKind {
+    Armor,
+    Addon,
+}
+
+fn legacy_armor_record_kind(
+    source_record_def: Option<&RecordDef>,
+) -> Option<LegacyArmorRecordKind> {
+    let source_record_def = source_record_def?;
+    if source_record_def
+        .subrecord_def("BMDT")
+        .and_then(|def| def.codec.as_deref())
+        != Some(LEGACY_ARMOR_BMDT_CODEC)
+    {
+        return None;
+    }
+
+    match source_record_def.id.as_str() {
+        "ARMO"
+            if source_record_def
+                .subrecord_def("DATA")
+                .and_then(|def| def.codec.as_deref())
+                == Some(LEGACY_ARMOR_DATA_CODEC) =>
+        {
+            Some(LegacyArmorRecordKind::Armor)
+        }
+        "ARMA" => Some(LegacyArmorRecordKind::Addon),
+        _ => None,
+    }
+}
+
+fn normalize_legacy_armor_core(
+    record: &mut Record,
+    source_record_def: Option<&RecordDef>,
+    interner: Option<&StringInterner>,
+) {
+    let Some(kind) = legacy_armor_record_kind(source_record_def) else {
+        return;
+    };
+    if record.sig.as_str()
+        != match kind {
+            LegacyArmorRecordKind::Armor => "ARMO",
+            LegacyArmorRecordKind::Addon => "ARMA",
+        }
+    {
+        return;
+    }
+
+    let has_legacy_bmdt = record
+        .fields
+        .iter()
+        .any(|entry| entry.sig.as_str() == "BMDT");
+    let has_target_markers = record.fields.iter().any(|entry| match kind {
+        LegacyArmorRecordKind::Armor => matches!(entry.sig.as_str(), "BOD2" | "FNAM" | "DAMA"),
+        LegacyArmorRecordKind::Addon => matches!(entry.sig.as_str(), "BOD2" | "RNAM"),
+    });
+    if !has_legacy_bmdt && has_target_markers {
+        return;
+    }
+
+    let biped_flags = record
+        .fields
+        .iter()
+        .find(|entry| entry.sig.as_str() == "BMDT")
+        .and_then(|entry| legacy_biped_flags(&entry.value, interner));
+
+    match kind {
+        LegacyArmorRecordKind::Armor => normalize_legacy_armo(
+            record,
+            source_record_def.expect("source definition"),
+            interner,
+        ),
+        LegacyArmorRecordKind::Addon => normalize_legacy_arma(record, interner),
+    }
+
+    if let Some(biped_flags) = biped_flags
+        && !record
+            .fields
+            .iter()
+            .any(|entry| entry.sig.as_str() == "BOD2")
+    {
+        record.fields.push(FieldEntry {
+            sig: crate::ids::SubrecordSig::from_str("BOD2").expect("BOD2 is valid"),
+            value: FieldValue::Uint(u64::from(map_legacy_biped_slots(biped_flags))),
+        });
+    }
+}
+
+fn normalize_legacy_armo(
+    record: &mut Record,
+    source_record_def: &RecordDef,
+    interner: Option<&StringInterner>,
+) {
+    let dnam_codec = source_record_def
+        .subrecord_def("DNAM")
+        .and_then(|def| def.codec.as_deref());
+    let dnam = record
+        .fields
+        .iter()
+        .find(|entry| entry.sig.as_str() == "DNAM")
+        .map(|entry| entry.value.clone());
+    let addon_list = record
+        .fields
+        .iter()
+        .find(|entry| entry.sig.as_str() == "BIPL")
+        .and_then(|entry| first_formkey_value(&entry.value));
+
+    for entry in &mut record.fields {
+        if entry.sig.as_str() == "DATA"
+            && let Some(target_data) = relayout_legacy_armo_data(&entry.value, interner)
+        {
+            entry.value = FieldValue::Bytes(SmallVec::from_vec(target_data));
+        }
+    }
+
+    let mut dropped_legacy_materials = false;
+    let mut dropped_legacy_etyp = false;
+    record.fields.retain_mut(|entry| match entry.sig.as_str() {
+        "BMDT" | "DNAM" => false,
+        "ETYP" if !value_is_target_formid(&entry.value) => {
+            dropped_legacy_etyp = true;
+            false
+        }
+        "MODL" if !value_is_target_formid(&entry.value) => false,
+        "MO2S" | "MO3S" | "MO4S" | "MO5S" if !value_is_target_formid(&entry.value) => {
+            dropped_legacy_materials = true;
+            false
+        }
+        "BIPL" => false,
+        _ => true,
+    });
+
+    if let Some(addon_list) = addon_list {
+        record.fields.push(FieldEntry {
+            sig: crate::ids::SubrecordSig::from_str("INDX").expect("INDX is valid"),
+            value: FieldValue::Uint(0),
+        });
+        record.fields.push(FieldEntry {
+            sig: crate::ids::SubrecordSig::from_str("MODL").expect("MODL is valid"),
+            value: FieldValue::FormKey(addon_list),
+        });
+    }
+
+    if matches!(
+        dnam_codec,
+        Some(FNV_ARMOR_DNAM_CODEC | FO3_ARMOR_DNAM_CODEC)
+    ) && let Some(dnam) = dnam
+    {
+        if !record
+            .fields
+            .iter()
+            .any(|entry| entry.sig.as_str() == "FNAM")
+            && let Some(armor_rating) = legacy_armor_rating(&dnam, interner)
+            && armor_rating > 0
+        {
+            let mut fnam = vec![0_u8; 8];
+            fnam[0..2].copy_from_slice(&armor_rating.to_le_bytes());
+            record.fields.push(FieldEntry {
+                sig: crate::ids::SubrecordSig::from_str("FNAM").expect("FNAM is valid"),
+                value: FieldValue::Bytes(SmallVec::from_vec(fnam)),
+            });
+        }
+
+        if dnam_codec == Some(FNV_ARMOR_DNAM_CODEC)
+            && !record
+                .fields
+                .iter()
+                .any(|entry| entry.sig.as_str() == "DAMA")
+            && let Some(dt) = legacy_armor_dt(&dnam, interner)
+            && dt.is_finite()
+            && dt > 0.0
+            && let Some(interner) = interner
+        {
+            let amount = dt.round().clamp(0.0, u32::MAX as f32) as u32;
+            let fallout4 = interner.intern("Fallout4.esm");
+            record.fields.push(FieldEntry {
+                sig: crate::ids::SubrecordSig::from_str("DAMA").expect("DAMA is valid"),
+                value: FieldValue::List(vec![FieldValue::Struct(vec![
+                    (
+                        interner.intern("resistances_type"),
+                        FieldValue::FormKey(crate::ids::FormKey {
+                            local: FO4_PHYSICAL_DAMAGE_TYPE_LOCAL,
+                            plugin: fallout4,
+                        }),
+                    ),
+                    (
+                        interner.intern("resistances_amount"),
+                        FieldValue::Uint(u64::from(amount)),
+                    ),
+                ])]),
+            });
+        }
+    }
+
+    if dropped_legacy_etyp {
+        push_legacy_armor_warning(record, interner, "legacy_armor_numeric_etyp_dropped");
+    }
+    if dropped_legacy_materials {
+        push_legacy_armor_warning(
+            record,
+            interner,
+            "legacy_armor_alternate_textures_require_mswp_synthesis",
+        );
+    }
+}
+
+fn normalize_legacy_arma(record: &mut Record, interner: Option<&StringInterner>) {
+    let mut dropped_legacy_materials = false;
+    record.fields.retain(|entry| match entry.sig.as_str() {
+        "BMDT" | "DATA" | "DNAM" | "ETYP" => false,
+        "MO2S" | "MO3S" | "MO4S" | "MO5S" if !value_is_target_formid(&entry.value) => {
+            dropped_legacy_materials = true;
+            false
+        }
+        _ => true,
+    });
+
+    if !record
+        .fields
+        .iter()
+        .any(|entry| entry.sig.as_str() == "RNAM")
+        && let Some(interner) = interner
+    {
+        record.fields.push(FieldEntry {
+            sig: crate::ids::SubrecordSig::from_str("RNAM").expect("RNAM is valid"),
+            value: FieldValue::FormKey(crate::ids::FormKey {
+                local: FO4_HUMAN_RACE_LOCAL,
+                plugin: interner.intern("Fallout4.esm"),
+            }),
+        });
+    }
+    if !record
+        .fields
+        .iter()
+        .any(|entry| entry.sig.as_str() == "DNAM")
+    {
+        record.fields.push(FieldEntry {
+            sig: crate::ids::SubrecordSig::from_str("DNAM").expect("DNAM is valid"),
+            value: FieldValue::Bytes(SmallVec::from_slice(&FO4_ARMA_DEFAULT_DNAM)),
+        });
+    }
+    if dropped_legacy_materials {
+        push_legacy_armor_warning(
+            record,
+            interner,
+            "legacy_armor_alternate_textures_require_mswp_synthesis",
+        );
+    }
+}
+
+fn legacy_biped_flags(value: &FieldValue, interner: Option<&StringInterner>) -> Option<u32> {
+    match value {
+        FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
+            Some(u32::from_le_bytes(bytes[0..4].try_into().ok()?))
+        }
+        _ => named_value(value, &["biped_flags"], interner).and_then(field_value_u32),
+    }
+}
+
+fn map_legacy_biped_slots(source: u32) -> u32 {
+    const SLOT_MAP: &[(u32, u32)] = &[
+        (1, 0),
+        (2, 6),
+        (3, 4),
+        (4, 5),
+        (6, 30),
+        (8, 20),
+        (9, 16),
+        (11, 17),
+        (16, 19),
+    ];
+    SLOT_MAP.iter().fold(0, |target, (source_bit, target_bit)| {
+        target | (((source >> source_bit) & 1) << target_bit)
+    })
+}
+
+fn relayout_legacy_armo_data(
+    value: &FieldValue,
+    interner: Option<&StringInterner>,
+) -> Option<Vec<u8>> {
+    let (value, health, weight) = match value {
+        FieldValue::Bytes(bytes) if bytes.len() == 12 => (
+            i32::from_le_bytes(bytes[0..4].try_into().ok()?),
+            i32::from_le_bytes(bytes[4..8].try_into().ok()?),
+            f32::from_le_bytes(bytes[8..12].try_into().ok()?),
+        ),
+        _ => (
+            named_value(value, &["value"], interner).and_then(field_value_i32)?,
+            named_value(value, &["health", "max_condition"], interner).and_then(field_value_i32)?,
+            named_value(value, &["weight"], interner).and_then(field_value_f32)?,
+        ),
+    };
+    let mut target = Vec::with_capacity(12);
+    target.extend_from_slice(&value.to_le_bytes());
+    target.extend_from_slice(&weight.to_le_bytes());
+    target.extend_from_slice(&(health.max(0) as u32).to_le_bytes());
+    Some(target)
+}
+
+fn legacy_armor_rating(value: &FieldValue, interner: Option<&StringInterner>) -> Option<u16> {
+    let rating = match value {
+        FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
+            i16::from_le_bytes(bytes[0..2].try_into().ok()?) as i32
+        }
+        _ => named_value(value, &["dr", "ar"], interner).and_then(field_value_i32)?,
+    };
+    Some(rating.clamp(0, i32::from(u16::MAX)) as u16)
+}
+
+fn legacy_armor_dt(value: &FieldValue, interner: Option<&StringInterner>) -> Option<f32> {
+    match value {
+        FieldValue::Bytes(bytes) if bytes.len() >= 8 => {
+            Some(f32::from_le_bytes(bytes[4..8].try_into().ok()?))
+        }
+        _ => named_value(value, &["dt"], interner).and_then(field_value_f32),
+    }
+}
+
+fn named_value<'a>(
+    value: &'a FieldValue,
+    names: &[&str],
+    interner: Option<&StringInterner>,
+) -> Option<&'a FieldValue> {
+    let interner = interner?;
+    match value {
+        FieldValue::Struct(fields) => fields.iter().find_map(|(key, value)| {
+            interner
+                .resolve(*key)
+                .is_some_and(|name| names.contains(&name))
+                .then_some(value)
+                .or_else(|| named_value(value, names, Some(interner)))
+        }),
+        FieldValue::List(items) => items
+            .iter()
+            .find_map(|value| named_value(value, names, Some(interner))),
+        _ => None,
+    }
+}
+
+fn field_value_u32(value: &FieldValue) -> Option<u32> {
+    match value {
+        FieldValue::Uint(value) => u32::try_from(*value).ok(),
+        FieldValue::Int(value) => u32::try_from(*value).ok(),
+        FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
+            Some(u32::from_le_bytes(bytes[0..4].try_into().ok()?))
+        }
+        _ => None,
+    }
+}
+
+fn field_value_i32(value: &FieldValue) -> Option<i32> {
+    match value {
+        FieldValue::Uint(value) => i32::try_from(*value).ok(),
+        FieldValue::Int(value) => i32::try_from(*value).ok(),
+        FieldValue::Float(value) => Some(*value as i32),
+        FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
+            Some(i32::from_le_bytes(bytes[0..4].try_into().ok()?))
+        }
+        _ => None,
+    }
+}
+
+fn field_value_f32(value: &FieldValue) -> Option<f32> {
+    match value {
+        FieldValue::Float(value) => Some(*value),
+        FieldValue::Uint(value) => Some(*value as f32),
+        FieldValue::Int(value) => Some(*value as f32),
+        FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
+            Some(f32::from_le_bytes(bytes[0..4].try_into().ok()?))
+        }
+        _ => None,
+    }
+}
+
+fn value_is_target_formid(value: &FieldValue) -> bool {
+    match value {
+        FieldValue::FormKey(_) => true,
+        FieldValue::List(items) => !items.is_empty() && items.iter().all(value_is_target_formid),
+        _ => false,
+    }
+}
+
+fn first_formkey_value(value: &FieldValue) -> Option<crate::ids::FormKey> {
+    match value {
+        FieldValue::FormKey(form_key) => Some(*form_key),
+        FieldValue::Struct(fields) => fields
+            .iter()
+            .find_map(|(_, value)| first_formkey_value(value)),
+        FieldValue::List(items) => items.iter().find_map(first_formkey_value),
+        _ => None,
+    }
+}
+
+fn push_legacy_armor_warning(
+    record: &mut Record,
+    interner: Option<&StringInterner>,
+    warning: &str,
+) {
+    let Some(interner) = interner else {
+        return;
+    };
+    let warning = interner.intern(warning);
+    if !record.warnings.contains(&warning) {
+        record.warnings.push(warning);
+    }
+}
 
 fn normalize_translated_cont_data(record: &mut Record, source_record_def: Option<&RecordDef>) {
     if record.sig.as_str() != "CONT" || !source_record_def.is_some_and(|def| def.id == "CONT") {
@@ -3544,17 +4311,20 @@ fn retain_cont_data_flags_supported_by_fo4(value: &mut FieldValue) {
 }
 
 fn normalize_translated_npc_acbs(record: &mut Record, source_record_def: Option<&RecordDef>) {
-    if record.sig.as_str() != "NPC_" || !source_record_def.is_some_and(|def| def.id == "NPC_") {
+    if record.sig.as_str() != "NPC_"
+        || !source_record_def.is_some_and(|def| matches!(def.id.as_str(), "NPC_" | "CREA"))
+    {
         return;
     }
 
     let clear_essential = is_w05_leveled_denizen_lite_ally(record);
-    let mut template_flags = 0;
+    let legacy_source = legacy_actor_source_kind(source_record_def).is_some();
+    let mut template_flags = None;
     for entry in record.fields.iter_mut() {
         if entry.sig.as_str() != "TPTA" {
             continue;
         }
-        template_flags = sanitize_npc_tpta_value(&mut entry.value);
+        template_flags = Some(sanitize_npc_tpta_value(&mut entry.value));
         break;
     }
 
@@ -3571,14 +4341,18 @@ fn normalize_translated_npc_acbs(record: &mut Record, source_record_def: Option<
 
         if bytes.len() >= 4 {
             let mut flags = u32::from_le_bytes(bytes[..4].try_into().unwrap());
-            flags &= !NPC_ACBS_FLAGS_STRIPPED_FOR_FO4;
-            if clear_essential {
-                flags &= !NPC_ACBS_FLAG_ESSENTIAL;
+            if !legacy_source {
+                flags &= !NPC_ACBS_FLAGS_STRIPPED_FOR_FO4;
+                if clear_essential {
+                    flags &= !NPC_ACBS_FLAG_ESSENTIAL;
+                }
             }
             bytes[..4].copy_from_slice(&flags.to_le_bytes());
         }
-        bytes[NPC_ACBS_TEMPLATE_FLAGS_OFFSET..NPC_ACBS_TEMPLATE_FLAGS_OFFSET + 2]
-            .copy_from_slice(&template_flags.to_le_bytes());
+        if let Some(template_flags) = template_flags.or((!legacy_source).then_some(0)) {
+            bytes[NPC_ACBS_TEMPLATE_FLAGS_OFFSET..NPC_ACBS_TEMPLATE_FLAGS_OFFSET + 2]
+                .copy_from_slice(&template_flags.to_le_bytes());
+        }
         break;
     }
 }
@@ -4652,8 +5426,17 @@ mod tests {
         source_sig: &str,
         interner: &StringInterner,
     ) -> TargetRecordNormalization {
+        normalize_from_source_game_with_sig(record, "fo76", source_sig, interner)
+    }
+
+    fn normalize_from_source_game_with_sig(
+        record: Record,
+        source_game: &str,
+        source_sig: &str,
+        interner: &StringInterner,
+    ) -> TargetRecordNormalization {
         let target_schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let source_schema = AuthoringSchema::for_game("fo76").expect("fo76 schema");
+        let source_schema = AuthoringSchema::for_game(source_game).expect("source schema");
         TargetRecordNormalizer {
             target_schema: &target_schema,
             source_record_def: source_schema.record_def(source_sig),
@@ -4843,6 +5626,227 @@ mod tests {
             panic!("field should be raw bytes");
         };
         bytes.as_slice()
+    }
+
+    fn legacy_bmdt(flags: u32) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(8);
+        bytes.extend_from_slice(&flags.to_le_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        bytes
+    }
+
+    fn legacy_armo_data(value: i32, health: i32, weight: f32) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(12);
+        bytes.extend_from_slice(&value.to_le_bytes());
+        bytes.extend_from_slice(&health.to_le_bytes());
+        bytes.extend_from_slice(&weight.to_le_bytes());
+        bytes
+    }
+
+    fn translate_legacy_record(
+        mut record: Record,
+        source: crate::translator::Game,
+        interner: &StringInterner,
+    ) -> Record {
+        let translator =
+            crate::translator::Translator::new(source, crate::translator::Game::Fo4).unwrap();
+        translator
+            .pre_translate(
+                &mut crate::translator::pair_hook::PairCtx { interner },
+                &mut record,
+            )
+            .unwrap();
+        let mut record = match translator.translate(&record, interner) {
+            crate::translator::TranslateResult::Translated(record) => record,
+            other => panic!("expected translated legacy record, got {other:?}"),
+        };
+        translator
+            .post_translate(
+                &mut crate::translator::pair_hook::PairCtx { interner },
+                &mut record,
+            )
+            .unwrap();
+        record
+    }
+
+    fn assert_target_armo_data(record: &Record, value: i32, weight: f32, health: u32) {
+        let data = raw_field_bytes(record, "DATA");
+        assert_eq!(i32::from_le_bytes(data[0..4].try_into().unwrap()), value);
+        assert_eq!(f32::from_le_bytes(data[4..8].try_into().unwrap()), weight);
+        assert_eq!(u32::from_le_bytes(data[8..12].try_into().unwrap()), health);
+    }
+
+    #[test]
+    fn normalizes_fnv_armo_core_layout_and_addon_list_marker() {
+        let interner = StringInterner::new();
+        let addon_list = FormKey::parse("1649E0@FNV_FO3_Merged.esm", &interner).unwrap();
+        let mut dnam = vec![0_u8; 12];
+        dnam[4..8].copy_from_slice(&15.0_f32.to_le_bytes());
+        let armo = record(
+            "ARMO",
+            vec![
+                bytes_field("BMDT", legacy_bmdt(1 << 2)),
+                formkey_field("BIPL", addon_list),
+                uint_field("ETYP", 7),
+                bytes_field("DATA", legacy_armo_data(250, 100, 45.0)),
+                bytes_field("DNAM", dnam),
+                bytes_field("MO2S", vec![1, 0, 0, 0]),
+                bytes_field("MO5S", vec![2, 0, 0, 0]),
+            ],
+            &interner,
+        );
+
+        let armo = translate_legacy_record(armo, crate::translator::Game::Fnv, &interner);
+        assert!(sigs(&armo).contains(&"BIPL"));
+        let armo = normalize_from_source_game(armo, "fnv", &interner);
+
+        assert_target_armo_data(&armo, 250, 45.0, 100);
+        assert_eq!(raw_field_bytes(&armo, "BOD2"), 0x40_u32.to_le_bytes());
+        assert!(
+            !sigs(&armo)
+                .iter()
+                .any(|sig| matches!(*sig, "BMDT" | "BIPL" | "ETYP" | "DNAM" | "MO2S" | "MO5S"))
+        );
+        assert_eq!(
+            armo.fields
+                .iter()
+                .find(|field| field.sig.as_str() == "MODL")
+                .map(|field| &field.value),
+            Some(&FieldValue::FormKey(addon_list))
+        );
+        let dama = armo
+            .fields
+            .iter()
+            .find(|field| field.sig.as_str() == "DAMA")
+            .expect("FNV DT should become DAMA");
+        assert_eq!(
+            named_value(&dama.value, &["resistances_amount"], Some(&interner))
+                .and_then(field_value_u32),
+            Some(15)
+        );
+        assert_eq!(
+            first_formkey_value(&dama.value),
+            Some(FormKey::parse("060A87@Fallout4.esm", &interner).unwrap())
+        );
+        assert!(armo.warnings.iter().any(|warning| {
+            interner.resolve(*warning)
+                == Some("legacy_armor_alternate_textures_require_mswp_synthesis")
+        }));
+        assert!(armo.warnings.iter().any(|warning| {
+            interner.resolve(*warning) == Some("legacy_armor_numeric_etyp_dropped")
+        }));
+    }
+
+    #[test]
+    fn normalizes_fo3_armo_data_and_damage_rating() {
+        let interner = StringInterner::new();
+        let addon_list = FormKey::parse("01D981@FNV_FO3_Merged.esm", &interner).unwrap();
+        let mut dnam = Vec::new();
+        dnam.extend_from_slice(&4000_i16.to_le_bytes());
+        dnam.extend_from_slice(&0_u16.to_le_bytes());
+        let armo = record(
+            "ARMO",
+            vec![
+                bytes_field("BMDT", legacy_bmdt(1 << 4)),
+                formkey_field("BIPL", addon_list),
+                uint_field("ETYP", 9),
+                bytes_field("DATA", legacy_armo_data(740, 1000, 45.0)),
+                bytes_field("DNAM", dnam),
+            ],
+            &interner,
+        );
+
+        let armo = translate_legacy_record(armo, crate::translator::Game::Fo3, &interner);
+        assert!(sigs(&armo).contains(&"BIPL"));
+        let armo = normalize_from_source_game(armo, "fo3", &interner);
+
+        assert_target_armo_data(&armo, 740, 45.0, 1000);
+        assert_eq!(raw_field_bytes(&armo, "BOD2"), 0x20_u32.to_le_bytes());
+        assert_eq!(
+            u16::from_le_bytes(raw_field_bytes(&armo, "FNAM")[0..2].try_into().unwrap()),
+            4000
+        );
+        assert!(!sigs(&armo).contains(&"DAMA"));
+        assert!(!sigs(&armo).contains(&"ETYP"));
+    }
+
+    #[test]
+    fn normalizes_fnv_and_fo3_arma_defaults_and_slots() {
+        let interner = StringInterner::new();
+        for (game, source_slot, target_slot) in [("fnv", 3, 4), ("fo3", 4, 5)] {
+            let arma = record(
+                "ARMA",
+                vec![
+                    bytes_field("BMDT", legacy_bmdt(1 << source_slot)),
+                    bytes_field("DATA", vec![0; 12]),
+                    bytes_field("DNAM", vec![0; if game == "fnv" { 12 } else { 4 }]),
+                    uint_field("ETYP", 9),
+                    bytes_field("MO2S", vec![1, 0, 0, 0]),
+                ],
+                &interner,
+            );
+
+            let arma = normalize_from_source_game(arma, game, &interner);
+
+            assert_eq!(
+                raw_field_bytes(&arma, "BOD2"),
+                (1_u32 << target_slot).to_le_bytes()
+            );
+            assert_eq!(raw_field_bytes(&arma, "DNAM"), [0; 12]);
+            assert_eq!(
+                arma.fields
+                    .iter()
+                    .find(|field| field.sig.as_str() == "RNAM")
+                    .and_then(|field| first_formkey_value(&field.value)),
+                Some(FormKey::parse("013746@Fallout4.esm", &interner).unwrap())
+            );
+            assert!(
+                !sigs(&arma)
+                    .iter()
+                    .any(|sig| matches!(*sig, "BMDT" | "DATA" | "ETYP" | "MO2S"))
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_target_shaped_and_fo76_armor_records() {
+        let interner = StringInterner::new();
+        let target_data = {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&25_i32.to_le_bytes());
+            bytes.extend_from_slice(&3.5_f32.to_le_bytes());
+            bytes.extend_from_slice(&80_u32.to_le_bytes());
+            bytes
+        };
+        for source_game in ["fnv", "fo76"] {
+            let armo = record(
+                "ARMO",
+                vec![
+                    bytes_field("BOD2", 0x40_u32.to_le_bytes().to_vec()),
+                    bytes_field("DATA", target_data.clone()),
+                ],
+                &interner,
+            );
+            let armo = normalize_from_source_game(armo, source_game, &interner);
+            assert_eq!(raw_field_bytes(&armo, "BOD2"), 0x40_u32.to_le_bytes());
+            assert_eq!(raw_field_bytes(&armo, "DATA"), target_data);
+        }
+
+        let target_dnam = [7, 6, 2, 2, 0, 0, 4, 0, 0, 0, 0, 63];
+        let arma = record(
+            "ARMA",
+            vec![
+                bytes_field("BOD2", 0x40_u32.to_le_bytes().to_vec()),
+                formkey_field(
+                    "RNAM",
+                    FormKey::parse("013746@Fallout4.esm", &interner).unwrap(),
+                ),
+                bytes_field("DNAM", target_dnam.to_vec()),
+            ],
+            &interner,
+        );
+        let arma = normalize_from_source_game(arma, "fnv", &interner);
+        assert_eq!(raw_field_bytes(&arma, "DNAM"), target_dnam);
     }
 
     fn parsed_record_by_sig<'a>(
@@ -5671,6 +6675,53 @@ mod tests {
         assert_eq!(
             pnam_payloads,
             vec![b"Travel\0".to_vec(), b"Patrol\0".to_vec(), vec![4; 4]]
+        );
+    }
+
+    #[test]
+    fn keeps_pack_procedure_branch_conditions_in_tree_not_package_scope() {
+        let interner = StringInterner::new();
+        let record = record(
+            "PACK",
+            vec![
+                bytes_field("EDID", b"Package\0".to_vec()),
+                bytes_field("PKDT", vec![0; 12]),
+                bytes_field("PSDT", vec![0; 12]),
+                // Package-level conditions (scope "conditions", before PKCU).
+                bytes_field("CTDA", vec![0x11; 32]),
+                bytes_field("CTDA", vec![0x22; 32]),
+                bytes_field("PKCU", vec![0; 12]),
+                // Procedure tree: one Procedure branch that owns two conditions.
+                bytes_field("ANAM", b"Procedure\0".to_vec()),
+                bytes_field("PRCB", vec![0; 8]),
+                bytes_field("CITC", 2u32.to_le_bytes().to_vec()),
+                bytes_field("CTDA", vec![0x33; 32]),
+                bytes_field("CTDA", vec![0x44; 32]),
+                bytes_field("PNAM", b"Travel\0".to_vec()),
+                bytes_field("FNAM", vec![0; 4]),
+                // Data-input boundary that ends the procedure tree.
+                bytes_field("UNAM", vec![0]),
+                bytes_field("BNAM", b"Input\0".to_vec()),
+            ],
+            &interner,
+        );
+
+        let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
+            panic!("PACK should be supported");
+        };
+
+        let out = sigs(&record);
+        let pkcu = out.iter().position(|s| *s == "PKCU").expect("PKCU present");
+        let ctda_before = out[..pkcu].iter().filter(|s| **s == "CTDA").count();
+        let ctda_after = out[pkcu..].iter().filter(|s| **s == "CTDA").count();
+        // The two package conditions stay before PKCU; the two procedure-branch
+        // conditions stay in the tree instead of being drained up to package scope
+        // (which would leave the branch CITC=2 with zero CTDAs → FO4 null-derefs in
+        // BGSProcedureTreeProcedure::InitItem).
+        assert_eq!(ctda_before, 2, "package conditions stay before PKCU");
+        assert_eq!(
+            ctda_after, 2,
+            "branch conditions stay in the procedure tree"
         );
     }
 
@@ -6545,6 +7596,273 @@ mod tests {
         };
 
         assert_eq!(sigs(&record), vec!["EDID", "AIDT", "FULL", "DATA"]);
+    }
+
+    #[test]
+    fn legacy_actor_source_guard_accepts_fo3_fnv_and_rejects_same_size_skyrim() {
+        for source_game in ["fnv", "fo3"] {
+            let source_schema = AuthoringSchema::for_game(source_game).expect("source schema");
+            assert!(
+                legacy_actor_source_kind(source_schema.record_def("NPC_"))
+                    == Some(LegacyActorSourceKind::Npc)
+            );
+            assert!(
+                legacy_actor_source_kind(source_schema.record_def("CREA"))
+                    == Some(LegacyActorSourceKind::Creature)
+            );
+        }
+
+        let skyrim_schema = AuthoringSchema::for_game("skyrimse").expect("Skyrim SE schema");
+        let skyrim_npc = skyrim_schema
+            .record_def("NPC_")
+            .expect("Skyrim SE NPC_ schema");
+        assert_eq!(
+            skyrim_npc
+                .subrecord_def("ACBS")
+                .and_then(|def| def.codec.as_deref())
+                .and_then(fixed_size_for_codec),
+            Some(LEGACY_ACTOR_ACBS_SIZE)
+        );
+        assert_eq!(
+            skyrim_npc
+                .subrecord_def("AIDT")
+                .and_then(|def| def.codec.as_deref())
+                .and_then(fixed_size_for_codec),
+            Some(LEGACY_ACTOR_AIDT_SIZE)
+        );
+        assert!(legacy_actor_source_kind(Some(skyrim_npc)).is_none());
+    }
+
+    #[test]
+    fn fnv_fo3_npc_core_structs_relayout_and_special_attributes_become_prps() {
+        for source_game in ["fnv", "fo3"] {
+            let interner = StringInterner::new();
+            let source_flags = LEGACY_ACTOR_FLAG_FEMALE
+                | LEGACY_ACTOR_FLAG_ESSENTIAL
+                | LEGACY_ACTOR_FLAG_CHARGEN_PRESET
+                | LEGACY_ACTOR_FLAG_RESPAWN
+                | LEGACY_ACTOR_FLAG_AUTO_CALC
+                | 0x0000_0040
+                | LEGACY_ACTOR_FLAG_PC_LEVEL_MULT
+                | LEGACY_ACTOR_FLAG_NO_BLOOD_SPRAY
+                | NPC_ACBS_FLAG_IS_GHOST
+                | NPC_ACBS_FLAG_INVULNERABLE;
+            let mut acbs = vec![0_u8; LEGACY_ACTOR_ACBS_SIZE];
+            acbs[0..4].copy_from_slice(&source_flags.to_le_bytes());
+            acbs[4..6].copy_from_slice(&0x1111_u16.to_le_bytes());
+            acbs[6..8].copy_from_slice(&0x2222_u16.to_le_bytes());
+            acbs[8..10].copy_from_slice(&0x3333_u16.to_le_bytes());
+            acbs[10..12].copy_from_slice(&0x4444_u16.to_le_bytes());
+            acbs[12..14].copy_from_slice(&0x5555_u16.to_le_bytes());
+            acbs[14..16].copy_from_slice(&0x6666_u16.to_le_bytes());
+            acbs[16..20].copy_from_slice(&1.5_f32.to_le_bytes());
+            acbs[20..22].copy_from_slice(&(-17_i16).to_le_bytes());
+            acbs[22..24].copy_from_slice(&0x03FF_u16.to_le_bytes());
+
+            let mut aidt = vec![0_u8; LEGACY_ACTOR_AIDT_SIZE];
+            aidt[0..5].copy_from_slice(&[3, 4, 50, 50, 6]);
+            aidt[5..8].copy_from_slice(&[67, 75, 4]);
+            aidt[8..12].copy_from_slice(&0xAABB_CCDD_u32.to_le_bytes());
+            aidt[12..16].copy_from_slice(&[9, 20, 1, 1]);
+            aidt[16..20].copy_from_slice(&3000_i32.to_le_bytes());
+
+            let mut data = 125_i32.to_le_bytes().to_vec();
+            data.extend_from_slice(&[5, 3, 4, 6, 7, 8, 9]);
+            let record = record(
+                "NPC_",
+                vec![
+                    bytes_field("ACBS", acbs),
+                    bytes_field("AIDT", aidt),
+                    bytes_field("DATA", data),
+                ],
+                &interner,
+            );
+
+            let TargetRecordNormalization::Keep(record) =
+                normalize_from_source_game_with_sig(record, source_game, "NPC_", &interner)
+            else {
+                panic!("NPC_ should be supported");
+            };
+
+            let acbs = raw_field_bytes(&record, "ACBS");
+            assert_eq!(acbs.len(), FO4_ACTOR_ACBS_SIZE);
+            assert_eq!(u16::from_le_bytes(acbs[4..6].try_into().unwrap()), 0);
+            assert_eq!(u16::from_le_bytes(acbs[6..8].try_into().unwrap()), 0x3333);
+            assert_eq!(u16::from_le_bytes(acbs[8..10].try_into().unwrap()), 0x4444);
+            assert_eq!(u16::from_le_bytes(acbs[10..12].try_into().unwrap()), 0x5555);
+            assert_eq!(i16::from_le_bytes(acbs[12..14].try_into().unwrap()), -17);
+            assert_eq!(u16::from_le_bytes(acbs[14..16].try_into().unwrap()), 0x03FF);
+            assert_eq!(&acbs[16..20], &[0, 0, 0, 0]);
+            assert_eq!(
+                u32::from_le_bytes(acbs[0..4].try_into().unwrap()),
+                LEGACY_ACTOR_FLAG_FEMALE
+                    | LEGACY_ACTOR_FLAG_ESSENTIAL
+                    | LEGACY_ACTOR_FLAG_CHARGEN_PRESET
+                    | LEGACY_ACTOR_FLAG_RESPAWN
+                    | LEGACY_ACTOR_FLAG_AUTO_CALC
+                    | LEGACY_ACTOR_FLAG_PC_LEVEL_MULT
+            );
+            let target_flags = u32::from_le_bytes(acbs[0..4].try_into().unwrap());
+            assert_eq!(
+                target_flags
+                    & (FO4_ACTOR_FLAG_HAS_BLEEDOUT_OVERRIDE
+                        | NPC_ACBS_FLAG_IS_GHOST
+                        | NPC_ACBS_FLAG_INVULNERABLE),
+                0
+            );
+
+            let aidt = raw_field_bytes(&record, "AIDT");
+            assert_eq!(aidt.len(), FO4_ACTOR_AIDT_SIZE);
+            assert_eq!(&aidt[0..8], &[3, 4, 50, 3, 0, 1, 1, 0]);
+            assert_eq!(u32::from_le_bytes(aidt[8..12].try_into().unwrap()), 3000);
+            assert_eq!(u32::from_le_bytes(aidt[12..16].try_into().unwrap()), 3000);
+            assert_eq!(u32::from_le_bytes(aidt[16..20].try_into().unwrap()), 3000);
+            assert_eq!(&aidt[20..24], &[0, 0, 0, 0]);
+            assert_special_prps(&record, &[5, 3, 4, 6, 7, 8, 9], &interner);
+        }
+    }
+
+    #[test]
+    fn fnv_fo3_creature_core_structs_convert_without_treating_biped_as_female() {
+        for source_game in ["fnv", "fo3"] {
+            let interner = StringInterner::new();
+            let source_flags = LEGACY_ACTOR_FLAG_FEMALE
+                | LEGACY_ACTOR_FLAG_ESSENTIAL
+                | LEGACY_ACTOR_FLAG_CHARGEN_PRESET
+                | LEGACY_ACTOR_FLAG_RESPAWN
+                | LEGACY_ACTOR_FLAG_AUTO_CALC
+                | LEGACY_ACTOR_FLAG_PC_LEVEL_MULT
+                | LEGACY_ACTOR_FLAG_NO_BLOOD_DECAL
+                | NPC_ACBS_FLAG_IS_GHOST
+                | NPC_ACBS_FLAG_INVULNERABLE;
+            let mut acbs = vec![0_u8; LEGACY_ACTOR_ACBS_SIZE];
+            acbs[0..4].copy_from_slice(&source_flags.to_le_bytes());
+            acbs[8..10].copy_from_slice(&12_u16.to_le_bytes());
+            acbs[10..12].copy_from_slice(&4_u16.to_le_bytes());
+            acbs[12..14].copy_from_slice(&24_u16.to_le_bytes());
+            acbs[20..22].copy_from_slice(&35_i16.to_le_bytes());
+            acbs[22..24].copy_from_slice(&0x0315_u16.to_le_bytes());
+
+            let mut aidt = vec![0_u8; LEGACY_ACTOR_AIDT_SIZE];
+            aidt[0..5].copy_from_slice(&[2, 3, 75, 10, 7]);
+            aidt[14] = 2;
+            aidt[15] = 0;
+            aidt[16..20].copy_from_slice(&(-1_i32).to_le_bytes());
+
+            let mut data = vec![0_u8; LEGACY_CREA_DATA_ATTRIBUTE_OFFSET];
+            data.extend_from_slice(&[10, 9, 8, 7, 6, 5, 4]);
+            let record = record(
+                "NPC_",
+                vec![
+                    bytes_field("ACBS", acbs),
+                    bytes_field("AIDT", aidt),
+                    bytes_field("DATA", data),
+                ],
+                &interner,
+            );
+
+            let TargetRecordNormalization::Keep(record) =
+                normalize_from_source_game_with_sig(record, source_game, "CREA", &interner)
+            else {
+                panic!("translated CREA should be supported as NPC_");
+            };
+
+            let acbs = raw_field_bytes(&record, "ACBS");
+            assert_eq!(
+                u32::from_le_bytes(acbs[0..4].try_into().unwrap()),
+                LEGACY_ACTOR_FLAG_ESSENTIAL
+                    | LEGACY_ACTOR_FLAG_RESPAWN
+                    | LEGACY_ACTOR_FLAG_PC_LEVEL_MULT
+                    | FO4_ACTOR_FLAG_DOES_NOT_BLEED
+                    | NPC_ACBS_FLAG_IS_GHOST
+                    | NPC_ACBS_FLAG_INVULNERABLE
+            );
+            assert_eq!(
+                u32::from_le_bytes(acbs[0..4].try_into().unwrap())
+                    & FO4_ACTOR_FLAG_HAS_BLEEDOUT_OVERRIDE,
+                0
+            );
+            assert_eq!(u16::from_le_bytes(acbs[6..8].try_into().unwrap()), 12);
+            assert_eq!(u16::from_le_bytes(acbs[8..10].try_into().unwrap()), 4);
+            assert_eq!(u16::from_le_bytes(acbs[10..12].try_into().unwrap()), 24);
+            assert_eq!(i16::from_le_bytes(acbs[12..14].try_into().unwrap()), 35);
+            assert_eq!(u16::from_le_bytes(acbs[14..16].try_into().unwrap()), 0x0315);
+
+            let aidt = raw_field_bytes(&record, "AIDT");
+            assert_eq!(&aidt[0..8], &[2, 3, 75, 3, 0, 2, 0, 0]);
+            assert_eq!(&aidt[8..20], &[0; 12]);
+            assert_special_prps(&record, &[10, 9, 8, 7, 6, 5, 4], &interner);
+        }
+    }
+
+    #[test]
+    fn fnv_fo3_target_shaped_actor_core_is_not_relayout_or_duplicated() {
+        for source_game in ["fnv", "fo3"] {
+            let interner = StringInterner::new();
+            let mut acbs = vec![0_u8; FO4_ACTOR_ACBS_SIZE];
+            acbs[0..4].copy_from_slice(&0x0001_009B_u32.to_le_bytes());
+            acbs[4..20].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+            let aidt = (0_u8..FO4_ACTOR_AIDT_SIZE as u8).collect::<Vec<_>>();
+            let existing_prps = FieldValue::List(Vec::new());
+            let record = record(
+                "NPC_",
+                vec![
+                    bytes_field("ACBS", acbs.clone()),
+                    bytes_field("AIDT", aidt.clone()),
+                    FieldEntry {
+                        sig: SubrecordSig::from_str("PRPS").unwrap(),
+                        value: existing_prps,
+                    },
+                    bytes_field("DATA", vec![0; 11]),
+                ],
+                &interner,
+            );
+
+            let TargetRecordNormalization::Keep(record) =
+                normalize_from_source_game_with_sig(record, source_game, "NPC_", &interner)
+            else {
+                panic!("NPC_ should be supported");
+            };
+            assert_eq!(raw_field_bytes(&record, "ACBS"), acbs);
+            assert_eq!(raw_field_bytes(&record, "AIDT"), aidt);
+            assert_eq!(
+                record
+                    .fields
+                    .iter()
+                    .filter(|entry| entry.sig.as_str() == "PRPS")
+                    .count(),
+                1
+            );
+        }
+    }
+
+    fn assert_special_prps(record: &Record, expected: &[u8; 7], interner: &StringInterner) {
+        let prps = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.as_str() == "PRPS")
+            .expect("PRPS should be synthesized");
+        let FieldValue::List(rows) = &prps.value else {
+            panic!("PRPS should be structured rows");
+        };
+        assert_eq!(rows.len(), expected.len());
+        for (index, (row, expected_value)) in rows.iter().zip(expected).enumerate() {
+            let FieldValue::Struct(fields) = row else {
+                panic!("PRPS row should be structured");
+            };
+            let FieldValue::FormKey(actor_value) = fields[0].1 else {
+                panic!("PRPS actor value should be a FormKey");
+            };
+            assert_eq!(
+                actor_value.local,
+                FO4_SPECIAL_AVIF_FIRST_LOCAL + index as u32
+            );
+            assert_eq!(interner.resolve(actor_value.plugin), Some("Fallout4.esm"));
+            let FieldValue::Bytes(value) = &fields[1].1 else {
+                panic!("PRPS value should be normalized float bytes");
+            };
+            assert_eq!(value.as_slice(), &f32::from(*expected_value).to_le_bytes());
+        }
     }
 
     #[test]
@@ -8795,6 +10113,81 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn legacy_gamebryo_patrol_rows_gain_fo4_null_placeholders() {
+        for source_game in ["fnv", "fo3"] {
+            for record_sig in ["REFR", "ACHR"] {
+                let interner = StringInterner::new();
+                let record = record(
+                    record_sig,
+                    vec![
+                        bytes_field("NAME", 0x34_u32.to_le_bytes().to_vec()),
+                        bytes_field("XPRD", 60.0_f32.to_le_bytes().to_vec()),
+                        bytes_field("XPPA", Vec::new()),
+                        bytes_field("INAM", 0_u32.to_le_bytes().to_vec()),
+                        bytes_field("SCHR", vec![0; 20]),
+                        bytes_field("TNAM", 0_u32.to_le_bytes().to_vec()),
+                        bytes_field("DATA", vec![0; 24]),
+                    ],
+                    &interner,
+                );
+
+                let normalized = normalize_from_source_game(record, source_game, &interner);
+                let patrol_start = normalized
+                    .fields
+                    .iter()
+                    .position(|field| field.sig.as_str() == "XPRD")
+                    .expect("patrol row should remain");
+                assert_eq!(
+                    normalized.fields[patrol_start..patrol_start + 4]
+                        .iter()
+                        .map(|field| field.sig.as_str())
+                        .collect::<Vec<_>>(),
+                    ["XPRD", "XPPA", "INAM", "PDTO"],
+                    "{source_game} {record_sig}"
+                );
+                for (offset, expected) in [(2, &[0_u8; 4][..]), (3, &[0_u8; 8][..])] {
+                    let FieldValue::Bytes(bytes) = &normalized.fields[patrol_start + offset].value
+                    else {
+                        panic!("{source_game} {record_sig} placeholder should remain raw bytes");
+                    };
+                    assert_eq!(bytes.as_slice(), expected, "{source_game} {record_sig}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn patrol_placeholder_synthesis_preserves_existing_row_values() {
+        let interner = StringInterner::new();
+        let existing_inam = [1, 2, 3, 4];
+        let existing_pdto = [5, 6, 7, 8, 9, 10, 11, 12];
+        let mut record = record(
+            "REFR",
+            vec![
+                bytes_field("XPRD", 15.0_f32.to_le_bytes().to_vec()),
+                bytes_field("XPPA", Vec::new()),
+                bytes_field("INAM", existing_inam.to_vec()),
+                bytes_field("PDTO", existing_pdto.to_vec()),
+                bytes_field("XPRD", 30.0_f32.to_le_bytes().to_vec()),
+                bytes_field("XPPA", Vec::new()),
+                bytes_field("DATA", vec![0; 24]),
+            ],
+            &interner,
+        );
+
+        synthesize_missing_patrol_placeholders(&mut record);
+
+        assert_eq!(
+            sigs(&record),
+            [
+                "XPRD", "XPPA", "INAM", "PDTO", "XPRD", "XPPA", "INAM", "PDTO", "DATA"
+            ]
+        );
+        assert_eq!(raw_field_bytes(&record, "INAM"), existing_inam);
+        assert_eq!(raw_field_bytes(&record, "PDTO"), existing_pdto);
     }
 
     #[test]

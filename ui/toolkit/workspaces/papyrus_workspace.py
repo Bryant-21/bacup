@@ -167,8 +167,6 @@ class PapyrusWorkspace(BaseWorkspace):
         return True
 
     def draw_toolbar(self, icon_font=None) -> None:
-        from imgui_bundle import imgui, icons_fontawesome_6 as fa
-
         def _btn(icon):
             if icon_font:
                 imgui.push_font(icon_font, icon_font.legacy_size)

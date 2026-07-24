@@ -76,57 +76,62 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 
 | Measure | Count |
 |---|---:|
-| Generated PSC sources | 6618 |
-| Patch fragments | 347 |
-| Patches with a current generated source | 345 |
-| Patch-only entries | 2 |
-| Unpatched candidates | 5973 |
-| Unpatched sources with generated logic | 300 |
+| Generated PSC sources | 6623 |
+| Patch fragments | 918 |
+| Patches with a current generated source | 918 |
+| Patch-only entries | 0 |
+| Unpatched candidates | 5415 |
+| Unpatched sources with generated logic | 290 |
 
 ### Unpatched candidates by top-level namespace
 
 | Namespace | Count |
 |---|---:|
-| `fragments` | 3483 |
-| `(root)` | 1981 |
+| `fragments` | 3112 |
+| `(root)` | 1808 |
 | `QUESTS` | 270 |
 | `Expeditions` | 48 |
-| `autotestclient` | 27 |
+| `autotestclient` | 29 |
 | `SupplyRun` | 22 |
-| `Creatures` | 19 |
-| `raids` | 18 |
+| `raids` | 17 |
 | `Burn` | 15 |
 | `mile` | 14 |
-| `p76_dlc01` | 14 |
+| `p76_dlc01` | 13 |
+| `Creatures` | 12 |
 | `Economy` | 11 |
-| `Objects` | 8 |
 | `HostileTakeovers` | 6 |
-| `fishing` | 5 |
 | `Perks` | 5 |
 | `autotestserver` | 4 |
 | `autotestshared` | 4 |
 | `DailyOps_All` | 4 |
 | `Drifter` | 4 |
+| `fishing` | 4 |
 | `DailyOps_Mode02` | 3 |
 | `CAMPPets` | 2 |
 | `NewPlayerExperience` | 2 |
+| `Objects` | 2 |
 | `bos` | 1 |
 | `debug` | 1 |
 | `mutatedevents` | 1 |
 | `shelters` | 1 |
 
 <details>
-<summary>Patch inventory (347)</summary>
+<summary>Patch inventory (918)</summary>
 
 | Patch | Source | Members |
 |---|---|---:|
+| `ACDuctEnterFXScript.psc` | Present | 1 |
+| `AddSpellOnFurnitureEnter.psc` | Present | 2 |
+| `aliassetstageonitemequipped.psc` | Present | 1 |
 | `ArcadeBottleBlasterTarget.psc` | Present | 2 |
 | `ArcadeNukaZapperRace.psc` | Present | 2 |
 | `ArcadeNukaZapperRaceRocket.psc` | Present | 3 |
 | `ArcadeNukaZapperRaceTarget.psc` | Present | 2 |
 | `ArcadeShootingGallery.psc` | Present | 7 |
 | `ArcadeShootingGalleryTarget.psc` | Present | 3 |
+| `ArcadeTicketDispenser.psc` | Present | 1 |
 | `ArcadeTokenDispenserScript.psc` | Present | 3 |
+| `ArcadeTokenSlot.psc` | Present | 1 |
 | `ArcadeWhackAMole.psc` | Present | 5 |
 | `ArcadeWhackAMoleTarget.psc` | Present | 5 |
 | `ATX_BloodTransfusionPumpScript.psc` | Present | 2 |
@@ -136,31 +141,47 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `AudioActorPlaySound.psc` | Present | 8 |
 | `BoS01PerPlayerSetStageTriggerScript.psc` | Present | 1 |
 | `BoS01ToggleButtonScript.psc` | Present | 4 |
+| `BoS01TrainingCampNoteScript.psc` | Present | 1 |
 | `BoS02DMVTicketPrinterScript.psc` | Present | 1 |
 | `BoS02TriggerScript.psc` | Present | 1 |
 | `BoSActivateMessageScript.psc` | Present | 1 |
 | `BoSSetStageTriggerScript.psc` | Present | 3 |
 | `BoSStartQuestTriggerScript.psc` | Present | 1 |
 | `BoSz04_CentrifugeScript.psc` | Present | 1 |
+| `Burn_ArmoredDeathclawFrenzy.psc` | Present | 3 |
+| `Burn_Bounty_CustomRadBurst.psc` | Present | 4 |
+| `Burn_HandlerCreateDeathclawScript.psc` | Present | 2 |
 | `Burn/Burn_Bounty/Burn_Bounty_GruntBountyActivator.psc` | Present | 1 |
 | `Burn/Burn_Bounty/Burn_Bounty_HandleOnDying.psc` | Present | 1 |
 | `Burn/Burn_Bounty/Burn_Bounty_PublicFlareScript.psc` | Present | 1 |
+| `capsStashScript.psc` | Present | 1 |
 | `CharGenStartTriggerScript.psc` | Present | 3 |
+| `COMP_AllyPermanentSpawnMarkerScript.psc` | Present | 1 |
+| `COMP_AllySpawnMarkerScript.psc` | Present | 1 |
+| `COMP_RQ_SpecificAliasesScript.psc` | Present | 2 |
 | `CoolingTowerHazardTriggerScript.psc` | Present | 2 |
 | `CreatureCombatStyle.psc` | Present | 4 |
+| `Creatures/_Default/CreatureVariantScript.psc` | Present | 1 |
+| `Creatures/_Default/selfdestructscript.psc` | Present | 10 |
+| `Creatures/BossLootDrop.psc` | Present | 1 |
 | `Creatures/EyebotSuiciderScript.psc` | Present | 7 |
+| `Creatures/FestiveGiftAddItem.psc` | Present | 1 |
 | `Creatures/FlatwoodsMonsterRaceScript.psc` | Present | 3 |
-| `Creatures/FlatwoodsMonsterWatcherScript.psc` | Present | 5 |
+| `Creatures/FlatwoodsMonsterWatcherScript.psc` | Present | 6 |
 | `Creatures/FloaterGnasherBiteScript.psc` | Present | 1 |
 | `Creatures/FloaterRaceScript.psc` | Present | 3 |
 | `Creatures/floaterscript.psc` | Present | 1 |
 | `Creatures/GraftonRaceScript.psc` | Present | 10 |
+| `Creatures/liberatorracescript.psc` | Present | 0 |
 | `Creatures/MothmanCombatantScript.psc` | Present | 8 |
 | `Creatures/MothmanDefenderScript.psc` | Present | 9 |
 | `Creatures/MothmanWatcherScript.psc` | Present | 6 |
+| `Creatures/mrhandyselfdestructscript.psc` | Present | 2 |
+| `Creatures/RusherDeathExplosion.psc` | Present | 0 |
 | `Creatures/ScorchbeastRaceScript.psc` | Present | 10 |
 | `Creatures/ScorchedStatueVariantScript.psc` | Present | 2 |
 | `Creatures/ScorchedSuiciderScript.psc` | Present | 5 |
+| `Creatures/SentryBotShoulderClusterScript.psc` | Present | 1 |
 | `Creatures/SheepsquatchRaceScript.psc` | Present | 5 |
 | `Creatures/StormBossRaceScript.psc` | Present | 9 |
 | `Creatures/WendigoColossusRaceScript.psc` | Present | 10 |
@@ -170,42 +191,86 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `DeconArchScript.psc` | Present | 1 |
 | `Default1StateSyncActivator.psc` | Present | 4 |
 | `Default2State1WayActivatorScript.psc` | Present | 1 |
+| `default2statesyncactivator.psc` | Present | 17 |
+| `DefaultActivatorVendorFactionScript.psc` | Present | 1 |
 | `DefaultActorIgnoreFriendlyHitsScript.psc` | Present | 1 |
+| `DefaultActorSetAVOnDeathInstOwner.psc` | Present | 3 |
+| `DefaultAliasInventoryManagement.psc` | Present | 13 |
+| `DefaultAliasOnDistanceLessThan.psc` | Present | 4 |
+| `DefaultCollClearGhostInstOwnerCombat.psc` | Present | 1 |
+| `DefaultCollectionAliasOnDeathA.psc` | Present | 1 |
+| `DefaultCommunityDepositActivator.psc` | Present | 1 |
+| `DefaultDestructibleMultiStateActivator.psc` | Present | 3 |
+| `DefaultExplosionOnActivate.psc` | Present | 3 |
 | `DefaultFixable2StateActivator.psc` | Present | 5 |
+| `DefaultInstanceAliasAddItemOnCreation.psc` | Present | 1 |
+| `defaultkeypadtargetscript.psc` | Present | 1 |
+| `defaultkillmylinkedrefondeathscript.psc` | Present | 1 |
+| `DefaultLockRefOnUnload.psc` | Present | 2 |
 | `DefaultMultiStateActivator.psc` | Present | 6 |
+| `DefaultMultiStateClientSideActivator.psc` | Present | 1 |
 | `DefaultOnActivateChangePrompt.psc` | Present | 2 |
 | `defaultonactivategiveitems.psc` | Present | 3 |
+| `DefaultOneWayContainerScript.psc` | Present | 2 |
+| `DefaultOnPlayerConnect.psc` | Present | 1 |
+| `DefaultOnReadAddToMap.psc` | Present | 1 |
 | `defaultplayexplosiononactivate.psc` | Present | 1 |
 | `defaultplayexplosiononpoweron.psc` | Present | 3 |
 | `DefaultPlayExposionAtNodeOnActivate.psc` | Present | 3 |
 | `DefaultPlaySoundOnActivate.psc` | Present | 1 |
+| `DefaultQuestAddMapMarkerOnHolotapeEnd.psc` | Present | 5 |
+| `DefaultQuestEnterInstancedLocScript.psc` | Present | 3 |
+| `DefaultQuestRemovePlayersScript.psc` | Present | 5 |
+| `DefaultRefDestroyOnLoad.psc` | Present | 1 |
+| `DefaultRefKillTriggerScript.psc` | Present | 1 |
 | `DefaultRefOnActivateSendEvent.psc` | Present | 1 |
 | `DefaultRefOnDistanceSendEvent.psc` | Present | 4 |
 | `DefaultRefOnTriggerEnterSendEvent.psc` | Present | 1 |
 | `defaultrefsendstoryevent.psc` | Present | 1 |
+| `DefaultRepairableActorScript.psc` | Present | 1 |
+| `defaultsequentialstateactivator.psc` | Present | 2 |
+| `defaultshutdownquestonchangelocation.psc` | Present | 3 |
+| `DefaultStartQuestOnHolotapeEvent.psc` | Present | 6 |
+| `DefaultTopicInfoTriggerCombat.psc` | Present | 2 |
+| `DefaultTriggerRespawnActorGroup.psc` | Present | 2 |
+| `defaultunlockandopenlinkonactivate.psc` | Present | 1 |
+| `DenizenEffectScript.psc` | Present | 1 |
 | `DenizenEnableMarkerScript.psc` | Present | 1 |
 | `DLC03HermitCrabSpawnChildScript.psc` | Present | 4 |
 | `doorbuttonscript.psc` | Present | 2 |
+| `DotMatrixPrinterScript.psc` | Present | 1 |
+| `E05_Caravan_Obstacle.psc` | Present | 1 |
+| `E08A_BeehiveContainerScript.psc` | Present | 1 |
 | `E08B_RadiationTriggerScript.psc` | Present | 3 |
 | `E09B_FanfareCannonScript.psc` | Present | 1 |
 | `E09B_ImposterCappyScript.psc` | Present | 3 |
+| `E09B_Wheel_ColaRewardScript.psc` | Present | 1 |
 | `E09C_PlaySoundOnActivateScript.psc` | Present | 1 |
 | `Economy/HalloweenCandyBowlScript.psc` | Present | 1 |
+| `EditKeywordsOnCombatChangeScript.psc` | Present | 3 |
+| `EggClusterContainerScript.psc` | Present | 2 |
 | `ElevatorDoorAutoOpenTriggerScript.psc` | Present | 3 |
 | `EN01_JudyGravePlaqueScript.psc` | Present | 1 |
 | `EN01A_CardReader.psc` | Present | 3 |
+| `EN02_DecalParentScript.psc` | Present | 1 |
 | `EN02_DeleteCollOnUnload.psc` | Present | 1 |
 | `EN02_DisableAfterWait.psc` | Present | 3 |
 | `EN02_ExamHandlerScript.psc` | Present | 3 |
 | `en02_examplayerscript.psc` | Present | 3 |
 | `EN02_ExamQuestionScript.psc` | Present | 2 |
 | `EN02_ExamRoomAVTriggerScript.psc` | Present | 2 |
+| `EN02_ExamWrapupScript.psc` | Present | 2 |
 | `EN02_FillAliasOnTriggerEnter.psc` | Present | 1 |
 | `EN02_FoodDispenserScript.psc` | Present | 1 |
 | `en02_immunoboostereffectscript.psc` | Present | 2 |
 | `EN02_IntroTerminalStateScript.psc` | Present | 1 |
+| `EN02_Misc_QuestScript.psc` | Present | 2 |
+| `EN02_ModuleHandlerScript.psc` | Present | 5 |
+| `EN02_MQ_QuestScript.psc` | Present | 19 |
+| `en02_orbitaldropcratescript.psc` | Present | 4 |
 | `EN02_OrbitalStrikeMarkerScript.psc` | Present | 4 |
 | `EN02_OrbitalStrikeShooterScript.psc` | Present | 1 |
+| `en02_questscript.psc` | Present | 8 |
 | `EN02_RefCollRemoveOnActivate.psc` | Present | 1 |
 | `EN02_RefreshLaserGridCollOnStageSet.psc` | Present | 3 |
 | `en02_refreshlasergridonstageset.psc` | Present | 2 |
@@ -216,10 +281,16 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `EN07_LaunchCardReceptacleScript.psc` | Present | 5 |
 | `EN07_NukeBlastMarkerRefScript.psc` | Present | 1 |
 | `EN07_NukeMasterScript.psc` | Present | 9 |
+| `EN07_NukeSoundCategoryMagicEffect.psc` | Present | 3 |
 | `EN07_TargetingComputerAliasScript.psc` | Present | 5 |
+| `EnableDisableOnActivationScript.psc` | Present | 1 |
+| `EpicCreatureRestoreHealthEffectScript.psc` | Present | 1 |
+| `ExplodeOnDeathFX.psc` | Present | 1 |
 | `Factory_IgnitionCoreTriggerScript.psc` | Present | 3 |
 | `FF05_Balance_SensorMessageScript.psc` | Present | 1 |
-| `FlipCardSignScript.psc` | Present | 3 |
+| `FirecrackerWhiskey_BurnAttackerScript.psc` | Present | 4 |
+| `fishing/LindaLeeChumTroughScript.psc` | Present | 1 |
+| `FlipCardSignScript.psc` | Present | 6 |
 | `fragments/packages/PF_AC_MQ01_Opportunity_Scave_006C2D35.psc` | Present | 1 |
 | `fragments/packages/PF_AC_MQ02_Stage_Evelyn_Trav_006FC62A.psc` | Present | 1 |
 | `fragments/packages/PF_AC_MQ02_Stage_Evelyn_Trav_00727F28.psc` | Present | 1 |
@@ -241,7 +312,12 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/packages/PF_GHL00_Quest_Package_Madel_00799D57.psc` | Present | 1 |
 | `fragments/packages/PF_GHL00_Quest_TransformPlay_007A86EE.psc` | Present | 1 |
 | `fragments/packages/PF_GHL00_Quest_TransformPlay_007ABDF5.psc` | Present | 1 |
+| `fragments/packages/PF_W05_MQ_001P_Wayward_Batte_0040BD22.psc` | Present | 1 |
 | `fragments/packages/PF_W05_MQ_101P_A_TravelToD_0041B853_1.psc` | Present | 1 |
+| `fragments/packages/PF_W05_MQ_101P_B_AubriePacka_0059F653.psc` | Present | 1 |
+| `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573891.psc` | Present | 1 |
+| `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573892.psc` | Present | 1 |
+| `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573895.psc` | Present | 1 |
 | `fragments/packages/PF_XPD_AC01_SalDespawn_Packa_006F58A7.psc` | Present | 1 |
 | `fragments/packages/PF_XPD_AC02_Package_DefendNP_006E83E3.psc` | Present | 1 |
 | `fragments/packages/PF_XPD_AC02_Package_JullianW_006D37BA.psc` | Present | 1 |
@@ -250,10 +326,152 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/packages/PF_XPD_Pitt02_Package_Labore_00666FF0.psc` | Present | 1 |
 | `fragments/packages/PF_XPD_Pitt02_Package_Skepti_00661875.psc` | Present | 1 |
 | `fragments/packages/PF_XPD_Pitt02_Package_Skepti_00661876.psc` | Present | 1 |
-| `fragments/Quests/QF_EN02_MQ_Us_000293A3.psc` | Present | 19 |
+| `fragments/Quests/QF_BS01_MQ00_Breadcrumb_OnCo_005EAD3B.psc` | Present | 1 |
+| `fragments/Quests/QF_BS02_MQ01_Penance_OnConne_00606C1C.psc` | Present | 1 |
+| `fragments/Quests/QF_BURN_BountyGiver_Appalach_00864CC7.psc` | Present | 1 |
+| `fragments/Quests/QF_BURN_SQ01_OnConnect_007F79A9.psc` | Present | 1 |
+| `fragments/Quests/QF_E06_PocketWatch_Colossus__00599357.psc` | Present | 5 |
+| `fragments/Quests/QF_EN01_Sam_000714FE.psc` | Present | 3 |
+| `fragments/Quests/QF_EN02_Misc_000293A4.psc` | Present | 2 |
+| `fragments/Quests/QF_EN02_MQ_Us_000293A3.psc` | Present | 37 |
 | `fragments/Quests/qf_en07_mq_fleeblast_002d0f69.psc` | Present | 3 |
 | `fragments/Quests/QF_EN07_MQ_FleeSilo_002D0F68.psc` | Present | 10 |
+| `fragments/Quests/QF_GHL00_Quest_OnConnect_0078DB39.psc` | Present | 1 |
+| `fragments/Quests/QF_HolotapeQuest_00011B82.psc` | Present | 1 |
+| `fragments/Quests/QF_HolotapeQuest_TS_00511A82.psc` | Present | 1 |
+| `fragments/Quests/QF_MOON_HolotapeQuest_006A21E2.psc` | Present | 16 |
+| `fragments/Quests/QF_MQ_OverseerNukeHolotapeVi_00437987.psc` | Present | 2 |
 | `fragments/Quests/qf_msilopersonal_003e03aa.psc` | Present | 38 |
+| `fragments/Quests/QF_RS01A_Contact_003C4C22.psc` | Present | 10 |
+| `fragments/Quests/QF_Storm_MQ01_Breadcrumb_OnC_0072A2A7.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_Daily_F01_Radio_0054A71B.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_Daily_Foundation01_0054A71A.psc` | Present | 8 |
+| `fragments/Quests/QF_W05_Daily_Photo_MiscPoint_005A5E29.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_daily_r01_0054fa50.psc` | Present | 33 |
+| `fragments/Quests/QF_W05_Daily_R02_Retirement_0054DCF9.psc` | Present | 15 |
+| `fragments/Quests/QF_W05_Dialogue_SecretServic_0054279C.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_DialogueDenizens_Scen_00597301.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_DialogueOverseer_003FB7B0.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_DialogueRaidersCrater_00559532.psc` | Present | 5 |
+| `fragments/Quests/QF_W05_DialogueRaidersCrater_0055E2BA.psc` | Present | 5 |
+| `fragments/Quests/QF_W05_DialogueRaidersCrater_005832EF.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_DialogueSettlers_Inte_00570D57.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_DialogueTheWayward_0040F5BF.psc` | Present | 4 |
+| `fragments/Quests/QF_W05_LGV01_PointerQuest_0059C22B.psc` | Present | 2 |
+| `fragments/Quests/QF_W05_MQ_000P_005698E4.psc` | Present | 3 |
+| `fragments/Quests/QF_W05_MQ_001P_Wayward_00405E14.psc` | Present | 20 |
+| `fragments/Quests/QF_W05_MQ_001P_Wayward_Lacey_00405E15.psc` | Present | 4 |
+| `fragments/Quests/QF_W05_MQ_001P_Wayward_Lacey_0053AF40.psc` | Present | 3 |
+| `fragments/Quests/QF_W05_MQ_001P_Wayward_MiscP_00594DFD.psc` | Present | 2 |
+| `fragments/Quests/QF_W05_MQ_002P_Radical_0040F5BE.psc` | Present | 33 |
+| `fragments/Quests/QF_W05_MQ_003P_Muscle_0041A39D.psc` | Present | 30 |
+| `fragments/Quests/QF_W05_MQ_003P_Muscle_Duncan_005537E0.psc` | Present | 2 |
+| `fragments/Quests/QF_W05_MQ_003P_Radio_0041A325.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_MQ_004P_Crane_0041C976.psc` | Present | 31 |
+| `fragments/Quests/QF_W05_MQ_101P_003FBBB2.psc` | Present | 24 |
+| `fragments/Quests/QF_W05_MQ_101P_A_003FBC0D.psc` | Present | 32 |
+| `fragments/Quests/QF_W05_MQ_101P_B_003FBC10.psc` | Present | 8 |
+| `fragments/Quests/QF_W05_MQ_101P_OnConnect_003FBBB4.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_MQ_101P_Radio_003FBBB3.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_MQ_102P_003FFACF.psc` | Present | 26 |
+| `fragments/Quests/qf_w05_mq_102p_a_003ffc02.psc` | Present | 7 |
+| `fragments/Quests/QF_W05_MQ_102P_B_003FFC00.psc` | Present | 4 |
+| `fragments/Quests/QF_W05_MQA_206P_0054EDB9.psc` | Present | 25 |
+| `fragments/Quests/QF_W05_MQR_201P_0040D28D.psc` | Present | 43 |
+| `fragments/Quests/QF_W05_MQR_201P_Track_RadioQ_0040D28C.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_MQR_202P_0041C9E6.psc` | Present | 35 |
+| `fragments/Quests/QF_W05_MQR_203P_0042F31B.psc` | Present | 62 |
+| `fragments/Quests/QF_W05_MQR_204P_00535E55.psc` | Present | 33 |
+| `fragments/Quests/QF_W05_MQR_205P_00548B7A.psc` | Present | 54 |
+| `fragments/Quests/QF_W05_MQR_205P_A_005588EF.psc` | Present | 7 |
+| `fragments/Quests/QF_W05_MQR_Choice_005930B2.psc` | Present | 3 |
+| `fragments/Quests/QF_W05_MQS_202P_Acrobat_003F28C7.psc` | Present | 32 |
+| `fragments/Quests/QF_W05_MQS_203P_0040571C.psc` | Present | 22 |
+| `fragments/Quests/QF_W05_MQS_204P_0040C458.psc` | Present | 17 |
+| `fragments/Quests/QF_W05_MQS_205P_0041CB6D.psc` | Present | 25 |
+| `fragments/Quests/qf_w05_mqs_choice_00592500.psc` | Present | 2 |
+| `fragments/Quests/QF_W05_MQSettlers_201P_Indus_003F28C3.psc` | Present | 51 |
+| `fragments/Quests/qf_w05_re_assaultaf01_0055de89.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_assaultbb02_0056f035.psc` | Present | 4 |
+| `fragments/Quests/qf_w05_re_assaultzw03_00569d82.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_assaultzw04_0056a0c1.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_assaultzw05_0056a0c0.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_assaultzw06_0056a0bf.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_assaultzw07_0056a0be.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_assaultzw08_0056a0bd.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_assaultzw09_0056ac47.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_assaultzw10_0056ac46.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_assaultzw11_0056ac45.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_assaultzw13_0056ac44.psc` | Present | 4 |
+| `fragments/Quests/qf_w05_re_assaultzw14_0056ac43.psc` | Present | 4 |
+| `fragments/Quests/qf_w05_re_assaultzw15_0056ac42.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_assaultzw16_0056ac41.psc` | Present | 4 |
+| `fragments/Quests/qf_w05_re_camp_jp08_cryptids_00571acc.psc` | Present | 4 |
+| `fragments/Quests/qf_w05_re_camp_jp09_cryptids_00571acb.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_camp_jp10_cryptids_00571aca.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_camp_jp11_campers_00586246.psc` | Present | 2 |
+| `fragments/Quests/QF_W05_RE_Camp_JP11_RaiderCa_00586245.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_camp_jp12_datenigh_00586247.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_camp_jp13_twoscien_00586244.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_camp_jp14_soldiera_00586248.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_camp_jp15_twosoldi_00586249.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_camp_jp16_supermut_0058624a.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_camp_jp17_bullies_0058624b.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp19_mobcamp__0058cea2.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp20_mobcamp__0058cea3.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp21_mobcamp__0058cea6.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp22_mobcamp__0058cea7.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp23_mobcamp__0058cea8.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp24_deadcult_0058cea9.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp25_deadsett_0058ceb0.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp26_deadmuta_0058ceb5.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp27_mobcamp__0058ceb6.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp28_mobcamp__0058ceb8.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp29_mobcamp__0058cebb.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp30_mobcamp__0058cebc.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp31_mobcamp__0058cebd.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp32_mobcamp__0058cebe.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp33_mobcamp__0058cebf.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camp_jp34_returnin_0058d3b4.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_campaf01_00562ba5.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_campaf02_0056385e.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_campaf04_005913ef.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_campaf05_0059192e.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_campaf06_00591931.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_campaf07_00591935.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_campaf08_00591937.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_campaf09_0059193a.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_camptemplate01_00562281.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_jp07_camp_junkdeal_00569cc7.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_miningjm01_005600e7.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_miningjm02_00562b57.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_miningjm03_005644da.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_miningjm04_00564a28.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_object_jp01_0056d1d8.psc` | Present | 7 |
+| `fragments/Quests/qf_w05_re_objectaf01_0056a1d1.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_objectbb01_00568e56.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_objectbb02_0056f038.psc` | Present | 11 |
+| `fragments/Quests/qf_w05_re_scene_jp04_a_005637bc.psc` | Present | 5 |
+| `fragments/Quests/QF_W05_RE_Scene_JP04_B_005637BA.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_scene_travelersjm0_0056ec33.psc` | Present | 1 |
+| `fragments/Quests/qf_w05_re_scene_travelersjm0_00571cd7.psc` | Present | 1 |
+| `fragments/Quests/qf_w05_re_scene_travelersjm0_00587bca.psc` | Present | 1 |
+| `fragments/Quests/qf_w05_re_scene_travelersjm0_00587bcb.psc` | Present | 1 |
+| `fragments/Quests/qf_w05_re_sceneaf04_005849e2.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_RE_SceneZW01_0056368E.psc` | Present | 3 |
+| `fragments/Quests/QF_W05_RE_SceneZW02_005655E4.psc` | Present | 3 |
+| `fragments/Quests/qf_w05_re_travelaf01_00567a72.psc` | Present | 1 |
+| `fragments/Quests/qf_w05_re_travelaf02_0056a1d0.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_travelbb01_0056f039.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_travelbb02_0056f034.psc` | Present | 2 |
+| `fragments/Quests/qf_w05_re_travelbb03_0056f033.psc` | Present | 5 |
+| `fragments/Quests/qf_w05_re_travelsm01_0059ea8f.psc` | Present | 1 |
+| `fragments/Quests/qf_w05_re_travelsm02_0059ea8e.psc` | Present | 1 |
+| `fragments/Quests/QF_W05_SettlersDaily_Paintin_003F28CC.psc` | Present | 8 |
+| `fragments/Quests/QF_W05_SettlersDaily_Secret_00541685.psc` | Present | 6 |
+| `fragments/Quests/QF_XPD_Hub_Responders_OnConn_0064D323.psc` | Present | 4 |
+| `fragments/Scenes/SF_W05_MQR_Choice_StartHeist_00593C90.psc` | Present | 1 |
+| `fragments/Scenes/sf_w05_mqs_choice_starthei_0059250a_1.psc` | Present | 1 |
 | `fragments/terminals/TERM_FS03_MQ_Fruition_Armory_00002CD5.psc` | Present | 1 |
 | `fragments/terminals/TERM_FS03_MQ_Fruition_Armory_004EA3B4.psc` | Present | 6 |
 | `fragments/terminals/TERM_LC043_SecurityTerminalC_0027BA0C.psc` | Present | 5 |
@@ -293,12 +511,16 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/terminals/TERM_V96_1_Engineering_Decon_0054AB71.psc` | Present | 6 |
 | `fragments/terminals/TERM_V96_1_Engineering_Decon_0054AB72.psc` | Present | 6 |
 | `fragments/terminals/TERM_V96_2_Cryo_CryoOptional_00427832.psc` | Present | 1 |
+| `fragments/terminals/TERM_W05_MQ_004P_Crane_Regis_00424851.psc` | Present | 1 |
+| `fragments/terminals/TERM_W05_MQ_101P_NukaTermina_003FE452.psc` | Present | 3 |
+| `fragments/terminals/TERM_W05_MQ_102P_SecurityTer_00544D59.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_BS_RE_TravelDWD01_005C54AD.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_BS_RE_TravelDWD02_005C721A.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_BS_RE_TravelDWD03_005C757F.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_E09D_MostWanted_0066DD77.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_EN02_MQ_Us_0027DB1A.psc` | Present | 2 |
 | `fragments/topicinfos/TIF_EN02_MQ_Us_004DF64B_1.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_EN02_MQ_Us_0052F516.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_MOON_MiddleMountainPitst_006BE893.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_RE_SceneDWD03_0052754B.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_RE_SceneDWD05_003E1887.psc` | Present | 1 |
@@ -307,12 +529,162 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/topicinfos/TIF_W05_Community_RaiderFish_0057CF5A.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_Community_RaiderFish_0057CF5B.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_Community_RaiderFish_0057CF5C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_BethyMangan_00599806.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_BethyMangan_0059980C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_BethyMangan_0059980F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_BethyMangan_0059A014.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_BethyMangan_0059A015.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_DontrelleHa_00583D50.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_DontrelleHa_00583D51.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_DontrelleHa_00583D54.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_FridaMadani_00599449.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_FuzzyBen_00598B1A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_FuzzyBen_00598B25.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_GilbertHops_00596E3A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_GilbertHops_00596E3D.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_GilbertHops_00596E41.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_GilbertHops_00596E43.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_HeatherElli_00577574.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_HeatherElli_00577579.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_HeatherElli_0057757A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_HeatherElli_00577580.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_HeatherElli_00583D4F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_JoeCreigh_00598B2D.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585551.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585552.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585553.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585554.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585555.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585556.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585557.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_JonahIto_005982BC.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_JonahIto_005982BF.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_JonahIto_005982C0.psc` | Present | 1 |
+| `fragments/topicinfos/tif_w05_dialogue_jonahito_005982c4.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Dialogue_JonahIto_005982CE.psc` | Present | 1 |
+| `fragments/topicinfos/tif_w05_dialogue_maramayari_00598b86.psc` | Present | 1 |
+| `fragments/topicinfos/tif_w05_dialogue_maramayari_00598b90.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDavenport_0056F021.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_S_0059B050_1.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00597334.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059733D.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00597340.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059898C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059899C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_005989AE.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D5A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D5C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D5D.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D5F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D61.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D62.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D65.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D67.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598DB2.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B009.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B00A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B00E.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B00F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B012.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B015.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B016.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B01A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B01C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B01E.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B01F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B020.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B021.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B023.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B02B.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B02D.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B031.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B034.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B037.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B038.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B039.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B03C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B03E.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B03F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B041.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B045.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B047.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B04B.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B04D.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B051.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B054.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B055.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B056.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B057.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B058.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B059.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B05B.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B061.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B062.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B063.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B066.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B06A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B06F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B076.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B078.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B079.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B07A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B07B.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B081.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B086.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B08C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B090.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B097.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B09A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B09E.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0A8.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0A9.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0AE.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0B3.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0B4.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0BA.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0BF.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0ED.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0EE.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0F0.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0FB.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B114.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059BC92.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059BC96.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059BC97.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059BC9C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueOverseer_00589696.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueOverseer_00595A2A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueOverseer_00595A2B.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueOverseer_00595A2C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueOverseer_00595A2F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueRadicals_00411F61.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_00585959.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_0058595A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_0058595B.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_0058595C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_0058595D.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_0058595E.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_0058595F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueRaidersGener_0042A0A0.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueRaidersGener_0042A0A1.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueSettlers_00562162.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0058FE02.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0058FE03.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0058FE04.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0058FE05.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_00595B53.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EDE8.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EDE9.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EDEA.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EDEB.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EDEC.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EDED.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EEA7.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EEA9.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EEAC.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EEAE.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EEB1.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EEB2.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_005A3311.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_005A3312.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_005A3313.psc` | Present | 1 |
@@ -334,21 +706,104 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_005A3326.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_005A3327.psc` | Present | 1 |
 | `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_005A3328.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueTheWayward_0042A20E.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0059AA6A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0059AA6B.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0059AA6C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0059AA6D.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Lace_0056A164.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Lace_0056A173.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Lace_0056A174.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Lace_0056A18B.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Penn_005852B7.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Anch_00589599.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Anch_0058959A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Tyle_00589564.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Tyle_00589570.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Tyle_005895DE.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_MQ_102P_004010A8.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_AssaultAF01_0055DEAA.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_AssaultAF01_0055DEAB.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_AssaultBB02_0056F078.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_AssaultBB02_00573F0D.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_AssaultBB02_00573F0E.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_CampAF01_00563870_1.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_CampAF02_00567A9F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_ObjectAF01_0056A224.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_ObjectAF01_0056A230.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_ObjectAF01_0056A239.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_ObjectAF01_0056A242.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_ObjectBB01_00568E60.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP01_0055C56C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP01_0055C572.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP01_0055C574.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP01_0055C576.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP01_00575178.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F811.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F815.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F81A.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F81E.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F823.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F837.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F838.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F83F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_00573F0B.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_00573F0C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_00573F13.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563818.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_0056381B.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_0056381C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563827_1.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_0056382E.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_0056382F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563831.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563832_1.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563838.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563839.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_B_0056D1FE.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_B_0056D20C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_B_0056D218.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_SceneAF03_0056A23C.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_SceneAF03_0056A245.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_SceneAF03_005849FF.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_SceneAF04_005849FC.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_SceneAF04_005849FD.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_SceneAF04_00584A00.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_SceneAF04_00584A04.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_SceneAF04_00584A05.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_SceneTemplate01_0055DEA4.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_SceneTemplate01_0055DEAD.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_TravelAF02_0056A22E.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_RE_TravelAF02_0056A23F.psc` | Present | 1 |
+| `fragments/topicinfos/TIF_W05_Wayward_DanielScene_0054AFA3.psc` | Present | 1 |
+| `FSDoorScript.psc` | Present | 2 |
 | `Generic/RandomResultPowered.psc` | Present | 1 |
+| `HandScannerDestructibleScript.psc` | Present | 8 |
 | `HazardTriggerScript.psc` | Present | 3 |
+| `LC006_SecurityMarkerScript.psc` | Present | 1 |
 | `LC060_WhitespringAutoCloseDoorScript.psc` | Present | 5 |
 | `LC080_MSiloMapLightScript.psc` | Present | 2 |
 | `LC080_WhitespringBunkerGearDoorScript.psc` | Present | 6 |
+| `LC158LumberMillNoteScript.psc` | Present | 1 |
 | `LookoutTowerSurveyTriggerScript.psc` | Present | 1 |
+| `MeatSweatsScript.psc` | Present | 3 |
 | `MineEntranceClosed.psc` | Present | 1 |
+| `MN2_TreatBowlCooldownScript.psc` | Present | 1 |
+| `ModActorValueOnSpellTargetScript.psc` | Present | 2 |
+| `MoM_PhantomEffectScript.psc` | Present | 2 |
+| `MoMHolotapeScript.psc` | Present | 5 |
+| `MoMSecretDoorTriggerScript.psc` | Present | 3 |
 | `moon_ambush_givecargoscript.psc` | Present | 3 |
+| `MOON_Ambush_SoundSpellCooldown.psc` | Present | 2 |
 | `moon_onactivateenableref.psc` | Present | 1 |
+| `MQ_Overseer_HolotapeScript.psc` | Present | 1 |
+| `MQ_Overseer_PlayerConnectScript.psc` | Present | 1 |
 | `MSiloBreadcrumbTriggerScript.psc` | Present | 1 |
 | `MSiloHandScannerLoadScript.psc` | Present | 3 |
 | `MSiloIDCardActivatorScript.psc` | Present | 3 |
 | `MSiloLaserGridScript.psc` | Present | 5 |
 | `MSiloOperationsPanelActivatorScript.psc` | Present | 3 |
-| `MSiloPersonalQuestScript.psc` | Missing | 6 |
+| `MSiloPersonalQuestScript.psc` | Present | 6 |
 | `MSiloQuestScript_Control.psc` | Present | 10 |
 | `MSiloQuestScript_Main.psc` | Present | 3 |
 | `MSiloQuestScript_Operations.psc` | Present | 7 |
@@ -362,17 +817,44 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `mtnl01examinetrapperkscript.psc` | Present | 1 |
 | `MTNL01QuestScript.psc` | Present | 7 |
 | `MTNL01TrapTrigger.psc` | Present | 1 |
+| `MTNM01_BaitMineScript.psc` | Present | 3 |
+| `mtnm01_deathclawfriendperkscript.psc` | Present | 1 |
 | `MTR05_RepairBeaconActivatorScript.psc` | Present | 1 |
+| `MTRZ05_MapScript.psc` | Present | 1 |
+| `MTRZ05MiningSiteScript.psc` | Present | 2 |
 | `MultiIDCardReaderScript.psc` | Present | 5 |
+| `MutationTriggerMeleeExplosionScript.psc` | Present | 4 |
+| `Nuke_CodePageRefScript.psc` | Present | 1 |
 | `Nuke_CodeSolutionMasterScript.psc` | Present | 1 |
 | `NWOT_Beneath_InvestigationClue.psc` | Present | 1 |
+| `NWOT_Fortune_CooldownEffectScript.psc` | Present | 2 |
 | `Objects/ATXHolidayNuclearTree.psc` | Present | 4 |
-| `Objects/Audio2StateActivator.psc` | Present | 3 |
+| `Objects/atxslotmachinescript.psc` | Present | 0 |
+| `Objects/Audio2StateActivator.psc` | Present | 4 |
+| `Objects/BeehiveContainerScript.psc` | Present | 1 |
+| `Objects/CB04_AddFactionPerkScript.psc` | Present | 1 |
+| `Objects/CB04_AddToFactionScript.psc` | Present | 1 |
+| `Objects/DestructibleAudio2StateActivator.psc` | Present | 5 |
+| `Objects/LC096_LegendaryBossTrigger.psc` | Present | 2 |
+| `Objects/LGVAnimController.psc` | Present | 4 |
+| `Objects/UD002OldTunnelTerminal.psc` | Present | 4 |
+| `Objects/workshopconveyor.psc` | Present | 2 |
+| `Objects/XPD_AC_CasinoGame.psc` | Present | 0 |
+| `Objects/XPD_AC_SlotMachine.psc` | Present | 0 |
+| `Objects/XPD_AC_SlotMachineScript_x5.psc` | Present | 0 |
+| `OnActivateAddItem.psc` | Present | 1 |
 | `OnActivateCastSpell.psc` | Present | 1 |
 | `OnEnterTriggerCastSpell.psc` | Present | 2 |
+| `OnHitByMeleeCastSpell.psc` | Present | 4 |
+| `OverseerPersonal_PlayerConnectScript.psc` | Present | 1 |
+| `OverseersCampToolboxScript.psc` | Present | 3 |
+| `p76_dlc01/DLC01_HazardMaker.psc` | Present | 1 |
+| `perkpacifyscript.psc` | Present | 1 |
+| `PerkPlayLocationalAudio.psc` | Present | 4 |
 | `PhysicalTrapHit.psc` | Present | 5 |
 | `Player/PowerArmor/LibertyPrimeVoiceModuleScript.psc` | Present | 4 |
-| `QUESTS/_Default/DisableRefOnActivate.psc` | Present | 1 |
+| `POI287OnReadAddToMap.psc` | Present | 1 |
+| `QUESTS/_default/DisableRefOnActivate.psc` | Present | 1 |
 | `QUESTS/AC_MQ01_Opportunity/RefOnActivate.psc` | Present | 2 |
 | `QUESTS/BS01_MQ06_Settlers/SetAVonEnter.psc` | Present | 1 |
 | `QUESTS/BS01_MQ07_Over/TransmitterAnimScript.psc` | Present | 3 |
@@ -382,11 +864,13 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `QUESTS/E07B_Invaders/MissileStrikeShooterScript.psc` | Present | 1 |
 | `QUESTS/Storm/MQ06/TrapBookFurnitureScript.psc` | Present | 4 |
 | `QuestToggleActivatorScript.psc` | Present | 4 |
-| `RadioGeneral_MasterScript.psc` | Present | 5 |
+| `RadioGeneral_MasterScript.psc` | Present | 6 |
+| `raids/RD01/Enc01/GuardianBotActorScript.psc` | Present | 2 |
 | `RE_ObjectTS05_BombActivatorScript.psc` | Present | 1 |
 | `RelayTowerActivationScript.psc` | Present | 1 |
+| `RSVP00_OnContainerChangedSetAV.psc` | Present | 1 |
 | `scorchedstatuefurniturescript.psc` | Present | 6 |
-| `ScorchedStatueScript.psc` | Present | 7 |
+| `ScorchedStatueScript.psc` | Present | 9 |
 | `shelters/NuclearTestBunkerBlastScript.psc` | Present | 3 |
 | `shelters/shelterentrance.psc` | Present | 1 |
 | `shelters/shelterworkshop.psc` | Present | 1 |
@@ -397,10 +881,17 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `SSE_LandmineTrigger_Script.psc` | Present | 1 |
 | `SSE_ReEnableActivatorAfterTimer.psc` | Present | 2 |
 | `Storm_Debug_OrbitalStrikeButtonScript.psc` | Present | 1 |
+| `Storm_DefenseUpgradeRepairScript.psc` | Present | 1 |
+| `Storm_DKWD_Interior_SecretDoor_Script.psc` | Present | 1 |
 | `Storm_LaserGridHazardTriggerScript.psc` | Present | 2 |
+| `Storm_LaserGridTimerScript.psc` | Present | 3 |
+| `Storm_ManorMapMarkerUnlockScript.psc` | Present | 1 |
+| `Storm_MQ10_KeypadOnLoadScript.psc` | Present | 1 |
 | `Storm_SE09_ChickenExplode.psc` | Present | 1 |
 | `Storm_WeatherStationButtonScript.psc` | Present | 7 |
+| `StormMetalDetectorScript.psc` | Present | 3 |
 | `StormProjectorToggleEnableLinkedRef.psc` | Present | 1 |
+| `TalesFromWV_OnActivateAddItem.psc` | Present | 1 |
 | `TempCampsiteTriggerboxScript.psc` | Present | 2 |
 | `TrapBearTrap.psc` | Present | 5 |
 | `TrapBoneChimes.psc` | Present | 1 |
@@ -408,37 +899,91 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `TrapFloraFirecrackerScript.psc` | Present | 16 |
 | `TrapFloraPitcherPlantScript.psc` | Present | 14 |
 | `TrapFloraThistleScript.psc` | Present | 13 |
-| `TrapMain.psc` | Present | 13 |
-| `TrapPunji.psc` | Present | 6 |
+| `TrapMain.psc` | Present | 14 |
+| `TrapPunji.psc` | Present | 7 |
 | `TrapResetOnActivateScript.psc` | Present | 1 |
 | `TrapSawblades.psc` | Present | 13 |
-| `TrapSpikes.psc` | Present | 13 |
+| `TrapSpikes.psc` | Present | 15 |
 | `TrapSwingingSpikeBoards.psc` | Present | 1 |
 | `traptriggermain.psc` | Present | 2 |
 | `TreasureMap_MoundActivator.psc` | Present | 1 |
 | `TriggerSoundOnActivate.psc` | Present | 8 |
+| `UD004_NukashineAutoCloseDoorScript.psc` | Present | 2 |
+| `UnlockOnLoadScript.psc` | Present | 1 |
+| `V94_TrapElectricArcSystem.psc` | Present | 3 |
+| `V96_1_CryoPipeScript.psc` | Present | 3 |
+| `V96_TeleportAbilityScript.psc` | Present | 1 |
+| `Vault79RaRaVentSoundScript.psc` | Present | 6 |
+| `VaultCircuitBreakerScript.psc` | Present | 5 |
 | `VaultDeconArchScript.psc` | Present | 1 |
 | `VaultDefault1StateActivator.psc` | Present | 7 |
 | `VaultDefault2StateActivator.psc` | Present | 11 |
 | `VaultDefaultBreakable2StateActivator.psc` | Present | 3 |
 | `VaultDefaultMultiStateActivator.psc` | Present | 6 |
+| `VaultDotMatrixPrinterScript.psc` | Present | 1 |
 | `VaultKeylockPanelScript.psc` | Present | 3 |
 | `VaultKlaxonScript.psc` | Present | 5 |
+| `VSTempResourceCollectorScript.psc` | Present | 1 |
 | `W05_001P_BatterAliasScript.psc` | Present | 1 |
+| `W05_001P_Wayward_QuestScript.psc` | Present | 2 |
+| `W05_002_RadicalCombatantCollScript.psc` | Present | 1 |
+| `W05_002P_GangerOnHitScript.psc` | Present | 1 |
+| `W05_002P_IntroSceneTriggerScript.psc` | Present | 1 |
+| `W05_002P_RadicalHostilityTrigger.psc` | Present | 1 |
+| `W05_002P_TopicInfoRadicalsAttack.psc` | Present | 1 |
+| `W05_003P_AddObjectToCollection.psc` | Present | 3 |
 | `W05_003P_AliasSetStageOnWeaponDrawn.psc` | Present | 3 |
+| `W05_003P_ApplyPerkOnEnterRefScript.psc` | Present | 1 |
 | `W05_003P_EnterAnyTriggerRefColl.psc` | Present | 1 |
 | `W05_003P_HiddenDoorTriggerScript.psc` | Present | 1 |
+| `W05_003P_LaserGridStateCollScript.psc` | Present | 1 |
 | `W05_003P_ScorchedBossCollDeathScript.psc` | Present | 1 |
+| `W05_003P_WakeUpEnemiesRefCollScript.psc` | Present | 1 |
 | `W05_004P_Crane_DispenserTriggerScript.psc` | Present | 3 |
 | `W05_004P_CraneAliasScript.psc` | Present | 1 |
 | `W05_004P_WakeUpTurretsCollScript.psc` | Present | 2 |
+| `W05_Com_RFC_Defend.psc` | Present | 1 |
+| `W05_Com_RFC_Participants_RC.psc` | Present | 1 |
+| `W05_Crater_BandFurnitureAliasScript.psc` | Present | 1 |
+| `W05_Daily_F01_Script.psc` | Present | 2 |
+| `W05_Daily_R01_PlayerAliasScript.psc` | Present | 1 |
+| `W05_Daily_R01_QuestScript_NEW.psc` | Present | 2 |
+| `W05_Daily_R02_FormerRaiderScript.psc` | Present | 1 |
+| `W05_Daniel_StartSceneScript.psc` | Present | 2 |
+| `W05_DnD_MainDoor_Script.psc` | Present | 1 |
+| `W05_HolotapeScript.psc` | Present | 6 |
+| `W05_InstSwapEnableState.psc` | Present | 3 |
+| `W05_InstSwapEnableStateQuestStage.psc` | Present | 4 |
+| `W05_Jen205_Script.psc` | Present | 2 |
+| `W05_KillAliasOnCriteria.psc` | Present | 1 |
+| `W05_MortTapeQuestScript.psc` | Present | 7 |
 | `W05_MQ_002P_RadioTerminalScript.psc` | Present | 1 |
+| `W05_MQ_002P_RemoveTapeScript.psc` | Present | 1 |
 | `W05_MQ_002P_StartSceneOnTriggerEnter.psc` | Present | 1 |
 | `W05_MQ_003P_Muscle_RobotBodyScript.psc` | Present | 1 |
+| `W05_MQ_003P_RemoveItemTopicInfo.psc` | Present | 1 |
 | `W05_MQ_004P_Crane_DoorTriggerScript.psc` | Present | 2 |
 | `W05_MQ_101P_A_EWSBossScript.psc` | Present | 1 |
 | `W05_MQ_101P_A_RepairSubTerminalScript.psc` | Present | 1 |
+| `W05_MQ_SkinnerShoutOnOpenScript.psc` | Present | 1 |
+| `w05_mqa_206_chasedistancelessthan.psc` | Present | 3 |
+| `W05_MQA_206P_SSTalkTriggerBoxScript.psc` | Present | 1 |
+| `w05_mqr_201p_explosivebreakerscript.psc` | Present | 1 |
+| `W05_MQR_201P_IntercomTriggerScript.psc` | Present | 1 |
+| `W05_MQR_202P_IDCardReaderScript.psc` | Present | 1 |
+| `W05_MQR_202P_PlayerScript.psc` | Present | 1 |
+| `W05_MQR_202P_RaRaItemPickedUpScript.psc` | Present | 1 |
+| `W05_MQR_202P_VentMarkerScript.psc` | Present | 1 |
+| `W05_MQR_203P_BenchScript.psc` | Present | 1 |
+| `W05_MQR_203P_DoorPortalScript.psc` | Present | 1 |
 | `W05_MQR_203P_WinnersCupBlackOutScript.psc` | Present | 2 |
+| `W05_MQR_205P_RaRaCombatScript.psc` | Present | 1 |
+| `W05_MQR_205P_RaRaCowerTriggerScript.psc` | Present | 1 |
+| `W05_MQR_205P_ScannerFurnitureScript.psc` | Present | 1 |
+| `W05_MQR_205P_SecurityTriggerScript.psc` | Present | 1 |
+| `W05_MQR_205P_TurretsOffScript.psc` | Present | 1 |
+| `W05_MQR_205P_VentSequenceScript.psc` | Present | 1 |
+| `W05_MQR_PlayerVault79KeypadObjective.psc` | Present | 1 |
 | `W05_MQR_Vault79KeypadAliasScript.psc` | Present | 1 |
 | `W05_MQS_203P_BrainPrepPlacementScript.psc` | Present | 1 |
 | `W05_MQS_203P_BrainPrepScript.psc` | Present | 1 |
@@ -446,15 +991,32 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `W05_MQS_204P_DisableOnUnload.psc` | Present | 1 |
 | `W05_MQS_204P_MotherlodeScript.psc` | Present | 1 |
 | `W05_MQS_205_Script.psc` | Present | 4 |
-| `W05_MQS_205P_SetLaserGridAVScript.psc` | Missing | 4 |
+| `W05_MQS_205P_SetLaserGridAVScript.psc` | Present | 4 |
 | `W05_MQS_BrainPrepStartScript.psc` | Present | 1 |
+| `W05_OverseerCAMP_TutTriggerScript.psc` | Present | 1 |
+| `W05_PurchaseBullionInfoScript.psc` | Present | 3 |
+| `W05_QuestToggleAliasObjectsOnAV.psc` | Present | 1 |
+| `W05_RadicalCollectionScript.psc` | Present | 2 |
+| `W05_Raider_BandAudienceScript.psc` | Present | 2 |
+| `W05_RaiderBlock_Quest_Script.psc` | Present | 2 |
 | `W05_RE_BlacklightActivatorScript.psc` | Present | 1 |
 | `W05_RE_ClueBoardActivatorScript.psc` | Present | 2 |
+| `W05_RE_CryptidStories_Master.psc` | Present | 1 |
 | `W05_RE_FlaviaSkeletonTrigScript.psc` | Present | 1 |
 | `W05_RE_MapMasterDummyScript.psc` | Present | 4 |
 | `W05_RE_MapSegmentDummyScript.psc` | Present | 3 |
+| `W05_RE_ObjectAF01_SelfDestruct_Script.psc` | Present | 12 |
+| `W05_RE_ObjectBB02_ObjectMoveScript.psc` | Present | 1 |
+| `W05_RE_ObjJP01_DistanceCheckStageSet.psc` | Present | 2 |
+| `W05_RE_PositionAndRotationCorrection.psc` | Present | 1 |
+| `W05_RE_TravelBB01_SoundtrackBotScript.psc` | Present | 3 |
 | `W05_RE_V79KeypadActivatorScript.psc` | Present | 1 |
+| `W05_RoperAliasScript.psc` | Present | 1 |
 | `W05_Vault79ElevatorDoorTriggerScript.psc` | Present | 3 |
+| `W05_Wayward_IntTriggerRCScript.psc` | Present | 1 |
+| `W05_Wayward_PatronsColl.psc` | Present | 1 |
+| `W05_Wayward_TopicInfoSetValueOnAlias.psc` | Present | 1 |
+| `W05_WaywardMiscPointerScript.psc` | Present | 1 |
 | `WaterSourceActivatorScript.psc` | Present | 1 |
 | `Weapons/CriticalEffectScript.psc` | Present | 1 |
 | `Weapons/FreezeEffectScript.psc` | Present | 7 |
@@ -462,37 +1024,43 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `WhitespringRoomDoorScript.psc` | Present | 3 |
 | `WhitespringRoomHandScannerScript.psc` | Present | 2 |
 | `WindChimesActivatorScript.psc` | Present | 1 |
+| `WL019_BookshelfScript.psc` | Present | 1 |
 | `WL049_TensionTrap.psc` | Present | 4 |
+| `workshopartillerysmokescript.psc` | Present | 1 |
+| `WorkshopCampScript.psc` | Present | 1 |
+| `WorkshopCreatedActorScript.psc` | Present | 5 |
 | `WorkshopDeconArchScript.psc` | Present | 2 |
+| `WorkshopInitActorValueScript.psc` | Present | 1 |
 | `WorkshopPressurePlateScript.psc` | Present | 5 |
+| `WorkshopRadioScript.psc` | Present | 1 |
+| `WorkshopRefillingContainerScript.psc` | Present | 4 |
+| `WorkshopSpotlightTurretScript.psc` | Present | 2 |
 | `WorkshopTrapGun.psc` | Present | 3 |
+| `WorkshopVertibirdGrenadeScript.psc` | Present | 1 |
 | `WorldMapActivatorScript.psc` | Present | 1 |
 
 </details>
 
 <details>
-<summary>Full unpatched candidate inventory (5973)</summary>
+<summary>Full unpatched candidate inventory (5415)</summary>
 
 | Script |
 |---|
 | `AbAudioActorPlaySound.psc` |
 | `AC_MQ04_Sins_QuestScript.psc` |
 | `AC_SQ05_Regent_QuestScript.psc` |
-| `ACDuctEnterFXScript.psc` |
 | `ACDuctExitFXScript.psc` |
 | `addcampkitsscript.psc` |
 | `AddItemOnMenuItemRun.psc` |
 | `AddMutationOnEffectScript.psc` |
 | `AddSpellOnBlockScript.psc` |
 | `AddSpellOnEffectFinish.psc` |
-| `AddSpellOnFurnitureEnter.psc` |
 | `AddToGroupQuestOnMenuItemRun.psc` |
 | `aliaschangeobjectiveonmenuitemrun.psc` |
 | `aliasmovetotargetonactivate.psc` |
 | `aliasondeathcompleteobjective.psc` |
 | `AliasOnPlayerHolotapeSetAV.psc` |
 | `AliasSendStoryEventOnActivate.psc` |
-| `aliassetstageonitemequipped.psc` |
 | `aliassetstageonitemequippeda.psc` |
 | `aliassetstageonitemequippedb.psc` |
 | `aliassetstageonitemequippedc.psc` |
@@ -501,8 +1069,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `ArcadeNukaZapperRace_ObjectiveScript.psc` |
 | `ArcadePointsQuestLinkerScript.psc` |
 | `arcadepoitnsquestlinkerscript.psc` |
-| `ArcadeTicketDispenser.psc` |
-| `ArcadeTokenSlot.psc` |
 | `ArktosPharmaQuestScript.psc` |
 | `asamscript.psc` |
 | `ATX_COMP_AstronomerScript.psc` |
@@ -515,6 +1081,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `autotestclient/common.psc` |
 | `autotestclient/damagetest.psc` |
 | `autotestclient/equipallarmor.psc` |
+| `autotestclient/equipandfireweapon.psc` |
 | `autotestclient/explosiontest.psc` |
 | `autotestclient/getweaponstatsinplayerinventory.psc` |
 | `autotestclient/killallnpcs.psc` |
@@ -536,6 +1103,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `autotestclient/tacgraphicstestlimited.psc` |
 | `autotestclient/tacinteriorsstandard.psc` |
 | `autotestclient/testscriptnetworkingkeywords.psc` |
+| `autotestclient/usechems.psc` |
 | `autotestclient/usestimpak.psc` |
 | `autotestclient/wait.psc` |
 | `autotestserver/perkcardtests.psc` |
@@ -556,7 +1124,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `bos01notescript.psc` |
 | `bos01readnotescript.psc` |
 | `BoS01Script.psc` |
-| `BoS01TrainingCampNoteScript.psc` |
 | `BoS02_DMV_SupportScript.psc` |
 | `BoS02AmmendmentScript.psc` |
 | `BoS02J47Script.psc` |
@@ -582,10 +1149,8 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `bs001_fortdebugbutton.psc` |
 | `bs001_suppliesdebugbutton.psc` |
 | `BS01_InstSwapEnableStatePlus.psc` |
-| `Burn_ArmoredDeathclawFrenzy.psc` |
 | `Burn_Bounty_AndyBachelor_AddAV.psc` |
 | `Burn_Bounty_BlueFangIntimidation.psc` |
-| `Burn_Bounty_CustomRadBurst.psc` |
 | `Burn_Bounty_EffectDescriptor_Script.psc` |
 | `Burn_Bounty_NukaBlast_Script.psc` |
 | `Burn_Bounty_NukaBlastMSG_Script.psc` |
@@ -595,9 +1160,8 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `BURN_EquipHelmet_Actor.psc` |
 | `BURN_EquipHelmet.psc` |
 | `burn_guntrap.psc` |
-| `Burn_HandlerCreateDeathclawScript.psc` |
 | `Burn_LockContainerOnSpawn.psc` |
-| `burn_movieprojectorscript.psc` |
+| `Burn_MovieProjectorScript.psc` |
 | `Burn_MQ03_MidQuestChallengeGrants.psc` |
 | `Burn_MQ03_MidQuestHackSuccess.psc` |
 | `Burn_MQ03_MidQuestLockpickSuccess.psc` |
@@ -633,7 +1197,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `BurntOvergrownScript.psc` |
 | `CAMPPets/PetActorScript.psc` |
 | `CAMPPets/petspawnfurniturescript.psc` |
-| `capsStashScript.psc` |
 | `capturebot.psc` |
 | `CB_MasterScript.psc` |
 | `CB_Mine_DropSiteContainerScript.psc` |
@@ -690,8 +1253,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `CollectItemViaTopicInfoQuestScript.psc` |
 | `CollectItemViaTopicInfoQuestScriptA.psc` |
 | `commontimefunctions.psc` |
-| `COMP_AllyPermanentSpawnMarkerScript.psc` |
-| `COMP_AllySpawnMarkerScript.psc` |
 | `COMP_Astro_OuttroQuestScript.psc` |
 | `COMP_Astronaut_SpawnerQuestScript.psc` |
 | `COMP_AstroSetStageOnPackageComplete.psc` |
@@ -714,7 +1275,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `COMP_RQ_Restore_Rescue_Script.psc` |
 | `comp_rq_restorescript.psc` |
 | `comp_rq_script.psc` |
-| `COMP_RQ_SpecificAliasesScript.psc` |
 | `COMP_ShutdownOnAllyCleanUpQuestScript.psc` |
 | `COMP_VisitorConversationQuestScript.psc` |
 | `COMP_VisitorPlayerDistanceStageSet.psc` |
@@ -725,24 +1285,17 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `CompanionScript.psc` |
 | `CompanionVisitorScript.psc` |
 | `crashedspacestationkeypadscript.psc` |
-| `Creatures/_Default/CreatureVariantScript.psc` |
 | `Creatures/_Default/glowinglootdrop.psc` |
 | `Creatures/_Default/setonfirescript.psc` |
 | `Creatures/AssaultronStealthScript.psc` |
-| `Creatures/BossLootDrop.psc` |
 | `Creatures/e3video_scorchbeastracescript.psc` |
 | `Creatures/Festive_LegendaryScorched.psc` |
-| `Creatures/FestiveGiftAddItem.psc` |
 | `Creatures/HoneyBeastRaceScript.psc` |
-| `Creatures/liberatorracescript.psc` |
 | `Creatures/MegaSlothRaceScript.psc` |
 | `Creatures/MoleMinerRaceScript.psc` |
-| `Creatures/mrhandyselfdestructscript.psc` |
 | `Creatures/robotselfdestructscript.psc` |
-| `Creatures/RusherDeathExplosion.psc` |
 | `Creatures/ScorchbeastSummonAlliesEffectScript.psc` |
 | `Creatures/ScorchedRaceScript.psc` |
-| `Creatures/SentryBotShoulderClusterScript.psc` |
 | `Creatures/SnallygasterRaceScript.psc` |
 | `currency.psc` |
 | `curvetable.psc` |
@@ -778,18 +1331,14 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `DebugSteveCTerminalScript.psc` |
 | `DebugSteveQuestScript.psc` |
 | `DebugSteveQuestScript2.psc` |
-| `default2statesyncactivator.psc` |
 | `defaultactivateobjectsonactivate.psc` |
-| `DefaultActivatorVendorFactionScript.psc` |
 | `DefaultActorAllowPCDialogueOverride.psc` |
 | `defaultactorsetavondeath.psc` |
-| `DefaultActorSetAVOnDeathInstOwner.psc` |
 | `defaultadditemsonload.psc` |
 | `defaultaliasaddplayerondeathscript.psc` |
 | `defaultaliasaddplayeronhitscript.psc` |
 | `DefaultAliasAddPlayerToQuest.psc` |
 | `defaultaliascrippleonload.psc` |
-| `DefaultAliasInventoryManagement.psc` |
 | `DefaultAliasInventoryManagementA.psc` |
 | `DefaultAliasInventoryManagementB.psc` |
 | `DefaultAliasInventoryManagementC.psc` |
@@ -823,7 +1372,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `defaultaliasonactivateremoveitemsa.psc` |
 | `defaultaliasoncontainerchangedtob.psc` |
 | `DefaultAliasOnDistanceGreaterThan.psc` |
-| `DefaultAliasOnDistanceLessThan.psc` |
 | `DefaultAliasOnDistanceLessThanA.psc` |
 | `DefaultAliasOnDistanceLessThanB.psc` |
 | `DefaultAliasOnDistanceLessThanC.psc` |
@@ -870,7 +1418,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `defaultcollaliasonlightningstrike.psc` |
 | `defaultcollaliassendeventonactivate.psc` |
 | `defaultcollaliassetstageonitemadd.psc` |
-| `DefaultCollClearGhostInstOwnerCombat.psc` |
 | `defaultcollectablehandinscript.psc` |
 | `defaultcollectablemiscitemscript.psc` |
 | `defaultcollectablequestscript.psc` |
@@ -878,10 +1425,8 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `DefaultCollectionAddPlayerOnHitScript.psc` |
 | `defaultcollectionaliaskeywordmanager.psc` |
 | `DefaultCollectionAliasOnActivateGive.psc` |
-| `DefaultCollectionAliasOnDeathA.psc` |
 | `DefaultCollectionAliasOnMenuItemRun.psc` |
 | `DefaultCollectionAliasRemoveOnDeath.psc` |
-| `DefaultCommunityDepositActivator.psc` |
 | `DefaultCompleteChallengeOnActivate.psc` |
 | `defaultcounteraliasinconfishsuccess.psc` |
 | `defaultcounteraliasinconfishsuccessa.psc` |
@@ -892,49 +1437,39 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `DefaultDailyQuestScript.psc` |
 | `defaultdamagerefonlightningstrike.psc` |
 | `DefaultDepositItem.psc` |
-| `DefaultDestructibleMultiStateActivator.psc` |
 | `DefaultEmoteObjective.psc` |
 | `DefaultEMSBossTriggerScript.psc` |
 | `defaultenableonlightningstrike.psc` |
 | `DefaultEventQuest.psc` |
-| `defaulteventradiusoverridescript.psc` |
-| `DefaultExplosionOnActivate.psc` |
+| `DefaultEventRadiusOverrideScript.psc` |
 | `DefaultExplosionOnTriggerEnter.psc` |
 | `DefaultFishingActivator.psc` |
 | `defaultforcelegendaryalias.psc` |
 | `DefaultForceLegendaryCollectionAlias.psc` |
 | `defaultgamedayspassedglobalsscript.psc` |
-| `DefaultInstanceAliasAddItemOnCreation.psc` |
 | `DefaultInstanceCellQuestSupportScript.psc` |
 | `DefaultItemCollection.psc` |
 | `defaultkeypadcontainerscript.psc` |
 | `defaultkeypaddoorscript.psc` |
 | `DefaultKeypadScript.psc` |
 | `DefaultKeypadSwitchDoorScript.psc` |
-| `defaultkeypadtargetscript.psc` |
 | `DefaultKeypadTimedSwitchScript.psc` |
-| `defaultkillmylinkedrefondeathscript.psc` |
 | `DefaultKillObjective.psc` |
 | `defaultlegendary4starcreatureref.psc` |
 | `defaultlegendarycreatureref.psc` |
 | `defaultlightningcontrollerscript.psc` |
-| `defaultlightningquesttrigger.psc` |
-| `defaultlightningspawngroupscript.psc` |
-| `defaultlightningspawningscript.psc` |
-| `DefaultLockRefOnUnload.psc` |
+| `DefaultLightningQuestTrigger.psc` |
+| `DefaultLightningSpawnGroupScript.psc` |
+| `DefaultLightningSpawningScript.psc` |
 | `DefaultMoveAliasWithSpawnMap.psc` |
 | `defaultonactivateremoveitemsetstages.psc` |
-| `DefaultOneWayContainerScript.psc` |
 | `DefaultOnItemAddedScript.psc` |
 | `DefaultOnItemCraftedScript.psc` |
-| `DefaultOnPlayerConnect.psc` |
 | `defaultonquestaddplayersendebs.psc` |
-| `DefaultOnReadAddToMap.psc` |
 | `DefaultOnReadSendStoryEvent.psc` |
 | `defaultontriggerenteraddtomap.psc` |
 | `defaultplaysoundonactivatealias.psc` |
 | `defaultquestadddeathitemscript.psc` |
-| `DefaultQuestAddMapMarkerOnHolotapeEnd.psc` |
 | `DefaultQuestAddPlayers.psc` |
 | `DefaultQuestAddPlayersDistanceCheck.psc` |
 | `defaultquestaddplayersdistancechecka.psc` |
@@ -950,7 +1485,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `defaultquestemergencybroadcastscript.psc` |
 | `DefaultQuestEMSInterfaceParentScript.psc` |
 | `defaultquestencounterwavescript.psc` |
-| `DefaultQuestEnterInstancedLocScript.psc` |
 | `DefaultQuestGiveReputation.psc` |
 | `DefaultQuestInventoryManagementScript.psc` |
 | `DefaultQuestlineRestartScript.psc` |
@@ -966,7 +1500,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `DefaultQuestOnKillManagerC.psc` |
 | `DefaultQuestOnRadioDetectedSendEvent.psc` |
 | `DefaultQuestOnTuneRadioScript.psc` |
-| `DefaultQuestRemovePlayersScript.psc` |
 | `DefaultQuestRewardEnemyDamageScript.psc` |
 | `defaultquestsendstoryevent.psc` |
 | `DefaultQuestSetStageOnTimerScript.psc` |
@@ -976,13 +1509,10 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `DefaultRandomConversationScript.psc` |
 | `DefaultRefClearGhostOnInstOwnerCombat.psc` |
 | `defaultrefcolaliasondeathchangevar.psc` |
-| `DefaultRefDestroyOnLoad.psc` |
-| `DefaultRefKillTriggerScript.psc` |
 | `DefaultRefOnAddedToPlayerSendEvent.psc` |
 | `defaultrefonlightningstrike.psc` |
 | `defaultrefontriggerleavesendevent.psc` |
 | `defaultremoveitemsbyrefcollection.psc` |
-| `DefaultRepairableActorScript.psc` |
 | `DefaultSendStoryEventOnMenuItemRun.psc` |
 | `defaultsetactorvalueonmenuitem.psc` |
 | `DefaultSetRandomStagesA.psc` |
@@ -991,10 +1521,8 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `DefaultSetStageOnInstanceLoadQuest.psc` |
 | `DefaultSetStageOnQuestTimerEnd.psc` |
 | `DefaultShutdownQuestAliasOnChangeLoc.psc` |
-| `defaultshutdownquestonchangelocation.psc` |
 | `DefaultSimpleRespawnScript.psc` |
 | `DefaultSpawnAnyObject.psc` |
-| `DefaultStartQuestOnHolotapeEvent.psc` |
 | `defaulttakeoverquestinstancescript.psc` |
 | `DefaultTeachRecipeOnMenuItemRun.psc` |
 | `DefaultTeachRecipeOnRead.psc` |
@@ -1004,22 +1532,17 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `DefaultTopicInfoGiveItemOnce.psc` |
 | `DefaultTopicInfoMarkForFaction.psc` |
 | `DefaultTopicInfoSetMultActorValues.psc` |
-| `DefaultTopicInfoTriggerCombat.psc` |
 | `DefaultTopicSendStoryEvent.psc` |
 | `DefaultTriggerEncounterWaveQuestScript.psc` |
 | `DefaultTriggerEncounterWaveScript.psc` |
-| `DefaultTriggerRespawnActorGroup.psc` |
 | `DefaultTriggerThrottledEventScript.psc` |
-| `defaultunlockandopenlinkonactivate.psc` |
 | `defaultvendorscript.psc` |
 | `DenizenDialogueScript.psc` |
-| `DenizenEffectScript.psc` |
-| `denizensendstoryevent.psc` |
+| `DenizenSendStoryEvent.psc` |
 | `DepressedRobobrainScript.psc` |
 | `dlc01_babylon_spawnenemytest.psc` |
 | `domekeycardfinal.psc` |
 | `domekeycardreader.psc` |
-| `DotMatrixPrinterScript.psc` |
 | `doublearrayindexvaluesscript.psc` |
 | `doublearrayvaluesscript.psc` |
 | `dq01_terminalscript.psc` |
@@ -1043,8 +1566,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `E01F_Fasnacht_SteinAnalysis.psc` |
 | `E01F_Fasnacht_WoodDonated.psc` |
 | `E01F_FasnachtQuest.psc` |
-| `E05_Caravan_Obstacle.psc` |
-| `E08A_BeehiveContainerScript.psc` |
 | `E08A_Moonshine_BathtubScript.psc` |
 | `e08amoonshinerrevivescript.psc` |
 | `e08aspawneractivatorscript.psc` |
@@ -1055,7 +1576,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `E08B_RadScrubberScript.psc` |
 | `E09A_AbomMutationListener.psc` |
 | `E09A_CrystalHengeScript.psc` |
-| `e09a_decorationsdisableonreset.psc` |
+| `E09A_DecorationsDisableOnReset.psc` |
 | `E09A_DestructibleCrystalsScript.psc` |
 | `E09A_MultipleEpicMutationTrigger.psc` |
 | `E09A_QuestScript.psc` |
@@ -1072,7 +1593,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `E09B_Script.psc` |
 | `E09B_TippableBrahmin.psc` |
 | `E09B_TippableBrahminServer.psc` |
-| `E09B_Wheel_ColaRewardScript.psc` |
 | `E09B_Wheel_Script.psc` |
 | `E09C_AliasTriggerScript.psc` |
 | `E09C_BrokenTrackAliasScript.psc` |
@@ -1098,8 +1618,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `Economy/ScorchbeastRecipesScript.psc` |
 | `Economy/UnlockTaxidermyRecipesScript.psc` |
 | `Economy/VendingMachineScript.psc` |
-| `EditKeywordsOnCombatChangeScript.psc` |
-| `EggClusterContainerScript.psc` |
 | `elevatordoorautoclosescript.psc` |
 | `EmergencyLightLightScript.psc` |
 | `emote.psc` |
@@ -1133,13 +1651,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `en01b_setstageonmenuitemscript.psc` |
 | `en01b_starttriggerquest.psc` |
 | `en01bquestscript.psc` |
-| `EN02_DecalParentScript.psc` |
-| `EN02_ExamWrapupScript.psc` |
-| `EN02_Misc_QuestScript.psc` |
-| `EN02_ModuleHandlerScript.psc` |
-| `EN02_MQ_QuestScript.psc` |
-| `en02_orbitaldropcratescript.psc` |
-| `en02_questscript.psc` |
 | `en03_questscript.psc` |
 | `en04_collsetstageonfurnitureexit.psc` |
 | `en04_collstartenemytimeronempty.psc` |
@@ -1198,12 +1709,10 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `EN07_IntroMiscScript.psc` |
 | `EN07_KeypadCooldownScript.psc` |
 | `EN07_MissileSoundRefScript.psc` |
-| `EN07_NukeSoundCategoryMagicEffect.psc` |
 | `EN07_PosterTutorialScript.psc` |
 | `en07_printersoundscript.psc` |
 | `EN07_ScorchbeastCleanUpScript.psc` |
 | `EN07_SiloStateTerminalScript.psc` |
-| `EnableDisableOnActivationScript.psc` |
 | `EnableLinkedRefOnLoad.psc` |
 | `ENB_BunkerMasterScript.psc` |
 | `ENB_ModusRefStateScript.psc` |
@@ -1245,7 +1754,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `ENz09_CollectionOnActivate.psc` |
 | `ENz09_QuestScript.psc` |
 | `EpicCreatureEffectScript.psc` |
-| `EpicCreatureRestoreHealthEffectScript.psc` |
 | `EpicCreaturesScript.psc` |
 | `ewsdangerroomscript.psc` |
 | `EWSModuleQuest.psc` |
@@ -1302,7 +1810,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `Expeditions/XPD_Pitt02/PlayExplosionOnMenuItemRun.psc` |
 | `Expeditions/XPD_Pitt02/QuestScript.psc` |
 | `Expeditions/XPD_Pitt02/TrogTargetScript.psc` |
-| `ExplodeOnDeathFX.psc` |
 | `FarmRobot01Script.psc` |
 | `farmrobotnotescript.psc` |
 | `FaschnachtMaskControl.psc` |
@@ -1345,10 +1852,8 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `ffz17_startevent.psc` |
 | `ffz17_teapotaliasscript.psc` |
 | `FFZ17_TeaTimeQuest.psc` |
-| `FirecrackerWhiskey_BurnAttackerScript.psc` |
 | `Fishing_BigFish_FishingScript.psc` |
 | `Fishing_BigFish_QuestScript.psc` |
-| `fishing/LindaLeeChumTroughScript.psc` |
 | `fishing/MQ01ChangeLocationQuestScript.psc` |
 | `fishing/MQ01PlayerAliasScript.psc` |
 | `fishing/NPCEquipRodOnLoad.psc` |
@@ -1442,7 +1947,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/packages/PF_W05_Community_Treehouse_E_00555B59.psc` |
 | `fragments/packages/PF_W05_Daily_R02_Package_Tra_00555E4E.psc` |
 | `fragments/packages/PF_W05_Derek_Vault79Operatio_0057507F.psc` |
-| `fragments/packages/PF_W05_MQ_001P_Wayward_Batte_0040BD22.psc` |
 | `fragments/packages/PF_W05_MQ_002P_Radical_Secon_00543873.psc` |
 | `fragments/packages/PF_W05_MQ_002P_Radical_Secon_00543874.psc` |
 | `fragments/packages/PF_W05_MQ_002P_Wayward_First_0040F68B.psc` |
@@ -1451,7 +1955,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/packages/PF_W05_MQ_002P_Wayward_Secon_0040F690.psc` |
 | `fragments/packages/PF_W05_MQ_003P_Muscle_SolExi_0041A4E5.psc` |
 | `fragments/packages/PF_W05_MQ_004P_Crane_ExitWay_0055ADC7.psc` |
-| `fragments/packages/PF_W05_MQ_101P_B_AubriePacka_0059F653.psc` |
 | `fragments/packages/PF_W05_MQA_206P_ExitOperatio_00583506.psc` |
 | `fragments/packages/PF_W05_MQA_206P_Gail_Entranc_00558978.psc` |
 | `fragments/packages/PF_W05_MQA_206P_LeaveVault_005674A3.psc` |
@@ -1504,9 +2007,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/packages/pf_w05_mqs_203p_robobraint_00407f9a_1.psc` |
 | `fragments/packages/PF_W05_MQS_204P_RaidersTrave_00574019.psc` |
 | `fragments/packages/PF_W05_MQS_205P_07_PennyLeav_00570D66.psc` |
-| `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573891.psc` |
-| `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573892.psc` |
-| `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573895.psc` |
 | `fragments/packages/PF_W05_RE_Scene_TravelersJM0_00569407.psc` |
 | `fragments/packages/PF_W05_RE_Scene_TravelersJM0_0056EC46.psc` |
 | `fragments/packages/PF_W05_RE_Scene_TravelersJM0_00571D1C.psc` |
@@ -1712,7 +2212,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/QF_BS01_Invention_005B79EB.psc` |
 | `fragments/Quests/QF_BS01_LeonePointer_Misc_005E65F1.psc` |
 | `fragments/Quests/QF_BS01_MQ00_Breadcrumb_005EAD3C.psc` |
-| `fragments/Quests/QF_BS01_MQ00_Breadcrumb_OnCo_005EAD3B.psc` |
 | `fragments/Quests/QF_BS01_MQ00_Breadcrumb_OnIn_005EECB8.psc` |
 | `fragments/Quests/QF_BS01_MQ06A_Raiders_005D2AFF.psc` |
 | `fragments/Quests/QF_BS01_MQ06B_Settlers_005D1F89.psc` |
@@ -1722,13 +2221,11 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/QF_BS01_Radio_IntroBroadcast_005E9591.psc` |
 | `fragments/Quests/QF_BS02_E01_Metal_005FE4D7.psc` |
 | `fragments/Quests/QF_BS02_MQ01_Penance_005F38F1.psc` |
-| `fragments/Quests/QF_BS02_MQ01_Penance_OnConne_00606C1C.psc` |
 | `fragments/Quests/QF_BS02_MQ02_Missing_005F56C4_1.psc` |
 | `fragments/Quests/qf_bs02_mq03_blue_005f5e1a.psc` |
 | `fragments/Quests/QF_BS02_MQ04_Conscience_005F3CF5.psc` |
 | `fragments/Quests/QF_BS02_MQ05_Catalyst_005FA459.psc` |
 | `fragments/Quests/QF_BS02_SpecialVendor_Dialog_00602AFA.psc` |
-| `fragments/Quests/QF_BURN_BountyGiver_Appalach_00864CC7.psc` |
 | `fragments/Quests/QF_BURN_BountyGiver_Applachi_0084BCA3.psc` |
 | `fragments/Quests/QF_Burn_BountyHunt_Daily_007D6A80.psc` |
 | `fragments/Quests/QF_Burn_BountyHunt_Public_007EBDF4.psc` |
@@ -1789,7 +2286,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/QF_BURN_SQ01_007DF76B.psc` |
 | `fragments/Quests/QF_BURN_SQ01_LevelIncrease_007F79AA.psc` |
 | `fragments/Quests/qf_burn_sq01_levelincrease_01000f56.psc` |
-| `fragments/Quests/QF_BURN_SQ01_OnConnect_007F79A9.psc` |
 | `fragments/Quests/qf_burn_sq01_onconnect_01000f55.psc` |
 | `fragments/Quests/QF_BURN_SQ01_Radio_007F79AB.psc` |
 | `fragments/Quests/qf_burn_sq01_radio_01000c06.psc` |
@@ -1921,7 +2417,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/QF_E05_Radiation_00562877.psc` |
 | `fragments/Quests/QF_E06_Colossus_00583D14.psc` |
 | `fragments/Quests/QF_E06_PocketWatch_00589140.psc` |
-| `fragments/Quests/QF_E06_PocketWatch_Colossus__00599357.psc` |
 | `fragments/Quests/QF_E06_PocketWatch_Maggie_00599355.psc` |
 | `fragments/Quests/QF_E06_PocketWatch_Misc_0058912C.psc` |
 | `fragments/Quests/qf_e07_mothman_006173a1.psc` |
@@ -1935,9 +2430,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/QF_E09D_GWWS_0065E071.psc` |
 | `fragments/Quests/qf_e09d_gwws_gunther_dialogu_006630ae.psc` |
 | `fragments/Quests/QF_EN01_Misc_000649C5.psc` |
-| `fragments/Quests/QF_EN01_Sam_000714FE.psc` |
 | `fragments/Quests/qf_en01a_mq_father_00017ebc.psc` |
-| `fragments/Quests/QF_EN02_Misc_000293A4.psc` |
 | `fragments/Quests/qf_en03_mq_uplink_01072ce0.psc` |
 | `fragments/Quests/qf_en04_misc_01000844.psc` |
 | `fragments/Quests/QF_EN05_Basic_0008C87F.psc` |
@@ -2017,7 +2510,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/QF_GHL00_Quest_0078DE64.psc` |
 | `fragments/Quests/QF_GHL00_Quest_DisguisePoint_007D4961.psc` |
 | `fragments/Quests/qf_ghl00_quest_disguisepoint_01001ad5.psc` |
-| `fragments/Quests/QF_GHL00_Quest_OnConnect_0078DB39.psc` |
 | `fragments/Quests/QF_GHL00_Quest_OnIncreaseLev_0078DB37.psc` |
 | `fragments/Quests/QF_GHL00_Quest_Radio_0078DE65.psc` |
 | `fragments/Quests/QF_GHL00_Quest_TransformPlay_007980FD.psc` |
@@ -2037,9 +2529,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/qf_gq01_horde_0000123f.psc` |
 | `fragments/Quests/QF_GQ04_WanderingBoss_0019B932.psc` |
 | `fragments/Quests/QF_GQ10_SuperMutantMerchant_0016AECD.psc` |
-| `fragments/Quests/QF_HolotapeQuest_00011B82.psc` |
 | `fragments/Quests/qf_holotapequest_comp_00571f0e.psc` |
-| `fragments/Quests/QF_HolotapeQuest_TS_00511A82.psc` |
 | `fragments/Quests/QF_HouseOfScares_004F82B8.psc` |
 | `fragments/Quests/qf_houseofscares_questrestar_004f82bd.psc` |
 | `fragments/Quests/QF_HTO_HostileTakeOver_Mar_008EFCA5_1.psc` |
@@ -2105,7 +2595,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/qf_momitemmanager_004e6051.psc` |
 | `fragments/Quests/QF_MoMVeil_0035C8B6.psc` |
 | `fragments/Quests/qf_moon_herd_00690659.psc` |
-| `fragments/Quests/QF_MOON_HolotapeQuest_006A21E2.psc` |
 | `fragments/Quests/QF_Moon_SQ01_Kieran_0068FD4A.psc` |
 | `fragments/Quests/QF_Moon_SQ02_Eugenie_006A173A.psc` |
 | `fragments/Quests/QF_Moon_SQ03_Libby_006A1030.psc` |
@@ -2132,7 +2621,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/QF_MQ_Overseer_CacheQuest_X2_003D7F5F.psc` |
 | `fragments/Quests/QF_MQ_Overseer_CacheQuest_X4_003D7F60.psc` |
 | `fragments/Quests/QF_MQ_Overseer_CacheQuest_X5_003D7F61.psc` |
-| `fragments/Quests/QF_MQ_OverseerNukeHolotapeVi_00437987.psc` |
 | `fragments/Quests/QF_MTN_MQ_Missing_003A5FA0.psc` |
 | `fragments/Quests/qf_mtnl01_raiders_00045a40.psc` |
 | `fragments/Quests/QF_MTNM01_Mayhem_0009732E.psc` |
@@ -2522,7 +3010,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/QF_RESceneTemplate_00027DD5.psc` |
 | `fragments/Quests/QF_ResourceGeneratorQuest_0012DB3F.psc` |
 | `fragments/Quests/QF_RETravelKMK01_0011CED1.psc` |
-| `fragments/Quests/QF_RS01A_Contact_003C4C22.psc` |
 | `fragments/Quests/qf_rs01a_contact_01001486.psc` |
 | `fragments/Quests/QF_RS01B_Contact_003C4C23.psc` |
 | `fragments/Quests/qf_rs01b_contact_01001482.psc` |
@@ -2593,7 +3080,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/QF_Storm_Misc_CraigItems_007734D8.psc` |
 | `fragments/Quests/qf_storm_misc_craigitems_01000eaa.psc` |
 | `fragments/Quests/QF_Storm_MQ01_Breadcrumb_0072A2A8.psc` |
-| `fragments/Quests/QF_Storm_MQ01_Breadcrumb_OnC_0072A2A7.psc` |
 | `fragments/Quests/QF_Storm_MQ01_Breadcrumb_OnI_0072AEAF.psc` |
 | `fragments/Quests/QF_Storm_MQ01_Breadcrumb_Rad_00699466.psc` |
 | `fragments/Quests/qf_storm_mq02_intropt1_00734c6b.psc` |
@@ -2782,151 +3268,26 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/qf_w05_community_raiderfishc_01000879.psc` |
 | `fragments/Quests/QF_W05_Community_Treehouse_V_00555A72.psc` |
 | `fragments/Quests/QF_W05_CommunityTest_Quest_004219C3.psc` |
-| `fragments/Quests/QF_W05_Daily_F01_Radio_0054A71B.psc` |
-| `fragments/Quests/QF_W05_Daily_Foundation01_0054A71A.psc` |
 | `fragments/Quests/qf_w05_daily_foundation01_0100082b.psc` |
 | `fragments/Quests/QF_W05_Daily_Photo_00548761.psc` |
 | `fragments/Quests/qf_w05_daily_photo_01000834.psc` |
-| `fragments/Quests/QF_W05_Daily_Photo_MiscPoint_005A5E29.psc` |
-| `fragments/Quests/qf_w05_daily_r01_0054fa50.psc` |
-| `fragments/Quests/QF_W05_Daily_R02_Retirement_0054DCF9.psc` |
-| `fragments/Quests/QF_W05_Dialogue_SecretServic_0054279C.psc` |
-| `fragments/Quests/QF_W05_DialogueDenizens_Scen_00597301.psc` |
-| `fragments/Quests/QF_W05_DialogueOverseer_003FB7B0.psc` |
 | `fragments/Quests/QF_W05_DialogueRaiderRC_Retu_00402CA0.psc` |
-| `fragments/Quests/QF_W05_DialogueRaidersCrater_00559532.psc` |
-| `fragments/Quests/QF_W05_DialogueRaidersCrater_0055E2BA.psc` |
-| `fragments/Quests/QF_W05_DialogueRaidersCrater_005832EF.psc` |
 | `fragments/Quests/QF_W05_DialogueSettlers_Foun_004299D0.psc` |
-| `fragments/Quests/QF_W05_DialogueSettlers_Inte_00570D57.psc` |
-| `fragments/Quests/QF_W05_DialogueTheWayward_0040F5BF.psc` |
-| `fragments/Quests/QF_W05_LGV01_PointerQuest_0059C22B.psc` |
-| `fragments/Quests/QF_W05_MQ_000P_005698E4.psc` |
-| `fragments/Quests/QF_W05_MQ_001P_Wayward_00405E14.psc` |
-| `fragments/Quests/QF_W05_MQ_001P_Wayward_Lacey_00405E15.psc` |
-| `fragments/Quests/QF_W05_MQ_001P_Wayward_Lacey_0053AF40.psc` |
-| `fragments/Quests/QF_W05_MQ_001P_Wayward_MiscP_00594DFD.psc` |
 | `fragments/Quests/qf_w05_mq_001p_wayward_penni_005851dd.psc` |
-| `fragments/Quests/QF_W05_MQ_002P_Radical_0040F5BE.psc` |
-| `fragments/Quests/QF_W05_MQ_003P_Muscle_0041A39D.psc` |
-| `fragments/Quests/QF_W05_MQ_003P_Muscle_Duncan_005537E0.psc` |
-| `fragments/Quests/QF_W05_MQ_003P_Radio_0041A325.psc` |
-| `fragments/Quests/QF_W05_MQ_004P_Crane_0041C976.psc` |
-| `fragments/Quests/QF_W05_MQ_101P_003FBBB2.psc` |
-| `fragments/Quests/QF_W05_MQ_101P_A_003FBC0D.psc` |
-| `fragments/Quests/QF_W05_MQ_101P_B_003FBC10.psc` |
-| `fragments/Quests/QF_W05_MQ_101P_OnConnect_003FBBB4.psc` |
 | `fragments/Quests/QF_W05_MQ_101P_OnIncreaseLev_00591E06.psc` |
 | `fragments/Quests/QF_W05_MQ_101P_OnLocationCha_00591AB3.psc` |
-| `fragments/Quests/QF_W05_MQ_101P_Radio_003FBBB3.psc` |
-| `fragments/Quests/QF_W05_MQ_102P_003FFACF.psc` |
-| `fragments/Quests/qf_w05_mq_102p_a_003ffc02.psc` |
-| `fragments/Quests/QF_W05_MQ_102P_B_003FFC00.psc` |
-| `fragments/Quests/QF_W05_MQA_206P_0054EDB9.psc` |
 | `fragments/Quests/qf_w05_mqa_206p_0100087e.psc` |
-| `fragments/Quests/QF_W05_MQR_201P_0040D28D.psc` |
-| `fragments/Quests/QF_W05_MQR_201P_Track_RadioQ_0040D28C.psc` |
-| `fragments/Quests/QF_W05_MQR_202P_0041C9E6.psc` |
-| `fragments/Quests/QF_W05_MQR_203P_0042F31B.psc` |
-| `fragments/Quests/QF_W05_MQR_204P_00535E55.psc` |
-| `fragments/Quests/QF_W05_MQR_205P_00548B7A.psc` |
-| `fragments/Quests/QF_W05_MQR_205P_A_005588EF.psc` |
-| `fragments/Quests/QF_W05_MQR_Choice_005930B2.psc` |
-| `fragments/Quests/QF_W05_MQS_202P_Acrobat_003F28C7.psc` |
-| `fragments/Quests/QF_W05_MQS_203P_0040571C.psc` |
-| `fragments/Quests/QF_W05_MQS_204P_0040C458.psc` |
-| `fragments/Quests/QF_W05_MQS_205P_0041CB6D.psc` |
-| `fragments/Quests/qf_w05_mqs_choice_00592500.psc` |
-| `fragments/Quests/QF_W05_MQSettlers_201P_Indus_003F28C3.psc` |
 | `fragments/Quests/QF_W05_MQSettlers_201P_Mothe_003F514C.psc` |
 | `fragments/Quests/qf_w05_player_01e_01000cfe.psc` |
-| `fragments/Quests/qf_w05_re_assaultaf01_0055de89.psc` |
 | `fragments/Quests/QF_W05_RE_AssaultBB01_0056F036.psc` |
-| `fragments/Quests/qf_w05_re_assaultbb02_0056f035.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw03_00569d82.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw04_0056a0c1.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw05_0056a0c0.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw06_0056a0bf.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw07_0056a0be.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw08_0056a0bd.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw09_0056ac47.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw10_0056ac46.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw11_0056ac45.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw13_0056ac44.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw14_0056ac43.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw15_0056ac42.psc` |
-| `fragments/Quests/qf_w05_re_assaultzw16_0056ac41.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp08_cryptids_00571acc.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp09_cryptids_00571acb.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp10_cryptids_00571aca.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp11_campers_00586246.psc` |
-| `fragments/Quests/QF_W05_RE_Camp_JP11_RaiderCa_00586245.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp12_datenigh_00586247.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp13_twoscien_00586244.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp14_soldiera_00586248.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp15_twosoldi_00586249.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp16_supermut_0058624a.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp17_bullies_0058624b.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp19_mobcamp__0058cea2.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp20_mobcamp__0058cea3.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp21_mobcamp__0058cea6.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp22_mobcamp__0058cea7.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp23_mobcamp__0058cea8.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp24_deadcult_0058cea9.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp25_deadsett_0058ceb0.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp26_deadmuta_0058ceb5.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp27_mobcamp__0058ceb6.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp28_mobcamp__0058ceb8.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp29_mobcamp__0058cebb.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp30_mobcamp__0058cebc.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp31_mobcamp__0058cebd.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp32_mobcamp__0058cebe.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp33_mobcamp__0058cebf.psc` |
-| `fragments/Quests/qf_w05_re_camp_jp34_returnin_0058d3b4.psc` |
-| `fragments/Quests/qf_w05_re_campaf01_00562ba5.psc` |
-| `fragments/Quests/qf_w05_re_campaf02_0056385e.psc` |
-| `fragments/Quests/qf_w05_re_campaf04_005913ef.psc` |
-| `fragments/Quests/qf_w05_re_campaf05_0059192e.psc` |
-| `fragments/Quests/qf_w05_re_campaf06_00591931.psc` |
-| `fragments/Quests/qf_w05_re_campaf07_00591935.psc` |
-| `fragments/Quests/qf_w05_re_campaf08_00591937.psc` |
-| `fragments/Quests/qf_w05_re_campaf09_0059193a.psc` |
 | `fragments/Quests/QF_W05_RE_CampTemplate_00568688.psc` |
-| `fragments/Quests/qf_w05_re_camptemplate01_00562281.psc` |
 | `fragments/Quests/QF_W05_RE_JP05_Camp_CryptidS_00569CC5.psc` |
 | `fragments/Quests/QF_W05_RE_JP06_Camp_Rambling_00569CC6.psc` |
-| `fragments/Quests/qf_w05_re_jp07_camp_junkdeal_00569cc7.psc` |
-| `fragments/Quests/qf_w05_re_miningjm01_005600e7.psc` |
-| `fragments/Quests/qf_w05_re_miningjm02_00562b57.psc` |
-| `fragments/Quests/qf_w05_re_miningjm03_005644da.psc` |
-| `fragments/Quests/qf_w05_re_miningjm04_00564a28.psc` |
-| `fragments/Quests/qf_w05_re_object_jp01_0056d1d8.psc` |
-| `fragments/Quests/qf_w05_re_objectaf01_0056a1d1.psc` |
-| `fragments/Quests/qf_w05_re_objectbb01_00568e56.psc` |
-| `fragments/Quests/qf_w05_re_objectbb02_0056f038.psc` |
-| `fragments/Quests/qf_w05_re_scene_jp04_a_005637bc.psc` |
-| `fragments/Quests/QF_W05_RE_Scene_JP04_B_005637BA.psc` |
-| `fragments/Quests/qf_w05_re_scene_travelersjm0_0056ec33.psc` |
-| `fragments/Quests/qf_w05_re_scene_travelersjm0_00571cd7.psc` |
-| `fragments/Quests/qf_w05_re_scene_travelersjm0_00587bca.psc` |
-| `fragments/Quests/qf_w05_re_scene_travelersjm0_00587bcb.psc` |
-| `fragments/Quests/qf_w05_re_sceneaf04_005849e2.psc` |
 | `fragments/Quests/QF_W05_RE_SceneJN01_Debug_005A506B.psc` |
 | `fragments/Quests/QF_W05_RE_SceneTemplate_00568689.psc` |
-| `fragments/Quests/QF_W05_RE_SceneZW01_0056368E.psc` |
-| `fragments/Quests/QF_W05_RE_SceneZW02_005655E4.psc` |
-| `fragments/Quests/qf_w05_re_travelaf01_00567a72.psc` |
-| `fragments/Quests/qf_w05_re_travelaf02_0056a1d0.psc` |
-| `fragments/Quests/qf_w05_re_travelbb01_0056f039.psc` |
-| `fragments/Quests/qf_w05_re_travelbb02_0056f034.psc` |
-| `fragments/Quests/qf_w05_re_travelbb03_0056f033.psc` |
-| `fragments/Quests/qf_w05_re_travelsm01_0059ea8f.psc` |
-| `fragments/Quests/qf_w05_re_travelsm02_0059ea8e.psc` |
 | `fragments/Quests/QF_W05_SettlersDaily_Clinic_003F2DC7.psc` |
 | `fragments/Quests/QF_W05_SettlersDaily_Fieldha_00403436.psc` |
-| `fragments/Quests/QF_W05_SettlersDaily_Paintin_003F28CC.psc` |
 | `fragments/Quests/QF_W05_SettlersDaily_Restock_0041B725.psc` |
-| `fragments/Quests/QF_W05_SettlersDaily_Secret_00541685.psc` |
 | `fragments/Quests/QF_W05_SettlersDaily_Stew_003F2DC9.psc` |
 | `fragments/Quests/qf_w05_testdialoguequest_00426914.psc` |
 | `fragments/Quests/QF_WarehouseEWSModuleExample_005C4924.psc` |
@@ -2974,7 +3335,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Quests/QF_XPD_Hub_Mutual_0063D5BD.psc` |
 | `fragments/Quests/QF_XPD_Hub_Recipe_00621FB7.psc` |
 | `fragments/Quests/QF_XPD_Hub_Responders_0062F5D6.psc` |
-| `fragments/Quests/QF_XPD_Hub_Responders_OnConn_0064D323.psc` |
 | `fragments/Quests/QF_XPD_HubRE_DonateItem_Test_00634699.psc` |
 | `fragments/Quests/qf_xpd_hubre_lostandfound_ch_006422f9.psc` |
 | `fragments/Quests/QF_XPD_HubRE_LostAndFound_Re_00643EB9.psc` |
@@ -3372,9 +3732,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/Scenes/SF_W05_MQR_203P_SargentoPA_0_0042F577.psc` |
 | `fragments/Scenes/SF_W05_MQR_205P_004A_JohnnyD_00572D92.psc` |
 | `fragments/Scenes/SF_W05_MQR_205P_005_Security_00548CFE.psc` |
-| `fragments/Scenes/SF_W05_MQR_Choice_StartHeist_00593C90.psc` |
 | `fragments/Scenes/SF_W05_MQS_202P_Scene1a_005600D6.psc` |
-| `fragments/Scenes/sf_w05_mqs_choice_starthei_0059250a_1.psc` |
 | `fragments/Scenes/SF_W05_RE_JP07_Camp_BloodEag_0056D230.psc` |
 | `fragments/Scenes/SF_W05_RE_ObjectAF01_Attack_0056BC6B.psc` |
 | `fragments/Scenes/SF_W05_RE_ObjectAF01_Explosi_0056A252.psc` |
@@ -3716,10 +4074,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/terminals/term_vtecagcenterterminal_0100168f_1.psc` |
 | `fragments/terminals/term_vtecagcenterterminal_0100168f.psc` |
 | `fragments/terminals/TERM_VTU_OverseerTrainingDea_0009A6DB.psc` |
-| `fragments/terminals/TERM_W05_MQ_004P_Crane_Regis_00424851.psc` |
-| `fragments/terminals/TERM_W05_MQ_101P_NukaTermina_003FE452.psc` |
 | `fragments/terminals/TERM_W05_MQ_102P_RestrictedW_00400485.psc` |
-| `fragments/terminals/TERM_W05_MQ_102P_SecurityTer_00544D59.psc` |
 | `fragments/terminals/term_w05_mqs_201p_motherlode_003f514d.psc` |
 | `fragments/terminals/term_warehousetestambusheste_01004b10.psc` |
 | `fragments/terminals/TERM_WarehouseTestEncounterT_0031E60F.psc` |
@@ -4017,7 +4372,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/topicinfos/tif_e09d_mostwanted_gunther__0066f34f.psc` |
 | `fragments/topicinfos/tif_e09d_mostwanted_gunther__01002dba.psc` |
 | `fragments/topicinfos/tif_e09d_mostwanted_gunther__010032e1.psc` |
-| `fragments/topicinfos/TIF_EN02_MQ_Us_0052F516.psc` |
 | `fragments/topicinfos/TIF_EN05_Basic_00182058.psc` |
 | `fragments/topicinfos/TIF_ENB_DialogueEnclaveBunke_0002A75E.psc` |
 | `fragments/topicinfos/TIF_ENs02_Blast_00363986.psc` |
@@ -4367,169 +4721,51 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/topicinfos/TIF_W05_Community_RaiderFish_0057CF4F.psc` |
 | `fragments/topicinfos/TIF_W05_Community_RaiderFish_0057CF62.psc` |
 | `fragments/topicinfos/tif_w05_community_treehouse__00555ad7.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_BethyMangan_00599806.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_BethyMangan_0059980C.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_BethyMangan_0059980F.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_BethyMangan_0059A014.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_BethyMangan_0059A015.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_dontrelle_01000fc7_1.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_dontrelle_01000fd9_1.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_dontrelle_01000fe0_1.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_dontrelle_01000fe0_2.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_DontrelleHa_00583D50.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_DontrelleHa_00583D51.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_DontrelleHa_00583D54.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_dontrelleha_01000fc7.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_dontrelleha_01000fd9.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_dontrelleha_01000fe0.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_FridaMadani_00599449.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_FuzzyBen_00598B1A.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_FuzzyBen_00598B25.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_GilbertHops_00596E3A.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_GilbertHops_00596E3D.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_GilbertHops_00596E41.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_GilbertHops_00596E43.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_gilberthops_01000972.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_gilberthops_01000975.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_gilberthops_01000978.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_gilberthops_0100097b.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_heatherel_01000fe2_1.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_HeatherElli_00577574.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_HeatherElli_00577579.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_HeatherElli_0057757A.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_HeatherElli_00577580.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_HeatherElli_00583D4F.psc` |
 | `fragments/topicinfos/tif_w05_dialogue_heatherelli_01000fe2.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_JoeCreigh_00598B2D.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585551.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585552.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585553.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585554.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585555.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585556.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_Johnny_00585557.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_JonahIto_005982BC.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_JonahIto_005982BF.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_JonahIto_005982C0.psc` |
-| `fragments/topicinfos/tif_w05_dialogue_jonahito_005982c4.psc` |
-| `fragments/topicinfos/TIF_W05_Dialogue_JonahIto_005982CE.psc` |
-| `fragments/topicinfos/tif_w05_dialogue_maramayari_00598b86.psc` |
-| `fragments/topicinfos/tif_w05_dialogue_maramayari_00598b90.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDavenport_0056F021.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_S_005976F8_1.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_S_0059B050_1.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00597334.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059733D.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00597340.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_005976D8.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_005976DE.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_005976E0.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_005976E8.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_005976EC.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_005976FA.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059898C.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059899C.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_005989AE.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D5A.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D5C.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D5D.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D5F.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D61.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D62.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D65.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598D67.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598DB1.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_00598DB2.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B009.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B00A.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B00E.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B00F.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B010.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B012.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B015.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B016.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B01A.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B01C.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B01E.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B01F.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B020.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B021.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B023.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B027.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B02B.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B02C.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B02D.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B031.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B034.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B037.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B038.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B039.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B03A.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B03B.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B03C.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B03E.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B03F.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B041.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B045.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B047.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B049.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B04A.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B04B.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B04D.psc` |
 | `fragments/topicinfos/tif_w05_dialoguedenizens_sce_0059b050.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B051.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B054.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B055.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B056.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B057.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B058.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B059.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B05B.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B05D.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B060.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B061.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B062.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B063.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B066.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B06A.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B06F.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B076.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B078.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B079.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B07A.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B07B.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B07C.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B081.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B082.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B086.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B089.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B08A.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B08B.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B08C.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B090.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B097.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B098.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B099.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B09A.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B09E.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0A8.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0A9.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0AC.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0AE.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0B3.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0B4.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0BA.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0BC.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0BF.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0ED.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0EE.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0F0.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0F2.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0F3.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0F8.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0F9.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0FA.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B0FB.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B100.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B101.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B102.psc` |
@@ -4543,46 +4779,14 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B10D.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B10E.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B10F.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B114.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059B115.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059BC92.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059BC96.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059BC97.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059BC9C.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueDenizens_Sce_0059C980.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueOverseer_00589696.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueOverseer_00595A2A.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueOverseer_00595A2B.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueOverseer_00595A2C.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueOverseer_00595A2F.psc` |
 | `fragments/topicinfos/tif_w05_dialogueradicals_0040fa8f.psc` |
 | `fragments/topicinfos/tif_w05_dialogueradicals_0040fa90.psc` |
 | `fragments/topicinfos/tif_w05_dialogueradicals_0040fa93.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueRadicals_00411F61.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueRadicals_Ext_005895B2.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_00585959.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_0058595A.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_0058595B.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_0058595C.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_0058595D.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_0058595E.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueRaidersCrate_0058595F.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueRaidersGener_0042A0A0.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueRaidersGener_0042A0A1.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueSettlers_00562162.psc` |
 | `fragments/topicinfos/tif_w05_dialoguesettlers_01000989.psc` |
 | `fragments/topicinfos/tif_w05_dialoguesettlers_0100098a.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0058FE02.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0058FE03.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0058FE04.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0058FE05.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_00595B53.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EEA7.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EEA9.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EEAC.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EEAE.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EEB1.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueSettlers_Fou_0059EEB2.psc` |
 | `fragments/topicinfos/tif_w05_dialoguesettlers_fou_01000b38.psc` |
 | `fragments/topicinfos/tif_w05_dialoguesettlers_fou_01000bd6.psc` |
 | `fragments/topicinfos/tif_w05_dialoguesettlers_fou_01000bd7.psc` |
@@ -4618,7 +4822,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/topicinfos/tif_w05_dialoguesettlers_fou_01000c7e.psc` |
 | `fragments/topicinfos/tif_w05_dialoguesettlers_fou_01000c7f.psc` |
 | `fragments/topicinfos/tif_w05_dialoguesettlers_fou_01000c80.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueTheWayward_0042A20E.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0058393C.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0058393D.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0058393E.psc` |
@@ -4626,31 +4829,17 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/topicinfos/tif_w05_dialoguethewayward_i_00585262.psc` |
 | `fragments/topicinfos/tif_w05_dialoguethewayward_i_0058528d.psc` |
 | `fragments/topicinfos/tif_w05_dialoguethewayward_i_005852dd.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0059AA6A.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0059AA6B.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0059AA6C.psc` |
-| `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0059AA6D.psc` |
 | `fragments/topicinfos/tif_w05_dialoguethewayward_i_01000c7c.psc` |
 | `fragments/topicinfos/tif_w05_dialoguethewayward_i_01000c7d.psc` |
 | `fragments/topicinfos/tif_w05_dialoguethewayward_i_01000c7e.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Lace_0056A164.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Lace_0056A173.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Lace_0056A174.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Lace_0056A18B.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Penn_005852B7.psc` |
 | `fragments/topicinfos/TIF_W05_MQ_002P_Radical_00543828.psc` |
 | `fragments/topicinfos/TIF_W05_MQ_002P_Radical_00543836.psc` |
 | `fragments/topicinfos/TIF_W05_MQ_002P_Radical_00543839.psc` |
 | `fragments/topicinfos/TIF_W05_MQ_002P_Radical_00543869.psc` |
 | `fragments/topicinfos/TIF_W05_MQ_002P_Radical_0054386B.psc` |
 | `fragments/topicinfos/tif_w05_mq_002p_radical_01000cd4.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Anch_00589599.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Anch_0058959A.psc` |
 | `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Ty_0058958C_1.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Tyle_00589564.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Tyle_00589570.psc` |
 | `fragments/topicinfos/tif_w05_mq_002p_radical_tyle_0058958c.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Tyle_005895DE.psc` |
 | `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0041A46F.psc` |
 | `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0041A4BC.psc` |
 | `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0041A4C8.psc` |
@@ -4660,7 +4849,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/topicinfos/TIF_W05_MQ_102P_0040107B.psc` |
 | `fragments/topicinfos/TIF_W05_MQ_102P_004010A0.psc` |
 | `fragments/topicinfos/TIF_W05_MQ_102P_004010A6.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_102P_004010A8.psc` |
 | `fragments/topicinfos/TIF_W05_MQR_202P_0041CADB.psc` |
 | `fragments/topicinfos/TIF_W05_MQR_202P_0041CAF7.psc` |
 | `fragments/topicinfos/TIF_W05_MQR_202P_0041CB1A.psc` |
@@ -4701,15 +4889,10 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/topicinfos/TIF_W05_MQR_204P_0056DD22.psc` |
 | `fragments/topicinfos/TIF_W05_MQR_Choice_0053635B.psc` |
 | `fragments/topicinfos/TIF_W05_RE_AssaultAF01_0055DEA2.psc` |
-| `fragments/topicinfos/TIF_W05_RE_AssaultAF01_0055DEAA.psc` |
-| `fragments/topicinfos/TIF_W05_RE_AssaultAF01_0055DEAB.psc` |
 | `fragments/topicinfos/TIF_W05_RE_AssaultAF01_0055DEAF.psc` |
 | `fragments/topicinfos/tif_w05_re_assaultaf01_005622b0.psc` |
 | `fragments/topicinfos/tif_w05_re_assaultaf01_01000bb0.psc` |
 | `fragments/topicinfos/TIF_W05_RE_AssaultBB02_0056F076.psc` |
-| `fragments/topicinfos/TIF_W05_RE_AssaultBB02_0056F078.psc` |
-| `fragments/topicinfos/TIF_W05_RE_AssaultBB02_00573F0D.psc` |
-| `fragments/topicinfos/TIF_W05_RE_AssaultBB02_00573F0E.psc` |
 | `fragments/topicinfos/tif_w05_re_assaultzw02_01000d91.psc` |
 | `fragments/topicinfos/tif_w05_re_assaultzw02_01000e04.psc` |
 | `fragments/topicinfos/tif_w05_re_assaultzw03_00569d8b.psc` |
@@ -4743,9 +4926,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/topicinfos/tif_w05_re_camp_jp10_cryptid_010084da.psc` |
 | `fragments/topicinfos/tif_w05_re_camp_jp10_cryptid_010084f9.psc` |
 | `fragments/topicinfos/TIF_W05_RE_CampAF01_0056386D.psc` |
-| `fragments/topicinfos/TIF_W05_RE_CampAF01_00563870_1.psc` |
 | `fragments/topicinfos/tif_w05_re_campaf01_00563870.psc` |
-| `fragments/topicinfos/TIF_W05_RE_CampAF02_00567A9F.psc` |
 | `fragments/topicinfos/TIF_W05_RE_CampAF02_00567AA6.psc` |
 | `fragments/topicinfos/TIF_W05_RE_JP05_Camp_Cryptid_00569D3F.psc` |
 | `fragments/topicinfos/TIF_W05_RE_JP05_Camp_Cryptid_00569D42.psc` |
@@ -4753,55 +4934,21 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/topicinfos/TIF_W05_RE_JP05_Camp_Cryptid_00569D58.psc` |
 | `fragments/topicinfos/TIF_W05_RE_JP05_Camp_Cryptid_00569D5E.psc` |
 | `fragments/topicinfos/TIF_W05_RE_JP05_Camp_Cryptid_00569D61.psc` |
-| `fragments/topicinfos/TIF_W05_RE_ObjectAF01_0056A224.psc` |
-| `fragments/topicinfos/TIF_W05_RE_ObjectAF01_0056A230.psc` |
-| `fragments/topicinfos/TIF_W05_RE_ObjectAF01_0056A239.psc` |
-| `fragments/topicinfos/TIF_W05_RE_ObjectAF01_0056A242.psc` |
 | `fragments/topicinfos/tif_w05_re_objectaf01_01000d15.psc` |
-| `fragments/topicinfos/TIF_W05_RE_ObjectBB01_00568E60.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP01_0055C56C.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP01_0055C572.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP01_0055C574.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP01_0055C576.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP01_00575178.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F811.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F815.psc` |
 | `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F819.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F81A.psc` |
 | `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F81B.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F81E.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F823.psc` |
 | `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F829.psc` |
 | `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F833.psc` |
 | `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F834.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F837.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F838.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_0055F83F.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_00573F0B.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_00573F0C.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP02_00573F13.psc` |
 | `fragments/topicinfos/TIF_W05_RE_Scene_JP03_0055F818.psc` |
 | `fragments/topicinfos/TIF_W05_RE_Scene_JP03_0055F83D.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563818.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_0056381B.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_0056381C.psc` |
 | `fragments/topicinfos/tif_w05_re_scene_jp04_a_00563822.psc` |
 | `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563824.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563827_1.psc` |
 | `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563829.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_0056382E.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_0056382F.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563831.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563832_1.psc` |
 | `fragments/topicinfos/tif_w05_re_scene_jp04_a_00563832.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563838.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_A_00563839.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_B_0056D1FE.psc` |
 | `fragments/topicinfos/TIF_W05_RE_Scene_JP04_B_0056D200.psc` |
 | `fragments/topicinfos/tif_w05_re_scene_jp04_b_0056d206.psc` |
 | `fragments/topicinfos/TIF_W05_RE_Scene_JP04_B_0056D209.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_B_0056D20C.psc` |
-| `fragments/topicinfos/TIF_W05_RE_Scene_JP04_B_0056D218.psc` |
 | `fragments/topicinfos/TIF_W05_RE_Scene_JP04_B_0056D21B.psc` |
 | `fragments/topicinfos/tif_w05_re_scene_travelersjm_0056a0ef.psc` |
 | `fragments/topicinfos/tif_w05_re_scene_travelersjm_0056a0f4.psc` |
@@ -4811,22 +4958,9 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `fragments/topicinfos/tif_w05_re_scene_travelersjm_01000a4a.psc` |
 | `fragments/topicinfos/TIF_W05_RE_SceneAF03_0056A234.psc` |
 | `fragments/topicinfos/TIF_W05_RE_SceneAF03_0056A237.psc` |
-| `fragments/topicinfos/TIF_W05_RE_SceneAF03_0056A23C.psc` |
-| `fragments/topicinfos/TIF_W05_RE_SceneAF03_0056A245.psc` |
 | `fragments/topicinfos/TIF_W05_RE_SceneAF03_00577C13.psc` |
-| `fragments/topicinfos/TIF_W05_RE_SceneAF03_005849FF.psc` |
-| `fragments/topicinfos/TIF_W05_RE_SceneAF04_005849FC.psc` |
-| `fragments/topicinfos/TIF_W05_RE_SceneAF04_005849FD.psc` |
-| `fragments/topicinfos/TIF_W05_RE_SceneAF04_00584A00.psc` |
-| `fragments/topicinfos/TIF_W05_RE_SceneAF04_00584A04.psc` |
-| `fragments/topicinfos/TIF_W05_RE_SceneAF04_00584A05.psc` |
-| `fragments/topicinfos/TIF_W05_RE_SceneTemplate01_0055DEA4.psc` |
-| `fragments/topicinfos/TIF_W05_RE_SceneTemplate01_0055DEAD.psc` |
 | `fragments/topicinfos/TIF_W05_RE_TravelAF01_00567AA7.psc` |
 | `fragments/topicinfos/tif_w05_re_travelaf01_01000cb3.psc` |
-| `fragments/topicinfos/TIF_W05_RE_TravelAF02_0056A22E.psc` |
-| `fragments/topicinfos/TIF_W05_RE_TravelAF02_0056A23F.psc` |
-| `fragments/topicinfos/TIF_W05_Wayward_DanielScene_0054AFA3.psc` |
 | `fragments/topicinfos/tif_xpd_dialogue_giuseppe_0100137d.psc` |
 | `fragments/topicinfos/TIF_XPD_Dialogue_RegularDebb_0063D35E.psc` |
 | `fragments/topicinfos/tif_xpd_dialogue_skippy_0063f9ba.psc` |
@@ -4849,7 +4983,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `FS03_MQ_Fruition_MasterHoloScript.psc` |
 | `FS03_MQ_Fruition_QuestScript.psc` |
 | `FS03_MQ_Fruition_TerminalScript.psc` |
-| `FSDoorScript.psc` |
 | `FSS01_TrapQuest.psc` |
 | `FSS02_Vigilant_CircuitBoxAliasScript.psc` |
 | `FSS02_Vigilant_FurnitureScript.psc` |
@@ -4901,7 +5034,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `GraftonSteelQuestScript.psc` |
 | `HabitatSpawnController.psc` |
 | `HalloweenCandyRandomEffectScript.psc` |
-| `HandScannerDestructibleScript.psc` |
 | `helvetiadecorationmanager.psc` |
 | `HighTechBBQGrillScript.psc` |
 | `HostileTakeovers/Creatures/HTO_SuiciderEyebotScript.psc` |
@@ -4921,7 +5053,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `lasergridturretssleeponinit.psc` |
 | `LC004_PowerOnScript.psc` |
 | `lc006_poseidonplantquestscript.psc` |
-| `LC006_SecurityMarkerScript.psc` |
 | `LC043_SecurityMarkerScript.psc` |
 | `LC060_DialogueAddToMapScript.psc` |
 | `LC060_WhitespringDiningRoomChairScript.psc` |
@@ -4933,7 +5064,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `LC080ConditionalElevatorScript.psc` |
 | `LC090_MonongahMineSafeScript.psc` |
 | `LC101ControlTerminalScript.psc` |
-| `LC158LumberMillNoteScript.psc` |
 | `LC177_ActivateShutterControlsOnLoad.psc` |
 | `LC184TerminalEnterMisc.psc` |
 | `LC192_NoFly.psc` |
@@ -4947,8 +5077,8 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `lightningopendoorscript.psc` |
 | `lightningresurrectscript.psc` |
 | `lightningstrike_damageonhitscript.psc` |
-| `limitedtimedoorscript.psc` |
-| `linkkeypadtounlock.psc` |
+| `LimitedTimeDoorScript.psc` |
+| `LinkKeypadToUnlock.psc` |
 | `LoadIntoNukeZoneEffect.psc` |
 | `loadout.psc` |
 | `LookoutTowerQuestScript.psc` |
@@ -4960,23 +5090,22 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `magiceffectapplysoundcategorysnapshot.psc` |
 | `magiceffectcastspellonapply.psc` |
 | `material.psc` |
-| `MeatSweatsScript.psc` |
 | `MILE_CaravanEscort_FallbackTrigger.psc` |
 | `MILE_SQ_AmmoMerchantScript.psc` |
-| `mile/Caravans/mile_brahminrenamescript.psc` |
-| `mile/Caravans/MILE_CaravanCostConditionals.psc` |
-| `mile/Caravans/MILE_CaravanPricingManager.psc` |
-| `mile/Caravans/MILE_Dialogue_HiringScript.psc` |
-| `mile/Caravans/MILE_Dialogue_StartCaravanScript.psc` |
-| `mile/Caravans/mile_dialoguepurchasescript.psc` |
-| `mile/Caravans/MILE_HQ_BrahminTamerUpgradeScript.psc` |
-| `mile/Caravans/mile_hq_cryptidhunterscript.psc` |
-| `mile/Caravans/MILE_HQ_DecoratorScript.psc` |
-| `mile/Caravans/MILE_HQ_EmployeeIntroScript.psc` |
-| `mile/Caravans/MILE_HQ_JosieChemsScript.psc` |
-| `mile/Caravans/MILE_HQ_MoleMinerScript.psc` |
-| `mile/Caravans/MILE_HQ_PlayerScript.psc` |
-| `mile/Caravans/MILE_HQ_UpgradesManager.psc` |
+| `mile/caravans/mile_brahminrenamescript.psc` |
+| `mile/caravans/MILE_CaravanCostConditionals.psc` |
+| `mile/caravans/MILE_CaravanPricingManager.psc` |
+| `mile/caravans/MILE_Dialogue_HiringScript.psc` |
+| `mile/caravans/MILE_Dialogue_StartCaravanScript.psc` |
+| `mile/caravans/mile_dialoguepurchasescript.psc` |
+| `mile/caravans/MILE_HQ_BrahminTamerUpgradeScript.psc` |
+| `mile/caravans/mile_hq_cryptidhunterscript.psc` |
+| `mile/caravans/MILE_HQ_DecoratorScript.psc` |
+| `mile/caravans/MILE_HQ_EmployeeIntroScript.psc` |
+| `mile/caravans/MILE_HQ_JosieChemsScript.psc` |
+| `mile/caravans/MILE_HQ_MoleMinerScript.psc` |
+| `mile/caravans/MILE_HQ_PlayerScript.psc` |
+| `mile/caravans/MILE_HQ_UpgradesManager.psc` |
 | `MineDefenderSpawner.psc` |
 | `missionquestscript.psc` |
 | `MN2_BonfireCollAliasScript.psc` |
@@ -4988,12 +5117,9 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `MN2_MiscPlayerScript.psc` |
 | `MN2_QuestScript.psc` |
 | `mn2_scorerefcollaliasscript.psc` |
-| `MN2_TreatBowlCooldownScript.psc` |
 | `MN2_TreatBowlScript.psc` |
-| `ModActorValueOnSpellTargetScript.psc` |
 | `ModLegendaryOnCritHealPlayerTeamScript.psc` |
 | `modus_resetstateonsceneend.psc` |
-| `MoM_PhantomEffectScript.psc` |
 | `MoM00CorpseScript.psc` |
 | `MoM00QuestScript.psc` |
 | `MoM00RECorpseAliasScript.psc` |
@@ -5009,7 +5135,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `MoMDressQuestScript.psc` |
 | `MoMEquippableQuestItemScript.psc` |
 | `momfabricatoractivatorscript.psc` |
-| `MoMHolotapeScript.psc` |
 | `MoMItemManagerQuestScript.psc` |
 | `MoMMasterQuestScript.psc` |
 | `momparentquestscript.psc` |
@@ -5017,11 +5142,9 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `MoMParlorLaserGridManagerScript.psc` |
 | `MoMParlorSecretEntranceScript.psc` |
 | `MoMPhantomDeviceDelayedSpellScript.psc` |
-| `MoMSecretDoorTriggerScript.psc` |
 | `MoMVeilQuestScript.psc` |
 | `moon_ambush_cartscript.psc` |
 | `moon_ambush_questscript.psc` |
-| `MOON_Ambush_SoundSpellCooldown.psc` |
 | `MOON_Clyde_BartenderScript.psc` |
 | `Moon_Herd_AddItemOnAliasActivate.psc` |
 | `Moon_Herd_BlueDevilAliasScript.psc` |
@@ -5035,9 +5158,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `MPScriptTestServerEventKeyword.psc` |
 | `MPScriptTestServerFunctionKeyword.psc` |
 | `MQ_Overseer_CacheRefScript.psc` |
-| `MQ_Overseer_HolotapeScript.psc` |
-| `MQ_Overseer_PlayerConnectScript.psc` |
-| `mq_overseer_refondistancesendevent.psc` |
+| `MQ_Overseer_RefOnDistanceSendEvent.psc` |
 | `MQ_OverseerPlayerScript.psc` |
 | `MQ_OverseerQuestScript.psc` |
 | `MSiloBiometricScannerScript.psc` |
@@ -5046,10 +5167,8 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `mtn02_masterquestscript.psc` |
 | `MTNL01BellhopQuestScript.psc` |
 | `MTNL01PlayerScript.psc` |
-| `MTNM01_BaitMineScript.psc` |
 | `mtnm01_cannibalperkentryscript.psc` |
 | `MTNM01_ChemDartEffectScript.psc` |
-| `mtnm01_deathclawfriendperkscript.psc` |
 | `mtnm01_playerscript.psc` |
 | `MTNM01QuestScript.psc` |
 | `mtnm02_mothmanstatueterminalscript.psc` |
@@ -5182,7 +5301,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `mtr07_earthcollectorscript.psc` |
 | `MTR07_EarthGeneratorScript.psc` |
 | `MTR07_EarthQuestScript.psc` |
-| `mtr07_earthreactortriggerscript.psc` |
+| `MTR07_EarthReactorTriggerScript.psc` |
 | `MTR08_AutoMinerAliasScript.psc` |
 | `MTR08_ClaimTokenTerminalScript.psc` |
 | `MTR08_ClearAliasOnEnterBleedout.psc` |
@@ -5207,24 +5326,20 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `mtr11_obrienscenestate.psc` |
 | `MTRZ01_LostQuestScript.psc` |
 | `MTRZ01_TriggerQuestScript.psc` |
-| `MTRZ05_MapScript.psc` |
 | `MTRZ05_QuestScript.psc` |
 | `mtrz05mapscript.psc` |
-| `MTRZ05MiningSiteScript.psc` |
 | `MTRZ05QuestRestartScript.psc` |
 | `MTRz05VendScript.psc` |
 | `mutatedevents/eventmutationscript.psc` |
-| `MutationTriggerMeleeExplosionScript.psc` |
 | `NativeRobotTerminalScript.psc` |
 | `nativeterminalscript.psc` |
 | `nativeturretterminalscript.psc` |
 | `NewPlayerExperience/LoadoutSelectTriggerScript.psc` |
 | `NewPlayerExperience/npe_drawweaponscript.psc` |
 | `NewRiverGorgeBridgeDestructionScript.psc` |
-| `ng17lightningstrikescript.psc` |
+| `NG17LightningStrikeScript.psc` |
 | `Nukacade_PrizeDispenserScript.psc` |
 | `Nukacade_PrizeTerminalClaimChecker.psc` |
-| `Nuke_CodePageRefScript.psc` |
 | `Nuke_Codes_CodeHuntAliasScript.psc` |
 | `Nuke_CodesOfficerScript.psc` |
 | `Nuke_CodesScript.psc` |
@@ -5236,7 +5351,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `Nuke_MasterScript.psc` |
 | `NukeWeatherTutorialScript.psc` |
 | `NWOT_Beneath_QuestScript.psc` |
-| `NWOT_Fortune_CooldownEffectScript.psc` |
 | `NWOT_Fortune_NoteScript.psc` |
 | `NWOT_FortuneTeller_DLGQuestScript.psc` |
 | `NWOT_FortuneTeller_FortuneTopicScript.psc` |
@@ -5247,27 +5361,17 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `nwot_setstageontriggerenter.psc` |
 | `NWOTQuestRewardNukacadePointsScript.psc` |
 | `objectivetimerquestscript.psc` |
-| `Objects/BeehiveContainerScript.psc` |
-| `Objects/CB04_AddFactionPerkScript.psc` |
-| `Objects/CB04_AddToFactionScript.psc` |
-| `Objects/LC096_LegendaryBossTrigger.psc` |
-| `Objects/UD002OldTunnelTerminal.psc` |
 | `Objects/XPD_AC_HorseRacingScript.psc` |
 | `Objects/XPD_AC_SlotMachineScript_WestVirginia.psc` |
-| `Objects/XPD_AC_SlotMachineScript_x5.psc` |
 | `OBSOLETEQuestCleanupItemsOnShutdown.psc` |
-| `OnActivateAddItem.psc` |
 | `ondeathcollsetstageonpercentlost.psc` |
 | `oneffectcastplayerteamspell.psc` |
 | `OnEffectCureMutationScript.psc` |
 | `OnEffectPlayAudioScript.psc` |
-| `OnHitByMeleeCastSpell.psc` |
 | `onitemcraftedsetstage.psc` |
-| `OverseerPersonal_PlayerConnectScript.psc` |
 | `OverseerPersonal_PlayerScript.psc` |
 | `OverseerPersonalEvanCollScript.psc` |
 | `OverseerPersonalQuestScript.psc` |
-| `OverseersCampToolboxScript.psc` |
 | `OverseerTerminalScript.psc` |
 | `P01B_Mini_Allbino01_QuestScript.psc` |
 | `P01b_Mini_Random02_Script.psc` |
@@ -5286,7 +5390,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `p76_dlc01/DLC01_BabylonGhostModeEffect.psc` |
 | `p76_dlc01/dlc01_babylonstealthboyeffect.psc` |
 | `p76_dlc01/DLC01_BabylonTerminal.psc` |
-| `p76_dlc01/DLC01_HazardMaker.psc` |
 | `p76_dlc01/DLC01_NukeTargetScript.psc` |
 | `p76_dlc01/DLC01_QP_Babylon_Child.psc` |
 | `p76_dlc01/DLC01_QP_Babylon_Enable.psc` |
@@ -5305,7 +5408,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `PerkDodgyScript.psc` |
 | `PerkMedicScript.psc` |
 | `perkmysterymeat.psc` |
-| `perkpacifyscript.psc` |
 | `PerkPhilanthropistScript.psc` |
 | `perkradspongescript.psc` |
 | `PerkRevenantScript.psc` |
@@ -5331,7 +5433,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `playertrapdisarmperk.psc` |
 | `PlayExplosionOnEffectStartScript.psc` |
 | `PlayExplosionOnEffectStartTarget.psc` |
-| `POI287OnReadAddToMap.psc` |
 | `powerarmorchassis.psc` |
 | `PowerPlantEventQuestScript.psc` |
 | `powerplantmasterquestscript.psc` |
@@ -5368,7 +5469,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `qp_pve_enable.psc` |
 | `QP_PVE.psc` |
 | `qp_tdm_child.psc` |
-| `qp_tdm_enable.psc` |
+| `QP_TDM_Enable.psc` |
 | `qp_tdm_master.psc` |
 | `QP_TDM_OneLife_Child.psc` |
 | `QP_TDM_OneLife_Master.psc` |
@@ -5381,50 +5482,50 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `questdefaultaliassetstageoncounter.psc` |
 | `questinstance.psc` |
 | `questmodule.psc` |
-| `QUESTS/_Default/AliasEnableOnLoad.psc` |
-| `QUESTS/_Default/AliasHazardTriggerScript.psc` |
-| `QUESTS/_Default/aliashealthbarscript.psc` |
-| `QUESTS/_Default/AliasOnActivateRemoveMultipleItems.psc` |
-| `QUESTS/_Default/aliasplayexplosiononactivate.psc` |
-| `QUESTS/_Default/ChooseRandomLocation.psc` |
-| `QUESTS/_Default/CollAliasAnnounceOnCombatStateChanged.psc` |
-| `QUESTS/_Default/CollAliasDisableOnInit.psc` |
-| `QUESTS/_Default/collaliasenableonload.psc` |
-| `QUESTS/_Default/collaliashealthbarscript.psc` |
-| `QUESTS/_Default/CollAliasOnAliasChanged.psc` |
-| `QUESTS/_Default/DispenserManagementScript.psc` |
-| `QUESTS/_Default/instancedhandscannerscript.psc` |
-| `QUESTS/_Default/InstancedLaserGridScript.psc` |
-| `QUESTS/_Default/managequesttimer.psc` |
-| `QUESTS/_Default/playexplosiononmenuitemrun.psc` |
-| `QUESTS/_Default/PlayIdleAnimScript.psc` |
-| `QUESTS/_Default/PlayMusicScript.psc` |
-| `QUESTS/_Default/progressbar/alias.psc` |
-| `QUESTS/_Default/progressbar/AliasOnActivate.psc` |
-| `QUESTS/_Default/progressbar/collalias.psc` |
-| `QUESTS/_Default/progressbar/collaliasonactivate.psc` |
-| `QUESTS/_Default/progressbar/collaliasonaliaschanged.psc` |
-| `QUESTS/_Default/progressbar/CollAliasOnDestructibleDestroyed.psc` |
-| `QUESTS/_Default/progressbar/CollAliasOnFurniture.psc` |
-| `QUESTS/_Default/progressbar/CollAliasOnKill.psc` |
-| `QUESTS/_Default/progressbar/collaliasontimer.psc` |
-| `QUESTS/_Default/progressbar/CollAliasTempModifier.psc` |
-| `QUESTS/_Default/progressbar/masterscript.psc` |
-| `QUESTS/_Default/RefCollectionAliasAddItem.psc` |
-| `QUESTS/_Default/refcollectionaliascastspellonactivate.psc` |
-| `QUESTS/_Default/RefCollectionAliasPlaceAtMe.psc` |
-| `QUESTS/_Default/SetAliasPreferredCombatTargets.psc` |
-| `QUESTS/_Default/SetPreferredCombatTargets.psc` |
-| `QUESTS/_Default/setrandomstages.psc` |
-| `QUESTS/_Default/SetStageOnEnterInstancedLoc.psc` |
-| `QUESTS/_Default/SetStageOnHealthPercent.psc` |
-| `QUESTS/_Default/SetStageOnHealthThreshold.psc` |
-| `QUESTS/_Default/showmessageonactivatealias.psc` |
-| `QUESTS/_Default/ShowMessageOnActivateAliasA.psc` |
-| `QUESTS/_Default/ShowMessageOnActivateAliasB.psc` |
-| `QUESTS/_Default/stopquestonplayerinstanceexit.psc` |
-| `QUESTS/_Default/TopicInfoExchangeItemsOrCurrency.psc` |
-| `QUESTS/_Default/WeatherOverrideScript.psc` |
+| `QUESTS/_default/AliasEnableOnLoad.psc` |
+| `QUESTS/_default/AliasHazardTriggerScript.psc` |
+| `QUESTS/_default/aliashealthbarscript.psc` |
+| `QUESTS/_default/AliasOnActivateRemoveMultipleItems.psc` |
+| `QUESTS/_default/aliasplayexplosiononactivate.psc` |
+| `QUESTS/_default/ChooseRandomLocation.psc` |
+| `QUESTS/_default/CollAliasAnnounceOnCombatStateChanged.psc` |
+| `QUESTS/_default/CollAliasDisableOnInit.psc` |
+| `QUESTS/_default/collaliasenableonload.psc` |
+| `QUESTS/_default/collaliashealthbarscript.psc` |
+| `QUESTS/_default/CollAliasOnAliasChanged.psc` |
+| `QUESTS/_default/DispenserManagementScript.psc` |
+| `QUESTS/_default/InstancedHandScannerScript.psc` |
+| `QUESTS/_default/InstancedLaserGridScript.psc` |
+| `QUESTS/_default/managequesttimer.psc` |
+| `QUESTS/_default/playexplosiononmenuitemrun.psc` |
+| `QUESTS/_default/PlayIdleAnimScript.psc` |
+| `QUESTS/_default/PlayMusicScript.psc` |
+| `QUESTS/_default/progressbar/alias.psc` |
+| `QUESTS/_default/progressbar/AliasOnActivate.psc` |
+| `QUESTS/_default/progressbar/collalias.psc` |
+| `QUESTS/_default/progressbar/collaliasonactivate.psc` |
+| `QUESTS/_default/progressbar/collaliasonaliaschanged.psc` |
+| `QUESTS/_default/progressbar/CollAliasOnDestructibleDestroyed.psc` |
+| `QUESTS/_default/progressbar/CollAliasOnFurniture.psc` |
+| `QUESTS/_default/progressbar/CollAliasOnKill.psc` |
+| `QUESTS/_default/progressbar/collaliasontimer.psc` |
+| `QUESTS/_default/progressbar/CollAliasTempModifier.psc` |
+| `QUESTS/_default/progressbar/masterscript.psc` |
+| `QUESTS/_default/RefCollectionAliasAddItem.psc` |
+| `QUESTS/_default/refcollectionaliascastspellonactivate.psc` |
+| `QUESTS/_default/RefCollectionAliasPlaceAtMe.psc` |
+| `QUESTS/_default/SetAliasPreferredCombatTargets.psc` |
+| `QUESTS/_default/SetPreferredCombatTargets.psc` |
+| `QUESTS/_default/setrandomstages.psc` |
+| `QUESTS/_default/SetStageOnEnterInstancedLoc.psc` |
+| `QUESTS/_default/SetStageOnHealthPercent.psc` |
+| `QUESTS/_default/SetStageOnHealthThreshold.psc` |
+| `QUESTS/_default/showmessageonactivatealias.psc` |
+| `QUESTS/_default/ShowMessageOnActivateAliasA.psc` |
+| `QUESTS/_default/ShowMessageOnActivateAliasB.psc` |
+| `QUESTS/_default/stopquestonplayerinstanceexit.psc` |
+| `QUESTS/_default/TopicInfoExchangeItemsOrCurrency.psc` |
+| `QUESTS/_default/WeatherOverrideScript.psc` |
 | `QUESTS/AC_MQ01_Opportunity/QuestScript.psc` |
 | `QUESTS/AC_MQ01_Opportunity/SetStageOnSit.psc` |
 | `QUESTS/AC_MQ02_Stage/ClientMusicScript.psc` |
@@ -5481,14 +5582,14 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `QUESTS/E01B_Herd/PlayerCollectionScript.psc` |
 | `QUESTS/E01B_Herd/playerscript.psc` |
 | `QUESTS/E01B_Herd/QuestScript.psc` |
-| `QUESTS/e01c_tales/Dark/CampfireScript.psc` |
-| `QUESTS/e01c_tales/Dark/EvidenceScript.psc` |
-| `QUESTS/e01c_tales/Dark/FlatwoodsBossScript.psc` |
-| `QUESTS/e01c_tales/Dark/FlatwoodsClonesScript.psc` |
-| `QUESTS/e01c_tales/Dark/KindlingSpawner.psc` |
-| `QUESTS/e01c_tales/Dark/PlayerScript.psc` |
-| `QUESTS/e01c_tales/Dark/QuestScript.psc` |
-| `QUESTS/e01c_tales/Dark/ShadowsScript.psc` |
+| `QUESTS/E01C_Tales/Dark/CampfireScript.psc` |
+| `QUESTS/E01C_Tales/Dark/EvidenceScript.psc` |
+| `QUESTS/E01C_Tales/Dark/FlatwoodsBossScript.psc` |
+| `QUESTS/E01C_Tales/Dark/FlatwoodsClonesScript.psc` |
+| `QUESTS/E01C_Tales/Dark/KindlingSpawner.psc` |
+| `QUESTS/E01C_Tales/Dark/PlayerScript.psc` |
+| `QUESTS/E01C_Tales/Dark/QuestScript.psc` |
+| `QUESTS/E01C_Tales/Dark/ShadowsScript.psc` |
 | `QUESTS/E01C/Tales_Mansion_Vote.psc` |
 | `QUESTS/E01C/Tales_Mansion.psc` |
 | `QUESTS/E02A_Meat/ChallyPooScript.psc` |
@@ -5519,7 +5620,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `QUESTS/E06_Colossus/PocketWatch_QuestScript.psc` |
 | `QUESTS/E06_Colossus/QuestScript.psc` |
 | `QUESTS/E07_Mothman/BarricadeDestructionScript.psc` |
-| `QUESTS/E07_Mothman/bookscript.psc` |
+| `QUESTS/E07_Mothman/BookScript.psc` |
 | `QUESTS/E07_Mothman/BossEnemyScript.psc` |
 | `QUESTS/E07_Mothman/DepositBoxScript.psc` |
 | `QUESTS/E07_Mothman/E07A_Mothman_WiseMothmanAliasScript.psc` |
@@ -5662,7 +5763,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `raids/EncounterStartOnActivate.psc` |
 | `raids/MasterScript.psc` |
 | `raids/RD01/Enc01/DamagingFloorTriggerScript.psc` |
-| `raids/RD01/Enc01/GuardianBotActorScript.psc` |
 | `raids/RD01/Enc01/MeleeComponentDoorTriggerScript.psc` |
 | `raids/RD01/Enc01/PlatformGunScript.psc` |
 | `raids/RD01/Enc01/QuestScript.psc` |
@@ -5733,15 +5833,14 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `REWhitespringAssaultQuestScript.psc` |
 | `RobotSelfDestructEffectScript.psc` |
 | `RS01AContactPlayerConnectScript.psc` |
-| `rs02_beat_kickouttriggerscript.psc` |
+| `RS02_Beat_KickoutTriggerScript.psc` |
 | `RS03_Balance_TerminalScript.psc` |
 | `rs03_inoculation_playealiasscript.psc` |
 | `RS03_PlayerScript.psc` |
 | `rs06_manual_playeraliasscript.psc` |
 | `rs06_manual_questscript.psc` |
 | `rs06_manual_stims_playeraliasscript.psc` |
-| `rsvp00_onactivateprintnewsletter.psc` |
-| `RSVP00_OnContainerChangedSetAV.psc` |
+| `RSVP00_OnActivatePrintNewsletter.psc` |
 | `RSVP00_OnItemCraftedSetStage.psc` |
 | `RSVP01_PlayerCollectWater.psc` |
 | `RSVP02_OnTerminalEnterSetAV.psc` |
@@ -5861,26 +5960,20 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `SSE_EventPlaylist_Script.psc` |
 | `Storm_Debug_DestFloorHazardScript.psc` |
 | `storm_defensebuilding_script.psc` |
-| `Storm_DefenseUpgradeRepairScript.psc` |
 | `storm_defenseupgradescript.psc` |
-| `Storm_DKWD_Interior_SecretDoor_Script.psc` |
 | `Storm_E01_Dangerous.psc` |
 | `Storm_E01_LightningStrikes.psc` |
 | `Storm_E01_PartsInstallScript.psc` |
 | `storm_e01_weatheroverridescript.psc` |
 | `storm_instancemaster.psc` |
-| `Storm_LaserGridTimerScript.psc` |
 | `storm_lightningharvesterscript.psc` |
 | `Storm_LostStateHandler.psc` |
-| `Storm_ManorMapMarkerUnlockScript.psc` |
 | `storm_mq04pt1_documentcounter.psc` |
-| `Storm_MQ10_KeypadOnLoadScript.psc` |
 | `storm_mq10_marcspt1_keypadscript.psc` |
 | `storm_mq10_marcspt1_questscript.psc` |
 | `storm_puzzlelasergridscript.psc` |
 | `storm_testlostsedationscript.psc` |
 | `Storm_WeaponizedLaserGridScript.psc` |
-| `StormMetalDetectorScript.psc` |
 | `StormMQ02MessageBoxScript.psc` |
 | `STW_QAHelper_Script.psc` |
 | `SupplyRun/Activator00.psc` |
@@ -5924,7 +6017,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `surv_playerstatsmanager.psc` |
 | `surv_playerusefurniturescript.psc` |
 | `surv_startsurvivaltriggerscript.psc` |
-| `TalesFromWV_OnActivateAddItem.psc` |
 | `TBQ_BountyScript.psc` |
 | `TEMP_EN05_StartOnTriggerEnterScript.psc` |
 | `tempcollectionremoverefonunload.psc` |
@@ -6004,7 +6096,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `thirstzapperrefillscript.psc` |
 | `ThousandWattDoorScript.psc` |
 | `TinkerWorkbenchTutorialScript.psc` |
-| `toggleenableonactivateref.psc` |
+| `ToggleEnableOnActivateRef.psc` |
 | `TopicInfoBuyDrinks.psc` |
 | `TopicInfoSendStoryEventAndSay.psc` |
 | `TopOfTheWorldFloor3ButtonScript.psc` |
@@ -6064,7 +6156,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `twz03_attendantscript.psc` |
 | `TWZ03_Script.psc` |
 | `TWZ03_TargetActivateScript.psc` |
-| `twz03_targetstandscript.psc` |
+| `TWZ03_TargetStandScript.psc` |
 | `twz04_kingdeathscript.psc` |
 | `TWZ05Script.psc` |
 | `twz07_postmasterscript.psc` |
@@ -6077,12 +6169,10 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `twz13_enablemasterscript.psc` |
 | `twz13_removebodyscript.psc` |
 | `TWZ13DirtTriggerBoxScript.psc` |
-| `twz13gravetriggerscript.psc` |
+| `TWZ13GraveTriggerScript.psc` |
 | `UD002TerminalAlias.psc` |
-| `UD004_NukashineAutoCloseDoorScript.psc` |
 | `ultracitegeneratoreffectscript.psc` |
 | `ultraciteveinscript.psc` |
-| `UnlockOnLoadScript.psc` |
 | `utilityitem.psc` |
 | `V63_1_VaultMissionQuestScript.psc` |
 | `V63_2_VaultMissionQuestScript.psc` |
@@ -6118,13 +6208,11 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `V94_3_VaultMissionQuestScript_Pump.psc` |
 | `V94_3_VaultMissionQuestScript_Reactor.psc` |
 | `V94_3_VaultMissionQuestScript_Seed.psc` |
-| `V94_TrapElectricArcSystem.psc` |
 | `V94_VaultInstanceQuestScript.psc` |
 | `V94_VaultQuestScript.psc` |
 | `V94TerminalScript.psc` |
 | `V96_1_AtriumEnemyRefCollectionScript.psc` |
 | `V96_1_CentrifugeScript.psc` |
-| `V96_1_CryoPipeScript.psc` |
 | `V96_1_DeconMistVFXScript.psc` |
 | `V96_1_QuantumParticleCellScript.psc` |
 | `V96_1_VaultMissionPersonalQuestScript.psc` |
@@ -6162,7 +6250,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `V96_2_VaultMissionQuestScript_Shutdown.psc` |
 | `V96_QuantumFieldGeneratorScript.psc` |
 | `v96_suppressoraddkeywordeffectscript.psc` |
-| `V96_TeleportAbilityScript.psc` |
 | `V96_VaultInstanceQuestScript.psc` |
 | `V96_VaultQuestScript.psc` |
 | `V96TerminalScript.psc` |
@@ -6181,7 +6268,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `Vault79MotherlodeDustScript.psc` |
 | `Vault79MotherlodeTunnelScript.psc` |
 | `Vault79MotherlodeVaultWallScrip.psc` |
-| `Vault79RaRaVentSoundScript.psc` |
 | `Vault79ReactorDoorOpenScript.psc` |
 | `Vault79ReactorSecurityActivateScript.psc` |
 | `Vault79ReactorVentilationScript.psc` |
@@ -6191,9 +6277,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `Vault79SentryBotSetStageScript.psc` |
 | `Vault79WendigoFightScript.psc` |
 | `Vault79WendigoSceneScript.psc` |
-| `VaultCircuitBreakerScript.psc` |
 | `VaultDefaultDestMultiStateActivator.psc` |
-| `VaultDotMatrixPrinterScript.psc` |
 | `VaultMainframeCorePanelScript.psc` |
 | `VaultSetPreferredCombatTargets.psc` |
 | `VaultSystemExploitCheckTriggerScript.psc` |
@@ -6207,65 +6291,37 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `VaultToggleButtonScript.psc` |
 | `vendorinteractchoicescript.psc` |
 | `VS_MiscTempScript.psc` |
-| `VSTempResourceCollectorScript.psc` |
 | `vstempresourcecollectorturretscript.psc` |
 | `W05_001P_PlayerKillAliasScript.psc` |
-| `W05_001P_Wayward_QuestScript.psc` |
-| `W05_002_RadicalCombatantCollScript.psc` |
 | `w05_002_radicalexteriorquestscript.psc` |
-| `w05_002p_deathclawisletriggerscript.psc` |
-| `W05_002P_GangerOnHitScript.psc` |
-| `W05_002P_IntroSceneTriggerScript.psc` |
+| `W05_002P_DeathclawIsleTriggerScript.psc` |
 | `W05_002P_Radical_QuestScript.psc` |
-| `W05_002P_RadicalHostilityTrigger.psc` |
-| `W05_002P_TopicInfoRadicalsAttack.psc` |
-| `W05_003P_AddObjectToCollection.psc` |
-| `W05_003P_ApplyPerkOnEnterRefScript.psc` |
-| `W05_003P_LaserGridStateCollScript.psc` |
 | `W05_003P_Muscle_QuestScript.psc` |
 | `W05_003P_MusicOverrideTriggerScript.psc` |
-| `W05_003P_WakeUpEnemiesRefCollScript.psc` |
 | `W05_ActorNukeReactionScript.psc` |
-| `W05_Com_RFC_Defend.psc` |
 | `W05_Com_RFC_Participants_QI.psc` |
-| `W05_Com_RFC_Participants_RC.psc` |
 | `W05_Community_BB_Quest_Script.psc` |
 | `W05_Community_Treehouse_Quest_Script.psc` |
 | `W05_COMP_AstronautSeekerAliasScript.psc` |
 | `W05_Comp_Lite_AllySpawnScript.psc` |
 | `w05_cottagebunker_gerorgiadoonce.psc` |
 | `w05_cottagebunkergeorgialoc.psc` |
-| `W05_Crater_BandFurnitureAliasScript.psc` |
-| `W05_Daily_F01_Script.psc` |
 | `W05_Daily_PhotoQuestScript.psc` |
-| `W05_Daily_R01_PlayerAliasScript.psc` |
-| `W05_Daily_R01_QuestScript_NEW.psc` |
 | `w05_daily_r01_questscript.psc` |
-| `W05_Daily_R02_FormerRaiderScript.psc` |
-| `W05_Daniel_StartSceneScript.psc` |
-| `W05_DnD_MainDoor_Script.psc` |
 | `W05_DnD_SupportQuestScript.psc` |
 | `w05_gail_test_scannerscript.psc` |
-| `W05_HolotapeScript.psc` |
-| `W05_InstSwapEnableState.psc` |
-| `W05_InstSwapEnableStateQuestStage.psc` |
 | `W05_Inventory_ScriptK.psc` |
 | `W05_InventoryScriptJ.psc` |
-| `W05_Jen205_Script.psc` |
 | `W05_Johnny_TestRobberyScript.psc` |
-| `W05_KillAliasOnCriteria.psc` |
 | `W05_LVC_InstLocQuestStartAliasScript.psc` |
 | `W05_LVC_TestForcePlayerToAlias.psc` |
 | `W05_ModRepScript.psc` |
-| `W05_MortTapeQuestScript.psc` |
 | `W05_MQ_000P_QuestScript.psc` |
-| `w05_mq_001p_wayward_laceyiselatrigger.psc` |
+| `W05_MQ_001P_Wayward_LaceyIselaTrigger.psc` |
 | `W05_MQ_002P_CraneSignScript.psc` |
 | `W05_MQ_002P_DeathclawEggWrapUpScript.psc` |
 | `W05_MQ_002P_RadicalCombatScript.psc` |
-| `W05_MQ_002P_RemoveTapeScript.psc` |
 | `W05_MQ_003P_PollyHeadEffectScript.psc` |
-| `W05_MQ_003P_RemoveItemTopicInfo.psc` |
 | `W05_MQ_003P_SolAliasScript.psc` |
 | `W05_MQ_004P_BunkerQuestScript.psc` |
 | `W05_MQ_004P_CacheLightMarkerScript.psc` |
@@ -6283,31 +6339,20 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `W05_MQ_102P_BlueprintsScript.psc` |
 | `W05_MQ_102P_ProjectorScript.psc` |
 | `w05_mq_102p_questscript.psc` |
-| `W05_MQ_SkinnerShoutOnOpenScript.psc` |
 | `W05_MQ_TheWayward_QuestScript.psc` |
-| `w05_mqa_206_chasedistancelessthan.psc` |
 | `w05_mqa_206p_goldchestscript.psc` |
 | `W05_MQA_206P_JennyRefScript.psc` |
 | `W05_MQA_206P_JohnnyAliasScript.psc` |
 | `w05_mqa_206p_playerscript.psc` |
 | `W05_MQA_206P_QuestScript.psc` |
 | `w05_mqa_206p_script.psc` |
-| `W05_MQA_206P_SSTalkTriggerBoxScript.psc` |
-| `w05_mqr_201p_explosivebreakerscript.psc` |
-| `W05_MQR_201P_IntercomTriggerScript.psc` |
 | `w05_mqr_201p_louroomtriggerscript.psc` |
 | `W05_MQR_201P_QuestScript.psc` |
 | `W05_MQR_202P_DummyActivateMarker.psc` |
-| `W05_MQR_202P_IDCardReaderScript.psc` |
-| `W05_MQR_202P_PlayerScript.psc` |
 | `W05_MQR_202P_QuestScript.psc` |
-| `W05_MQR_202P_RaRaItemPickedUpScript.psc` |
-| `W05_MQR_202P_VentMarkerScript.psc` |
 | `W05_MQR_203P_ArenaDoorCloseLock.psc` |
-| `W05_MQR_203P_BenchScript.psc` |
 | `w05_mqr_203p_dismemberhead.psc` |
 | `W05_MQR_203P_DoorPortalRefScript.psc` |
-| `W05_MQR_203P_DoorPortalScript.psc` |
 | `W05_MQR_203P_QuestScript.psc` |
 | `W05_MQR_203P_TurretScript.psc` |
 | `w05_mqr_204p_freelouperkscript.psc` |
@@ -6315,13 +6360,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `W05_MQR_204P_QuestScript.psc` |
 | `W05_MQR_205P_A_QuestScript.psc` |
 | `W05_MQR_205P_QuestScript.psc` |
-| `W05_MQR_205P_RaRaCombatScript.psc` |
-| `W05_MQR_205P_RaRaCowerTriggerScript.psc` |
-| `W05_MQR_205P_ScannerFurnitureScript.psc` |
-| `W05_MQR_205P_SecurityTriggerScript.psc` |
-| `W05_MQR_205P_TurretsOffScript.psc` |
-| `W05_MQR_205P_VentSequenceScript.psc` |
-| `W05_MQR_PlayerVault79KeypadObjective.psc` |
 | `W05_MQR_Vault79CodeNoteScript.psc` |
 | `W05_MQS_201P_MotherlodeWaveScript.psc` |
 | `w05_mqs_201p_questscript.psc` |
@@ -6331,20 +6369,13 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `W05_MQS_204P_FakeWallScript.psc` |
 | `W05_MQS_204P_PlayerScript.psc` |
 | `W05_MQS_204P_QuestScript.psc` |
-| `w05_overseercamp_tuttriggerscript.psc` |
-| `W05_PurchaseBullionInfoScript.psc` |
 | `W05_QT_TriggerScript.psc` |
-| `W05_QuestToggleAliasObjectsOnAV.psc` |
 | `W05_Radical_DialogueQuestScript.psc` |
-| `W05_RadicalCollectionScript.psc` |
-| `W05_Raider_BandAudienceScript.psc` |
-| `W05_RaiderBlock_Quest_Script.psc` |
 | `W05_RaiderBlockade_AllGuardScript.psc` |
 | `W05_RE_AddToRefCollection.psc` |
 | `W05_RE_AssaultAF01_QuestScript.psc` |
 | `W05_RE_CampAF01_Quest_Script.psc` |
 | `W05_RE_CampAF02_Quest_Script.psc` |
-| `W05_RE_CryptidStories_Master.psc` |
 | `W05_RE_FakeKeypadActivatorScript.psc` |
 | `w05_re_graftonpawnshoploaddoorscript.psc` |
 | `W05_RE_MapBoardActivatorScript.psc` |
@@ -6355,34 +6386,25 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `W05_RE_ObjectBB02_CheckStashScript.psc` |
 | `W05_RE_ObjectBB02_ItemAddedScript.psc` |
 | `W05_RE_ObjectBB02_ItemRemovedScript.psc` |
-| `W05_RE_ObjectBB02_ObjectMoveScript.psc` |
 | `W05_RE_ObjectBB02_TimerScript.psc` |
-| `W05_RE_ObjJP01_DistanceCheckStageSet.psc` |
-| `W05_RE_PositionAndRotationCorrection.psc` |
 | `W05_RE_Scene_JP03_DialogueTracker.psc` |
 | `W05_RE_Scene_TravelersJM01_Script.psc` |
 | `W05_RE_Scene_TravelersJM02_Script.psc` |
 | `W05_RE_SceneZW01_TriggerScript.psc` |
 | `W05_RE_TravelAF01_Quest_Script.psc` |
-| `W05_RE_TravelBB01_SoundtrackBotScript.psc` |
 | `W05_RE_TravelBB02_ChickenScript.psc` |
 | `W05_RE_TravelBB02RunnerScript.psc` |
 | `W05_RE_TravelBB03_SquirrelScript.psc` |
 | `w05_reputationplayerscript.psc` |
 | `W05_ReputationQuestScript.psc` |
-| `W05_RoperAliasScript.psc` |
 | `w05_tokenaliasscript.psc` |
 | `W05_Vault79EntranceDoorTriggerScript.psc` |
-| `w05_vaut79entrancekeypadscript.psc` |
+| `W05_Vaut79EntranceKeypadScript.psc` |
 | `W05_Wayward_ExtDialogueScript.psc` |
-| `W05_Wayward_IntTriggerRCScript.psc` |
-| `W05_Wayward_PatronsColl.psc` |
 | `W05_Wayward_RC_MortsClueRCScript.psc` |
-| `w05_wayward_setavonquestlinecomplete.psc` |
+| `W05_Wayward_SetAVOnQuestlineComplete.psc` |
 | `W05_Wayward_SettlementQuestScript.psc` |
 | `W05_Wayward_SwapMarkerOnCriteria.psc` |
-| `W05_Wayward_TopicInfoSetValueOnAlias.psc` |
-| `W05_WaywardMiscPointerScript.psc` |
 | `w05_wl059_participationscript.psc` |
 | `w05_wl059_queststarterscript.psc` |
 | `W05RaiderChompkinsScript.psc` |
@@ -6417,7 +6439,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `WL006_PlayButtonSound.psc` |
 | `WL006_SentryBotRevealScript.psc` |
 | `WL006_SwapButtonScript.psc` |
-| `WL019_BookshelfScript.psc` |
 | `WL019_CollapsingCageSegmentScript.psc` |
 | `WL019_DisarmFlamethrowersOnDeath.psc` |
 | `WL020_JailCellCollisionScript.psc` |
@@ -6425,19 +6446,11 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `WL036KeypadScript.psc` |
 | `WL038MotherlodeDrillScript.psc` |
 | `WorkshopArmorRackScript.psc` |
-| `WorkshopArtillerySmokeScript.psc` |
-| `WorkshopCampScript.psc` |
 | `WorkshopCollectorScript.psc` |
-| `WorkshopCreatedActorScript.psc` |
-| `WorkshopInitActorValueScript.psc` |
 | `workshoppowerarmordisplayscript.psc` |
-| `WorkshopRadioScript.psc` |
 | `WorkshopRandomSwitchInputScript.psc` |
-| `WorkshopRefillingContainerScript.psc` |
-| `WorkshopSpotlightTurretScript.psc` |
 | `WorkshopTerminalActorValueScript.psc` |
 | `WorkshopVendorParentScript.psc` |
-| `WorkshopVertibirdGrenadeScript.psc` |
 | `workshopvertibirdscript.psc` |
 | `WS01script.psc` |
 | `WS02script.psc` |
@@ -6452,7 +6465,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 </details>
 
 <details>
-<summary>Unpatched sources with generated event logic (300)</summary>
+<summary>Unpatched sources with generated event logic (290)</summary>
 
 | Script |
 |---|
@@ -6471,6 +6484,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `autotestclient/distributeclientsfromfile.psc` |
 | `autotestclient/exploreworld.psc` |
 | `autotestclient/gatherloot.psc` |
+| `autotestclient/grindmonsters.psc` |
 | `autotestclient/interiorexteriortransition.psc` |
 | `autotestclient/loadvault94_v1.psc` |
 | `autotestclient/moveandfightindirection.psc` |
@@ -6502,7 +6516,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `Creatures/_Default/AddToFaction.psc` |
 | `Creatures/_Default/ExplodeOnDeath.psc` |
 | `Creatures/_Default/frenzyscript.psc` |
-| `Creatures/_Default/selfdestructscript.psc` |
 | `Creatures/_Default/TunnelingScript.psc` |
 | `Creatures/AssaultronHeadLaserScript.psc` |
 | `Creatures/bloodbugracescript.psc` |
@@ -6531,14 +6544,12 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `DefaultDestructible2StateActivator.psc` |
 | `DefaultDisableRefsOnActorDestruction.psc` |
 | `DefaultEffectPlaySound.psc` |
-| `DefaultMultiStateClientSideActivator.psc` |
 | `DefaultNoSwarmScript.psc` |
 | `defaultonactivateanimate.psc` |
 | `DefaultPlayAnimOnDestructionStage.psc` |
 | `DefaultPlayClientSoundOnActivate.psc` |
 | `DefaultPlaySoundScript.psc` |
 | `DefaultReleaseToHavokScript.psc` |
-| `defaultsequentialstateactivator.psc` |
 | `DefaultSetImpactMaterial.psc` |
 | `DefaultTopicInfoSetActorValue.psc` |
 | `DLC03HermitCrabSpawnScript.psc` |
@@ -6628,12 +6639,6 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `NukashineFX.psc` |
 | `Nuke_CodesOfficerRefScript.psc` |
 | `NukeBriefcaseScript.psc` |
-| `Objects/atxslotmachinescript.psc` |
-| `Objects/DestructibleAudio2StateActivator.psc` |
-| `Objects/LGVAnimController.psc` |
-| `Objects/workshopconveyor.psc` |
-| `Objects/XPD_AC_CasinoGame.psc` |
-| `Objects/XPD_AC_SlotMachine.psc` |
 | `p76_dlc01/dlc01_addkeyword.psc` |
 | `p76_dlc01/DLC01_ApplyBabylonVaporizeImod.psc` |
 | `p76_dlc01/DLC01_AtomicShopAdvertisement.psc` |
@@ -6651,12 +6656,11 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `p76_dlc01/DLC01_QP_Babylon_Client_Initializer.psc` |
 | `p76_dlc01/dlc01_triggercamerashakeoneffectstart.psc` |
 | `PerkLastLaughScript.psc` |
-| `PerkPlayLocationalAudio.psc` |
 | `PlatformHelperFreeScript.psc` |
 | `PlayAnimationOnLightningStrike.psc` |
 | `PotionExpireScript.psc` |
 | `PowerBoxScript.psc` |
-| `QUESTS/_Default/ActorStateScript.psc` |
+| `QUESTS/_default/ActorStateScript.psc` |
 | `QUESTS/BS01_Invention/UltraciteBatteryScript.psc` |
 | `QUESTS/BS01_MQ07_Over/TransmitterActorScript.psc` |
 | `QUESTS/BS02_MQ01_Penance/ShinExplosionScript.psc` |
@@ -6665,7 +6669,7 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `QUESTS/E01B_Encryptid/AssaultronBossScript.psc` |
 | `QUESTS/E01B_Encryptid/playerscript.psc` |
 | `QUESTS/E01B_Encryptid/PylonScript.psc` |
-| `QUESTS/e01c_tales/campfireref.psc` |
+| `QUESTS/E01C_Tales/CampfireRef.psc` |
 | `QUESTS/E03A_Mischief/BonfireScript.psc` |
 | `QUESTS/E07_Mothman/MothmanActorScript.psc` |
 | `QUESTS/E07B_Invaders/ExtractorClientScript.psc` |
@@ -6744,16 +6748,15 @@ An **unpatched candidate** has no patch and no `Event` declaration, matching the
 | `VaultBoyHUDEffectScript.psc` |
 | `VaultRespiteZoneExitToggleButtonScript.psc` |
 | `VertibotScript.psc` |
-| `W05_RE_ObjectAF01_SelfDestruct_Script.psc` |
-| `w05_waywardstateswaprefscript.psc` |
+| `W05_WaywardStateSwapRefScript.psc` |
 | `WendigoEffectScript.psc` |
 | `WindingPathCreatureEffects.psc` |
 | `WindingPathPillarScript.psc` |
 | `wl005_fallingdustloopscript.psc` |
-| `wl029_waywardstatechangemanagerscript.psc` |
-| `wl029_waywardstatechangeobjectscript.psc` |
+| `WL029_WaywardStateChangeManagerScript.psc` |
+| `WL029_WaywardStateChangeObjectScript.psc` |
 | `WL029_WaywardStateChangeSignScript.psc` |
-| `wl029_waywardstatechangesupportscript.psc` |
+| `WL029_WaywardStateChangeSupportScript.psc` |
 | `WorkshopFiringTargetScript.psc` |
 | `workshoppowercounterscript.psc` |
 
@@ -6811,9 +6814,9 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `DeconArchScript.psc` | Patched |
 | `Default1StateSyncActivator.psc` | Patched |
 | `Default2State1WayActivatorScript.psc` | Patched |
-| `default2statesyncactivator.psc` | Unpatched candidate |
+| `default2statesyncactivator.psc` | Patched |
 | `defaultactivateobjectsonactivate.psc` | Unpatched candidate |
-| `DefaultActivatorVendorFactionScript.psc` | Unpatched candidate |
+| `DefaultActivatorVendorFactionScript.psc` | Patched |
 | `DefaultActorAlphaOnActivate.psc` | Generated logic |
 | `DefaultAliasOnActivateB.psc` | Unpatched candidate |
 | `DefaultAliasOnActivateC.psc` | Unpatched candidate |
@@ -6836,12 +6839,12 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `DefaultCollAliasOnActivateGiveItems.psc` | Unpatched candidate |
 | `defaultcollaliassendeventonactivate.psc` | Unpatched candidate |
 | `DefaultCollectionAliasOnActivateGive.psc` | Unpatched candidate |
-| `DefaultCommunityDepositActivator.psc` | Unpatched candidate |
+| `DefaultCommunityDepositActivator.psc` | Patched |
 | `DefaultCompleteChallengeOnActivate.psc` | Unpatched candidate |
 | `DefaultDestructible2StateActivator.psc` | Generated logic |
-| `DefaultDestructibleMultiStateActivator.psc` | Unpatched candidate |
+| `DefaultDestructibleMultiStateActivator.psc` | Patched |
 | `DefaultEMSBossTriggerScript.psc` | Unpatched candidate |
-| `DefaultExplosionOnActivate.psc` | Unpatched candidate |
+| `DefaultExplosionOnActivate.psc` | Patched |
 | `DefaultExplosionOnTriggerEnter.psc` | Unpatched candidate |
 | `DefaultFishingActivator.psc` | Unpatched candidate |
 | `DefaultFixable2StateActivator.psc` | Patched |
@@ -6849,11 +6852,11 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `defaultkeypaddoorscript.psc` | Unpatched candidate |
 | `DefaultKeypadScript.psc` | Unpatched candidate |
 | `DefaultKeypadSwitchDoorScript.psc` | Unpatched candidate |
-| `defaultkeypadtargetscript.psc` | Unpatched candidate |
+| `defaultkeypadtargetscript.psc` | Patched |
 | `DefaultKeypadTimedSwitchScript.psc` | Unpatched candidate |
-| `defaultlightningquesttrigger.psc` | Unpatched candidate |
+| `DefaultLightningQuestTrigger.psc` | Unpatched candidate |
 | `DefaultMultiStateActivator.psc` | Patched |
-| `DefaultMultiStateClientSideActivator.psc` | Generated logic |
+| `DefaultMultiStateClientSideActivator.psc` | Patched |
 | `defaultonactivateanimate.psc` | Generated logic |
 | `DefaultOnActivateChangePrompt.psc` | Patched |
 | `defaultonactivategiveitems.psc` | Patched |
@@ -6865,17 +6868,17 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `DefaultPlaySoundOnActivate.psc` | Patched |
 | `defaultplaysoundonactivatealias.psc` | Unpatched candidate |
 | `DefaultQuestTriggerRespawnVIPScript.psc` | Unpatched candidate |
-| `DefaultRefKillTriggerScript.psc` | Unpatched candidate |
+| `DefaultRefKillTriggerScript.psc` | Patched |
 | `DefaultRefOnActivateSendEvent.psc` | Patched |
 | `DefaultRefOnTriggerEnterSendEvent.psc` | Patched |
 | `defaultrefontriggerleavesendevent.psc` | Unpatched candidate |
-| `defaultsequentialstateactivator.psc` | Generated logic |
-| `DefaultTopicInfoTriggerCombat.psc` | Unpatched candidate |
+| `defaultsequentialstateactivator.psc` | Patched |
+| `DefaultTopicInfoTriggerCombat.psc` | Patched |
 | `DefaultTriggerEncounterWaveQuestScript.psc` | Unpatched candidate |
 | `DefaultTriggerEncounterWaveScript.psc` | Unpatched candidate |
-| `DefaultTriggerRespawnActorGroup.psc` | Unpatched candidate |
+| `DefaultTriggerRespawnActorGroup.psc` | Patched |
 | `DefaultTriggerThrottledEventScript.psc` | Unpatched candidate |
-| `defaultunlockandopenlinkonactivate.psc` | Unpatched candidate |
+| `defaultunlockandopenlinkonactivate.psc` | Patched |
 | `doorbuttonscript.psc` | Patched |
 | `dq01_terminalscript.psc` | Unpatched candidate |
 | `e08aspawneractivatorscript.psc` | Unpatched candidate |
@@ -7106,7 +7109,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/terminals/term_x01x_playerterminal_ale_010008ce.psc` | Unpatched candidate |
 | `fs_ontriggersendeventscript.psc` | Unpatched candidate |
 | `FS03_MQ_Fruition_TerminalScript.psc` | Unpatched candidate |
-| `FSDoorScript.psc` | Unpatched candidate |
+| `FSDoorScript.psc` | Patched |
 | `GenerateKeypadCombination.psc` | Unpatched candidate |
 | `GenericEWSmoduleTrigger.psc` | Unpatched candidate |
 | `GPUBenchmarkActivatorScript.psc` | Unpatched candidate |
@@ -7122,8 +7125,8 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `LC177_ActivateShutterControlsOnLoad.psc` | Unpatched candidate |
 | `LC184TerminalEnterMisc.psc` | Unpatched candidate |
 | `lightningopendoorscript.psc` | Unpatched candidate |
-| `limitedtimedoorscript.psc` | Unpatched candidate |
-| `linkkeypadtounlock.psc` | Unpatched candidate |
+| `LimitedTimeDoorScript.psc` | Unpatched candidate |
+| `LinkKeypadToUnlock.psc` | Unpatched candidate |
 | `LookoutTowerSurveyTriggerScript.psc` | Patched |
 | `MILE_CaravanEscort_FallbackTrigger.psc` | Unpatched candidate |
 | `MissionQuestActivatorScript.psc` | Generated logic |
@@ -7133,7 +7136,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `MoMCryptosTerminalScript.psc` | Unpatched candidate |
 | `momfabricatoractivatorscript.psc` | Unpatched candidate |
 | `MoMParlorEntryTriggerScript.psc` | Unpatched candidate |
-| `MoMSecretDoorTriggerScript.psc` | Unpatched candidate |
+| `MoMSecretDoorTriggerScript.psc` | Patched |
 | `Moon_Herd_AddItemOnAliasActivate.psc` | Unpatched candidate |
 | `Moon_Herd_CollAliasSceneTriggerScript.psc` | Unpatched candidate |
 | `moon_onactivateenableref.psc` | Patched |
@@ -7169,13 +7172,13 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `MTR05_SayOnActivate.psc` | Unpatched candidate |
 | `mtr05_triggerprinteronmenualiasscript.psc` | Unpatched candidate |
 | `mtr05_triggerprinteronmenuitemrun.psc` | Unpatched candidate |
-| `mtr07_earthreactortriggerscript.psc` | Unpatched candidate |
+| `MTR07_EarthReactorTriggerScript.psc` | Unpatched candidate |
 | `MTR08_ClaimTokenTerminalScript.psc` | Unpatched candidate |
 | `MTR10DoorStateScript.psc` | Unpatched candidate |
 | `MTR10KeypadAliasScript.psc` | Unpatched candidate |
 | `MTR10ShutdownButtonScript.psc` | Unpatched candidate |
 | `MTRZ01_TriggerQuestScript.psc` | Unpatched candidate |
-| `MutationTriggerMeleeExplosionScript.psc` | Unpatched candidate |
+| `MutationTriggerMeleeExplosionScript.psc` | Patched |
 | `NativeRobotTerminalScript.psc` | Unpatched candidate |
 | `nativeterminalscript.psc` | Unpatched candidate |
 | `nativeturretterminalscript.psc` | Unpatched candidate |
@@ -7185,10 +7188,10 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `Nuke_LaunchCardPatrolTerminalScript.psc` | Unpatched candidate |
 | `nwot_setstageontriggerenter.psc` | Unpatched candidate |
 | `Objects/Audio2StateActivator.psc` | Patched |
-| `Objects/DestructibleAudio2StateActivator.psc` | Generated logic |
-| `Objects/LC096_LegendaryBossTrigger.psc` | Unpatched candidate |
-| `Objects/UD002OldTunnelTerminal.psc` | Unpatched candidate |
-| `OnActivateAddItem.psc` | Unpatched candidate |
+| `Objects/DestructibleAudio2StateActivator.psc` | Patched |
+| `Objects/LC096_LegendaryBossTrigger.psc` | Patched |
+| `Objects/UD002OldTunnelTerminal.psc` | Patched |
+| `OnActivateAddItem.psc` | Patched |
 | `OnActivateCastSpell.psc` | Patched |
 | `OnEnterTriggerCastSpell.psc` | Patched |
 | `OverseerTerminalScript.psc` | Unpatched candidate |
@@ -7201,16 +7204,16 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `PowerPlantTerminalScript.psc` | Unpatched candidate |
 | `powersystemterminalscript.psc` | Unpatched candidate |
 | `qp_triggeraliastempscript.psc` | Unpatched candidate |
-| `QUESTS/_Default/AliasHazardTriggerScript.psc` | Unpatched candidate |
-| `QUESTS/_Default/AliasOnActivateRemoveMultipleItems.psc` | Unpatched candidate |
-| `QUESTS/_Default/aliasplayexplosiononactivate.psc` | Unpatched candidate |
-| `QUESTS/_Default/DisableRefOnActivate.psc` | Patched |
-| `QUESTS/_Default/progressbar/AliasOnActivate.psc` | Unpatched candidate |
-| `QUESTS/_Default/progressbar/collaliasonactivate.psc` | Unpatched candidate |
-| `QUESTS/_Default/refcollectionaliascastspellonactivate.psc` | Unpatched candidate |
-| `QUESTS/_Default/showmessageonactivatealias.psc` | Unpatched candidate |
-| `QUESTS/_Default/ShowMessageOnActivateAliasA.psc` | Unpatched candidate |
-| `QUESTS/_Default/ShowMessageOnActivateAliasB.psc` | Unpatched candidate |
+| `QUESTS/_default/AliasHazardTriggerScript.psc` | Unpatched candidate |
+| `QUESTS/_default/AliasOnActivateRemoveMultipleItems.psc` | Unpatched candidate |
+| `QUESTS/_default/aliasplayexplosiononactivate.psc` | Unpatched candidate |
+| `QUESTS/_default/DisableRefOnActivate.psc` | Patched |
+| `QUESTS/_default/progressbar/AliasOnActivate.psc` | Unpatched candidate |
+| `QUESTS/_default/progressbar/collaliasonactivate.psc` | Unpatched candidate |
+| `QUESTS/_default/refcollectionaliascastspellonactivate.psc` | Unpatched candidate |
+| `QUESTS/_default/showmessageonactivatealias.psc` | Unpatched candidate |
+| `QUESTS/_default/ShowMessageOnActivateAliasA.psc` | Unpatched candidate |
+| `QUESTS/_default/ShowMessageOnActivateAliasB.psc` | Unpatched candidate |
 | `QUESTS/AC_MQ01_Opportunity/RefOnActivate.psc` | Patched |
 | `QUESTS/AC_MQ02_Stage/EquipItemOnActivate.psc` | Unpatched candidate |
 | `QUESTS/AC_MQ02_Stage/HighRollersDoorScript.psc` | Unpatched candidate |
@@ -7252,9 +7255,9 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `RestrictedAreaTriggerScript.psc` | Unpatched candidate |
 | `RETriggerScript_NonAppalachia.psc` | Unpatched candidate |
 | `ReturnToPreviousLocOnActivate.psc` | Unpatched candidate |
-| `rs02_beat_kickouttriggerscript.psc` | Unpatched candidate |
+| `RS02_Beat_KickoutTriggerScript.psc` | Unpatched candidate |
 | `RS03_Balance_TerminalScript.psc` | Unpatched candidate |
-| `rsvp00_onactivateprintnewsletter.psc` | Unpatched candidate |
+| `RSVP00_OnActivatePrintNewsletter.psc` | Unpatched candidate |
 | `RSVP02_OnTerminalEnterSetAV.psc` | Unpatched candidate |
 | `rsz00_terminalscript.psc` | Unpatched candidate |
 | `sendstoryeventontriggerenter.psc` | Unpatched candidate |
@@ -7274,9 +7277,9 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `SSE_LandmineTrigger_Script.psc` | Patched |
 | `SSE_ReEnableActivatorAfterTimer.psc` | Patched |
 | `Storm_Debug_OrbitalStrikeButtonScript.psc` | Patched |
-| `Storm_DKWD_Interior_SecretDoor_Script.psc` | Unpatched candidate |
+| `Storm_DKWD_Interior_SecretDoor_Script.psc` | Patched |
 | `Storm_LaserGridHazardTriggerScript.psc` | Patched |
-| `Storm_MQ10_KeypadOnLoadScript.psc` | Unpatched candidate |
+| `Storm_MQ10_KeypadOnLoadScript.psc` | Patched |
 | `storm_mq10_marcspt1_keypadscript.psc` | Unpatched candidate |
 | `Storm_WeatherStationButtonScript.psc` | Patched |
 | `SupplyRun/Activator00.psc` | Unpatched candidate |
@@ -7289,7 +7292,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `SupplyRun/activatortrigger.psc` | Unpatched candidate |
 | `SupplyRun/AmbientEWSTrigger.psc` | Unpatched candidate |
 | `surv_startsurvivaltriggerscript.psc` | Unpatched candidate |
-| `TalesFromWV_OnActivateAddItem.psc` | Unpatched candidate |
+| `TalesFromWV_OnActivateAddItem.psc` | Patched |
 | `TEMP_EN05_StartOnTriggerEnterScript.psc` | Unpatched candidate |
 | `TempCampsiteTriggerboxScript.psc` | Patched |
 | `templunchboxactivatorscript.psc` | Unpatched candidate |
@@ -7327,7 +7330,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `TestTerminalScript.psc` | Generated logic |
 | `testvisualeffectonactivatefxscript.psc` | Generated logic |
 | `ThousandWattDoorScript.psc` | Unpatched candidate |
-| `toggleenableonactivateref.psc` | Unpatched candidate |
+| `ToggleEnableOnActivateRef.psc` | Unpatched candidate |
 | `TopOfTheWorldFloor3ButtonScript.psc` | Unpatched candidate |
 | `TrapResetOnActivateScript.psc` | Patched |
 | `traptriggermain.psc` | Patched |
@@ -7341,9 +7344,9 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `tw04a_secondactivate.psc` | Unpatched candidate |
 | `TWZ03_TargetActivateScript.psc` | Unpatched candidate |
 | `TWZ13DirtTriggerBoxScript.psc` | Unpatched candidate |
-| `twz13gravetriggerscript.psc` | Unpatched candidate |
+| `TWZ13GraveTriggerScript.psc` | Unpatched candidate |
 | `UD002TerminalAlias.psc` | Unpatched candidate |
-| `UD004_NukashineAutoCloseDoorScript.psc` | Unpatched candidate |
+| `UD004_NukashineAutoCloseDoorScript.psc` | Patched |
 | `V63TerminalTextReplacementScript.psc` | Unpatched candidate |
 | `V94_3_AtriumEnemyKillTriggerScript.psc` | Unpatched candidate |
 | `V94TerminalScript.psc` | Unpatched candidate |
@@ -7367,34 +7370,34 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `VaultSystemExploitCheckTriggerScript.psc` | Unpatched candidate |
 | `vaultsystemterminalscript.psc` | Unpatched candidate |
 | `VaultToggleButtonScript.psc` | Unpatched candidate |
-| `w05_002p_deathclawisletriggerscript.psc` | Unpatched candidate |
-| `W05_002P_IntroSceneTriggerScript.psc` | Unpatched candidate |
-| `W05_002P_RadicalHostilityTrigger.psc` | Unpatched candidate |
+| `W05_002P_DeathclawIsleTriggerScript.psc` | Unpatched candidate |
+| `W05_002P_IntroSceneTriggerScript.psc` | Patched |
+| `W05_002P_RadicalHostilityTrigger.psc` | Patched |
 | `W05_003P_EnterAnyTriggerRefColl.psc` | Patched |
 | `W05_003P_HiddenDoorTriggerScript.psc` | Patched |
 | `W05_003P_MusicOverrideTriggerScript.psc` | Unpatched candidate |
 | `W05_004P_Crane_DispenserTriggerScript.psc` | Patched |
-| `W05_DnD_MainDoor_Script.psc` | Unpatched candidate |
-| `w05_mq_001p_wayward_laceyiselatrigger.psc` | Unpatched candidate |
+| `W05_DnD_MainDoor_Script.psc` | Patched |
+| `W05_MQ_001P_Wayward_LaceyIselaTrigger.psc` | Unpatched candidate |
 | `W05_MQ_002P_RadioTerminalScript.psc` | Patched |
 | `W05_MQ_002P_StartSceneOnTriggerEnter.psc` | Patched |
 | `W05_MQ_004P_Crane_DoorTriggerScript.psc` | Patched |
 | `W05_MQ_004p_UpstairDoorAliasScript.psc` | Unpatched candidate |
 | `W05_MQ_101P_A_RepairSubTerminalScript.psc` | Patched |
 | `W05_MQ_101P_A_RepairTerminalScript.psc` | Unpatched candidate |
-| `W05_MQA_206P_SSTalkTriggerBoxScript.psc` | Unpatched candidate |
-| `W05_MQR_201P_IntercomTriggerScript.psc` | Unpatched candidate |
+| `W05_MQA_206P_SSTalkTriggerBoxScript.psc` | Patched |
+| `W05_MQR_201P_IntercomTriggerScript.psc` | Patched |
 | `w05_mqr_201p_louroomtriggerscript.psc` | Unpatched candidate |
 | `W05_MQR_202P_DummyActivateMarker.psc` | Unpatched candidate |
 | `W05_MQR_203P_ArenaDoorCloseLock.psc` | Unpatched candidate |
 | `W05_MQR_203P_DoorPortalRefScript.psc` | Unpatched candidate |
-| `W05_MQR_203P_DoorPortalScript.psc` | Unpatched candidate |
-| `W05_MQR_205P_RaRaCowerTriggerScript.psc` | Unpatched candidate |
-| `W05_MQR_205P_SecurityTriggerScript.psc` | Unpatched candidate |
-| `W05_MQR_PlayerVault79KeypadObjective.psc` | Unpatched candidate |
+| `W05_MQR_203P_DoorPortalScript.psc` | Patched |
+| `W05_MQR_205P_RaRaCowerTriggerScript.psc` | Patched |
+| `W05_MQR_205P_SecurityTriggerScript.psc` | Patched |
+| `W05_MQR_PlayerVault79KeypadObjective.psc` | Patched |
 | `W05_MQR_Vault79KeypadAliasScript.psc` | Patched |
 | `w05_mqs_204p_disableontriggerenter.psc` | Unpatched candidate |
-| `w05_overseercamp_tuttriggerscript.psc` | Unpatched candidate |
+| `W05_OverseerCAMP_TutTriggerScript.psc` | Patched |
 | `W05_QT_TriggerScript.psc` | Unpatched candidate |
 | `W05_RE_BlacklightActivatorScript.psc` | Patched |
 | `W05_RE_ClueBoardActivatorScript.psc` | Patched |
@@ -7405,8 +7408,8 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `W05_RE_V79KeypadActivatorScript.psc` | Patched |
 | `W05_Vault79ElevatorDoorTriggerScript.psc` | Patched |
 | `W05_Vault79EntranceDoorTriggerScript.psc` | Unpatched candidate |
-| `w05_vaut79entrancekeypadscript.psc` | Unpatched candidate |
-| `W05_Wayward_IntTriggerRCScript.psc` | Unpatched candidate |
+| `W05_Vaut79EntranceKeypadScript.psc` | Unpatched candidate |
+| `W05_Wayward_IntTriggerRCScript.psc` | Patched |
 | `WarehouseActorAmbushTerminalScript.psc` | Unpatched candidate |
 | `WarehouseEncounterTypesTerminalScript.psc` | Unpatched candidate |
 | `WarehouseEnemyNPCControlButton.psc` | Unpatched candidate |
@@ -7441,23 +7444,23 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | Script | Status |
 |---|---|
 | `Creatures/_Default/AddToFaction.psc` | Generated logic |
-| `Creatures/_Default/CreatureVariantScript.psc` | Unpatched candidate |
+| `Creatures/_Default/CreatureVariantScript.psc` | Patched |
 | `Creatures/_Default/ExplodeOnDeath.psc` | Generated logic |
 | `Creatures/_Default/frenzyscript.psc` | Generated logic |
 | `Creatures/_Default/glowinglootdrop.psc` | Unpatched candidate |
-| `Creatures/_Default/selfdestructscript.psc` | Generated logic |
+| `Creatures/_Default/selfdestructscript.psc` | Patched |
 | `Creatures/_Default/setonfirescript.psc` | Unpatched candidate |
 | `Creatures/_Default/TunnelingScript.psc` | Generated logic |
 | `Creatures/AssaultronHeadLaserScript.psc` | Generated logic |
 | `Creatures/AssaultronStealthScript.psc` | Unpatched candidate |
 | `Creatures/bloodbugracescript.psc` | Generated logic |
-| `Creatures/BossLootDrop.psc` | Unpatched candidate |
+| `Creatures/BossLootDrop.psc` | Patched |
 | `Creatures/BrahminRaceHerdingScript.psc` | Generated logic |
 | `Creatures/BrahminRaceMilkingScript.psc` | Generated logic |
 | `Creatures/e3video_scorchbeastracescript.psc` | Unpatched candidate |
 | `Creatures/EyebotSuiciderScript.psc` | Patched |
 | `Creatures/Festive_LegendaryScorched.psc` | Unpatched candidate |
-| `Creatures/FestiveGiftAddItem.psc` | Unpatched candidate |
+| `Creatures/FestiveGiftAddItem.psc` | Patched |
 | `Creatures/FlatwoodsMonsterRaceScript.psc` | Patched |
 | `Creatures/FlatwoodsMonsterWatcherScript.psc` | Patched |
 | `Creatures/FloaterGnasherBiteScript.psc` | Patched |
@@ -7466,18 +7469,18 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `Creatures/GraftonRaceScript.psc` | Patched |
 | `Creatures/HoneyBeastBeeSwarmRaceScript.psc` | Generated logic |
 | `Creatures/HoneyBeastRaceScript.psc` | Unpatched candidate |
-| `Creatures/liberatorracescript.psc` | Unpatched candidate |
+| `Creatures/liberatorracescript.psc` | Patched |
 | `Creatures/MegaSlothRaceScript.psc` | Unpatched candidate |
 | `Creatures/MoleMinerRaceScript.psc` | Unpatched candidate |
 | `Creatures/MothmanCombatantScript.psc` | Patched |
 | `Creatures/MothmanDefenderScript.psc` | Patched |
 | `Creatures/MothmanInvisibilityEffect.psc` | Generated logic |
 | `Creatures/MothmanWatcherScript.psc` | Patched |
-| `Creatures/mrhandyselfdestructscript.psc` | Unpatched candidate |
+| `Creatures/mrhandyselfdestructscript.psc` | Patched |
 | `Creatures/ProtectronSuiciderScript.psc` | Generated logic |
 | `Creatures/RadtoadRaceScript.psc` | Generated logic |
 | `Creatures/robotselfdestructscript.psc` | Unpatched candidate |
-| `Creatures/RusherDeathExplosion.psc` | Unpatched candidate |
+| `Creatures/RusherDeathExplosion.psc` | Patched |
 | `Creatures/ScorchbeastRaceScript.psc` | Patched |
 | `Creatures/ScorchbeastSummonAlliesEffectScript.psc` | Unpatched candidate |
 | `Creatures/ScorchedRaceScript.psc` | Unpatched candidate |
@@ -7485,7 +7488,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `Creatures/ScorchedSuiciderScript.psc` | Patched |
 | `Creatures/SentryBotFaceLightScript.psc` | Generated logic |
 | `Creatures/SentryBotOverheatScript.psc` | Generated logic |
-| `Creatures/SentryBotShoulderClusterScript.psc` | Unpatched candidate |
+| `Creatures/SentryBotShoulderClusterScript.psc` | Patched |
 | `Creatures/SheepsquatchRaceScript.psc` | Patched |
 | `Creatures/SnallygasterRaceScript.psc` | Unpatched candidate |
 | `Creatures/StormBossRaceScript.psc` | Patched |
@@ -7609,7 +7612,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/packages/PF_W05_Community_Treehouse_E_00555B59.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_Daily_R02_Package_Tra_00555E4E.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_Derek_Vault79Operatio_0057507F.psc` | Unpatched candidate |
-| `fragments/packages/PF_W05_MQ_001P_Wayward_Batte_0040BD22.psc` | Unpatched candidate |
+| `fragments/packages/PF_W05_MQ_001P_Wayward_Batte_0040BD22.psc` | Patched |
 | `fragments/packages/PF_W05_MQ_002P_Radical_Secon_00543873.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQ_002P_Radical_Secon_00543874.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQ_002P_Wayward_First_0040F68B.psc` | Unpatched candidate |
@@ -7619,7 +7622,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/packages/PF_W05_MQ_003P_Muscle_SolExi_0041A4E5.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQ_004P_Crane_ExitWay_0055ADC7.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQ_101P_A_TravelToD_0041B853_1.psc` | Patched |
-| `fragments/packages/PF_W05_MQ_101P_B_AubriePacka_0059F653.psc` | Unpatched candidate |
+| `fragments/packages/PF_W05_MQ_101P_B_AubriePacka_0059F653.psc` | Patched |
 | `fragments/packages/PF_W05_MQA_206P_ExitOperatio_00583506.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQA_206P_Gail_Entranc_00558978.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQA_206P_LeaveVault_005674A3.psc` | Unpatched candidate |
@@ -7672,9 +7675,9 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/packages/pf_w05_mqs_203p_robobraint_00407f9a_1.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQS_204P_RaidersTrave_00574019.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQS_205P_07_PennyLeav_00570D66.psc` | Unpatched candidate |
-| `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573891.psc` | Unpatched candidate |
-| `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573892.psc` | Unpatched candidate |
-| `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573895.psc` | Unpatched candidate |
+| `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573891.psc` | Patched |
+| `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573892.psc` | Patched |
+| `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573895.psc` | Patched |
 | `fragments/packages/PF_W05_RE_Scene_TravelersJM0_00569407.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_RE_Scene_TravelersJM0_0056EC46.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_RE_Scene_TravelersJM0_00571D1C.psc` | Unpatched candidate |
@@ -8088,10 +8091,10 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/terminals/term_vtecagcenterterminal_0100168f_1.psc` | Unpatched candidate |
 | `fragments/terminals/term_vtecagcenterterminal_0100168f.psc` | Unpatched candidate |
 | `fragments/terminals/TERM_VTU_OverseerTrainingDea_0009A6DB.psc` | Unpatched candidate |
-| `fragments/terminals/TERM_W05_MQ_004P_Crane_Regis_00424851.psc` | Unpatched candidate |
-| `fragments/terminals/TERM_W05_MQ_101P_NukaTermina_003FE452.psc` | Unpatched candidate |
+| `fragments/terminals/TERM_W05_MQ_004P_Crane_Regis_00424851.psc` | Patched |
+| `fragments/terminals/TERM_W05_MQ_101P_NukaTermina_003FE452.psc` | Patched |
 | `fragments/terminals/TERM_W05_MQ_102P_RestrictedW_00400485.psc` | Unpatched candidate |
-| `fragments/terminals/TERM_W05_MQ_102P_SecurityTer_00544D59.psc` | Unpatched candidate |
+| `fragments/terminals/TERM_W05_MQ_102P_SecurityTer_00544D59.psc` | Patched |
 | `fragments/terminals/term_w05_mqs_201p_motherlode_003f514d.psc` | Unpatched candidate |
 | `fragments/terminals/term_warehousetestambusheste_01004b10.psc` | Unpatched candidate |
 | `fragments/terminals/TERM_WarehouseTestEncounterT_0031E60F.psc` | Unpatched candidate |

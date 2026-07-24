@@ -1,10 +1,12 @@
 //! Fixup: rewrite raw WRLD large-reference (RNAM) table FormIDs.
 //!
-//! Each RNAM row is an on-disk source FormID followed by cell coordinates. A
-//! `00xxxxxx` source-local FormID left after FO4 masters are added resolves
-//! against `Fallout4.esm`, so it is remapped here. Defensive: the translator
-//! normally strips WRLD runtime tables (RNAM/MHDT/OFST/CLSZ), so this only fires
-//! on a WRLD.RNAM table that survives.
+//! Each RNAM subrecord is a grid header (i16 gridY + i16 gridX + u32 count)
+//! followed by rows of (u32 ref FormID, i16 cellY, i16 cellX). A `00xxxxxx`
+//! source-local FormID left after FO4 masters are added resolves against
+//! `Fallout4.esm`, so it is remapped here. Defensive: the translator normally
+//! strips WRLD runtime tables (RNAM/OFST/CLSZ) — the shipped RNAM is produced by
+//! `esp_authoring_core::worldspace_header`'s carry — so this only fires on a
+//! WRLD.RNAM table that survives translation.
 
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -120,8 +122,14 @@ fn rewrite_rnam_bytes(
     mapper: &mut FormKeyMapper,
     warnings: &mut Vec<Sym>,
 ) -> bool {
+    // RNAM layout: i16 gridY + i16 gridX + u32 row count, then count rows of
+    // (u32 ref formid, i16 cellY, i16 cellX). The grid header must be skipped —
+    // treating it as a row would rewrite the coords/count as a formid.
+    const RNAM_HEADER_SIZE: usize = 8;
     const RNAM_ROW_SIZE: usize = 8;
-    if bytes.len() % RNAM_ROW_SIZE != 0 {
+    let count = (bytes.len() >= RNAM_HEADER_SIZE)
+        .then(|| u32::from_le_bytes(bytes[4..8].try_into().expect("four-byte count")) as usize);
+    if count.is_none_or(|c| bytes.len() != RNAM_HEADER_SIZE + c * RNAM_ROW_SIZE) {
         let w = mapper.interner.intern(&format!(
             "rewrite_raw_wrld_large_refs_bad_rnam_len:{}",
             bytes.len()
@@ -131,7 +139,7 @@ fn rewrite_rnam_bytes(
     }
 
     let mut changed = false;
-    for row_start in (0..bytes.len()).step_by(RNAM_ROW_SIZE) {
+    for row_start in (RNAM_HEADER_SIZE..bytes.len()).step_by(RNAM_ROW_SIZE) {
         let raw = u32::from_le_bytes(
             bytes[row_start..row_start + 4]
                 .try_into()
@@ -227,6 +235,9 @@ mod tests {
             FormKey::parse("00DC6C@SeventySix.esm", mapper.interner).unwrap(),
         );
         let mut raw = Vec::new();
+        raw.extend_from_slice(&16_i16.to_le_bytes());
+        raw.extend_from_slice(&42_i16.to_le_bytes());
+        raw.extend_from_slice(&1_u32.to_le_bytes());
         raw.extend_from_slice(&0x0002_6616_u32.to_le_bytes());
         raw.extend_from_slice(&16_i16.to_le_bytes());
         raw.extend_from_slice(&42_i16.to_le_bytes());
@@ -246,19 +257,51 @@ mod tests {
         let FieldValue::Bytes(bytes) = &record.fields[0].value else {
             panic!("expected raw RNAM bytes");
         };
+        // Grid header untouched.
+        assert_eq!(i16::from_le_bytes(bytes[0..2].try_into().unwrap()), 16);
+        assert_eq!(i16::from_le_bytes(bytes[2..4].try_into().unwrap()), 42);
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
+        // Row formid remapped, cell coords untouched.
         assert_eq!(
-            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
             0x0702_6616
         );
-        assert_eq!(i16::from_le_bytes(bytes[4..6].try_into().unwrap()), 16);
-        assert_eq!(i16::from_le_bytes(bytes[6..8].try_into().unwrap()), 42);
+        assert_eq!(i16::from_le_bytes(bytes[12..14].try_into().unwrap()), 16);
+        assert_eq!(i16::from_le_bytes(bytes[14..16].try_into().unwrap()), 42);
+    }
+
+    #[test]
+    fn warns_on_rnam_bytes_shorter_than_declared_row_count() {
+        let mut interner = StringInterner::new();
+        let mut mapper = fo76_to_fo4_mapper(&mut interner);
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&0_i16.to_le_bytes());
+        raw.extend_from_slice(&0_i16.to_le_bytes());
+        raw.extend_from_slice(&2_u32.to_le_bytes()); // claims 2 rows, holds 1
+        raw.extend_from_slice(&0x0002_6616_u32.to_le_bytes());
+        raw.extend_from_slice(&0_i16.to_le_bytes());
+        raw.extend_from_slice(&0_i16.to_le_bytes());
+        let before = raw.clone();
+
+        let mut warnings = Vec::new();
+        assert!(!rewrite_rnam_bytes(
+            raw.as_mut_slice(),
+            &mut mapper,
+            &mut warnings
+        ));
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(raw, before);
     }
 
     #[test]
     fn leaves_already_target_encoded_wrld_rnam_refs_unchanged() {
         let mut interner = StringInterner::new();
         let mut mapper = fo76_to_fo4_mapper(&mut interner);
-        let mut raw = 0x0702_6616_u32.to_le_bytes().to_vec();
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&16_i16.to_le_bytes());
+        raw.extend_from_slice(&42_i16.to_le_bytes());
+        raw.extend_from_slice(&1_u32.to_le_bytes());
+        raw.extend_from_slice(&0x0702_6616_u32.to_le_bytes());
         raw.extend_from_slice(&16_i16.to_le_bytes());
         raw.extend_from_slice(&42_i16.to_le_bytes());
 
@@ -270,7 +313,7 @@ mod tests {
         ));
         assert!(warnings.is_empty());
         assert_eq!(
-            u32::from_le_bytes(raw[0..4].try_into().unwrap()),
+            u32::from_le_bytes(raw[8..12].try_into().unwrap()),
             0x0702_6616
         );
     }

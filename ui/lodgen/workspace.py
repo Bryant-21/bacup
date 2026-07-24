@@ -13,6 +13,10 @@ class LodgenWorkspace(BaseWorkspace):
     id = "lodgen"
     name = "LOD Generator"
     icon = "LOD"
+    user_guide_body = """
+Generate terrain, object, and tree LOD for a worldspace from the World, Terrain, Object, and Tree panels.
+Configure the output settings, then run generation from the Generate panel and monitor progress.
+"""
 
     def __init__(self, toolkit_settings=None):
         super().__init__(toolkit_settings=toolkit_settings)

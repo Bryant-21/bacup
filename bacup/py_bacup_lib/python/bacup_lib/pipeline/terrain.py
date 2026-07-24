@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from bacup_lib.runner import ConversionRunner
 
 
+_RUST_TRANSLATED_SOURCES: set[str] = {"fnv", "fo3", "skyrimse"}
 _SUPPORTED_SOURCES: set[str] = {"fo76"}
 
 def convert_terrain(
@@ -21,11 +22,10 @@ def convert_terrain(
 ) -> None:
     """Dispatch terrain conversion by source game."""
     source = (ctx.source_game or "").lower()
-    if source == "fnv":
+    if source in _RUST_TRANSLATED_SOURCES:
         runner.emit_log(
-            "WARN",
-            "convert_terrain: FNV LAND is emitted by Rust translate_records; "
-            "legacy Python terrain phase has been removed",
+            "INFO",
+            f"convert_terrain: {source} LAND is emitted by Rust translate_records",
         )
         progress.total_items = 0
         progress.completed_items = 0

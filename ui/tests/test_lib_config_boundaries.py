@@ -4,6 +4,8 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -145,9 +147,10 @@ def test_rust_workspace_belongs_to_py_creation_lib():
     assert (PROJECT_ROOT / "py_creation_lib" / "Cargo.toml").is_file()
     assert (PROJECT_ROOT / "py_creation_lib" / "Cargo.lock").is_file()
 
-    ensure_native = (PROJECT_ROOT / "scripts" / "ensure_native.py").read_text(
-        encoding="utf-8"
-    )
+    ensure_native_path = PROJECT_ROOT / "scripts" / "ensure_native.py"
+    if not ensure_native_path.exists():
+        pytest.skip("scripts/ensure_native.py is monorepo-only (not shipped to the public repo)")
+    ensure_native = ensure_native_path.read_text(encoding="utf-8")
     assert '"cargo", "metadata", "--format-version", "1"' in ensure_native
     assert 'REPO_ROOT / "py_creation_lib"' in ensure_native
     assert 'REPO_ROOT / "bacup" / "py_bacup_lib"' in ensure_native

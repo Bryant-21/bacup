@@ -4,8 +4,8 @@
 //!   - "fo76": routes through terrain_textures::run (two-pass manifest flow)
 //!     so TXST/LTEX/GRAS records are emitted. Requires source_handle_id and
 //!     fo76_data_dir in params for fallback asset reads.
-//!   - "fnv" / "fo3": skips with a warning. Full-plugin LAND is emitted by the
-//!     Rust record translation pass, not this terrain texture phase.
+//!   - "fnv" / "fo3" / "skyrimse": skips this phase. Full-plugin LAND is
+//!     emitted by the Rust record translation pass.
 //!
 //! Params shape (JSON object in PhaseCtx::params):
 //! ```json
@@ -49,14 +49,23 @@ impl Phase for ConvertTerrainPhase {
 
         match source_game {
             "fo76" => run_fo76_btd(ctx),
+            "fnv" | "fo3" | "skyrimse" => {
+                let _ = ctx.run.event_tx.try_send(crate::phase::PhaseEvent::Log {
+                    phase: "convert_terrain",
+                    level: crate::phase::LogLevel::Info,
+                    message: format!(
+                        "convert_terrain: {} LAND is emitted by Rust translate_records",
+                        source_game
+                    ),
+                });
+                Ok(PhaseReport::default())
+            }
             other => {
                 let _ = ctx.run.event_tx.try_send(crate::phase::PhaseEvent::Log {
                     phase: "convert_terrain",
                     level: crate::phase::LogLevel::Warn,
                     message: format!(
-                        "convert_terrain: source game '{}' not yet supported in native phase; \
-                         full-plugin LAND is emitted by Rust translate_records",
-                        other
+                        "convert_terrain: source game '{other}' is not supported in native phase"
                     ),
                 });
                 Ok(PhaseReport::default())
