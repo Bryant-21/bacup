@@ -1,0 +1,20 @@
+{
+  "SFM04_Organic": {
+    "form_id": "0010AE02",
+    "stage": 1000,
+    "source": ["CompleteQuest"],
+    "live": ["CompleteQuest"],
+    "source_index_flags": [],
+    "live_index_flags": [],
+    "fragment": "Fragment_Stage_1000_Item_00"
+  },
+  "MTR07_Earth": {
+    "form_id": "003443FB",
+    "stage": 255,
+    "source": ["CompleteQuest"],
+    "live": ["CompleteQuest"],
+    "source_index_flags": ["TimerEnd"],
+    "live_index_flags": [],
+    "fragment": "Fragment_Stage_0255_Item_00"
+  }
+}

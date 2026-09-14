@@ -215,7 +215,7 @@ MISC_PATCH_CASES = {
         "structs[found].DestAlias.ForceRefTo(akTarget)",
     ),
     "Fragments:Quests:QF_W05_DialogueDenizens_Scen_00597301": (
-        "DenizenDialogueScript ownerQuest = Self as DenizenDialogueScript",
+        "DenizenDialogueScript ownerQuest = (Self as Quest) as DenizenDialogueScript",
         "ownerQuest.RepConvoOutcomeDV = 0",
     ),
 }

@@ -1,25 +1,14 @@
 //! Fixup: strip PRPS (Properties) entries whose actor-value FormID is null.
 //!
-
+//! FO76 actor values with no FO4 equivalent leave RACE Properties rows whose
+//! `PropertiesActorValue` is null (FormID 0) after the translation sweep, and xEdit
+//! warns on them. Those rows are dropped from every RACE's PRPS.
 //!
-//! # What this does
-//! FO76 actor values that have no FO4 equivalent produce Properties entries
-//! whose `PropertiesActorValue` reference becomes null (FormID 0) after the
-//! translation sweep.  These entries are meaningless and cause xEdit warnings.
-//!
-//! This fixup scans every RACE record in the target plugin, reads the PRPS
-//! subrecord (codec `array_struct:I,f`, 8 bytes per row: 4-byte FormID + 4-byte
-//! float), drops any row whose FormID is zero, and writes the cleaned record
-//! back.
-//!
-//! # Binary layout of PRPS
+//! # Binary layout of PRPS (codec `array_struct:I,f`, 8 bytes per row)
 //! | Offset | Size | Field                   |
 //! |--------|------|-------------------------|
 //! |      0 |    4 | PropertiesActorValue (formid) |
 //! |      4 |    4 | PropertiesValue (float32)     |
-//!
-//! An entry whose FormID == 0x00000000 has no actor value (orphaned) and is
-//! dropped.  All other entries are kept as-is.
 
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -109,18 +98,9 @@ impl Fixup for StripOrphanRacePropertiesFixup {
 // Record-level mutation (extracted for unit-test access)
 // ---------------------------------------------------------------------------
 
-/// Strip PRPS rows whose actor-value FormID is zero.
-///
-/// The PRPS subrecord uses codec `array_struct:I,f` — raw bytes decoded as
-/// `FieldValue::Bytes` by the source reader (unknown-codec fallback).  This
-/// function treats the bytes as a sequence of 8-byte rows and removes every
-/// row whose first 4 bytes (little-endian FormID) are zero.
-///
-/// Returns the number of entries stripped.
-///
-/// Rows shorter than 8 bytes or whose byte count is not a multiple of 8 are
-/// left in place and counted as zero strips (defensive: no data loss on
-/// unexpected payloads).
+/// Strip PRPS rows whose actor-value FormID is zero; returns the number stripped.
+/// PRPS decodes as `FieldValue::Bytes` (unknown-codec fallback). A payload that is
+/// not a whole number of 8-byte rows is left untouched.
 pub fn apply_to_record(record: &mut Record) -> u32 {
     let prps_sig = match SubrecordSig::from_str("PRPS") {
         Ok(s) => s,

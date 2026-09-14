@@ -280,7 +280,7 @@ class ToolbarPanel:
             imgui.separator()
 
             if imgui.menu_item("Validate NIF", "", False, bool(self.app.nif_file))[0]:
-                vp = getattr(self.app, 'validation_panel', None)
+                vp = getattr(self.app, "validation", None)
                 if vp:
                     vp.validate()
 

@@ -1,30 +1,19 @@
 //! Fixup: strip / null references whose resolved target record type is illegal
 //! for the FO4 field (Class C — reference type-mismatch).
 //!
-//! # Why
-//! FO76 and FO4 disagree on the allowed target type of several FormID fields.
-//! After the conversion remaps a reference, the FK resolves fine but points at
-//! a record whose *signature* is not in the FO4 field's `wbFormIDCk` allow-set,
-//! e.g. `FACT \ VENC -> Found a REFR? ...` or `DIAL \ BNAM -> non-DLBR`. xEdit
-//! reports these as "Found a X reference, expected: Y".
+//! FO76 and FO4 disagree on the allowed target type of several FormID fields. A
+//! remapped reference can resolve fine but to a signature outside the FO4 field's
+//! `wbFormIDCk` allow-set (e.g. `FACT \ VENC -> Found a REFR? ...`,
+//! `DIAL \ BNAM -> non-DLBR`), which xEdit reports as "Found a X reference,
+//! expected: Y". XEZN→LCTN, the dominant case, is handled in
+//! `rewrite_raw_object_template_formids::rewrite_placed_ref_location_record`.
 //!
-//! XEZN→LCTN (the dominant Class C case) is handled separately in
-//! `rewrite_raw_object_template_formids::rewrite_placed_ref_location_record`;
-//! this pass covers the remaining tail.
-//!
-//! # How
-//! For each `(record_sig, field_path)` in `CLASS_C_TARGETS`, this pass walks the
-//! matching subrecord of every output record of that sig, resolves the FK's
-//! target record signature via the output FK→sig index, and consults the shared
-//! schema accessor `CompiledSchema::allowed_targets(record_sig, field_path)`:
-//! when the resolved sig is not allowed, the field is acted on per `Action`:
-//!   - `Null`  — zero the FK in place, keep the subrecord (NULL is xEdit-legal).
-//!   - `Strip` — remove the whole subrecord (single optional FK subrecord).
-//!
-//! A FK that does not resolve to any output/master record (dangling) is left
-//! alone — `fix_invalid_target_formkeys` / `sweep_unmapped_formkeys` own that.
-//! Only references whose target type is *positively known and wrong* are acted
-//! on, mirroring the conservative policy in `fix_stag_sound_refs`.
+//! For each `(record_sig, field_path)` in `CLASS_C_TARGETS`, the FK's target sig is
+//! resolved via the output FK→sig index and checked with
+//! `CompiledSchema::allowed_targets`. A disallowed FK is nulled in place (`Null`),
+//! its subrecord removed (`Strip`), or left with a warning (`Leave`), per
+//! `action_for`. Dangling FKs are left to `fix_invalid_target_formkeys` /
+//! `sweep_unmapped_formkeys`; only positively known wrong types are acted on.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -76,15 +65,11 @@ fn action_for(null_allowed: bool, required: bool) -> Action {
     }
 }
 
-/// Subrecord-level Class C tail: `(record_sig, subrecord_sig)`. The action is
-/// DERIVED per record from schema metadata (`action_for`), never hardcoded.
-///
-/// `field_path` passed to `allowed_targets` is the subrecord sig — every entry
-/// here is a single-FK subrecord, so the schema's subrecord-level / sole-FK-field
-/// fallback resolves the target spec. NOT listed here:
-/// - XEZN (placed-ref encounter zone) → `rewrite_placed_ref_location_record`.
-/// - MGEF DATA, RACE DATA, IDLE ANAM, etc. → struct-INTERNAL FKs, handled by the
-///   struct-field pass (`validate_struct_fk_fields`) below.
+/// Subrecord-level Class C tail: `(record_sig, subrecord_sig)`, each a single-FK
+/// subrecord, so `allowed_targets` resolves by subrecord sig. The action comes from
+/// `action_for`. XEZN goes through `rewrite_placed_ref_location_record`, and
+/// struct-internal FKs (MGEF DATA, RACE DATA, IDLE ANAM, ...) through
+/// `validate_struct_fk_fields`.
 const CLASS_C_TARGETS: &[(&str, &str)] = &[
     // DIAL BNAM → DLBR (NULL NOT in set → strip, optional subrecord).
     ("DIAL", "BNAM"),
@@ -103,39 +88,30 @@ const CLASS_C_TARGETS: &[(&str, &str)] = &[
     // whole COBJ.
     ("COBJ", "CNAM"),
     // REFR XRFG → RFGP (Reference Group) and XLYR → LAYR (Layer): FO76
-    // editor-grouping refs with no FO4 home. RFGP/LAYR are not carried into the
-    // exterior-only port, so the blind object-id remap either collided with an
-    // unrelated 07 record (xEdit "Found a REFR/INFO/LVLI") or dangles at an
-    // 01xxxxxx master index where no such record exists. Both are optional,
-    // NULL-disallowed single-FK subrecords → Strip. Because the target type has
-    // NO valid FO4 representation, the Strip action here also drops the dangling
-    // (unresolved-non-null) variant — see `apply_to_record`'s strip-dangling path.
+    // editor-grouping refs the exterior-only port does not carry, so the object-id
+    // remap collides with an unrelated 07 record (xEdit "Found a REFR/INFO/LVLI")
+    // or dangles at an 01xxxxxx master index. Optional, NULL-disallowed → Strip,
+    // including the dangling variant (see `STRIP_DANGLING_SUBRECORDS`).
     ("REFR", "XRFG"),
     ("REFR", "XLYR"),
-    // REFR XASP → REFR (Acoustic Parent): the FO76 acoustic-parent REFR lived in
-    // a dropped interior, so the blind object-id remap collided with an unrelated
-    // output record (xEdit "Found a LAND reference, expected: REFR"). NULL-
-    // disallowed optional single-FK subrecord → Strip the wrong-type. (Pure
-    // dangling XASP is the null-sweep's; only positively-wrong-type is stripped
-    // here, so the slot's valid REFR target type is respected.)
+    // REFR XASP → REFR (Acoustic Parent): the FO76 parent lived in a dropped
+    // interior, so the remap collides with an unrelated output record (xEdit
+    // "Found a LAND reference, expected: REFR"). Optional, NULL-disallowed → Strip
+    // the wrong type; a purely dangling XASP is left to the null sweep.
     ("REFR", "XASP"),
 ];
 
-/// Subrecords whose ONLY valid FO4 target record type is never carried into the
-/// exterior-only APPALACHIA port (FO76 editor-grouping records: RFGP Reference
-/// Group, LAYR Layer). For these, a non-null FK that resolves NOWHERE (output or
-/// master) is just as wrong as a wrong-typed one — the slot can't point at a
-/// valid record, so a `Strip` action drops the dangling variant too rather than
-/// leaving it for the (correctly conservative) sweep fixups, which would keep it.
+/// Subrecords whose only valid FO4 target type (RFGP Reference Group, LAYR Layer)
+/// is never carried into the exterior-only Appalachia port. A non-null FK that
+/// resolves nowhere is as wrong as a wrong-typed one, so `Strip` drops it too
+/// instead of leaving it for the conservative sweep fixups.
 const STRIP_DANGLING_SUBRECORDS: &[(&str, &str)] = &[("REFR", "XRFG"), ("REFR", "XLYR")];
 
-/// Keyword-LIST (formid_array) Class C targets: `(record_sig, subrecord_sig)`.
-/// xEdit reports a wrong-type ENTRY (e.g. `KWDA -> Found a STAT reference,
-/// expected: KYWD,NULL`) when a FO76 keyword's object-id, remapped to 07,
-/// collided with an unrelated output record. NULL is allowed in these slots, so
-/// the fix FILTERS the wrong-type entries and keeps the valid keywords — never
-/// strips the whole list (which would drop legitimate keywords). Mirrors the
-/// existing OMOD MNAM handling, generalised to the full set.
+/// Keyword-list (formid_array) Class C targets: `(record_sig, subrecord_sig)`. A
+/// FO76 keyword remapped to 07 can collide with an unrelated output record (xEdit
+/// `KWDA -> Found a STAT reference, expected: KYWD,NULL`). NULL is allowed, so
+/// wrong-type entries are filtered out and valid keywords kept; the list is never
+/// stripped whole.
 const KEYWORD_LIST_TARGETS: &[(&str, &str)] = &[
     ("OMOD", "MNAM"),
     ("FURN", "KWDA"),
@@ -187,17 +163,12 @@ enum UnionAction {
     NullFk,
 }
 
-/// Bytes-union wrong-type targets: `(record_sig, subrecord_sig, rule, action)`
-/// whose FK lives in a raw `union`/`struct:`-codec blob that the decoded walk
-/// can't reach (so `CLASS_C_TARGETS` / `KEYWORD_LIST_TARGETS` skip them — the
-/// union field carries no `formlink_targets`). The FK sits at offset 0 (SNDR.BNAM
-/// `base_descriptor` variant) or offset 4 (PACK PTDA/PLDT `[i32 type][FK]`); see
-/// `validate_union_formid_target`.
-///
-/// SNDR.BNAM is a heterogeneous-size union: the 6-byte `values` variant is a
-/// scalar (NOT a FK), the 4-byte `base_descriptor` variant is a SNDR FK. The
-/// 4-byte length discriminates the FK variant, so a scalar `values` payload is
-/// never touched.
+/// Bytes-union wrong-type targets: `(record_sig, subrecord_sig, rule, action)`. The
+/// FK sits in a raw union/`struct:` blob with no `formlink_targets`, so the decoded
+/// passes skip it: offset 0 for SNDR.BNAM `base_descriptor`, offset 4 for PACK
+/// PTDA/PLDT `[i32 type][FK]` (see `validate_union_formid_target`). SNDR.BNAM's
+/// 6-byte `values` variant is a scalar; only the 4-byte `base_descriptor` variant is
+/// a SNDR FK, so the length discriminates.
 const UNION_WRONGTYPE_TARGETS: &[(&str, &str, UnionTypeRule, UnionAction)] = &[
     (
         "SNDR",
@@ -271,7 +242,16 @@ const DOBJ_FO76_ONLY_OBJECT_USE_TAGS: &[u32] = &[
 ];
 
 const MGEF_ACTOR_VALUE_FIELD_IDS: &[&str] = &["actor_value", "actor_value_1"];
-const FO4_HARDCODED_AVIF_LOCAL_IDS: &[u32] = &[
+const MGEF_ACTOR_VALUE_PRIMARY_FIELD_ID: &str = "actor_value";
+const MGEF_ARCHETYPE_FIELD_ID: &str = "archetype";
+const FO4_MGEF_ARCHETYPE_VALUE_MODIFIER: u32 = 0;
+const FO4_MGEF_ARCHETYPE_SCRIPT: u32 = 1;
+const FO4_MGEF_ARCHETYPES_REQUIRING_ACTOR_VALUE: &[u32] = &[
+    FO4_MGEF_ARCHETYPE_VALUE_MODIFIER,
+    5,  // Dual Value Modifier
+    34, // Peak Value Modifier
+];
+pub(crate) const FO4_HARDCODED_AVIF_LOCAL_IDS: &[u32] = &[
     0x0002D2, // AnimationMult
     0x0002D3, // WeapReloadSpeedMult
     0x0002D8, // ActionPointsRate
@@ -287,6 +267,13 @@ const FO4_HARDCODED_AVIF_LOCAL_IDS: &[u32] = &[
     0x00035C, // PowerArmorBattery
     0x00035F, // ReflectDamage
     0x00037F, // Sneak
+    // Below: attested by vanilla Fallout4.esm, which references these ids from
+    // MGEF.DATA.actor_value even though no AVIF record defines them. Left out of
+    // the list above, they were treated as dangling and nulled — which strands a
+    // Value Modifier effect with no actor value and hard-crashes FO4 on apply.
+    // Names are deliberately omitted: nothing in the data files names them.
+    0x0002BC, 0x0002BD, 0x0002D9, 0x0002EE, 0x0002F4, 0x0002F7, 0x000310, 0x000311, 0x00032D,
+    0x000355, 0x000360, 0x000361, 0x000362, 0x000363, 0x000365, 0x000366, 0x000367, 0x000389,
 ];
 const MAGIC_TARGET_SELF: u32 = 0;
 const MAGIC_TARGET_AIMED: u32 = 2;
@@ -482,7 +469,10 @@ impl Fixup for ValidateReferenceTargetTypesFixup {
             &fk_to_sig,
             mapper.interner,
             &target_masters,
-            || target_record_sigs_by_encoded_form_id(session, mapper.interner, &target_masters),
+            || {
+                target_record_sigs_by_encoded_form_id(session, &target_masters)
+                    .map(|index| index.as_ref().clone())
+            },
         )?;
 
         if has_dobj_object_use_cleanup {
@@ -894,13 +884,10 @@ impl Fixup for ValidateReferenceTargetTypesFixup {
         }
 
         // ── Multi-entry list Class C (formid_array subrecords) ──────────────
-        // Keyword ARRAYS (List of KYWD FormKeys): OMOD MNAM, FURN/WEAP/NPC_ KWDA.
-        // A FO76 keyword's object-id, remapped to 07, can collide with an
-        // unrelated output record (xEdit "KWDA -> Found a STAT/SCOL reference,
-        // expected: KYWD,NULL"). The single-FK path above would strip the whole
-        // subrecord (dropping valid keywords); instead filter the bad ENTRIES and
-        // keep the rest. Dangling (non-null, unresolved) entries are left for the
-        // sweep fixups, matching the conservative policy above.
+        // Keyword arrays (OMOD MNAM, FURN/WEAP/NPC_ KWDA): filter wrong-type
+        // entries (xEdit "KWDA -> Found a STAT/SCOL reference, expected:
+        // KYWD,NULL") and keep the rest, instead of stripping the whole subrecord.
+        // Dangling entries are left for the sweep fixups.
         for &(record_sig, sub_sig) in KEYWORD_LIST_TARGETS {
             if !present_sigs.iter().any(|s| s.as_str() == record_sig)
                 || compiled.allowed_targets(record_sig, sub_sig).is_none()
@@ -981,13 +968,11 @@ impl Fixup for ValidateReferenceTargetTypesFixup {
         }
 
         // ── Struct-internal Class C (FKs inside struct: codecs) ─────────────
-        // RACE DATA, MGEF DATA, IDLE ANAM, COBJ FVPA components, LVLI LVLO,
-        // MGEF SNDD sound, etc. These live in raw struct bytes the decoded walk
-        // can't reach; validate each via the keystone struct_field_layout (shared
-        // with the validator). MASTER-AWARE: MGEF.SNDD sounds point at FO4 master
-        // SNDR/REFR records (e.g. `0010FBAB` in Fallout4.esm) the output-only
-        // `encoded_sigs` map can't see; the resolver does the on-demand master
-        // lookup so wrong-type ones are still caught.
+        // RACE DATA, MGEF DATA, IDLE ANAM, COBJ FVPA components, LVLI LVLO, MGEF
+        // SNDD sound, etc. are validated via `struct_field_layout` (shared with the
+        // validator). Master-aware: MGEF.SNDD sounds point at FO4 master SNDR/REFR
+        // records (e.g. `0010FBAB` in Fallout4.esm) that the output-only
+        // `encoded_sigs` map can't see.
         if has_struct_class_c {
             for record_sig in STRUCT_FK_SIGS {
                 let sig = match SigCode::from_str(record_sig) {
@@ -1239,14 +1224,12 @@ impl Fixup for ValidateReferenceTargetTypesFixup {
         }
 
         // ── SCOL ONAM+DATA paired-part strip + FO76-only MNAM strip ────────
-        // FO76 allows nested SCOL-in-SCOL (ONAM codec='struct:I,I' with SCOL in
-        // formlink_targets). FO4 does not (ONAM codec='formid', SCOL absent from
-        // formlink_targets). An ONAM whose target resolves to SCOL must be dropped
-        // TOGETHER with its immediately-following DATA (required, paired by
-        // scope_id='parts') — stripping ONAM alone orphans a DATA, which causes
-        // xEdit "out of order" errors (the paired-array lockstep rule).
+        // FO76 allows nested SCOLs (ONAM `struct:I,I` with SCOL in formlink_targets);
+        // FO4 does not (ONAM `formid`, no SCOL). An ONAM resolving to SCOL is dropped
+        // together with its following DATA (required, paired by scope_id='parts');
+        // dropping ONAM alone orphans the DATA and xEdit reports "out of order".
         // Late LOD synthesis can also append FO76 SCOL.MNAM chunks after the
-        // translation-map drop list has run; FO4 xEdit rejects those on SCOL.
+        // translation-map drop list ran; FO4 xEdit rejects those on SCOL.
         if present_sigs.iter().any(|s| s.as_str() == "SCOL") {
             let scol_sig = SigCode::from_str("SCOL").expect("SCOL sigcode");
             let fks = session
@@ -1402,24 +1385,18 @@ impl Fixup for ValidateReferenceTargetTypesFixup {
 // Post-copy REFR placed-child subrecord strip
 // ---------------------------------------------------------------------------
 
-/// REFR-only `(record_sig, subrecord_sig)` Class C entries (subset of
-/// `CLASS_C_TARGETS`) carried by placed children. These live on REFR records,
-/// which are in `skip_records` and re-inserted by the FO76→FO4 phase-6 cell-slice
-/// copy that runs AFTER the registered fixup phase. So the in-phase
-/// `ValidateReferenceTargetTypesFixup` run sees ZERO of them, leaving their
-/// wrong-type / no-FO4-home FKs (xEdit "Found a REFR/INFO/LVLI/LAND reference,
-/// expected RFGP/LAYR/REFR") in the output. This post-copy entrypoint re-runs the
-/// identical subrecord-level Class C strip against the now-complete plugin.
+/// REFR-only subset of `CLASS_C_TARGETS` carried by placed children. REFRs are in
+/// `skip_records` and re-inserted by the FO76→FO4 phase-6 cell-slice copy after the
+/// fixup phase, so the in-phase `ValidateReferenceTargetTypesFixup` never sees them
+/// and their wrong-type FKs (xEdit "Found a REFR/INFO/LVLI/LAND reference, expected
+/// RFGP/LAYR/REFR") would survive. The post-copy entrypoint re-runs the strip.
 const REFR_PLACED_CHILD_CLASS_C: &[(&str, &str)] =
     &[("REFR", "XRFG"), ("REFR", "XLYR"), ("REFR", "XASP")];
 
 /// Strip wrong-type / no-FO4-home REFR placed-child subrecords (XRFG→RFGP,
-/// XLYR→LAYR, XASP→REFR) against the now-complete output plugin. Mirrors the
-/// subrecord-level Class C loop in `run_with_session`, restricted to the REFR
-/// placed-child slots, and reuses the same `apply_to_record` / master-aware
-/// resolver. Called from `ConversionRun::repair_placed_child_refs` (the post-copy
-/// hook), AFTER phase-6 re-inserts the placed children — the registered in-phase
-/// run cannot see these records (REFR ∈ `skip_records`).
+/// XLYR→LAYR, XASP→REFR) on the complete output, with the same `apply_to_record`
+/// and master-aware resolver as `run_with_session`. Called from
+/// `ConversionRun::repair_placed_child_refs` after phase-6 re-inserts the children.
 pub fn strip_refr_placed_child_subrecords(
     session: &mut PluginSession,
     mapper: &mut FormKeyMapper,
@@ -1455,7 +1432,8 @@ pub fn strip_refr_placed_child_subrecords(
     let target_master_handle_ids = config.target_master_handle_ids.clone();
     let encoded_sigs =
         encoded_sigs_from_fk_index_or_else(&fk_to_sig, mapper.interner, &target_masters, || {
-            target_record_sigs_by_encoded_form_id(session, mapper.interner, &target_masters)
+            target_record_sigs_by_encoded_form_id(session, &target_masters)
+                .map(|index| index.as_ref().clone())
         })?;
 
     struct RefrPlacedChildRule {
@@ -1584,16 +1562,13 @@ struct Outcome {
     acted: u32,
 }
 
-/// Apply `action` to every `sub`-signature subrecord of `record` whose FK
-/// resolves to a record signature for which `allows` is false.
-///
-/// Resolution is OUTPUT-first (`fk_to_sig`) then a per-record MASTER fallback
-/// (`master_resolved`, keyed identically): the output-only index misses refs to
-/// master records (e.g. an XASP REFR whose target lives in Fallout4.esm). `allows` is
-/// the shared schema accessor (`RefTargetSpec::allows_target`), passed in so this
-/// fixup never re-implements the allow-check. A FK that is null, or that resolves
-/// nowhere (output or master), is left untouched (dangling refs are owned by the
-/// invalid-target / sweep fixups).
+/// Apply `action` to every `sub` subrecord of `record` whose FK resolves to a sig
+/// `allows` rejects. Resolution tries the output index (`fk_to_sig`), then the
+/// per-record master fallback (`master_resolved`, same keys), which catches refs to
+/// master records (e.g. an XASP REFR in Fallout4.esm). `allows` is the shared schema
+/// accessor (`RefTargetSpec::allows_target`). Null and dangling FKs are left to the
+/// invalid-target / sweep fixups, except under `Strip`: a present-but-null subrecord
+/// is dropped, and so is a dangling one when `strip_dangling` is set.
 fn apply_to_record(
     record: &mut Record,
     sub: SubrecordSig,
@@ -1614,12 +1589,9 @@ fn apply_to_record(
         }
         let Some(fk) = first_formkey(&entry.value) else {
             // A present-but-null `formid` subrecord decodes to `FieldValue::None`
-            // (source_read: raw==0 => None), so `first_formkey` finds no FK. This
-            // is STILL a "Found NULL, expected X" error in xEdit. For a Strip
-            // action (optional, NULL-disallowed) drop the whole subrecord so it's
-            // absent (valid) rather than present-but-NULL — this is the bulk
-            // DIAL BNAM / FACT VENC null source. Non-None values with no FK leaf
-            // (shouldn't happen for these single-FK subrecords) are left as-is.
+            // (raw 0), which xEdit still reports as "Found NULL, expected X". Under
+            // Strip (optional, NULL-disallowed) drop it; this is the bulk DIAL BNAM /
+            // FACT VENC null source. Other FK-less values are left as-is.
             if action == Action::Strip && matches!(entry.value, FieldValue::None) {
                 outcome.changed = true;
                 outcome.acted += 1;
@@ -1715,17 +1687,11 @@ fn apply_to_record(
     outcome
 }
 
-/// Filter wrong-type entries out of a `formid_array` (List) subrecord, keeping
-/// the valid ones. Returns the number of entries removed.
-///
-/// An entry is REMOVED only when its FK resolves (OUTPUT `fk_to_sig` first, then
-/// the per-record MASTER fallback `master_resolved`) to a record signature for
-/// which `allows` is false — a positively-known wrong type (e.g. OMOD MNAM
-/// keyword pointing at a SCOL, FURN KWDA at a master STAT). Null FKs and dangling
-/// (non-null, unresolved in output AND masters) FKs are KEPT — dangling refs are
-/// owned by the sweep / invalid-target fixups, matching `apply_to_record`'s
-/// conservative policy. If every entry is removed the now-empty subrecord is
-/// dropped entirely.
+/// Filter wrong-type entries out of a `formid_array` (List) subrecord and return
+/// how many were removed. An entry goes only when its FK resolves (output
+/// `fk_to_sig`, then `master_resolved`) to a sig `allows` rejects (e.g. an OMOD MNAM
+/// keyword at a SCOL, a FURN KWDA at a master STAT). Null and dangling FKs are kept
+/// for the sweep / invalid-target fixups. A subrecord left empty is dropped.
 fn filter_keyword_list_entries(
     record: &mut Record,
     sub: SubrecordSig,
@@ -2184,6 +2150,21 @@ fn null_invalid_mgef_actor_values(
         return 0;
     }
 
+    let primary_off = struct_field_offset(
+        schema,
+        "MGEF",
+        "DATA",
+        form_version,
+        MGEF_ACTOR_VALUE_PRIMARY_FIELD_ID,
+    );
+    let archetype_off = struct_field_offset(
+        schema,
+        "MGEF",
+        "DATA",
+        form_version,
+        MGEF_ARCHETYPE_FIELD_ID,
+    );
+
     let mut nulled = 0u32;
     for entry in record.fields.iter_mut() {
         if entry.sig != data_sub {
@@ -2202,6 +2183,18 @@ fn null_invalid_mgef_actor_values(
             if write_u32_le(bytes, off, 0) {
                 nulled = nulled.saturating_add(1);
             }
+        }
+        // FO4's actor-value modifier effects dereference the resolved actor value
+        // with no null check. When conversion cannot resolve it, demote the
+        // effect to Script so applying it is inert instead of fatal.
+        if let (Some(primary_off), Some(archetype_off)) = (primary_off, archetype_off)
+            && read_u32_le(bytes, archetype_off).is_some_and(|archetype| {
+                FO4_MGEF_ARCHETYPES_REQUIRING_ACTOR_VALUE.contains(&archetype)
+            })
+            && read_u32_le(bytes, primary_off) == Some(0)
+            && write_u32_le(bytes, archetype_off, FO4_MGEF_ARCHETYPE_SCRIPT)
+        {
+            nulled = nulled.saturating_add(1);
         }
     }
     nulled
@@ -2955,14 +2948,12 @@ fn encode_target_fk(
         return Some(0);
     }
     let plugin_name = interner.resolve(fk.plugin)?;
-    // Only refs to a plugin that is actually in `target_masters` can be
-    // type-resolved. Callers exclude output-plugin records upstream (`fk_to_sig`),
-    // so a plugin missing here is an unresolvable master ref — return None so it is
-    // kept as dangling. It must NOT fall into the `target_masters.len()` sentinel
-    // bucket, which `output_encoded_sigs` reuses for the output's own records: that
-    // collision makes an out-of-list master ref (e.g. an OMOD MNAM keyword pointing
-    // at DLCNukaWorld.esm:033B61) resolve to an unrelated output record sharing the
-    // object id, and it then gets wrongly dropped as a wrong-type entry.
+    // Only refs to a plugin in `target_masters` can be type-resolved; output-plugin
+    // records are excluded upstream (`fk_to_sig`), so anything else returns None and
+    // stays dangling. It must not land in the `target_masters.len()` bucket that
+    // `output_encoded_sigs` uses for output records, or an out-of-list master ref
+    // (e.g. an OMOD MNAM keyword at DLCNukaWorld.esm:033B61) resolves to an unrelated
+    // output record sharing the object id and is dropped as wrong-type.
     let load_index = target_masters
         .iter()
         .position(|master| master.eq_ignore_ascii_case(plugin_name))?;
@@ -3013,19 +3004,11 @@ fn resolve_scol_onam_fk_masters(
 }
 
 /// Drop every (ONAM, DATA) pair in a SCOL `record` whose ONAM resolves to a SCOL
-/// target — which is valid in FO76 (nested SCOLs) but illegal in FO4.
-///
-/// Paired-array lockstep rule: every ONAM is immediately followed by exactly one
-/// DATA within the `scope_id='parts'` group. Dropping ONAM alone would orphan the
-/// DATA (xEdit "out of order" error / potential CTD). The drain-and-rebuild walk
-/// sets a `drop_next_data` flag when it removes an ONAM so the immediately
-/// following DATA is also discarded.
-///
-/// "Positively wrong type" ONAMs (resolved SCOL) and NULL ONAMs are acted on. A
-/// dangling ONAM (non-null, unresolvable) is left for the sweep / invalid-target
-/// fixups, matching the conservative policy of `apply_to_record`.
-///
-/// Returns the number of ONAM+DATA pairs dropped.
+/// (valid in FO76, illegal in FO4) or is NULL; returns the number of pairs dropped.
+/// Each ONAM is followed by exactly one DATA in the `scope_id='parts'` group, and
+/// dropping ONAM alone orphans the DATA (xEdit "out of order", potential CTD), so
+/// the following DATA goes too. Dangling ONAMs are left for the sweep /
+/// invalid-target fixups.
 pub fn strip_scol_wrong_type_onam_data_pairs(
     record: &mut Record,
     fk_to_sig: &FxHashMap<(u32, Sym), SigCode>,
@@ -3763,9 +3746,96 @@ mod tests {
         );
 
         let data = field_bytes(&record, "DATA");
-        assert_eq!(nulled, 1);
+        // One null for the unresolved primary, one for the archetype demotion it
+        // forces (a Value Modifier with no actor value hard-crashes FO4).
+        assert_eq!(nulled, 2);
         assert_eq!(read_u32_le(&data, actor_value_off), Some(0));
         assert_eq!(read_u32_le(&data, actor_value_1_off), Some(0x07123101));
+        let archetype_off =
+            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "archetype").unwrap();
+        assert_eq!(
+            read_u32_le(&data, archetype_off),
+            Some(FO4_MGEF_ARCHETYPE_SCRIPT)
+        );
+    }
+
+    #[test]
+    fn demotes_peak_value_modifier_with_null_actor_value() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").unwrap();
+        let archetype_off =
+            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "archetype").unwrap();
+        let mut data = vec![0; 96];
+        set_u32(&mut data, archetype_off, 34);
+        let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
+
+        let nulled = null_invalid_mgef_actor_values(
+            &mut record,
+            &schema,
+            Some(131),
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &["Fallout4.esm".to_string()],
+        );
+
+        let data = field_bytes(&record, "DATA");
+        assert_eq!(nulled, 1);
+        assert_eq!(
+            read_u32_le(&data, archetype_off),
+            Some(FO4_MGEF_ARCHETYPE_SCRIPT)
+        );
+    }
+
+    #[test]
+    fn keeps_vanilla_attested_hardcoded_mgef_actor_value() {
+        // 0x000310 has no AVIF record anywhere, but vanilla Fallout4.esm points
+        // MGEF.DATA.actor_value at it, so it must not be treated as dangling.
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").unwrap();
+        let actor_value_off =
+            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "actor_value").unwrap();
+        let mut data = vec![0; 96];
+        set_u32(&mut data, actor_value_off, 0x00000310);
+        let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
+
+        let nulled = null_invalid_mgef_actor_values(
+            &mut record,
+            &schema,
+            Some(131),
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &["Fallout4.esm".to_string()],
+        );
+
+        let data = field_bytes(&record, "DATA");
+        assert_eq!(nulled, 0);
+        assert_eq!(read_u32_le(&data, actor_value_off), Some(0x00000310));
+    }
+
+    #[test]
+    fn keeps_non_value_modifier_archetype_with_null_actor_value() {
+        // Only the Value Modifier archetype dereferences the actor value, so a
+        // Damage effect with an empty slot must be left exactly as-is.
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").unwrap();
+        let archetype_off =
+            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "archetype").unwrap();
+        let mut data = vec![0; 96];
+        set_u32(&mut data, archetype_off, 45);
+        let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
+
+        let nulled = null_invalid_mgef_actor_values(
+            &mut record,
+            &schema,
+            Some(131),
+            &FxHashMap::default(),
+            &FxHashMap::default(),
+            &["Fallout4.esm".to_string()],
+        );
+
+        let data = field_bytes(&record, "DATA");
+        assert_eq!(nulled, 0);
+        assert_eq!(read_u32_le(&data, archetype_off), Some(45));
     }
 
     #[test]

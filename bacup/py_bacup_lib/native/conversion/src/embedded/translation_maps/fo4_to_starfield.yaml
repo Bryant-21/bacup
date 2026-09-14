@@ -1,0 +1,744 @@
+# fo4_to_starfield.yaml
+#
+# FO4 -> Starfield MVP translation map (world-only pair, `fo4:starfield`).
+#
+# CRITICAL: `fields:`, `transforms:`, and `drop:` keys are matched against the
+# RAW 4-BYTE SUBRECORD SIG only (translator/maps.rs: SubrecordSig::from_str
+# requires exactly 4 bytes). Semantic/display labels (e.g. "ObjectBounds",
+# "MusicTracks") are SILENT NO-OPS. Every key below is a real 4CC verified
+# against py_creation_lib/native/esp/generated/{fo4,starfield}.rs.
+#
+# Executor behaviour (verified against translator/mod.rs::translate_with_skip_override):
+#   - The output record starts as a FULL CLONE of the source record's fields.
+#   - `drop:` removes named subrecords; everything else survives BY DEFAULT,
+#     raw bytes unchanged. There is no allow-list — `fields:` only RENAMES a
+#     subrecord's sig (a no-op when source==target, which is every case here)
+#     and documents intent; it does not filter which fields survive.
+#   - Consequence: any FO4 subrecord whose byte layout differs from the
+#     Starfield schema's subrecord of the same sig MUST be explicitly dropped,
+#     or its raw FO4-shaped bytes will be written verbatim into a
+#     Starfield-schema record and corrupt/mismatch on read. `drop:` lists
+#     below are therefore the load-bearing part of this map, built from a
+#     codec-by-codec comparison of the two generated schemas.
+#   - `remap_formkey` transforms here only rewrite FormKey *strings* embedded
+#     in raw text; genuine `formid`/`formid_array` fields are FormKey-typed
+#     and are remapped automatically, globally, for every surviving field by
+#     FormKeyMapper::rewrite_record (formkey_mapper.rs) regardless of this
+#     YAML. The `remap_formkey` transform entries below are kept for
+#     documentation/idiom parity with the rest of the repo's maps.
+#   - `defaults:` is parsed but NOT applied by the translation executor today
+#     (translator/maps.rs explicitly lints it as "ignored_top_level_key").
+#     Spec-mandated Starfield-only mandatory fields that have no FO4 source
+#     value (MUSC.VNAM/UNAM, MUST.MSTF, ASPC.ODTY/FLTV/BOLV/DEVT/ASDF, the
+#     Sound Event Set structs) CANNOT be injected by this map today and will
+#     be absent from the translated record. All are schema `required: false`
+#     so this is legal output, but downstream phases (T14 audio_rewire) must
+#     independently set them rather than relying on a `defaults:` block here.
+#
+# SPATIAL SCALE: FO4_TO_SF_SPATIAL = 1.0 / 69.99125 = 0.0142875 (Global
+# Constraints, R7). This map scales NOTHING: `scale_nested` only operates on
+# `FieldValue::Struct` values (transforms/scale_nested.rs) and every spatial
+# payload here is a `struct:` codec, which reaches the translator as raw
+# `FieldValue::Bytes`. Ownership of each rescale:
+#   - ObjectBounds (OBND)      -> pair_hooks/fo4_starfield::rescale_object_bounds
+#   - SCOL per-part placements -> pair_hooks/fo4_starfield::rescale_scol_placements
+#   - LGTM world distances     -> pair_hooks/fo4_starfield::relayout_lgtm_data
+#   - CELL water height, REFR position / XTEL destination / XPRM bounds / XRDS
+#     -> phase/starfield_cells.rs (CELL and REFR are `skip_records` above and
+#        reach the target only through that structured phase)
+#   - terrain + cell-grid frame -> phase/terrain_btd.rs
+# Do not re-add `scale_nested` transforms here; they would be dead at best and
+# a double-scale at worst.
+#
+# R2 (bacup/docs/starfield_target/R2-audio-records.md, commit 377d50bb9) is
+# the audio contract of record and overrides this plan on audio families.
+# Key R2 facts baked in below: SNDR/SNCT/SOPM are not Starfield record types
+# (drop, but NOT excluded from the pipeline elsewhere -- T13 reads FO4 SNDR
+# directly); MUST's real content ref is the 40-byte MTSH Sound Event Set
+# (Starfield-only, synthesized later by T14, not carried here); REGN has no
+# audio subrecords in Starfield at all.
+
+skip_records:
+  # Group-nested/topology records emitted by structured worldspace/cell
+  # phases, not the generic top-level writer (mirrors fo76_to_fo4.yaml /
+  # starfield_to_fo4.yaml precedent). The per-record entries below still
+  # document field-level intent for whichever structured phase consumes them.
+  - CELL
+  - REFR
+  - NAVM
+  - NAVI
+  # MVP scope explicitly excludes the weather system (plan: "WTHR/CLMT: not
+  # translated"). Both record types exist in the Starfield schema, but no
+  # field-level correspondence is authored for this MVP. Because nothing is
+  # emitted, every surviving reference into the weather system must be
+  # repointed at a vanilla form; pair_hooks/fo4_starfield does that in
+  # post_translate for WRLD.CNAM and REGN.RDWT.
+  - WTHR
+  - CLMT
+  # R2 D2: SNDR/SNCT/SOPM have no Starfield record type at all. Dropping
+  # here (not via the pair's exclude fence) lets T13's audio phase still
+  # read the untranslated FO4 SNDR records directly from the source plugin.
+  - SNDR
+  - SNCT
+  - SOPM
+
+WRLD:
+  fields:
+    FULL: FULL
+    DATA: DATA
+    ONAM: ONAM
+    NAMA: NAMA
+    NAM2: NAM2
+    ZNAM: ZNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    NAM2:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+    ZNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+  drop:
+  # LAND/terrain/grid-frame fields — T9 owns worldspace/BTD synthesis and
+  # writes these directly; a raw carry would use the wrong cell/height frame.
+  - RNAM
+  - OFST
+  - CLSZ
+  - MHDT
+  - WCTR
+  - DNAM
+  - MNAM
+  # Map/LOD asset paths — out of scope for the record-only map (T9/LOD
+  # pipeline generates these).
+  - ICON
+  - XWEM
+  - TNAM
+  - UNAM
+  - NNAM
+  # Out-of-scope FormKey targets (ECZN, LCTN, CLMT not translated by this
+  # map). CNAM (Climate) is dropped here because `defaults:` is inert and
+  # remap_formkey against a never-translated CLMT would leave a dangling
+  # reference; pair_hooks/fo4_starfield then reinstalls it in post_translate
+  # pointing at vanilla Starfield.esm DefaultClimate (00015F).
+  - XEZN
+  - XLCN
+  - CNAM
+
+CELL:
+  fields:
+    FULL: FULL
+    LTMP: LTMP
+    XCAS: XCAS
+    XCMO: XCMO
+    XCWT: XCWT
+    XCCM: XCCM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    LTMP:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+    XCAS:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+    XCMO:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+    XCWT:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+    XCCM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+  drop:
+  # Precombine/previs/portal metadata — meaningless for Starfield, no
+  # precombine system equivalent (plan Step 3 names these explicitly).
+  - XCRI
+  - PCMB
+  - VISI
+  - RVIS
+  - XPRI
+  - CNAM
+  - ZNAM
+  # DATA codec differs (uint16 FO4 vs uint32 Starfield); XCLC (grid) and
+  # XCLW (water height) need T9's grid-frame/spatial-scale math, not a raw
+  # carry; XCLL (Lighting) byte layout differs completely between games and
+  # no existing transform can safely repack it — dropped, not translated.
+  - DATA
+  - XCLC
+  - XCLL
+  - MHDT
+  # Terrain-adjacent / out-of-scope FormKey targets.
+  - XCIM
+  - XGLB
+  - XILL
+  - XLCN
+  - XWEM
+
+REFR:
+  fields:
+    NAME: NAME
+    DATA: DATA
+    XSCL: XSCL
+    XTEL: XTEL
+    XPRM: XPRM
+  transforms:
+    NAME:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+    XTEL:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+  # `scale_nested` for DATA was removed here -- it never scaled anything, for
+  # two independent reasons. (a) `scale_nested` only operates on a decoded
+  # FieldValue::Struct and DATA reaches this map as raw FieldValue::Bytes
+  # (this file's header comment). (b) REFR is in `skip_records` above, so the
+  # generic translator never runs this entry at all; the only path REFR takes
+  # to a Starfield target is `phase/starfield_cells.rs`, which owns EVERY
+  # placed-ref rescale (DATA position, XTEL destination position, XPRM bounds,
+  # XRDS radius) and every embedded-FormID remap (XTEL's door + transition
+  # endpoints, which the FormKeyMapper cannot see inside raw struct bytes).
+  # Do NOT re-add a `scale_nested` transform for DATA/XTEL/XPRM here -- it
+  # would double-scale the moment REFR ever leaves `skip_records`.
+  drop:
+  # Scripts do not carry between engines — dropping VMAD prevents a dangling
+  # FO4 Papyrus binding from reaching the Starfield plugin.
+  - VMAD
+  # FO4-only fields with no Starfield REFR subrecord at all.
+  - XALP
+  - XAMC
+  - XAPD
+  - XAPR
+  - XASP
+  - XCVL
+  - XCVR
+  - XLOD
+  - XLRM
+  - XMBO
+  - XMBP
+  - XMBR
+  - XMSP
+  - XOCP
+  - XORD
+  - XPOD
+  - XPTL
+  - XPWR
+  - XRDO
+  - XRMR
+  - XSPC
+  - XTRI
+  - XWPG
+  - XWPN
+  # Codec differs between games (byte layout mismatch) — unsafe to carry raw.
+  - FNAM
+  - LNAM
+  - TNAM
+  - XBSD
+  - XLIG
+  - XLOC
+  - XLTW
+  - XMRK
+  - XPDD
+  - XPLK
+
+STAT:
+  fields:
+    FULL: FULL
+    MODL: MODL
+    OBND: OBND
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+  # `scale_nested` for OBND was removed here -- it never scaled anything.
+  # `scale_nested` only operates on a decoded FieldValue::Struct and OBND
+  # reaches this map as raw FieldValue::Bytes (this file's header comment),
+  # so the transform silently no-op'd on every record. pair_hooks/fo4_starfield
+  # now owns this rescale (`rescale_object_bounds`, pre_translate) -- do not
+  # re-add a `scale_nested` transform for OBND here.
+  drop:
+  # Scripts / navmesh do not carry between engines.
+  - VMAD
+  - NVNM
+  # FO4-only, no Starfield STAT subrecord.
+  - MNAM
+  - MODC
+  - MODF
+  - MODT
+  - PTRN
+  # Codec differs (array/struct shape mismatch).
+  - DNAM
+  - FTYP
+  - MODS
+  - PRPS
+
+SCOL:
+  fields:
+    FULL: FULL
+    MODL: MODL
+    OBND: OBND
+    FLTR: FLTR
+    DATA: DATA
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+  # `scale_nested` for OBND was removed here -- it never scaled anything.
+  # `scale_nested` only operates on a decoded FieldValue::Struct and OBND
+  # reaches this map as raw FieldValue::Bytes (this file's header comment),
+  # so the transform silently no-op'd on every record. pair_hooks/fo4_starfield
+  # now owns this rescale (`rescale_object_bounds`, pre_translate) -- do not
+  # re-add a `scale_nested` transform for OBND here.
+  drop:
+  # FO4-only, no Starfield SCOL subrecord.
+  - MODC
+  - MODF
+  - MODT
+  - PTRN
+  # MODS codec differs (formid vs float32) — unsafe to carry raw.
+  #
+  # ONAM is NOT dropped: the row shape does differ (FO4 plain formid per row
+  # vs Starfield struct:I,B,B,B,B), but pair_hooks/fo4_starfield repacks each
+  # row in pre_translate into a Struct whose Static member stays a live
+  # FormKey, so the mapper still remaps it. Dropping ONAM here would strip
+  # every part reference and leave SCOLs empty (spec gate 3).
+  #
+  # DO NOT add a `scale_nested` transform for DATA. Per-part placement (DATA,
+  # scope "parts") is codec-identical in both games, so it carries raw, but its
+  # position floats are FO4 game units. pair_hooks/fo4_starfield OWNS that
+  # rescale (`rescale_scol_placements`, pre_translate) and applies it to the
+  # position vector only. A `scale_nested` here would double-scale it, and the
+  # hook has no length change to detect a second pass.
+  - MODS
+
+MSTT:
+  fields:
+    FULL: FULL
+    MODL: MODL
+    OBND: OBND
+    KSIZ: KSIZ
+    KWDA: KWDA
+    DATA: DATA
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    # `scale_nested` for OBND was removed here -- it never scaled anything.
+    # `scale_nested` only operates on a decoded FieldValue::Struct and OBND
+    # reaches this map as raw FieldValue::Bytes (this file's header comment),
+    # so the transform silently no-op'd on every record. pair_hooks/fo4_starfield
+    # now owns this rescale (`rescale_object_bounds`, pre_translate) -- do not
+    # re-add a `scale_nested` transform for OBND here.
+    KWDA:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+  drop:
+  - VMAD
+  # Destructible component — codec partially differs (DAMC/DSTD row shape)
+  # and is out of scope for a world-only geometry MVP.
+  - DAMC
+  - DEST
+  - DMDL
+  - DMDS
+  - DSTA
+  - DSTD
+  - DSTF
+  - DMDC
+  - DMDT
+  # FO4-only, no Starfield MSTT subrecord.
+  - MODF
+  - MODT
+  - PTRN
+  - SNAM
+  # Codec differs.
+  - MODC
+  - MODS
+  - PRPS
+
+ACTI:
+  fields:
+    FULL: FULL
+    MODL: MODL
+    OBND: OBND
+    KSIZ: KSIZ
+    KWDA: KWDA
+    FNAM: FNAM
+    ATTX: ATTX
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    ATTX:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    # `scale_nested` for OBND was removed here -- it never scaled anything.
+    # `scale_nested` only operates on a decoded FieldValue::Struct and OBND
+    # reaches this map as raw FieldValue::Bytes (this file's header comment),
+    # so the transform silently no-op'd on every record. pair_hooks/fo4_starfield
+    # now owns this rescale (`rescale_object_bounds`, pre_translate) -- do not
+    # re-add a `scale_nested` transform for OBND here.
+    KWDA:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+  drop:
+  - VMAD
+  - NVNM
+  # Destructible component — out of scope for MVP (see MSTT).
+  - DAMC
+  - DEST
+  - DMDL
+  - DMDS
+  - DSTA
+  - DSTD
+  - DSTF
+  - DMDC
+  - DMDT
+  # Conditions — RADR codec differs, so the CITC/CTDA/CIS1/CIS2 condition
+  # block is meaningless without it; dropped as a group for MVP simplicity.
+  - CITC
+  - CTDA
+  - CIS1
+  - CIS2
+  - RADR
+  # FO4-only, no Starfield ACTI subrecord (KNAM/SNAM/VNAM/WNAM point at
+  # KYWD/SNDR/WATR concepts Starfield ACTI does not expose the same way).
+  - KNAM
+  - MODC
+  - MODF
+  - MODT
+  - PTRN
+  - SNAM
+  - STCP
+  - VNAM
+  - WNAM
+  # Codec differs.
+  - FTYP
+  - MODS
+  - PRPS
+
+LIGH:
+  fields:
+    FULL: FULL
+    MODL: MODL
+    OBND: OBND
+    KSIZ: KSIZ
+    KWDA: KWDA
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    # `scale_nested` for OBND was removed here -- it never scaled anything.
+    # `scale_nested` only operates on a decoded FieldValue::Struct and OBND
+    # reaches this map as raw FieldValue::Bytes (this file's header comment),
+    # so the transform silently no-op'd on every record. pair_hooks/fo4_starfield
+    # now owns this rescale (`rescale_object_bounds`, pre_translate) -- do not
+    # re-add a `scale_nested` transform for OBND here.
+    KWDA:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+  drop:
+  - VMAD
+  # Destructible component — out of scope for MVP (see MSTT).
+  - DAMC
+  - DEST
+  - DMDL
+  - DMDS
+  - DSTA
+  - DSTD
+  - DSTF
+  - DMDC
+  - DMDT
+  # DATA (color/radius/falloff — the actual light behaviour) has no
+  # same-sig Starfield target: Starfield keeps it in DAT2 with a different
+  # 27-field layout. pair_hooks/fo4_starfield rewrites DATA into DAT2 in
+  # pre_translate, so by the time this drop runs there is normally no DATA
+  # left and the entry is a no-op. It is retained as the fail-closed backstop
+  # required by the executor contract at the top of this file: if the hook
+  # ever refuses a payload it cannot interpret, the FO4-shaped bytes must not
+  # reach the Starfield record.
+  - DATA
+  - FNAM
+  - ICON
+  - MICO
+  # FO4-only, no Starfield LIGH subrecord (SNAM->SNDR, WGDR->GDRY, LNAM->LENS
+  # all out of scope).
+  - LNAM
+  - MODC
+  - MODF
+  - MODT
+  - NAM0
+  - PTRN
+  - SNAM
+  - WGDR
+  # Codec differs.
+  - MODS
+  - PRPS
+
+TXST:
+  fields:
+    OBND: OBND
+    DNAM: DNAM
+    MNAM: MNAM
+    TX00: TX00
+    TX01: TX01
+  # `scale_nested` for OBND was removed here -- it never scaled anything.
+  # `scale_nested` only operates on a decoded FieldValue::Struct and OBND
+  # reaches this map as raw FieldValue::Bytes (this file's header comment),
+  # so the transform silently no-op'd on every record. pair_hooks/fo4_starfield
+  # now owns this rescale (`rescale_object_bounds`, pre_translate) -- do not
+  # re-add a `scale_nested` transform for OBND here (the removed transform
+  # was the only entry under `transforms:`, so that key is omitted entirely
+  # now, same as LGTM's empty `fields: {}` above).
+  drop:
+  # FO4-only texture slots with no Starfield TXST equivalent sig.
+  - TX02
+  - TX03
+  - TX04
+  - TX05
+  - TX06
+  - TX07
+  # Decal data codec differs (14-field FO4 struct vs 6-field Starfield struct).
+  - DODT
+
+LTEX:
+  fields:
+    MNAM: MNAM
+    HNAM: HNAM
+  transforms:
+    MNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+  drop:
+  # FO4-only, no Starfield LTEX subrecord (GNAM->GRAS and TNAM->TXST are not
+  # in scope / have no Starfield-side slot on LTEX; SNAM specular exponent
+  # is likewise absent).
+  - GNAM
+  - SNAM
+  - TNAM
+
+MATT:
+  fields:
+    PNAM: PNAM
+    MNAM: MNAM
+    CNAM: CNAM
+    BNAM: BNAM
+    FNAM: FNAM
+  transforms:
+    PNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+  drop:
+  # FO4-only.
+  - MODT
+  # HNAM (-> IPDS) and ANAM (breakable FX name) are out of scope for a
+  # world-only MVP.
+  - HNAM
+  - ANAM
+
+WATR:
+  fields:
+    FULL: FULL
+    ANAM: ANAM
+    FNAM: FNAM
+    NAM0: NAM0
+    NAM1: NAM1
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+  drop:
+  # FO4-only, no Starfield WATR subrecord in scope (SNAM->SNDR, TNAM unused
+  # material ref, noise texture paths).
+  - NAM2
+  - NAM3
+  - NAM4
+  - SNAM
+  - TNAM
+  # Out-of-scope FormKey targets (IMGS, SPEL not translated by this map).
+  - INAM
+  - XNAM
+  - YNAM
+  # DATA/GNAM are unknown blobs with no Starfield counterpart — dropped.
+  #
+  # DNAM (Visual Data) is NOT dropped: FO4's 69-field struct and Starfield's
+  # 41-field struct share a large semantic subset (underwater colour + fog,
+  # surface normals, displacement simulator, all three noise layers), and
+  # pair_hooks/fo4_starfield repacks it in pre_translate. The Starfield-only
+  # fields (colour absorption ranges, concentrations, flowmap scale,
+  # roughness) take vanilla WaterClear values there.
+  - DATA
+  - GNAM
+
+KYWD:
+  fields:
+    FULL: FULL
+    CNAM: CNAM
+    TNAM: TNAM
+    DNAM: DNAM
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+  drop:
+  # FO4-only.
+  - NNAM
+  # Out-of-scope FormKey target (AORU not translated by this map).
+  - DATA
+
+# --- Audio families (R2-driven; R2-audio-records.md is the contract of
+# record and wins over the plan where they conflict — see task dispatch). ---
+
+MUSC:
+  # 1:1 carry (R2 SS4/8.2): every FO4 MUSC subrecord has a byte-identical
+  # Starfield counterpart. VNAM (Re-evaluate Interval) and UNAM (Stability
+  # Interval) are Starfield-only, schema-optional, mandatory-by-precedent
+  # (0 in 82/83 vanilla records) uint64 fields with no FO4 source value —
+  # `defaults:` is inert (see file header), so they are simply absent from
+  # the translated output. Known MVP limitation, flagged in task report.
+  fields:
+    FNAM: FNAM
+    PNAM: PNAM
+    WNAM: WNAM
+    TNAM: TNAM
+  transforms:
+    TNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+  drop: []
+
+MUST:
+  # R2 SS5/8.3: EDID/CNAM/FLTV/DNAM/FNAM/SNAM/CITC/CTDA/CIS1/CIS2 carry;
+  # ANAM/BNAM (FO4's path-based content ref) drop entirely — Starfield's
+  # content ref is the 40-byte MTSH Sound Event Set, which does not exist on
+  # the FO4 side and is synthesized post-hoc by T14's audio_rewire phase
+  # (not by this map). LNAM (Loop Data) drops per R2. MSTF
+  # (ConditionsCantFailAfterSuccess, Starfield-only bool) has no FO4 source
+  # value; `defaults:` is inert, so it is absent from the translated output
+  # (schema-legal: required: false).
+  #
+  # R2 R-5: CNAM has a schema-collision risk (shared-component zstring
+  # variant vs the record's own uint32 TrackType variant) in the AUTHORING
+  # JSON round-trip path. This map performs a raw byte-preserving carry (no
+  # decode/re-encode through the authoring JSON), so the collision does not
+  # apply here; T13 (WWED synthesis) must still assert encoded length == 4.
+  fields:
+    CNAM: CNAM
+    FLTV: FLTV
+    DNAM: DNAM
+    FNAM: FNAM
+    SNAM: SNAM
+    CITC: CITC
+    CTDA: CTDA
+    CIS1: CIS1
+    CIS2: CIS2
+  transforms:
+    SNAM:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+  drop:
+  - ANAM
+  - BNAM
+  - LNAM
+
+REGN:
+  # R2 SS8.4/8.5: geometry carries, ALL audio drops (Starfield REGN has no
+  # RDMO/RDSA subrecord at all). ANAM's codec could not be resolved against
+  # either schema (complex/conditional shape on both sides) and is dropped
+  # for safety rather than carried unverified.
+  fields:
+    RCLR: RCLR
+    RDAT: RDAT
+    RDWT: RDWT
+    RPLD: RPLD
+    RPLI: RPLI
+  transforms:
+    RDWT:
+      type: remap_formkey
+      source_esm: Fallout4.esm
+      target_esm: Starfield.esm
+  drop:
+  - ANAM
+  - ICON
+  - RDGS
+  - RDMO
+  - RDMP
+  - RDOT
+  - RDSA
+  - RLDM
+  - WNAM
+
+LGTM:
+  # DATA and DALC are NOT dropped. Both Starfield layouts turned out to be
+  # prefixes of the FO4 ones, not different layouts: DATA is FO4's first 108
+  # of 136 bytes (Starfield omits the 7 trailing fog/height scale floats) and
+  # DALC is FO4's first 24 of 32 (Starfield's wbAmbientColors has no Specular
+  # colour or Fresnel Power). pair_hooks/fo4_starfield truncates both in
+  # pre_translate and rescales DATA's seven world-distance members.
+  # WGDR (God Rays -> GDRY) stays out of scope.
+  fields: {}
+  drop:
+  - WGDR
+
+ASPC:
+  # R2 AUDIO DELTAS (task dispatch, overrides plan): XTRI carries; WNAM
+  # drops (not equivalent to Starfield's AEAR RTPC); BNAM is dropped rather
+  # than remapped to REVB — Starfield REVB (EDID+ANAM aux-bus name string)
+  # has no field-compatible target for FO4's numeric reverb params, and
+  # `defaults:` cannot inject a fallback ANAM ("Default"/vanilla
+  # DefaultReverb 0C5B6E) since it is inert in the current executor. A
+  # later polish pass (T14 or a follow-up) should point BNAM at vanilla
+  # DefaultReverb directly on the target plugin. SNAM (SNDR ref) is not
+  # mapped — audio_rewire (T14) resolves it. Starfield-only mandatory
+  # fields (ODTY, FLTV, BOLV, DEVT, ASDF) and the Sound Event Sets
+  # (ASLS/WED0/WED1) have no FO4 source value and cannot be defaulted here;
+  # T14 must set them independently. Flagged in task report.
+  fields:
+    OBND: OBND
+    XTRI: XTRI
+  # `scale_nested` for OBND was removed here -- it never scaled anything.
+  # `scale_nested` only operates on a decoded FieldValue::Struct and OBND
+  # reaches this map as raw FieldValue::Bytes (this file's header comment),
+  # so the transform silently no-op'd on every record. pair_hooks/fo4_starfield
+  # now owns this rescale (`rescale_object_bounds`, pre_translate) -- do not
+  # re-add a `scale_nested` transform for OBND here (the removed transform
+  # was the only entry under `transforms:`, so that key is omitted entirely
+  # now, same as LGTM's empty `fields: {}` above).
+  drop:
+  - BNAM
+  - RDAT
+  - SNAM
+  - WNAM

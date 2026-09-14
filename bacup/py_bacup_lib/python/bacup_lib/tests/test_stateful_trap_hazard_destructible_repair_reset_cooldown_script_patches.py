@@ -224,10 +224,9 @@ def _on_effect_finish_body(patch: str) -> str:
     [("FirecrackerWhiskey_BurnAttackerScript", "1"), ("OnHitByMeleeCastSpell", "TimerID")],
 )
 def test_hit_cooldown_scripts_cancel_timer_on_effect_finish(script_name: str, timer_id: str):
-    """Regression guard: rows 4 and 14 StartTimer a cooldown from OnHit, same as
-    sibling rows 5 and 12 (MeatSweatsScript, MutationTriggerMeleeExplosionScript).
-    Both siblings CancelTimer in OnEffectFinish; these two originally didn't,
-    leaving a pending timer uncancelled on early effect removal (reviewer finding)."""
+    """These StartTimer a cooldown from OnHit, like MeatSweatsScript and
+    MutationTriggerMeleeExplosionScript, so they must CancelTimer in OnEffectFinish
+    or early effect removal leaves the timer pending."""
     finish_body = _on_effect_finish_body(_patch_source(script_name))
     assert f"CancelTimer({timer_id})" in finish_body
 

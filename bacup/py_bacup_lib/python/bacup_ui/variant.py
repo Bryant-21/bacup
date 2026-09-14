@@ -17,4 +17,5 @@ BACUP_VARIANT = AppVariant(
     minimum_window_size=(1280, 760),
     start_centered=True,
     auto_hide_single_window_tabs=True,
+    include_status_bar=False,
 )

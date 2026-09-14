@@ -1,10 +1,16 @@
 Event OnLoad()
-    If MTNM01_Mayhem.IsRunning()
-        If !myHazard
-            myHazard = PlaceAtMe(MTNM01_BaitMineScentAttractorMeatHazard)
+    If !MTNM01_Mayhem || !MTNM01_Mayhem.IsRunning()
+        If myHazard
+            myHazard.Delete()
+            myHazard = None
         EndIf
-        StartTimer(ExplosionCheckTimerSeconds, 1)
+        Return
     EndIf
+
+    If !myHazard
+        myHazard = PlaceAtMe(MTNM01_BaitMineScentAttractorMeatHazard)
+    EndIf
+    StartTimer(ExplosionCheckTimerSeconds, 1)
 EndEvent
 
 ; Must cancel on unload - FO4 has no RegisterForSingleUpdate/OnUpdate (Skyrim-only,
@@ -13,6 +19,10 @@ EndEvent
 ; polling loop bloating the save.
 Event OnUnload()
     CancelTimer(1)
+    If myHazard
+        myHazard.Delete()
+        myHazard = None
+    EndIf
 EndEvent
 
 Event OnTimer(Int aiTimerID)
@@ -23,6 +33,10 @@ Event OnTimer(Int aiTimerID)
     ; Quest-gate failure terminates the loop - no reschedule once the timed event
     ; quest has stopped, so no live hazard/explosive is left behind outside it.
     If !MTNM01_Mayhem.IsRunning()
+        If myHazard
+            myHazard.Delete()
+            myHazard = None
+        EndIf
         Return
     EndIf
 
@@ -43,6 +57,9 @@ Event OnTimer(Int aiTimerID)
         If myHazard
             myHazard.Delete()
             myHazard = None
+        EndIf
+        If !MTNM01_Mayhem.IsStageDone(600)
+            MTNM01_Mayhem.SetStage(600)
         EndIf
     Else
         StartTimer(ExplosionCheckTimerSeconds, 1)

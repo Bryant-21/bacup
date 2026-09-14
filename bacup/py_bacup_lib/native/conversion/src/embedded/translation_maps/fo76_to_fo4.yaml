@@ -41,6 +41,14 @@ skip_records:
   # base layers and can reuse FO4 layer indices. References are remapped to
   # compatible FO4 layers during native preflight seeding.
   - COLL
+  # FO76 loading screens carry their art as a 2D background image (BNAM, a
+  # .DDS path); FO4 renders a loading screen from a 3D model (NNAM) plus a
+  # camera transform. There is no BNAM -> NNAM bridge, so image-backed screens
+  # convert with no art at all: 108 of 437 arrived without a model and 35
+  # without any description, against a vanilla FO4 corpus where all 358 have
+  # both. Skip the record type wholesale so FO4 falls back to its own loading
+  # screens; revisit if the BNAM image is ever ported to a billboard NIF.
+  - LSCR
 
 WEAP:
   source_extra:
@@ -1495,6 +1503,7 @@ LVLN:
     LVLF: LVLF
     Count: Count
     LVLO: LVLO
+    CTDA: CTDA
   transforms: {}
   drop:
   - ObjectPlacementDefault
@@ -1503,7 +1512,6 @@ LVLN:
   - MaxValue
   - LVCV
   - LVLD
-  - CTDA
   - LVOV
   - Quantity
   - MinimumLevel
@@ -1625,13 +1633,11 @@ INNR:
   fields: {}
   transforms: {}
   drop:
-  - Count
-  - InstanceNamingFilter
-  - KeywordCount
-  - Keywords
-  - Priority
-  - RulesetName
-  - Text
+  # INRF is converted to FO4's UNAM target in pre_translate; this catches
+  # filters with no FO4 target enum. ZNAM ruleset labels have no FO4 slot.
+  # The rule payload (VNAM/WNAM/KSIZ/KWDA/YNAM) must survive or nothing is named.
+  - INRF
+  - ZNAM
   defaults: {}
 IDLE:
   source_extra:
@@ -2114,7 +2120,6 @@ FURN:
   - PAHD
   - PreviewTransform
   - Properties
-  - VirtualMachineAdapter
   - AnimationSound
   - AssociatedForm
   - AssociatedQuest
@@ -2357,6 +2362,24 @@ PERK:
     Description: Description
     Data: Data
     EffectData: EffectData
+    VirtualMachineAdapter: VirtualMachineAdapter
+    VMAD: VMAD
+    PRKE: PRKE
+    RunOnTabIndex: RunOnTabIndex
+    PRKC: PRKC
+    CTDA: CTDA
+    Type: Type
+    EPFT: EPFT
+    PerkEntryIDUnique: PerkEntryIDUnique
+    EPFB: EPFB
+    ButtonLabel: ButtonLabel
+    EPF2: EPF2
+    ScriptFlags: ScriptFlags
+    EPF3: EPF3
+    EndMarker: EndMarker
+    PRKF: PRKF
+    CIS1: CIS1
+    CIS2: CIS2
   transforms:
     Name:
       type: trim_languages
@@ -2391,21 +2414,11 @@ PERK:
       default_data:
         Magnitude: 0.0
   drop:
-  - CTDA
-  - EPF3
   - EPFD
-  - EndMarker
-  - PRKE
-  - PerkEntryIDUnique
-  - RunOnTabIndex
   - SWFSpriteName
   - Sound
-  - Type
   - UnknownSpellValue
-  - VirtualMachineAdapter
   - ActorValue2
-  - CIS1
-  - CIS2
   - PerkActivationIcon
   - PerkActivationSound
   - PerkAddedFaction
@@ -2787,7 +2800,6 @@ QUST:
   drop:
   - ActorReserveFlags
   - ActorReserveType
-  - AliasLocationRefType
   - CollectionAliasID
   - CombatOverridePackageList
   - DATA
@@ -2828,7 +2840,6 @@ QUST:
   - QuestStartLocation
   - QuestTimerLengthMax
   - QuestVariable
-  - RefType
   - ReferenceAliasID
   - SCCM
   - SCFC

@@ -1,31 +1,20 @@
-//! Fixup: inject the minimum required child block into records
-//! that the FO76→FO4 port left structurally incomplete, so xEdit's FO4 grammar
-//! stops reporting a phantom "Found a NULL reference" on a missing block.
+//! Fixup: inject the minimum required child block into records the FO76→FO4 port
+//! left structurally incomplete, so xEdit's FO4 grammar stops reporting a phantom
+//! "Found a NULL reference" on the missing block.
 //!
-//! Two cases:
+//! - **ALCH / ENCH / SPEL with zero Effects.** FO4's grammar wants at least one
+//!   Effect, so xEdit synthesizes one and flags its missing `EFID`. ENCH/SPEL get a
+//!   `DamageHealth` placeholder. ALCH repair is limited to three verified
+//!   effect-less SeventySix.esm records: incomplete effect children are replaced
+//!   with `RestoreHealthGeneric [MGEF:00023735]` plus an all-zero `EFIT`. The Effect
+//!   block is the last block in the FO4 grammar, so a tail append is valid.
+//! - **NPC_ with no CNAM (Class).** FO4 requires one; inject `Citizen [CLAS:0001326B]`.
+//!   CNAM sits mid-record (between the `OBTS`/`STOP` template block and
+//!   `FULL`/`DATA`), so the insert position comes from the schema's subrecord order.
+//!   A wrong offset trades this error for "out of order subrecord".
 //!
-//! 1. **ALCH / ENCH / SPEL with zero Effects**. FO76 carries effect-less magic
-//!    items; FO4's grammar wants ≥1 Effect, so xEdit synthesizes one and flags
-//!    its missing `EFID`. ENCH/SPEL retain their existing `DamageHealth`
-//!    placeholder. ALCH repair is restricted to three verified effect-less
-//!    SeventySix.esm records and replaces any incomplete effect children with
-//!    `RestoreHealthGeneric [MGEF:00023735]` plus an all-zero `EFIT`
-//!    (`struct:f,I,I` = magnitude 0.0, area 0, duration 0). The Effect block is
-//!    the LAST block in the FO4 grammar, so a tail append is grammar-correct.
-//!
-//! 2. **NPC_ with no CNAM (Class)**. FO76 allows an NPC without an
-//!    explicit Class; FO4 requires one. We inject `CNAM` → `Citizen [CLAS:0001326B]`
-//!    (a stable Fallout4.esm class). UNLIKE the Effect block, `CNAM` is NOT a tail
-//!    field in NPC_ — it sits at a fixed position in the FO4 NPC_ grammar (between
-//!    the `OBTS`/`STOP` template block and `FULL`/`DATA`). Inserting it at the wrong
-//!    offset would produce a NEW "out of order subrecord" error, so the insert
-//!    position is derived from the schema's ordered subrecord list, NOT hardcoded.
-//!
-//! # Plugin-aware
-//! The base FormIDs name `Fallout4.esm` explicitly; the encoder resolves that to
-//! the output's actual master index at write time (it is index 0 here, but never
-//! assumed). If `Fallout4.esm` is not among the target masters, injection is
-//! skipped rather than emitting an unresolvable reference.
+//! The base FormIDs name `Fallout4.esm` and the encoder resolves its master index at
+//! write time. Injection is skipped when `Fallout4.esm` is not a target master.
 
 use rustc_hash::FxHashSet;
 
@@ -293,13 +282,10 @@ fn inject_npc_cnam(
             local: FALLBACK_CLASS_LOCAL,
         }),
     };
-    // Insert CNAM before the first existing field that comes AFTER it in schema
-    // order. Each existing field is ranked by its LAST schema-order occurrence
-    // (`rposition`), which disambiguates sigs the FO4 NPC_ grammar lists twice —
-    // notably FULL (a Template-Name slot at idx 54, before CNAM, AND the NPC Name
-    // slot at idx 58, after CNAM). A real NPC's lone post-template FULL is the
-    // Name, so ranking by its last occurrence (58 > CNAM) correctly puts CNAM
-    // before it; ranking by the first (54 < CNAM) would wrongly skip it.
+    // Insert before the first existing field that sits after CNAM in schema order.
+    // Fields rank by their LAST schema occurrence: the FO4 NPC_ grammar lists FULL
+    // twice (Template-Name slot at idx 54 before CNAM, NPC Name at idx 58 after it),
+    // and a real NPC's lone post-template FULL is the Name.
     let insert_at = record
         .fields
         .iter()

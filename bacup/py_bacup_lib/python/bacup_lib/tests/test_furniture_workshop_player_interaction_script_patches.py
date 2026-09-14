@@ -18,18 +18,15 @@ from creation_lib.pex.native_runtime import compile_psc
 REPO_ROOT = Path(__file__).resolve().parents[5]
 SOURCE_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 
-# Every script patched by shard
-# w2-furniture-workshop-player-interaction-ungrouped-furniture-workshop-player-interaction,
-# mapped to the top-level member(s) its patch must supply. MTRZ05MiningSiteScript's
-# OnActivate is state-scoped (inside "open") and is verified separately below via
-# _state_block, matching test_two_state_sync's / the default-interaction-helpers
-# shard's pattern (_iter_top_level_papyrus_members only sees top-level members).
+# Each patched script mapped to the top-level member(s) its patch must supply.
+# MTRZ05MiningSiteScript's OnActivate is state-scoped (inside "open") and is
+# checked separately via _state_block, since _iter_top_level_papyrus_members sees
+# only top-level members.
 #
-# AddSpellOnFurnitureEnter and OverseersCampToolboxScript are deterministic
-# guarded one-shot/paired-event handlers (no named states) — a full compile of
-# the merged patch is sufficient coverage for them; see repair-papyrus-stubs
-# SKILL.md's dedicated-test-file criteria. MTRZ05MiningSiteScript's open/used
-# state machine keeps its detailed regression test below.
+# AddSpellOnFurnitureEnter and OverseersCampToolboxScript are guarded
+# one-shot/paired-event handlers (no named states), covered by a full compile of
+# the merged patch. MTRZ05MiningSiteScript's open/used state machine has a
+# dedicated test below.
 PATCH_CASES = {
     "AddSpellOnFurnitureEnter": {"onactivate", "onexitfurniture"},
     "MTRZ05MiningSiteScript": {"onload"},

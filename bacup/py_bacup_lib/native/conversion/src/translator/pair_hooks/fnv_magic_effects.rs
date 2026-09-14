@@ -6,9 +6,13 @@
 
 use smallvec::SmallVec;
 
+use super::fnv_conditions::{
+    ConditionReferenceOutcome, LegacyConditionFamily, normalize_legacy_condition_value,
+};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SubrecordSig};
 use crate::record::{FieldEntry, FieldValue, Record};
+use crate::sym::Sym;
 
 pub const LEGACY_EFIT_LEN: usize = 20;
 pub const FO4_EFIT_LEN: usize = 12;
@@ -29,6 +33,13 @@ const FO4_SPEL_IGNORE_RESISTANCE_FLAG: u32 = 1 << 20;
 const FO4_SPEL_NO_ABSORB_REFLECT_FLAG: u32 = 1 << 21;
 const FO4_ENCHANTMENT_TYPE: u32 = 6;
 const FO4_STAFF_ENCHANTMENT_TYPE: u32 = 12;
+const FNV_RESTORE_ALL_LIMBS_MGEF: u32 = 0x0CB05D;
+const FNV_DOCTOR_LIMB_RESTORATION_SPEL: u32 = 0x172091;
+const FNV_DOCTOR_LIMB_RESTORATION_EDID: &str = "DoctorLimbRestoration";
+const FNV_SOURCE_PLUGIN: &str = "FalloutNV.esm";
+const FO4_RESTORE_CONDITION_EFFECTS: &[u32] =
+    &[0x05C529, 0x05C52C, 0x05C52D, 0x05C52A, 0x05C52B, 0x05C52E];
+const FO4_RESTORE_CONDITION_MAGNITUDE: f32 = 100.0;
 
 const FNV_CTDA_PARAM1_FORMID_FUNCTIONS: &[u16] = &[
     1, 27, 32, 42, 43, 44, 45, 47, 53, 56, 58, 59, 60, 66, 67, 68, 69, 71, 72, 73, 74, 76, 79, 84,
@@ -117,6 +128,15 @@ pub fn normalize_legacy_magic_effects(
     family: LegacyMagicFamily,
     mapper: &mut FormKeyMapper<'_>,
 ) -> MagicEffectsNormalizeReport {
+    normalize_legacy_magic_effects_for_source(record, family, record.form_key, mapper)
+}
+
+pub fn normalize_legacy_magic_effects_for_source(
+    record: &mut Record,
+    family: LegacyMagicFamily,
+    source_form_key: FormKey,
+    mapper: &mut FormKeyMapper<'_>,
+) -> MagicEffectsNormalizeReport {
     let mut report = MagicEffectsNormalizeReport::default();
     if !matches!(record.sig.0, sig if sig == *b"ALCH" || sig == *b"ENCH" || sig == *b"SPEL") {
         return report;
@@ -136,6 +156,9 @@ pub fn normalize_legacy_magic_effects(
             normalize_effect_group(
                 &input[index..end],
                 effect_index,
+                record.sig.0,
+                source_form_key,
+                record.eid,
                 family,
                 mapper,
                 &mut report,
@@ -174,6 +197,9 @@ pub fn normalize_legacy_magic_effects(
 fn normalize_effect_group(
     group: &[FieldEntry],
     effect_index: usize,
+    record_sig: [u8; 4],
+    source_form_key: FormKey,
+    record_eid: Option<Sym>,
     family: LegacyMagicFamily,
     mapper: &mut FormKeyMapper<'_>,
     report: &mut MagicEffectsNormalizeReport,
@@ -186,6 +212,22 @@ fn normalize_effect_group(
         .collect::<Vec<_>>();
     if efit_positions != [1] {
         drop_effect_group(group, report, output);
+        return;
+    }
+
+    if is_restore_all_limbs_spell_effect(
+        group,
+        record_sig,
+        source_form_key,
+        record_eid,
+        family,
+        mapper,
+    ) {
+        if group.len() != 2 {
+            drop_effect_group(group, report, output);
+            return;
+        }
+        append_restore_all_limbs_effects(effect_index, report, output);
         return;
     }
 
@@ -231,6 +273,71 @@ fn normalize_effect_group(
     output.push(efid);
     output.push(efit);
     normalize_condition_payload(&group[2..], effect_index, family, mapper, report, output);
+}
+
+fn is_restore_all_limbs_spell_effect(
+    group: &[FieldEntry],
+    record_sig: [u8; 4],
+    source_form_key: FormKey,
+    record_eid: Option<Sym>,
+    family: LegacyMagicFamily,
+    mapper: &FormKeyMapper<'_>,
+) -> bool {
+    matches!(family, LegacyMagicFamily::Fnv)
+        && record_sig == *b"SPEL"
+        && source_form_key.local == FNV_DOCTOR_LIMB_RESTORATION_SPEL
+        && mapper
+            .interner
+            .resolve(source_form_key.plugin)
+            .is_some_and(|plugin| plugin.eq_ignore_ascii_case(FNV_SOURCE_PLUGIN))
+        && record_eid.and_then(|eid| mapper.interner.resolve(eid))
+            == Some(FNV_DOCTOR_LIMB_RESTORATION_EDID)
+        && source_local_form_id(&group[0].value) == Some(FNV_RESTORE_ALL_LIMBS_MGEF)
+}
+
+fn append_restore_all_limbs_effects(
+    effect_index: usize,
+    report: &mut MagicEffectsNormalizeReport,
+    output: &mut Vec<FieldEntry>,
+) {
+    for &effect in FO4_RESTORE_CONDITION_EFFECTS {
+        output.push(FieldEntry {
+            sig: SubrecordSig(*b"EFID"),
+            value: FieldValue::Bytes(SmallVec::from_slice(&effect.to_le_bytes())),
+        });
+        let mut efit = vec![0; FO4_EFIT_LEN];
+        efit[0..4].copy_from_slice(&FO4_RESTORE_CONDITION_MAGNITUDE.to_le_bytes());
+        output.push(FieldEntry {
+            sig: SubrecordSig(*b"EFIT"),
+            value: FieldValue::Bytes(SmallVec::from_vec(efit)),
+        });
+        report.references.push(MagicReferenceDecision {
+            effect_index: Some(effect_index),
+            field: "restore_all_limbs_effect",
+            outcome: MagicReferenceOutcome::MappedRaw {
+                source_raw: FNV_RESTORE_ALL_LIMBS_MGEF,
+                target_raw: effect,
+            },
+        });
+    }
+    report.enums.push(MagicEnumDecision {
+        field: "restore_all_limbs_effect_count",
+        source: 1,
+        target: FO4_RESTORE_CONDITION_EFFECTS.len() as u32,
+        dropped_bits: 0,
+        used_default: false,
+    });
+    report.converted_effects += FO4_RESTORE_CONDITION_EFFECTS.len();
+}
+
+fn source_local_form_id(value: &FieldValue) -> Option<u32> {
+    match value {
+        FieldValue::Bytes(bytes) if bytes.len() == 4 => Some(read_u32(bytes, 0) & 0x00FF_FFFF),
+        FieldValue::FormKey(form_key) => Some(form_key.local),
+        FieldValue::Uint(value) => u32::try_from(*value).ok().map(|value| value & 0x00FF_FFFF),
+        FieldValue::Int(value) => u32::try_from(*value).ok().map(|value| value & 0x00FF_FFFF),
+        _ => None,
+    }
 }
 
 fn drop_effect_group(
@@ -359,73 +466,49 @@ fn convert_condition_row(
         RowShape::Malformed => None,
         RowShape::Legacy => match value {
             FieldValue::Bytes(bytes) => {
-                let source_function = read_u16(bytes, 8);
-                let function = translate_condition_function(family, source_function)?;
-                let mut target = bytes.to_vec();
-                target[8..10].copy_from_slice(&function.to_le_bytes());
-                target.extend_from_slice(&(-1_i32).to_le_bytes());
-                report.enums.push(MagicEnumDecision {
-                    field: "condition_function",
-                    source: u32::from(source_function),
-                    target: u32::from(function),
-                    dropped_bits: 0,
-                    used_default: false,
-                });
-                if target[0] & 0x04 != 0
-                    && !remap_raw_reference_at(
-                        &mut target,
-                        4,
-                        Some(effect_index),
-                        "condition_comparison_global",
-                        mapper,
-                        report,
-                    )
-                {
-                    return None;
+                let family = match family {
+                    LegacyMagicFamily::Fnv => LegacyConditionFamily::Fnv,
+                    LegacyMagicFamily::Fo3 => LegacyConditionFamily::Fo3,
+                };
+                let (target, condition_report) = normalize_legacy_condition_value(
+                    &FieldValue::Bytes(bytes.clone()),
+                    family,
+                    mapper,
+                )
+                .ok()?;
+                if condition_report.converted {
+                    report.converted_conditions += 1;
                 }
-                let (param1_functions, param2_functions) = condition_formid_functions(family);
-                if param1_functions.binary_search(&source_function).is_ok()
-                    && !remap_raw_reference_at(
-                        &mut target,
-                        12,
-                        Some(effect_index),
-                        "condition_parameter_1",
-                        mapper,
-                        report,
-                    )
-                {
-                    return None;
+                for decision in condition_report.references {
+                    let outcome = match decision.outcome {
+                        ConditionReferenceOutcome::SourceNull => MagicReferenceOutcome::SourceNull,
+                        ConditionReferenceOutcome::MappedRaw {
+                            source_raw,
+                            target_raw,
+                        } => MagicReferenceOutcome::MappedRaw {
+                            source_raw,
+                            target_raw,
+                        },
+                    };
+                    report.references.push(MagicReferenceDecision {
+                        effect_index: Some(effect_index),
+                        field: decision.field,
+                        outcome,
+                    });
                 }
-                if param2_functions.binary_search(&source_function).is_ok()
-                    && !remap_raw_reference_at(
-                        &mut target,
-                        16,
-                        Some(effect_index),
-                        "condition_parameter_2",
-                        mapper,
-                        report,
-                    )
-                {
-                    return None;
+                if let (Some(source), Some(target_function)) = (
+                    condition_report.source_function,
+                    condition_report.target_function,
+                ) {
+                    report.enums.push(MagicEnumDecision {
+                        field: "condition_function",
+                        source: u32::from(source),
+                        target: u32::from(target_function),
+                        dropped_bits: 0,
+                        used_default: false,
+                    });
                 }
-                let source_run_on = read_u32(&target, 20);
-                if source_run_on == 20 {
-                    target[20..24].copy_from_slice(&0_u32.to_le_bytes());
-                }
-                if source_run_on == 2
-                    && !remap_raw_reference_at(
-                        &mut target,
-                        24,
-                        Some(effect_index),
-                        "condition_run_on_reference",
-                        mapper,
-                        report,
-                    )
-                {
-                    return None;
-                }
-                report.converted_conditions += 1;
-                Some(FieldValue::Bytes(SmallVec::from_vec(target)))
+                Some(target)
             }
             FieldValue::Struct(fields) => {
                 let source_function = named_u32(fields, mapper.interner, "function")
@@ -1372,12 +1455,75 @@ mod tests {
         }
     }
 
+    fn assert_doctor_limb_restoration_expands(source_plugin: &str) {
+        let family = LegacyMagicFamily::Fnv;
+        let interner = StringInterner::new();
+        let mut mapper = mapper(&interner, family, &[(0x0CB05D, 0x00397E)]);
+        let mut spell = record(&interner, b"SPEL");
+        spell.form_key = form_key(&interner, source_plugin, FNV_DOCTOR_LIMB_RESTORATION_SPEL);
+        spell.eid = Some(interner.intern(FNV_DOCTOR_LIMB_RESTORATION_EDID));
+        spell.fields.extend([
+            field(b"SPIT", vec![0; LEGACY_SPEL_SPIT_LEN]),
+            efid(0x0CB05D),
+            legacy_efit(10, 0, 0),
+        ]);
+
+        let report = normalize_legacy_magic_effects(&mut spell, family, &mut mapper);
+
+        assert_eq!(report.converted_metadata_rows, 1);
+        assert_eq!(report.converted_effects, 6);
+        assert_eq!(report.dropped_metadata_rows, 0);
+        assert_eq!(report.dropped_effects, 0);
+        assert_eq!(raw_fields(&spell, b"SPIT")[0], &[0; FO4_SPEL_SPIT_LEN]);
+        assert_eq!(
+            raw_fields(&spell, b"EFID")
+                .iter()
+                .map(|bytes| read_u32(bytes, 0))
+                .collect::<Vec<_>>(),
+            FO4_RESTORE_CONDITION_EFFECTS
+        );
+        assert!(raw_fields(&spell, b"EFIT").iter().all(|bytes| {
+            bytes.len() == FO4_EFIT_LEN
+                && f32::from_le_bytes(bytes[0..4].try_into().unwrap())
+                    == FO4_RESTORE_CONDITION_MAGNITUDE
+        }));
+        assert!(report.references.iter().all(|reference| {
+            reference.field == "restore_all_limbs_effect"
+                && matches!(
+                    reference.outcome,
+                    MagicReferenceOutcome::MappedRaw {
+                        source_raw: FNV_RESTORE_ALL_LIMBS_MGEF,
+                        ..
+                    }
+                )
+        }));
+    }
+
     #[test]
-    fn doctor_limb_restoration_golden_expands_zero_spit_for_fnv_and_fo3() {
-        for family in [LegacyMagicFamily::Fnv, LegacyMagicFamily::Fo3] {
-            let interner = StringInterner::new();
+    fn doctor_limb_restoration_golden_expands_the_canonical_fnv_script_effect() {
+        assert_doctor_limb_restoration_expands(FNV_SOURCE_PLUGIN);
+    }
+
+    #[test]
+    fn restore_all_limbs_expansion_requires_the_exact_doctor_spell_identity() {
+        let family = LegacyMagicFamily::Fnv;
+        let interner = StringInterner::new();
+        for (plugin, local, eid) in [
+            (
+                FNV_SOURCE_PLUGIN,
+                0x172092,
+                FNV_DOCTOR_LIMB_RESTORATION_EDID,
+            ),
+            (
+                "Fallout3.esm",
+                FNV_DOCTOR_LIMB_RESTORATION_SPEL,
+                FNV_DOCTOR_LIMB_RESTORATION_EDID,
+            ),
+        ] {
             let mut mapper = mapper(&interner, family, &[(0x0CB05D, 0x00397E)]);
             let mut spell = record(&interner, b"SPEL");
+            spell.form_key = form_key(&interner, plugin, local);
+            spell.eid = Some(interner.intern(eid));
             spell.fields.extend([
                 field(b"SPIT", vec![0; LEGACY_SPEL_SPIT_LEN]),
                 efid(0x0CB05D),
@@ -1386,10 +1532,9 @@ mod tests {
 
             let report = normalize_legacy_magic_effects(&mut spell, family, &mut mapper);
 
-            assert_eq!(report.converted_metadata_rows, 1);
             assert_eq!(report.converted_effects, 1);
-            assert_eq!(raw_fields(&spell, b"SPIT")[0], &[0; FO4_SPEL_SPIT_LEN]);
-            assert_eq!(raw_fields(&spell, b"EFIT")[0].len(), FO4_EFIT_LEN);
+            assert_eq!(raw_fields(&spell, b"EFID").len(), 1);
+            assert_eq!(read_u32(raw_fields(&spell, b"EFID")[0], 0), 0x00397E);
         }
     }
 

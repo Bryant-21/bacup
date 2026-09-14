@@ -21,6 +21,12 @@ class TestFO3ToFO4:
         assert result == AnimationEvent(time=0.5, text="HitFrame")
         assert warning is None
 
+    def test_gecko_attack_hit_preserves_audited_time(self, mapper):
+        ev = AnimationEvent(time=0.9333334, text="Hit")
+        result, warning = mapper.map_event(ev)
+        assert result == AnimationEvent(time=0.9333334, text="HitFrame")
+        assert warning is None
+
     def test_direct_mapping_equip(self, mapper):
         ev = AnimationEvent(time=0.0, text="Equip")
         result, warning = mapper.map_event(ev)

@@ -1,21 +1,78 @@
-//! MODT compute manifest — the per-output-mesh material/texture/addon-node graph
-//! the asset waves emit and the `regenerate_modt` phase consumes to compute a
-//! byte-exact FO4 `MODT` for novel converted meshes.
+//! MODT compute manifest: the per-output-mesh material/texture/addon-node graph
+//! the asset waves emit and the `regenerate_modt` phase consumes to compute FO4
+//! `MODT` for novel converted meshes.
 //!
-//! Shape rationale (see `src/test_fixtures/modt/README.md` for the byte-exact
-//! calibration): a record's `MODT` texture list is built from the mesh's
-//! **resolved material slots** (not the NIF inline texture sets), so the producer
-//! must resolve each shape's `.bgsm`/`.bgem` and emit the final FO4 texture paths
-//! with their semantic slot ROLE (which fixes sRGB per RULE 4), the resolved
-//! material paths, and any addon-node indices. Material swaps are a per-RECORD
-//! concern (`MODS`/`MSWP`), resolved by the phase — not baked here.
-//!
-//! This module defines only the data shape + the role→sRGB rule; the producer is
-//! wired in a later step.
+//! A record's `MODT` texture list comes from the mesh's resolved material slots,
+//! not the NIF's inline texture sets. The producer resolves each shape's
+//! `.bgsm`/`.bgem` and emits the final FO4 texture paths with their slot role
+//! (which fixes sRGB per RULE 4 in `src/test_fixtures/modt/README.md`), the
+//! material paths, and any addon-node indices. Material swaps (`MODS`/`MSWP`)
+//! are per-record and resolved by the phase, not baked here.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use nif_core_native::convert_file::FinalNifDependencies;
 
 use serde::{Deserialize, Serialize};
+
+#[derive(Default)]
+pub struct OutputNifDependencies {
+    entries: Mutex<HashMap<String, Arc<FinalNifDependencies>>>,
+    hits: AtomicUsize,
+    misses: AtomicUsize,
+}
+
+impl OutputNifDependencies {
+    fn key(path: &Path) -> String {
+        path.to_string_lossy()
+            .chars()
+            .map(|character| {
+                if character == '\\' {
+                    '/'
+                } else {
+                    character.to_ascii_lowercase()
+                }
+            })
+            .collect()
+    }
+
+    pub fn insert(&self, path: &Path, dependencies: FinalNifDependencies) {
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(Self::key(path), Arc::new(dependencies));
+    }
+
+    pub fn matching(&self, path: &Path, bytes: &[u8]) -> Option<Arc<FinalNifDependencies>> {
+        let entry = self.lookup(path);
+        let matched = entry.filter(|entry| entry.digest == *blake3::hash(bytes).as_bytes());
+        self.record_match(matched.is_some());
+        matched
+    }
+
+    pub(crate) fn lookup(&self, path: &Path) -> Option<Arc<FinalNifDependencies>> {
+        let key = Self::key(path);
+        self.entries.lock().unwrap().get(&key).cloned()
+    }
+
+    pub(crate) fn record_match(&self, matched: bool) {
+        if matched {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn counts(&self) -> (usize, usize) {
+        (
+            self.hits.load(Ordering::Relaxed),
+            self.misses.load(Ordering::Relaxed),
+        )
+    }
+}
 
 /// One texture slot referenced by an output mesh's resolved materials.
 #[derive(Debug, Clone, Serialize, Deserialize)]

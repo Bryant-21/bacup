@@ -4,7 +4,7 @@ Event OnLocationChange(Location akOldLoc, Location akNewLoc)
     EndIf
 
     Quest owningQuest = GetOwningQuest()
-    If owningQuest != None && owningQuest.IsStageDone(200) && !owningQuest.IsStageDone(310)
-        owningQuest.SetStage(310)
+    If owningQuest != None && owningQuest.IsStageDone(200) && !owningQuest.IsStageDone(300)
+        owningQuest.SetStage(300)
     EndIf
 EndEvent

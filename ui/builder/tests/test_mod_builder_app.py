@@ -16,6 +16,7 @@ from ui.builder.mod_builder_app import (
     _is_master_tagged,
     _is_mod_deployed,
     _mod_kind,
+    _creation_only_masters,
     _mod_list_label,
     _mod_plugin_type_label,
     _progress_fraction_from_line,
@@ -338,6 +339,7 @@ def test_register_fo4_runtime_archive_ini_entries_seeds_custom_ini(tmp_path: Pat
             "B21_Test - Animations.ba2",
             "B21_Test - Textures1.ba2",
             "B21_Test - Meshes_xbox.ba2",
+            "B21_Test - Meshes_ps.ba2",
         ],
         ini_path=custom_ini,
         base_ini_path=game_ini,
@@ -353,6 +355,7 @@ def test_register_fo4_runtime_archive_ini_entries_seeds_custom_ini(tmp_path: Pat
     assert "SResourceArchiveList2=Fallout4 - Animations.ba2, B21_Test - Animations.ba2" in text
     assert "sResourceIndexFileList=Fallout4 - Textures1.ba2, B21_Test - Textures1.ba2" in text
     assert "B21_Test - Meshes_xbox.ba2" not in text
+    assert "B21_Test - Meshes_ps.ba2" not in text
 
 
 def test_remove_fo4_archive_ini_entries_removes_only_requested_mod_archives(tmp_path: Path):
@@ -405,6 +408,18 @@ def test_builder_progress_state_tracks_latest_lines():
     for idx in range(5):
         app._record_progress_line(f"Copied file {idx}")
     assert app._progress_lines == ["Copied file 2", "Copied file 3", "Copied file 4"]
+
+    app._running = True
+    with patch("ui.builder.mod_builder_app.loading_panel") as loader:
+        app._draw_loading_overlay()
+        loader.assert_called_once_with(
+            "Deploying B21_Test", "Copied file 4", 0.2,
+            history=["Copied file 2", "Copied file 3", "Copied file 4"],
+        )
+        loader.reset_mock()
+        app._running = False
+        app._draw_loading_overlay()
+        loader.assert_not_called()
 
 
 def test_mod_selection_summary_does_not_walk_mod_tree(tmp_path: Path):
@@ -493,6 +508,9 @@ def test_builder_deploy_actions_forward_skip_validation_flag(tmp_path: Path):
     app._skip_pack = False
     app._esp_only = False
     app._xbox = False
+    app._ps = True
+    app._ps_max_res_idx = 2
+    app._ps_effects_max_res_idx = 3
     app._deploy_patches = False
     app._skip_validation = True
     app._run_fn = lambda target_fn, on_done=None, description="": target_fn(lambda msg: None)
@@ -519,6 +537,10 @@ def test_builder_deploy_actions_forward_skip_validation_flag(tmp_path: Path):
     assert deploy_calls[0]["expanded_archives"] is False
     assert deploy_calls[0]["archive_workers"] == 0
     assert deploy_calls[0]["archive_transfer_mode"] == "copy"
+    assert deploy_calls[0]["pack_archives_to_deploy_target"] is False
+    assert deploy_calls[0]["ps"] is True
+    assert deploy_calls[0]["ps_max_res"] == 2048
+    assert deploy_calls[0]["ps_effects_max_res"] == 1024
     assert loose_calls[0]["skip_validation"] is True
     assert loose_calls[0]["workers"] == 0
 
@@ -625,6 +647,7 @@ def test_builder_deploy_forwards_move_archive_option(tmp_path: Path):
         app._on_deploy()
 
     assert deploy_calls[0]["archive_transfer_mode"] == "move"
+    assert deploy_calls[0]["pack_archives_to_deploy_target"] is True
 
 
 def test_builder_archive_max_size_setting_persists_to_workspace():
@@ -943,6 +966,8 @@ def test_builder_release_pack_options_include_archive_max_size_setting():
     assert options["archive_max_bytes"] == int(3.25 * 1024**3)
     assert options["expanded_archives"] is False
     assert options["archive_workers"] == 5
+    assert options["xbox_max_res"] == 0
+    assert options["ps_max_res"] == 0
 
 
 def test_builder_deploy_and_release_tabs_render_archive_setting_fields():
@@ -954,10 +979,15 @@ def test_builder_deploy_and_release_tabs_render_archive_setting_fields():
     deploy_section = source[deploy_start:release_start]
     release_section = source[release_start:migrate_start]
 
-    assert "self._draw_archive_max_size_field()" in deploy_section
-    assert "self._draw_archive_max_size_field()" in release_section
+    assert "self._draw_archive_max_size_field(self._expanded_archives)" in deploy_section
+    assert (
+        "self._draw_archive_max_size_field(self._release_expanded_archives)"
+        in release_section
+    )
     assert "self._draw_asset_workers_field()" in deploy_section
     assert "self._draw_asset_workers_field()" in release_section
+    assert '"PlayStation BA2s"' in deploy_section
+    assert '"PlayStation BA2s"' in release_section
 
 
 def test_builder_deploy_tab_renders_fo4_archive_ini_checkbox():
@@ -1014,6 +1044,7 @@ def test_builder_release_cleanup_removes_all_discovered_archives(tmp_path: Path)
         mod_dir / "B21_Test - Main.ba2",
         mod_dir / "B21_Test - Meshes1.ba2",
         mod_dir / "B21_Test - Textures_xbox.ba2",
+        mod_dir / "B21_Test - Textures_ps.ba2",
         mod_dir / "B21_Test - Main.bsa",
     ]
     for path in removable:
@@ -1081,6 +1112,7 @@ def test_builder_release_package_includes_all_discovered_archives(tmp_path: Path
     (mod_dir / "B21_Test - Meshes1.ba2").write_bytes(b"mesh")
     (mod_dir / "B21_Test - Textures2.ba2").write_bytes(b"tex")
     (mod_dir / "B21_Test - Main_xbox.ba2").write_bytes(b"xbox")
+    (mod_dir / "B21_Test - Main_ps.ba2").write_bytes(b"ps")
 
     with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None), patch(
         "ui.builder.mod_builder_app.MODS_DIR", str(mods_dir)
@@ -1097,6 +1129,7 @@ def test_builder_release_package_includes_all_discovered_archives(tmp_path: Path
         "B21_Test - Meshes1.ba2",
         "B21_Test - Textures2.ba2",
         "B21_Test - Main_xbox.ba2",
+        "B21_Test - Main_ps.ba2",
     }.issubset(names)
 
 
@@ -1130,3 +1163,146 @@ def test_create_loose_archlist_includes_deployable_sources(tmp_path: Path):
         '\t"Data\\\\Textures\\\\foo.dds"',
         "]",
     ]
+
+
+def test_builder_settings_round_trip_per_mod(tmp_path: Path):
+    mods_dir = tmp_path / "mods"
+    (mods_dir / "B21_A").mkdir(parents=True)
+    (mods_dir / "B21_B").mkdir(parents=True)
+
+    with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None), patch(
+        "ui.builder.mod_builder_app.MODS_DIR", str(mods_dir)
+    ):
+        app = ModBuilderApp()
+        app._mod_list = ["B21_A", "B21_B"]
+        app._mod_kinds = ["mod", "mod"]
+
+        app._selected_mod_idx = 0
+        app._skip_build = True
+        app._expanded_archives = True
+        app._pc_max_res_idx = 2
+        app._release_previs = True
+        app._release_xbox = True
+        app._release_ps = True
+        app._release_pc_max_res_idx = 3
+        app._save_mod_settings()
+
+        app._selected_mod_idx = 1
+        app._load_mod_settings()
+        assert app._skip_build is False
+        assert app._expanded_archives is False
+        assert app._pc_max_res_idx == 0
+        assert app._release_previs is False
+        assert app._release_xbox is False
+        assert app._release_ps is False
+        assert app._release_pc_max_res_idx == 0
+
+        app._selected_mod_idx = 0
+        app._load_mod_settings()
+        assert app._skip_build is True
+        assert app._expanded_archives is True
+        assert app._pc_max_res_idx == 2
+        assert app._release_previs is True
+        assert app._release_xbox is True
+        assert app._release_ps is True
+        assert app._release_pc_max_res_idx == 3
+
+    assert not (mods_dir / "B21_B" / ".builder.json").exists()
+
+
+def test_builder_settings_unreadable_file_falls_back_to_defaults(tmp_path: Path):
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "B21_A"
+    mod_dir.mkdir(parents=True)
+    (mod_dir / ".builder.json").write_text("not json", encoding="utf-8")
+
+    with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None), patch(
+        "ui.builder.mod_builder_app.MODS_DIR", str(mods_dir)
+    ):
+        app = ModBuilderApp()
+        app._mod_list = ["B21_A"]
+        app._mod_kinds = ["mod"]
+        app._selected_mod_idx = 0
+        app._skip_pack = True
+        app._release_anim_data = True
+        app._load_mod_settings()
+
+    assert app._skip_pack is False
+    assert app._release_anim_data is False
+
+
+def test_mod_list_groups_plugins_before_mods_alphabetically(tmp_path: Path):
+    mods_dir = tmp_path / "mods"
+    mods_dir.mkdir(parents=True)
+
+    with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None), patch(
+        "ui.builder.mod_builder_app.MODS_DIR", str(mods_dir)
+    ):
+        app = ModBuilderApp()
+        app._mod_list = ["B21_Zebra", "B21_Alpha", "B21_Combined", "B21_Plugin"]
+        app._mod_kinds = ["mod", "mod", "combined", "xse"]
+
+        assert [mod for _, mod in app._filtered_mods()] == [
+            "B21_Combined",
+            "B21_Plugin",
+            "B21_Alpha",
+            "B21_Zebra",
+        ]
+
+        app._mod_filter_text = "b21_a"
+        assert [mod for _, mod in app._filtered_mods()] == ["B21_Alpha"]
+
+
+def _write_plugin_yaml(mod_dir: Path, masters: list[str]) -> None:
+    yaml_dir = mod_dir / "yaml"
+    yaml_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["format_version: 1", f"plugin: {mod_dir.name}.esp", "game: fo4", "header:", "  masters:"]
+    lines += [f"  - {m}" for m in masters]
+    (yaml_dir / "plugin.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_creation_only_masters_flags_dlc_and_creation_club(tmp_path: Path):
+    mod_dir = tmp_path / "B21_Test"
+    _write_plugin_yaml(mod_dir, [
+        "Fallout4.esm",
+        "DLCCoast.esm",
+        "ccBGSFO4046-TesCan.esl",
+        "SomeOtherMod.esp",
+    ])
+
+    assert _creation_only_masters(str(mod_dir), "fo4") == [
+        "DLCCoast.esm",
+        "ccBGSFO4046-TesCan.esl",
+    ]
+
+
+def test_creation_only_masters_allows_base_game_and_skyrim_update(tmp_path: Path):
+    mod_dir = tmp_path / "B21_Test"
+    _write_plugin_yaml(mod_dir, ["Skyrim.esm", "Update.esm"])
+
+    assert _creation_only_masters(str(mod_dir), "skyrimse") == []
+
+
+def test_verified_creation_suppresses_master_warning(tmp_path: Path, caplog):
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "B21_Test"
+    _write_plugin_yaml(mod_dir, ["Fallout4.esm", "DLCNukaWorld.esm"])
+
+    with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None), patch(
+        "ui.builder.mod_builder_app.MODS_DIR", str(mods_dir)
+    ):
+        app = ModBuilderApp()
+        app._mod_list = ["B21_Test"]
+        app._mod_kinds = ["mod"]
+        app._selected_mod_idx = 0
+        app._get_mod_game = lambda: "fo4"
+
+        with caplog.at_level("WARNING", logger="toolkit.mod_builder"):
+            app._warn_creation_only_masters()
+        assert "DLCNukaWorld.esm" in caplog.text
+
+        caplog.clear()
+        app._verified_creation = True
+        with caplog.at_level("WARNING", logger="toolkit.mod_builder"):
+            app._warn_creation_only_masters()
+        assert caplog.text == ""

@@ -15,6 +15,16 @@ Function ShowNumber(Int numberToShow)
     CurrentlyPlacedNumber = NumberPosition.PlaceAtMe(numberStatic)
 EndFunction
 
+Function RevealMapSegment(Int numberToShow)
+    MapSegment = GetLinkedRef(W05_RE_MapSegment_Keyword)
+    If MapSegment == None
+        Return
+    EndIf
+
+    MapSegment.Enable(False)
+    ShowNumber(numberToShow)
+EndFunction
+
 Function ClearNumber()
     If CurrentlyPlacedNumber != None
         CurrentlyPlacedNumber.Disable()

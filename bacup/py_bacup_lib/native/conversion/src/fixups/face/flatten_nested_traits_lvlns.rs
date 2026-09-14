@@ -8,7 +8,9 @@
 //! source list instead uses conditions that FO4 translation drops, redirect NPC
 //! template slots to its single unconditional fallback actor. Preserve role NPCs
 //! that delegate non-Traits slots because flattening them would discard their
-//! inventory, factions, AI, and other role data.
+//! inventory, factions, AI, and other role data. FO76 material-list expansion can
+//! also leave `LVLN -> LVLI -> NPC_` chains; unwrap single-NPC LVLI rows because
+//! FO4 leveled-NPC lists cannot select leveled-item records.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
@@ -64,6 +66,8 @@ impl Fixup for FlattenNestedTraitsLvlnsFixup {
         let target_plugin = session.target_slot().parsed.plugin_name.clone();
         let lvln_sig = SigCode::from_str("LVLN")
             .map_err(|error| FixupError::SchemaError(error.to_string()))?;
+        let lvli_sig = SigCode::from_str("LVLI")
+            .map_err(|error| FixupError::SchemaError(error.to_string()))?;
         let npc_sig = SigCode::from_str("NPC_")
             .map_err(|error| FixupError::SchemaError(error.to_string()))?;
 
@@ -79,6 +83,16 @@ impl Fixup for FlattenNestedTraitsLvlnsFixup {
         }
         if lvln_records.is_empty() {
             return Ok(FixupReport::empty());
+        }
+        let mut lvli_records = FxHashMap::default();
+        for form_key in session
+            .form_keys_of_sig(lvli_sig, mapper.interner)
+            .map_err(|error| FixupError::HandleError(error.to_string()))?
+        {
+            if let Ok(record) = session.record_decoded(&form_key, schema.as_ref(), mapper.interner)
+            {
+                lvli_records.insert(form_key, record);
+            }
         }
 
         let mut delegated_traits = FxHashMap::default();
@@ -124,6 +138,26 @@ impl Fixup for FlattenNestedTraitsLvlnsFixup {
                 }
             }
             npc_records.insert(form_key, record);
+        }
+
+        let material_wrappers = single_npc_lvli_wrappers(
+            &lvli_records,
+            &npc_records,
+            &target_masters,
+            &target_plugin,
+            mapper.interner,
+        );
+        let mut wrapper_lists_unwrapped = FxHashSet::default();
+        for (form_key, record) in &mut lvln_records {
+            if rewrite_lvln_material_wrapper_entries(
+                record,
+                &material_wrappers,
+                &target_masters,
+                &target_plugin,
+                mapper.interner,
+            ) {
+                wrapper_lists_unwrapped.insert(*form_key);
+            }
         }
 
         let conditional_fallbacks = conditional_template_fallbacks(
@@ -181,7 +215,7 @@ impl Fixup for FlattenNestedTraitsLvlnsFixup {
         }
         for record in lvln_records.values() {
             let mut changed = record.clone();
-            if flatten_nested_traits_entries(
+            let flattened = flatten_nested_traits_entries(
                 &mut changed,
                 &lvln_records,
                 &delegated_traits,
@@ -191,7 +225,8 @@ impl Fixup for FlattenNestedTraitsLvlnsFixup {
                 &target_plugin,
                 mapper.interner,
                 &mut role_entries_preserved,
-            ) {
+            );
+            if flattened || wrapper_lists_unwrapped.contains(&record.form_key) {
                 lists_flattened.push(changed.form_key);
                 changed_records.insert(changed.form_key, changed);
             }
@@ -740,6 +775,102 @@ fn bake_display_name(record: &mut Record, full: FieldEntry, shrt: Option<FieldEn
     true
 }
 
+fn single_npc_lvli_wrappers(
+    lvli_records: &FxHashMap<FormKey, Record>,
+    npc_records: &FxHashMap<FormKey, Record>,
+    target_masters: &[String],
+    target_plugin: &str,
+    interner: &StringInterner,
+) -> FxHashMap<FormKey, FormKey> {
+    lvli_records
+        .iter()
+        .filter_map(|(form_key, record)| {
+            let mut entries = record
+                .fields
+                .iter()
+                .filter(|field| field.sig.as_str() == "LVLO");
+            let npc = lvlo_reference(
+                &entries.next()?.value,
+                target_masters,
+                target_plugin,
+                interner,
+            )?;
+            (entries.next().is_none() && npc_records.contains_key(&npc)).then_some((*form_key, npc))
+        })
+        .collect()
+}
+
+fn rewrite_lvln_material_wrapper_entries(
+    record: &mut Record,
+    replacements: &FxHashMap<FormKey, FormKey>,
+    target_masters: &[String],
+    target_plugin: &str,
+    interner: &StringInterner,
+) -> bool {
+    if replacements.is_empty() || record.sig.as_str() != "LVLN" {
+        return false;
+    }
+    let mut changed = false;
+    for field in &mut record.fields {
+        if field.sig.as_str() != "LVLO" {
+            continue;
+        }
+        let Some(wrapper) = lvlo_reference(&field.value, target_masters, target_plugin, interner)
+        else {
+            continue;
+        };
+        let Some(npc) = replacements.get(&wrapper).copied() else {
+            continue;
+        };
+        if set_lvlo_reference(
+            &mut field.value,
+            npc,
+            target_masters,
+            target_plugin,
+            interner,
+        ) {
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn set_lvlo_reference(
+    value: &mut FieldValue,
+    replacement: FormKey,
+    target_masters: &[String],
+    target_plugin: &str,
+    interner: &StringInterner,
+) -> bool {
+    match value {
+        FieldValue::Bytes(bytes) if bytes.len() >= LVLO_REFERENCE_OFFSET + 4 => {
+            let Some(raw) =
+                encode_raw_form_id(replacement, target_masters, target_plugin, interner)
+            else {
+                return false;
+            };
+            bytes[LVLO_REFERENCE_OFFSET..LVLO_REFERENCE_OFFSET + 4]
+                .copy_from_slice(&raw.to_le_bytes());
+            true
+        }
+        FieldValue::Struct(fields) => {
+            for (name, field_value) in fields {
+                if !interner.resolve(*name).is_some_and(|name| {
+                    name.eq_ignore_ascii_case("npc")
+                        || name.eq_ignore_ascii_case("reference")
+                        || name.eq_ignore_ascii_case("item")
+                }) {
+                    continue;
+                }
+                *field_value = FieldValue::FormKey(replacement);
+                return true;
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
 fn flatten_nested_traits_entries(
     record: &mut Record,
     lvln_records: &FxHashMap<FormKey, Record>,
@@ -865,7 +996,9 @@ fn lvlo_reference(
             interner
                 .resolve(*name)
                 .is_some_and(|name| {
-                    name.eq_ignore_ascii_case("npc") || name.eq_ignore_ascii_case("reference")
+                    name.eq_ignore_ascii_case("npc")
+                        || name.eq_ignore_ascii_case("reference")
+                        || name.eq_ignore_ascii_case("item")
                 })
                 .then(|| form_key_value(value, target_masters, target_plugin, interner))
                 .flatten()
@@ -1047,6 +1180,67 @@ mod tests {
                 (interner.intern("count"), FieldValue::Uint(count as u64)),
             ]),
         )
+    }
+
+    #[test]
+    fn unwraps_single_npc_lvli_material_wrappers_from_lvln_entries() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let face_list = FormKey {
+            local: 0x56420C,
+            plugin,
+        };
+        let wrapper = FormKey {
+            local: 0xB0FC14,
+            plugin,
+        };
+        let face = FormKey {
+            local: 0xB0FC13,
+            plugin,
+        };
+        let mut face_list_record = record(
+            "LVLN",
+            face_list.local,
+            vec![lvlo(1, wrapper, 1, &interner)],
+            &interner,
+        );
+        let wrapper_record = record(
+            "LVLI",
+            wrapper.local,
+            vec![field(
+                "LVLO",
+                FieldValue::Struct(vec![(interner.intern("item"), FieldValue::FormKey(face))]),
+            )],
+            &interner,
+        );
+        let face_record = record("NPC_", face.local, vec![], &interner);
+        let lvli_records = FxHashMap::from_iter([(wrapper, wrapper_record)]);
+        let npc_records = FxHashMap::from_iter([(face, face_record)]);
+
+        let replacements = single_npc_lvli_wrappers(
+            &lvli_records,
+            &npc_records,
+            &[],
+            "SeventySix.esm",
+            &interner,
+        );
+        assert_eq!(replacements, FxHashMap::from_iter([(wrapper, face)]));
+        assert!(rewrite_lvln_material_wrapper_entries(
+            &mut face_list_record,
+            &replacements,
+            &[],
+            "SeventySix.esm",
+            &interner,
+        ));
+        assert_eq!(
+            lvlo_reference(
+                &face_list_record.fields[0].value,
+                &[],
+                "SeventySix.esm",
+                &interner,
+            ),
+            Some(face)
+        );
     }
 
     #[test]

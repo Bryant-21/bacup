@@ -10,8 +10,8 @@ Function Fragment_Terminal_01(ObjectReference akTerminalRef)
         i += 1
     EndWhile
     Quest managerQuest = Game.GetFormFromFile(0x003D72E6, "SeventySix.esm") as Quest
-    If managerQuest != None && !managerQuest.IsRunning()
-        managerQuest.Start()
+    If managerQuest == None || !managerQuest.IsRunning()
+        Return
     EndIf
     (managerQuest as MSiloQuestScript_Storage).OpenSecurityDoor()
 EndFunction

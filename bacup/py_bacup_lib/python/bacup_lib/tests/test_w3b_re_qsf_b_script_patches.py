@@ -17,10 +17,9 @@ from creation_lib.pex.native_runtime import compile_psc
 REPO_ROOT = Path(__file__).resolve().parents[5]
 SOURCE_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 
-# Section A -- Camp/CampAF discovery-tableau family, B1 shape (9 rows): stage 10
-# does the clutter-marker toggle AND scene-start bundled (no separate native
-# trigger); stage 1000 is an evidenced-empty terminal (contracts/w3b-re-qsf-b.md
-# Section A).
+# Camp/CampAF discovery-tableau family, B1 shape (9 rows): stage 10 bundles the
+# clutter-marker toggle and scene start (no separate native trigger); stage 1000
+# is an evidenced-empty terminal (contracts/w3b-re-qsf-b.md).
 CAMP_B1_CASES: dict[str, tuple[str, ...]] = {
     "Fragments:Quests:QF_W05_RE_Camp_JP32_MobCamp__0058CEBE": (
         "Alias_ClutterMarkerEnable.GetReference().Enable()",
@@ -96,12 +95,10 @@ CAMP_B2B3_CASES: dict[str, tuple[str, ...]] = {
         "Alias_Patient02.GetActorReference()",
         "patientActor.DamageValue(Health, patientActor.GetValue(Health))",
     ),
-    # NOTE: the live VMAD fragment ScriptName for this row is
-    # "qf_w05_re_camptemplate01_..." (matching the generated skeleton filename),
-    # NOT the quest's current eid W05_RE_CampAF03 -- fragment script names are
-    # derived from the record's original identifier at fragment-creation time and
-    # do not follow later eid renames (contract's disclosed naming-vs-content
-    # mismatch, Section A).
+    # The live VMAD fragment ScriptName is "qf_w05_re_camptemplate01_..." (matching
+    # the generated skeleton filename), not the quest's current EID
+    # W05_RE_CampAF03: fragment script names come from the record's identifier at
+    # fragment creation and don't follow later EID renames.
     "Fragments:Quests:QF_W05_RE_CampTemplate01_00562281": (
         "Alias_ClutterMarkerEnable.GetReference().Enable()",
         "Alias_ClutterMarkerDisable.GetReference().Disable()",
@@ -127,9 +124,9 @@ CAMP_B2B3_MEMBERS: dict[str, set[str]] = {
     },
 }
 
-# Section B -- Mining family (4 rows): stage 10 enables the claim marker; stages
+# Mining family (4 rows): stage 10 enables the claim marker; stages
 # 20/40/50/1000 are native-triggered, evidenced-empty (no REAssaultQuestScript
-# sibling on this shape -- contracts/w3b-re-qsf-b.md Section B).
+# sibling on this shape; contracts/w3b-re-qsf-b.md).
 MINING_CASES: dict[str, tuple[str, ...]] = {
     "Fragments:Quests:QF_W05_RE_MiningJM01_005600E7": ("Alias_EnableMarker.GetReference().Enable()",),
     "Fragments:Quests:QF_W05_RE_MiningJM02_00562B57": ("Alias_EnableMarker.GetReference().Enable()",),
@@ -144,7 +141,7 @@ MINING_MEMBERS = {
     "fragment_stage_1000_item_00",
 }
 
-# Section C -- Object family (4 rows, high complexity).
+# Object family (4 rows, high complexity).
 OBJECT_JP01_SCRIPT = "Fragments:Quests:QF_W05_RE_Object_JP01_0056D1D8"
 OBJECT_JP01_CALLS = (
     "SandboxScene.Start()",
@@ -164,9 +161,9 @@ OBJECTAF01_SCRIPT = "Fragments:Quests:QF_W05_RE_ObjectAF01_0056A1D1"
 OBJECTAF01_CALLS = (
     "W05_RE_ObjectAF01_Sandbox.Start()",
     "W05_RE_ObjectAF01_Attack.Start()",
-    "W05_RE_ObjectAF01_Protectron_Destruct.Cast(protRef, protRef)",
     "W05_RE_ObjectAF01_Explosion.Start()",
     "protRef.RemoveKeyword(W05_RE_ObjectAF01_BrokenProtectronKeyword)",
+    "W05_RE_ObjectAF01_RobotFaction.SetAlly(W05_RE_ObjectAF01_HumanFaction)",
 )
 OBJECTAF01_MEMBERS = {
     "fragment_stage_0010_item_00", "fragment_stage_0023_item_00", "fragment_stage_0025_item_00",
@@ -191,7 +188,7 @@ OBJECTBB02_MEMBERS = {
     "fragment_stage_0400_item_00", "fragment_stage_1000_item_00",
 }
 
-# Section D -- Scene_JP04 rescue/bait pair, TravelersJM family, and the
+# Scene_JP04 rescue/bait pair, TravelersJM family, and the
 # SceneAF04/SceneZW01/SceneZW02 rows.
 SCENE_JP04_A_SCRIPT = "Fragments:Quests:QF_W05_RE_Scene_JP04_A_005637BC"
 SCENE_JP04_A_CALLS = (
@@ -240,7 +237,7 @@ SCENEZW02_MEMBERS = {
     "fragment_stage_0020_item_00", "fragment_stage_0040_item_00", "fragment_stage_1000_item_00",
 }
 
-# Section E -- Travel family (7 rows).
+# Travel family (7 rows).
 TRAVELAF01_SCRIPT = "Fragments:Quests:QF_W05_RE_TravelAF01_00567A72"
 
 TRAVELAF02_SCRIPT = "Fragments:Quests:QF_W05_RE_TravelAF02_0056A1D0"
@@ -428,17 +425,13 @@ def test_qsf_b_campaf02_kill_patient_assignment_is_reachable():
     assert assign_index < guard_index < damage_index
 
 
-def test_qsf_b_objectaf01_casts_from_bound_ref_not_self():
-    # Adjudicated correction: Spell.Cast(ObjectReference, ObjectReference) cannot
-    # take Self (the Quest) as akSource -- verify the corrected reference-typed
-    # local is assigned, guarded, and used as both cast arguments.
+def test_qsf_b_objectaf01_stage_25_delegates_delayed_cast_to_scene():
     patch = _script_patch_source("Fragments:Quests:QF_W05_RE_ObjectAF01_0056A1D1")
     assert patch is not None
     assert "Self as" not in patch
-    assign_index = patch.index("ObjectReference protRef = Alias_DisProtectron.GetReference()")
-    cast_index = patch.index("W05_RE_ObjectAF01_Protectron_Destruct.Cast(protRef, protRef)")
-    assert assign_index < cast_index
-    keyword_assign_index = patch.rindex("ObjectReference protRef = Alias_DisProtectron.GetReference()")
+    assert "W05_RE_ObjectAF01_Protectron_Destruct.Cast" not in patch
+    assert "W05_RE_ObjectAF01_Explosion.Start()" in patch
+    keyword_assign_index = patch.index("ObjectReference protRef = Alias_DisProtectron.GetReference()")
     keyword_index = patch.index("protRef.RemoveKeyword(W05_RE_ObjectAF01_BrokenProtectronKeyword)")
     assert keyword_assign_index < keyword_index
 

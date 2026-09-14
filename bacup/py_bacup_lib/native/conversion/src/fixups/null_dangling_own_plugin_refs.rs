@@ -1,57 +1,37 @@
-//! Fixup: null or repair reference slots that point at a
-//! record which was never emitted into the output plugin, because the source
-//! FO76 record lives OUTSIDE the converted slice (or has no FO4 equivalent).
+//! Fixup: null or repair reference slots whose target was never emitted into the
+//! output plugin, because the FO76 source record lives outside the converted slice
+//! or has no FO4 equivalent.
 //!
-//! # Root cause
-//! The FO76→FO4 conversion ports only the APPALACHIA exterior worldspace (its
-//! terrain cells + their placed children). Interior cells and other worldspaces
-//! are NOT converted. But many *base* records that ARE carried (LCTN, REFR,
-//! WRLD, NPC_, PACK, FACT) still reference placed REFR/ACHR records that lived in
-//! those dropped interior cells. The translate-time remap dutifully rewrites the
-//! FK to its own-plugin (07) target FormKey — but the target record is never
-//! emitted, so the FK dangles. xEdit (full FO4 master order loaded) reports
-//! "Could not be resolved" on (byte-verified counts vs the round-6 output):
-//!   * LCTN `LCEP` Ref + Actor (~1459) — enable-parent markers of interior
-//!     locations (e.g. `LocBurnHighwayTownInteriorLocation`).
-//!   * PACK `PLDT`/`PTDA`/`PDTO` + FACT `PLVD` (~636) — package/faction targets
-//!     pointing at interior REFRs / dropped bases (e.g. PTDA `FeedFish04`).
+//! The FO76→FO4 conversion ports only the Appalachia exterior (terrain cells and
+//! their placed children). Carried base records (LCTN, REFR, WRLD, NPC_, PACK, FACT)
+//! still reference placed REFR/ACHR records in the dropped interiors. The translate
+//! remap rewrites those to own-plugin (07) FormKeys that are never emitted, and
+//! xEdit reports "Could not be resolved" on:
+//!   * LCTN `LCEP` Ref + Actor (~1459): interior enable-parent markers
+//!     (e.g. `LocBurnHighwayTownInteriorLocation`).
+//!   * PACK `PLDT`/`PTDA`/`PDTO` + FACT `PLVD` (~636): targets in interior REFRs or
+//!     dropped bases (e.g. PTDA `FeedFish04`).
 //!   * REFR `XCZR` Current-Zone-Ref, `XRFG` Reference-Group (interior REFRs).
 //!   * WRLD `WNAM` Parent-Worldspace (a synthesized id present in neither game).
-//!   * NPC_ `CNTO` Item — the FO76 `CNCY Caps001` currency, which has no FO4
-//!     record (FO4 caps are a MISC item, allocated under a different id).
+//!   * NPC_ `CNTO` Item: the FO76 `CNCY Caps001` currency, which has no FO4 record
+//!     (FO4 caps are a MISC under a different id).
 //!
-//! NOTE this is emission-completeness ONLY for genuinely-absent targets: a FK
-//! that resolves in a FO4 master (e.g. PTDA `000DF42E` CombatRifle, a vanilla
-//! WEAP correctly inherited from Fallout4.esm and NOT re-emitted) is KEPT
-//! byte-identical — it was never a real error, only a stale-dump (no-masters)
-//! xEdit artifact. Emitting interiors is out of scope; the FO4-correct
-//! representation of an absent reference is NULL.
+//! Emitting the ~8,700 interior cells (~1.9M placed children) is out of scope, so an
+//! absent target becomes NULL (`local = 0`). A FK that resolves in a FO4 master
+//! (e.g. PTDA `000DF42E` CombatRifle) is kept byte-identical. This complements
+//! `fix_invalid_target_formkeys`, whose `is_invalid_target_fk` checks only target
+//! masters, never the output plugin, and never visits LCTN in whole-plugin runs.
 //!
-//! These are emission GAPS that are correct-by-design for an exterior-only port:
-//! emitting the ~8,700 interior cells (and ~1.9M placed children) is out of
-//! scope. The FO4-correct representation of a reference whose target legitimately
-//! does not exist is NULL (`local = 0`) — the same resolution
-//! `fix_invalid_target_formkeys` applies to dangling *master* refs, which this
-//! fixup complements for dangling *own-plugin* refs (a class that fixup misses:
-//! its `is_invalid_target_fk` only checks the target masters, never the output
-//! plugin itself, and in whole-plugin runs its worklist never even visits LCTN).
+//! Master-byte truncation is repaired instead of nulled: REFR `XTNM` `00510AF5`
+//! addresses Fallout4.esm, but the MESG it names (`LC104DoorOverride_TurbineHall`)
+//! was emitted at `07510AF5`. When a dangling leaf's object-id exists in the output,
+//! its plugin sym is repaired (like `null_dangling_misc_refs`'s SNDR repair). This
+//! check runs before the null decision.
 //!
-//! # The one repair case: master-byte truncation
-//! REFR `XTNM` Teleport-Loc-Name `00510AF5` addresses Fallout4.esm but the MESG
-//! `LC104DoorOverride_TurbineHall` it names WAS emitted in the output plugin at
-//! `07510AF5`; the leaf merely lost its master byte. When an apparently-dangling
-//! leaf's object-id DOES exist in the output plugin, we REPAIR the plugin sym to
-//! the output rather than null it (mirrors `null_dangling_misc_refs`'s SNDR
-//! repair). This is checked before the null decision.
-//!
-//! # Plugin-aware
-//! Every decision is made on the leaf's full `(plugin, object_id)` against the
-//! authoritative object-id set of the addressed handle (output plugin or the
-//! named master), collected once via `local_object_ids_in_handle` over ALL
-//! signatures — never a sig-filtered subset (a CNTO item may be MISC/AMMO/WEAP/…
-//! so a per-sig "emitted set" would false-positive thousands of valid refs). A
-//! leaf that already resolves in its addressed handle is left byte-identical, so
-//! a correctly-remapped foreign-master FK is never clobbered.
+//! Each decision checks the leaf's full `(plugin, object_id)` against the object-id
+//! set of the addressed handle, collected over ALL signatures by
+//! `local_object_ids_in_handle`. A per-sig set would false-positive thousands of
+//! valid refs (a CNTO item may be MISC/AMMO/WEAP/...).
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -81,17 +61,12 @@ const TOUCHED_SUBRECORDS: &[(&str, &str)] = &[
     ("REFR", "XCZR"),
     ("REFR", "XTNM"),
     ("REFR", "XRFG"),
-    // REFR Teleport-Destination (codec `struct:I,f×6,I,I` → two `formid` leaves:
-    // `door`→REFR @offset 0, `transition_interior`→CELL @offset 32). The door is
-    // almost always a PERSISTENT placed REFR (source flag 0x400) living in a
-    // worldspace persistent cell (or the FO76 global persistent cell), materialized
-    // in the output only by the persistent-cell phase that runs alongside the
-    // phase-6 copy. XTEL is correctly remapped 00→07 by cell_slice's remap-offset
-    // table, but the pre-copy pass would null the not-yet-emitted door with nothing
-    // to rebind, so it is deferred (see `DEFERRED_PLACED_CHILD_SUBRECORDS`) and
-    // resolved post-copy. NOT drop-on-null: dropping XTEL would lose the teleport
-    // link — null-then-rebind. Both Struct FormKey leaves are walked by
-    // `resolve_fk_leaves`.
+    // REFR Teleport-Destination (codec `struct:I,f×6,I,I`: `door`→REFR @0,
+    // `transition_interior`→CELL @32). The door is almost always a persistent placed
+    // REFR (source flag 0x400) that only the persistent-cell phase emits, alongside
+    // the phase-6 copy. The pre-copy pass would null the not-yet-emitted door, so
+    // XTEL is deferred (see `DEFERRED_PLACED_CHILD_SUBRECORDS`) and resolved
+    // post-copy. Not drop-on-null: dropping XTEL loses the teleport link.
     ("REFR", "XTEL"),
     ("WRLD", "WNAM"),
     ("WRLD", "NAM3"),
@@ -117,77 +92,48 @@ const TOUCHED_SUBRECORDS: &[(&str, &str)] = &[
     // required starting topic was not emitted, omit BNAM rather than leave a
     // dangling reference behind.
     ("DIAL", "BNAM"),
-    // PACK/FACT value-selected-union ref slots. These decode to opaque `Bytes`
-    // at fixup time (the generic decoder can't evaluate the `type` selector), so
-    // they're handled by the byte-offset union path (`null_union_slot`), not the
-    // FormKey-leaf walk. `pack`'s `remap_value_selected_union_formids` already
-    // rewrites the resolvable ones 00→07; the residue here is targets that
-    // resolve in neither the output nor any master (interior REFRs, dropped
-    // bases) → null them.
+    // PACK/FACT value-selected-union ref slots. They decode to opaque `Bytes` (the
+    // generic decoder can't evaluate the `type` selector), so `null_union_slot`
+    // handles them by byte offset. `remap_value_selected_union_formids` already
+    // rewrote the resolvable ones 00→07; targets that resolve nowhere (interior
+    // REFRs, dropped bases) are nulled.
     ("PACK", "PTDA"),
     ("PACK", "PLDT"),
     ("PACK", "PDTO"),
     ("FACT", "PLVD"),
-    // FACT VENC "Merchant Container" → REFR. The container is a PLACED CHILD
-    // re-inserted post-copy by the cell-slice / interior-cell phases, so at
-    // pre-copy fixup time it is ABSENT and the FK looks dangling. Without the
-    // deferral (see `DEFERRED_PLACED_CHILD_SUBRECORDS`), `fix_invalid_target_formkeys`
-    // nulls it and `validate_reference_target_types` then strips the present-but-null
-    // VENC — every converted vendor faction loses its merchant container. Deferred
-    // and resolved post-copy (drop-on-null when the container is genuinely absent).
+    // FACT VENC "Merchant Container" → REFR, a placed child re-inserted post-copy by
+    // the cell-slice / interior-cell phases, so it looks dangling pre-copy. Without
+    // deferral, `fix_invalid_target_formkeys` nulls it and
+    // `validate_reference_target_types` strips the null VENC, and every converted
+    // vendor faction loses its container. Dropped post-copy only if genuinely absent.
     ("FACT", "VENC"),
-    // QUST alias Forced-Reference (codec `formid`, repeatable in the `aliases`
-    // scope → decodes to one-or-more `FieldValue::FormKey` leaves). Its target is
-    // almost always a worldspace PERSISTENT ref (REFR/ACHR, source flag 0x400)
-    // living in the WRLD-embedded persistent cell. That cell is materialized in
-    // the output only by the persistent-cell phase (owner-G), so ALFR is deferred
-    // (see `DEFERRED_PLACED_CHILD_SUBRECORDS`) and resolved post-copy. A null leaf
-    // is left in place (NOT drop-on-null: dropping one ALFR would corrupt the
-    // repeatable alias block) — matching the CK-benign state for ALFR targets that
-    // resolve nowhere (interior/test-quest forced refs absent from an exterior port).
+    // QUST alias Forced-Reference (repeatable in the `aliases` scope, so one or more
+    // FormKey leaves). Its target is almost always a worldspace persistent ref
+    // (REFR/ACHR, source flag 0x400) in the WRLD-embedded persistent cell, which only
+    // the persistent-cell phase emits, so ALFR is deferred and resolved post-copy.
+    // Null leaves stay (dropping one ALFR corrupts the repeatable alias block); a
+    // null ALFR is CK-benign.
     ("QUST", "ALFR"),
-    // RFGP Reference-Group anchor (codec `formid` → typed `FieldValue::FormKey`).
-    // A "Reference Group" record's RNAM points at its member REFR — a PLACED CHILD
-    // (source flag 0x400 persistent) re-inserted only by the phase-6 cell-slice /
-    // persistent-cell copy that runs AFTER the pre-copy fixups. At fixup time the
-    // target is ABSENT, so the sweep's skip-record-sig rule nulls the RNAM leaf even
-    // though the REFR is present post-copy (confirmed over-null on 002150→0017C2,
-    // 866182→866161, 864038→86402B). Deferred (see `DEFERRED_PLACED_CHILD_SUBRECORDS`)
-    // and resolved post-copy. NOT drop-on-null: a valid self-ref resolves to Keep, a
-    // genuine dangler nulls (null-leaf is CK-benign for RFGP, like XTEL/ALFR).
+    // RFGP Reference-Group anchor: RNAM points at its member REFR, a persistent
+    // placed child (source flag 0x400) re-inserted only by the phase-6 cell-slice /
+    // persistent-cell copy after the pre-copy fixups. Pre-copy, the sweep's
+    // skip-record-sig rule nulls the leaf even though the REFR exists post-copy
+    // (e.g. 002150→0017C2, 866182→866161, 864038→86402B), so RNAM is deferred. Not
+    // drop-on-null: a null RFGP leaf is CK-benign, like XTEL/ALFR.
     ("RFGP", "RNAM"),
 ];
 
-/// `(record sig, subrecord sig)` of the placed-ref-target class — refs that
-/// translate-remap to exterior placed children (ACHR/REFR/...). In a whole-plugin
-/// FO76→FO4 worldspace run those children are SKIPPED by `translate_all` and
-/// re-inserted by the phase-6 cell-slice copy, which runs AFTER this fixup. At
-/// fixup time their targets are therefore ABSENT, so the pre-copy pass would
-/// wrongly null refs that are actually present post-copy. When
-/// `FixupConfig::defer_placed_child_ref_class` is set the pre-copy pass DEFERS
-/// this class (leaves the refs intact); `repair_placed_child_refs` runs the
-/// single authoritative resolution post-copy over the now-complete output. A
-/// genuinely-interior dangler (e.g. FeedFish04) is still absent post-copy → still
-/// nulled.
+/// `(record sig, subrecord sig)` of the placed-ref-target class: refs to exterior
+/// placed children (ACHR/REFR/...) or worldspace persistent refs (source flag 0x400)
+/// that whole-plugin FO76→FO4 worldspace runs emit only in the phase-6 cell-slice
+/// copy and the persistent-cell phase, after this fixup. With
+/// `FixupConfig::defer_placed_child_ref_class` set, the pre-copy pass leaves them
+/// intact and `repair_placed_child_refs` resolves them over the complete output. A
+/// genuine interior dangler (e.g. FeedFish04) is still nulled then.
 ///
-/// Refs that point at WORLDSPACE PERSISTENT children (REFR/ACHR, source flag
-/// 0x400) living in the WRLD-embedded persistent cell. That cell is materialized
-/// in the output only by the persistent-cell phase (which runs alongside the
-/// phase-6 copy), so these must defer pre-copy and resolve in the post-copy
-/// repair exactly like the LCTN enable-parent class:
-///   * `(QUST, ALFR)` — alias Forced Reference (mostly worldspace-persistent →
-///     resolve post-copy; the rest are interior/test refs that stay null = benign).
-///   * `(LCTN, MNAM)` — World Location Marker Ref. MNAM is also in
-///     `DROP_ON_NULL_SUBRECORDS`; deferring it means the drop decision is made
-///     post-copy (keep if the marker is now present, else drop).
-///
-///   * `(REFR, XTEL)` — Teleport-Destination door. Its `door` formid points at a
-///     persistent placed REFR emitted only by the persistent-cell phase, so it
-///     defers pre-copy and rebinds post-copy. NOT drop-on-null (nulling-then-
-///     rebinding preserves the teleport link).
-///   * `(CELL, XILW|XOWN)` — interior CELL records are emitted after the registered
-///     fixup pass. Defer their exact-type validation until the post-copy repair,
-///     after interior and synthesized cells are present.
+/// `(LCTN, MNAM)` is also drop-on-null; deferral moves that drop decision post-copy.
+/// `(CELL, XILW|XOWN)`: interior CELL records are emitted after the registered fixup
+/// pass, so their exact-type validation waits for the post-copy repair.
 const DEFERRED_PLACED_CHILD_SUBRECORDS: &[(&str, &str)] = &[
     ("LCTN", "LCEP"),
     ("LCTN", "ACEP"),
@@ -197,15 +143,13 @@ const DEFERRED_PLACED_CHILD_SUBRECORDS: &[(&str, &str)] = &[
     ("REFR", "XTEL"),
     ("CELL", "XILW"),
     ("CELL", "XOWN"),
-    // FACT VENC merchant container — see `TOUCHED_SUBRECORDS`. Its REFR target is a
-    // placed child emitted only by the cell-slice / interior-cell copy that runs
-    // AFTER the pre-copy fixups, so defer the null/validate decision to the
-    // post-copy repair over the complete output (where the container is present).
+    // PACK target/location refs can point at interior placed furniture copied
+    // after the pre-copy sweep. Resolve them only once that copy is complete.
+    ("PACK", "PTDA"),
+    ("PACK", "PLDT"),
+    // FACT VENC merchant container; see `TOUCHED_SUBRECORDS`.
     ("FACT", "VENC"),
-    // RFGP RNAM Reference-Group anchor — points at a PERSISTENT placed REFR emitted
-    // only by the phase-6 / persistent-cell copy, so it defers pre-copy and rebinds
-    // post-copy exactly like XTEL/ALFR. See `TOUCHED_SUBRECORDS` for the over-null
-    // evidence (002150→0017C2 et al.).
+    // RFGP RNAM Reference-Group anchor; see `TOUCHED_SUBRECORDS`.
     ("RFGP", "RNAM"),
 ];
 
@@ -240,23 +184,16 @@ const PACK_LOCATION_NEAR_PACKAGE_START_TYPE: i32 = 2;
 /// (needs no external reference). Mirrors the translator's target replacement.
 const PACK_TARGET_SELF_TYPE: i32 = 6;
 
-/// `(record sig, subrecord sig)` reference slots whose FO4 schema forbids a NULL
-/// value: xEdit reports "Found a NULL reference, expected: <type>" when the
-/// upstream dangling-nuller zeroed the leaf in place. CELL.XOWN may remain an
-/// opaque ownership struct; the CELL-specific path resolves its leading FormID.
-/// All are OPTIONAL subrecords
-/// in the FO4 grammar (verified: INFO.DNAM Shared-INFO, WRLD.WNAM Parent
-/// Worldspace, WRLD.NAM3 LOD Water, LCTN.MNAM World-Location-Marker,
-/// CELL.XILW Exterior-LOD Worldspace, CELL.XOWN Owner, SCEN.TNAM Template-Scene), so the
-/// FO4-correct representation of an absent target is to OMIT the subrecord, not to
-/// keep a `local = 0` leaf. When the leaf resolves to `Null` (and only then) the
-/// entire `FieldEntry` is dropped. A leaf that resolves (in-output or a master) or
-/// repairs (truncated master byte) is kept/repaired exactly as for any other
-/// touched slot.
+/// `(record sig, subrecord sig)` slots whose FO4 schema forbids NULL: xEdit reports
+/// "Found a NULL reference, expected: <type>" on a zeroed leaf. All are optional in
+/// the FO4 grammar (INFO.DNAM Shared-INFO, WRLD.WNAM Parent Worldspace, WRLD.NAM3 LOD
+/// Water, LCTN.MNAM World-Location-Marker, CELL.XILW Exterior-LOD Worldspace,
+/// CELL.XOWN Owner, SCEN.TNAM Template-Scene), so a leaf that resolves to `Null`
+/// drops its whole `FieldEntry`. CELL.XOWN may stay an opaque ownership struct; the
+/// CELL-specific path resolves its leading FormID.
 ///
-/// DLBR.SNAM Starting-Topic is intentionally NOT here: the FO4 DLBR grammar
-/// requires it, so `run_resolution` drops the whole DLBR when the target DIAL is
-/// absent or has the wrong signature.
+/// DLBR.SNAM Starting-Topic is not here: FO4 DLBR requires it, so `run_resolution`
+/// drops the whole DLBR when the target DIAL is absent or has the wrong signature.
 const DROP_ON_NULL_SUBRECORDS: &[(&str, &str)] = &[
     ("LCTN", "MNAM"),
     ("CELL", "XILW"),
@@ -548,13 +485,11 @@ fn dedupe_records_by_form_key(records: Vec<Record>) -> Vec<Record> {
     deduped
 }
 
-/// Post-copy authoritative resolution of the deferred placed-ref-target class
-/// (LCTN LCUN/LCEP/ACEP) against the now-COMPLETE output plugin. Called AFTER the
-/// FO76→FO4 phase-6 cell-slice copy + cell-location sync re-insert the exterior
-/// placed children, so a ref kept here resolves to a present record and a ref
-/// still absent (a genuine interior dangler, e.g. FeedFish04) is nulled (and its
-/// LCUN row dropped in lockstep). Only meaningful when the pre-copy pass deferred
-/// this class; a no-op otherwise (the refs are already resolved/nulled).
+/// Post-copy resolution of the deferred placed-ref-target class
+/// (`DEFERRED_PLACED_CHILD_SUBRECORDS`) against the complete output, called after
+/// the phase-6 cell-slice copy and cell-location sync. Present targets are kept; a
+/// genuine interior dangler (e.g. FeedFish04) is nulled and its LCUN row dropped in
+/// lockstep. Effectively a no-op when the pre-copy pass did not defer the class.
 pub fn repair_placed_child_refs(
     session: &mut PluginSession,
     mapper: &mut FormKeyMapper,
@@ -1312,19 +1247,15 @@ fn null_union_slot(
     }
 }
 
-/// Rewrite a PLDT/PLVD/PTDA *Reference*-variant union whose offset-4 FK is null
-/// (`[type=0][value=0]`) to a benign self-relative selector, so the FO4 CK reads
-/// valid package data instead of warning "Package Location/Target Reference
-/// (00000000)". PLDT/PLVD location → "Near Package Start" (type 2); PTDA target →
-/// "Self" (type 6). Both replacements treat offset 4 as cpIgnore, so the already-
-/// zero value stays valid. Only fires on the Reference variant (`type == 0`) with
-/// a null value — a resolvable reference (value != 0) or a non-reference variant
-/// is left untouched. This mirrors the translator's
-/// `neutralize_dangling_package_alias_targets` (which handles the *alias* variants
-/// {8,9,14}/{4}); here we cover the *reference* variant nulled either by
-/// `null_union_slot` above or by `validate_reference_target_types` (wrong-type FK
-/// zeroed in place — it is registered before this fixup). PDTO is excluded: its
-/// null is a Topic Data variant the CK does not flag as a package loc/target ref.
+/// Rewrite a null PLDT/PLVD/PTDA *Reference*-variant union (`[type=0][value=0]`) to
+/// a benign self-relative selector, so the FO4 CK stops warning "Package
+/// Location/Target Reference (00000000)": PLDT/PLVD → "Near Package Start" (type 2),
+/// PTDA → "Self" (type 6). Both treat offset 4 as cpIgnore. Other variants and
+/// non-null references are untouched. The translator's
+/// `neutralize_dangling_package_alias_targets` covers the alias variants
+/// ({8,9,14}/{4}); this covers reference variants nulled by `null_union_slot` or by
+/// `validate_reference_target_types` (registered before this fixup). PDTO is
+/// excluded: its null is a Topic Data variant the CK does not flag.
 fn benignify_value0_reference_union(bytes: &mut [u8], sub_sig: &str) -> bool {
     if bytes.len() < 8 {
         return false;
@@ -1542,7 +1473,7 @@ mod tests {
     #[test]
     fn keeps_valid_master_leaf() {
         // A leaf that genuinely resolves in DLCCoast must never be touched
-        // (the task #10 plugin-blind-clobber guard).
+        // (plugin-blind clobber guard).
         let interner = StringInterner::new();
         let r = resolver(
             &[0x000001],
@@ -1563,12 +1494,10 @@ mod tests {
 
     //
     // In a whole-plugin FO76→FO4 worldspace run the exterior placed children
-    // (ACHR/REFR) targeted by LCTN LCUN/LCEP/ACEP are re-inserted by the phase-6
-    // cell-slice copy AFTER the pre-copy fixup. So the pre-copy pass DEFERS that
-    // class (PreCopy{defer=true} leaves the refs intact) and the post-copy repair
-    // (PostCopyPlacedChild) resolves it against the now-complete output: a target
-    // present post-copy is KEPT, one still absent (a genuine interior dangler) is
-    // NULLED (+LCUN row dropped). PreCopy{defer=false} preserves HEAD behavior.
+    // (ACHR/REFR) targeted by LCTN LCUN/LCEP/ACEP arrive with the phase-6 cell-slice
+    // copy, after the pre-copy fixup. PreCopy{defer=true} leaves those refs intact;
+    // PostCopyPlacedChild keeps present targets and nulls genuine interior danglers
+    // (+LCUN row dropped). PreCopy{defer=false} resolves the class pre-copy.
 
     fn lcep_record(local: u32, plugin: &str, interner: &StringInterner) -> Record {
         // Minimal LCTN with one LCEP ref leaf (List<Struct>{ref}).
@@ -1715,12 +1644,10 @@ mod tests {
 
     #[test]
     fn pre_copy_without_defer_nulls_qust_alfr() {
-        // Neutralize-and-fail anchor: with defer OFF, an own-plugin ALFR whose
-        // target was not emitted nulls in place pre-copy. This is the regression
-        // the deferral prevents — and the production sweep would have nulled it
-        // even earlier. If `("QUST","ALFR")` were dropped from
-        // DEFERRED_PLACED_CHILD_SUBRECORDS, `pre_copy_defers_qust_alfr` above
-        // would start nulling (defer=true would behave like defer=false here).
+        // Control for `pre_copy_defers_qust_alfr`: with defer OFF, an own-plugin
+        // ALFR whose target was not emitted nulls in place pre-copy. Removing
+        // `("QUST","ALFR")` from DEFERRED_PLACED_CHILD_SUBRECORDS makes the
+        // defer=true case behave like this one.
         let interner = StringInterner::new();
         let r = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
         let mut rec = qust_alfr_record(0x343DB5, "SeventySix.esm", &interner);
@@ -2074,6 +2001,80 @@ mod tests {
         let mut b = union_bytes(0, 0x008A483A);
         assert!(null_union_slot(&mut b, "PTDA", &r, 7));
         assert_eq!(u32::from_le_bytes([b[4], b[5], b[6], b[7]]), 0);
+    }
+
+    fn pack_union_record(sig: &str, kind: i32, raw: u32, interner: &StringInterner) -> Record {
+        record(
+            "PACK",
+            vec![(sig, FieldValue::Bytes(union_bytes(kind, raw)))],
+            interner,
+        )
+    }
+
+    #[test]
+    fn pre_copy_defers_pack_placed_reference_targets() {
+        let interner = StringInterner::new();
+        let r = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
+
+        for sig in ["PTDA", "PLDT"] {
+            let mut rec = pack_union_record(sig, 0, 0x01405EA6, &interner);
+            assert!(!apply_to_record(
+                &mut rec,
+                &r,
+                &interner,
+                ApplyMode::PreCopy {
+                    defer_placed_child: true,
+                },
+            ));
+            let FieldValue::Bytes(bytes) = &rec.fields[0].value else {
+                panic!("raw package union expected");
+            };
+            assert_eq!(
+                u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+                0x01405EA6
+            );
+
+            let mut eager = pack_union_record(sig, 0, 0x01405EA6, &interner);
+            assert!(apply_to_record(
+                &mut eager,
+                &r,
+                &interner,
+                ApplyMode::PreCopy {
+                    defer_placed_child: false,
+                },
+            ));
+            let FieldValue::Bytes(bytes) = &eager.fields[0].value else {
+                panic!("raw package union expected");
+            };
+            let expected_benign_type = if sig == "PTDA" { 6 } else { 2 };
+            assert_eq!(
+                i32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+                expected_benign_type
+            );
+            assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 0);
+        }
+    }
+
+    #[test]
+    fn post_copy_keeps_pack_target_when_placed_reference_exists() {
+        let interner = StringInterner::new();
+        let r = resolver(&[0x405EA6], &[("Fallout4.esm", &[])], "SeventySix.esm");
+        let mut rec = pack_union_record("PTDA", 0, 0x01405EA6, &interner);
+
+        assert!(!apply_to_record(
+            &mut rec,
+            &r,
+            &interner,
+            ApplyMode::PostCopyPlacedChild,
+        ));
+        let FieldValue::Bytes(bytes) = &rec.fields[0].value else {
+            panic!("raw package union expected");
+        };
+        assert_eq!(i32::from_le_bytes(bytes[0..4].try_into().unwrap()), 0);
+        assert_eq!(
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            0x01405EA6
+        );
     }
 
     #[test]

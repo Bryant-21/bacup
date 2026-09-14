@@ -1,9 +1,8 @@
 """Tests for FormKeyMapper.rewrite_formkeys on canonical-shape records.
 
 Canonical-shape records embed FormKey references as
-``{reference: {plugin, object_id}}`` dicts (Task 2/3 reindex output).
-These tests cover the walker's recognition and rewriting of that shape
-in addition to the legacy ``"OBJID:Plugin.esm"`` string form.
+``{reference: {plugin, object_id}}`` dicts. These tests cover recognizing and
+rewriting that shape as well as the ``"OBJID:Plugin.esm"`` string form.
 """
 from __future__ import annotations
 

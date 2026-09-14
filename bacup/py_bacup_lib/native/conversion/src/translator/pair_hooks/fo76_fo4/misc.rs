@@ -1,25 +1,8 @@
 use super::*;
 
 /// Four-byte subrecord sigs to drop from every record before translation.
-///
-/// Mirrors `_GLOBAL_DROP_FIELDS` in `fo76_to_fo4.py`. The Python names are
-/// YAML object-level field names that map 1-to-1 to subrecord sigs except
-/// where noted:
-///
-/// | Python field             | Subrecord sig |
-/// |--------------------------|---------------|
-/// | ObjectPlacementDefaults  | OPDS (dropped as raw) |
-/// | VersionControl           | VCTX          |
-/// | FormVersion              | FVER          |
-/// | Fallout76MajorRecordFlags| FL76          |
-/// | MajorRecordFlagsRaw      | FLWR          |
-/// | MaxItemID                | MIID          |
-/// | MAGF                     | MAGF          |
-/// | CODV                     | CODV          |
-///
-/// Note: Python field names that do not map directly to 4-char sigs are
-/// represented here by their canonical subrecord equivalents. Orchestrator
-/// must apply the same list when processing YAML-level keys by name.
+/// Each entry names its YAML field (OPDS is dropped raw). The orchestrator must
+/// apply the same list when processing YAML-level keys by name.
 pub(super) const GLOBAL_DROP_SIGS: &[[u8; 4]] = &[
     *b"VCTX", // VersionControl
     *b"FVER", // FormVersion
@@ -32,12 +15,46 @@ pub(super) const GLOBAL_DROP_SIGS: &[[u8; 4]] = &[
 ];
 pub(super) const FO4_WORKBENCH_DATA_LEN: usize = 1;
 pub(super) const FO4_MAX_MGEF_ARCHETYPE: u32 = 49;
-pub(super) const FO76_DAMAGE_TYPE_ROW_LEN: usize = 12;
-pub(super) const FO4_DAMAGE_TYPE_ROW_LEN: usize = 8;
 pub(super) const FO76_IDLM_UNKNOWN_5_FLAG: u8 = 0x20;
 pub(super) const FO4_MOVEMENT_SPEED_DATA_LEN: usize = 112;
-pub(crate) const FO76_RADIO_FREQUENCY_NAMESPACE_OFFSET: f32 = 2048.0;
+pub(super) const FO4_ANIO_UNLOAD_EVENT: &str = "AnimObjUnequip";
+/// `INNR.UNAM.target` enum values, from the generated FO4 schema.
+pub(super) const FO4_INNR_TARGET_ARMOR: u32 = 29;
+pub(super) const FO4_INNR_TARGET_FURNITURE: u32 = 42;
+pub(super) const FO4_INNR_TARGET_WEAPON: u32 = 43;
+pub(super) const FO4_INNR_TARGET_ACTOR: u32 = 45;
 pub(super) const WSBUNKER_INTERCOM_EDITOR_ID: &str = "WSBunkerIntercom";
+pub(super) const FO76_XALG_SKIP_HAVOK_ON_LOAD: u64 = 0x0000_0001;
+const STATIC_MODEL_PREFIX: &str = "BACUP_Static";
+
+/// Map an FO76 `INNR.INRF` record sig onto the FO4 `INNR.UNAM` target enum.
+/// Filters with no FO4 equivalent return `None`, leaving the record untouched
+/// rather than inventing a target.
+fn fo4_innr_target_for_filter(filter: &str) -> Option<u32> {
+    match filter {
+        "ARMO" => Some(FO4_INNR_TARGET_ARMOR),
+        "FURN" => Some(FO4_INNR_TARGET_FURNITURE),
+        "WEAP" => Some(FO4_INNR_TARGET_WEAPON),
+        "NPC_" => Some(FO4_INNR_TARGET_ACTOR),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Fo76MiscStaticModelVariant {
+    pub source_path: String,
+    pub output_subpath: String,
+}
+
+impl Fo76MiscStaticModelVariant {
+    pub(crate) fn decision_message(&self) -> String {
+        serde_json::json!({
+            "source_path": &self.source_path,
+            "output_subpath": &self.output_subpath,
+        })
+        .to_string()
+    }
+}
 
 pub(super) const FO76_FONT_ALIAS_REPLACEMENTS: [(&str, &str); 3] = [
     ("$Typewriter_Font", "$Terminal_Font"),
@@ -77,17 +94,77 @@ pub(super) fn rewrite_fo76_font_aliases_in_record(
     }
 }
 
-pub(crate) fn namespace_fo76_radio_frequency(frequency: &mut f32) -> bool {
-    if !frequency.is_finite()
-        || *frequency <= 0.0
-        || *frequency >= FO76_RADIO_FREQUENCY_NAMESPACE_OFFSET
-    {
-        return false;
+pub(crate) fn fo76_misc_static_model_variant(
+    record: &Record,
+    interner: &crate::sym::StringInterner,
+) -> Option<Fo76MiscStaticModelVariant> {
+    if record.sig.0 != *b"MISC" {
+        return None;
     }
-    *frequency += FO76_RADIO_FREQUENCY_NAMESPACE_OFFSET;
-    true
+    let xalg = record
+        .fields
+        .iter()
+        .find(|field| field.sig.0 == *b"XALG")
+        .and_then(|field| field_value_to_u32(&field.value))?;
+    if u64::from(xalg) & FO76_XALG_SKIP_HAVOK_ON_LOAD == 0 {
+        return None;
+    }
+    let model = record
+        .fields
+        .iter()
+        .find(|field| field.sig.0 == *b"MODL")
+        .and_then(|field| match &field.value {
+            FieldValue::String(model) => interner.resolve(*model),
+            _ => None,
+        })?;
+    let canonical = model_paths::canonical_model_path(model)?;
+    let source_model = canonical
+        .strip_prefix(&format!("{STATIC_MODEL_PREFIX}\\"))
+        .unwrap_or(&canonical);
+    let source_model = source_model.replace('\\', "/");
+    Some(Fo76MiscStaticModelVariant {
+        source_path: format!("Meshes/{source_model}"),
+        output_subpath: format!("Meshes/{STATIC_MODEL_PREFIX}/{source_model}"),
+    })
 }
+
 impl Fo76Fo4Hook {
+    pub(super) fn route_skip_havok_misc_to_static_model(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        let Some(variant) = fo76_misc_static_model_variant(record, interner) else {
+            return;
+        };
+        let record_model = variant
+            .output_subpath
+            .strip_prefix("Meshes/")
+            .unwrap_or(&variant.output_subpath)
+            .replace('/', "\\");
+        let Some(model) = record
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.0 == *b"MODL")
+        else {
+            return;
+        };
+        model.value = FieldValue::String(interner.intern(&record_model));
+    }
+
+    pub(super) fn ensure_anio_unload_event(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        if record.sig.0 != *b"ANIO" || record.fields.iter().any(|entry| entry.sig.0 == *b"BNAM") {
+            return;
+        }
+
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig(*b"BNAM"),
+            value: FieldValue::String(interner.intern(FO4_ANIO_UNLOAD_EVENT)),
+        });
+    }
+
     pub(super) fn strip_wsbunker_intercom_radio(
         interner: &crate::sym::StringInterner,
         record: &mut Record,
@@ -103,39 +180,6 @@ impl Fo76Fo4Hook {
         record
             .fields
             .retain(|entry| entry.sig.0 != *b"FNAM" && entry.sig.0 != *b"RADR");
-    }
-
-    pub(super) fn namespace_radio_receiver_frequency(
-        interner: &crate::sym::StringInterner,
-        record: &mut Record,
-    ) {
-        if record.sig.0 != *b"ACTI" {
-            return;
-        }
-        for entry in &mut record.fields {
-            if entry.sig.0 != *b"RADR" {
-                continue;
-            }
-            match &mut entry.value {
-                FieldValue::Bytes(bytes) if bytes.len() >= 8 => {
-                    let mut frequency =
-                        f32::from_le_bytes(bytes[4..8].try_into().expect("RADR frequency"));
-                    if namespace_fo76_radio_frequency(&mut frequency) {
-                        bytes[4..8].copy_from_slice(&frequency.to_le_bytes());
-                    }
-                }
-                FieldValue::Struct(fields) => {
-                    let Some((_, FieldValue::Float(frequency))) = fields
-                        .iter_mut()
-                        .find(|(name, _)| Self::struct_field_name_is(interner, *name, "Frequency"))
-                    else {
-                        continue;
-                    };
-                    namespace_fo76_radio_frequency(frequency);
-                }
-                _ => {}
-            }
-        }
     }
 
     /// Drop all subrecords whose sig is in `GLOBAL_DROP_SIGS`.
@@ -224,16 +268,45 @@ impl Fo76Fo4Hook {
             b"MOVT" => {
                 truncate_raw_subrecord(record, b"SPED", FO4_MOVEMENT_SPEED_DATA_LEN);
             }
-            b"ARMO" | b"WEAP" => {
-                project_raw_array_rows(
-                    record,
-                    b"DAMA",
-                    FO76_DAMAGE_TYPE_ROW_LEN,
-                    FO4_DAMAGE_TYPE_ROW_LEN,
-                );
-            }
             _ => {}
         }
+    }
+
+    /// FO76 names an `INNR`'s target with an `INRF` record sig; FO4 uses a
+    /// `UNAM` enum. Converting in place keeps the subrecord ahead of the first
+    /// ruleset `VNAM`, where FO4 expects it. An INNR that reaches FO4 without a
+    /// `UNAM` is inert — the engine never applies its rules.
+    pub(super) fn convert_innr_filter_to_fo4_target(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        if record.sig.0 != *b"INNR" {
+            return;
+        }
+
+        let Some(entry) = record
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.0 == *b"INRF")
+        else {
+            return;
+        };
+
+        let filter = match &entry.value {
+            FieldValue::String(sym) => interner.resolve(*sym).map(|s| s.to_string()),
+            FieldValue::Bytes(bytes) => {
+                let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+                std::str::from_utf8(&bytes[..end]).ok().map(str::to_string)
+            }
+            _ => None,
+        };
+
+        let Some(target) = filter.as_deref().and_then(fo4_innr_target_for_filter) else {
+            return;
+        };
+
+        entry.sig = SubrecordSig::from_str("UNAM").expect("UNAM is a valid sig");
+        entry.value = FieldValue::Uint(u64::from(target));
     }
 
     pub(super) fn normalize_idlm_flags(record: &mut Record) {

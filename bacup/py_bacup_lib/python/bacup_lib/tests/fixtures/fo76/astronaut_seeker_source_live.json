@@ -1,0 +1,45 @@
+{
+  "main_quest": {
+    "form_id": "0054EB40",
+    "editor_id": "COMP_Quest_Intro_Full_Astronaut",
+    "start_stage": 1190,
+    "shutdown_stage": 1195,
+    "start_keyword": "005A0681",
+    "story_manager_node": "005A06A8",
+    "started_quest": "005A0675"
+  },
+  "quest": {
+    "form_id": "005A0675",
+    "editor_id": "COMP_Quest_Intro_Astronaut_CrashSpawnQuest",
+    "source_event_type": "CoOp",
+    "live_event_type": null,
+    "stages": [10, 9000],
+    "spawn_center_alias": 0,
+    "wave_collection_alias": 2,
+    "seeker_alias": 4,
+    "seeker_package": "005A24B0"
+  },
+  "wave": {
+    "form_id": "005A1246",
+    "editor_id": "WaveType_COMP_Astronaut_SuperMutant",
+    "live_record_supported": false,
+    "actors": [
+      {"form_id": "00075335", "spawn_slot": 0},
+      {"form_id": "00075335", "spawn_slot": 0},
+      {"form_id": "0014AE58", "spawn_slot": 0}
+    ]
+  },
+  "seeker_package": {
+    "form_id": "005A24B0",
+    "editor_id": "COMP_Astronaut_Intro_SpawnerSeeker",
+    "source_and_live_target_marker": "005A24B1",
+    "radius": 250
+  },
+  "seeker_client_pex": {
+    "size": 533,
+    "members": [],
+    "spawn_enemies_alias": 2,
+    "check_timer_id": 1,
+    "refill_check": 15
+  }
+}

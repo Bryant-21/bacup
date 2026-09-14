@@ -256,6 +256,7 @@ dependencies = [
  "bstr",
  "directxtex",
  "flate2",
+ "libdeflater",
  "lz4_flex",
  "lzzzz",
  "memmap2",
@@ -487,6 +488,7 @@ dependencies = [
  "memory-stats",
  "meshopt",
  "nif_core_native",
+ "papyrus_core",
  "pyo3",
  "pyo3-build-config",
  "rayon",
@@ -1437,6 +1439,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
+name = "libdeflate-sys"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72753e0008ea87963d2f0770042d0df7abe51fafbb8dcaf618ac440f2f1fec0a"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "libdeflater"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1ee41cf6fb1bb6030dfb59ffb7bc01ab26aade44142084c87f0fc7a1658fe71"
+dependencies = [
+ "libdeflate-sys",
+]
+
+[[package]]
 name = "libmimalloc-sys"
 version = "0.1.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1679,11 +1699,14 @@ dependencies = [
 name = "nif_core_native"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "byteorder",
+ "directxtex_native",
  "havok_native",
  "indexmap",
  "kiddo",
  "materials_native",
+ "meshopt",
  "once_cell",
  "pyo3",
  "regex",
@@ -1796,6 +1819,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7d950ca161dc355eaf28f82b11345ed76c6e1f6eb1f4f4479e0323b9e2fbd0e"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "papyrus_core"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "ropey",
+ "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2095,6 +2129,16 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "ropey"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93411e420bcd1a75ddd1dc3caf18c23155eda2c090631a85af21ba19e97093b5"
+dependencies = [
+ "smallvec",
+ "str_indices",
 ]
 
 [[package]]
@@ -2419,6 +2463,12 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "str_indices"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d08889ec5408683408db66ad89e0e1f93dff55c73a4ccc71c427d5b277ee47e6"
 
 [[package]]
 name = "strsim"

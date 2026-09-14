@@ -1,4 +1,5 @@
 import pytest
+from bacup_lib.source_pairs import SOURCE_PAIRS
 from bacup_lib.upgrade_manifest import (
     UpgradeManifest, UpgradeVersion, bundled_upgrade_manifest_path,
     load_upgrade_manifest, resolve_family_union,
@@ -200,7 +201,7 @@ def test_none_family_cannot_be_combined_with_other_families(tmp_path):
         load_upgrade_manifest(manifest_path)
 
 
-def test_manifest_requires_explicit_family_scope_for_every_conversion(tmp_path):
+def test_manifest_defaults_missing_family_scopes_to_none(tmp_path):
     manifest_path = tmp_path / "upgrade_manifest.yaml"
     manifest_path.write_text(
         "current: alpha3\n"
@@ -211,8 +212,11 @@ def test_manifest_requires_explicit_family_scope_for_every_conversion(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match=r"use \[NONE\] for no changes"):
-        load_upgrade_manifest(manifest_path)
+    version = load_upgrade_manifest(manifest_path).versions[0]
+
+    assert version.families_for_conversion("fo76:fo4") == ("Textures",)
+    for conversion_id in set(SOURCE_PAIRS).difference({"fo76:fo4"}):
+        assert version.families_for_conversion(conversion_id) == ()
 
 
 def test_force_regen_applies_only_when_flagged_version_is_crossed():

@@ -14,7 +14,16 @@ Event OnEntryRun(int auiEntryID, ObjectReference akTarget, Actor akOwner)
         Return
     EndIf
 
+    MTNM01QuestScript controller = MTNM01_Mayhem as MTNM01QuestScript
+    If !controller || !controller.IsStageDone(controller.DeathclawStage) || controller.IsStageDone(controller.KillDeathClawStage)
+        Return
+    EndIf
+
     akOwner.SetValue(MTNM01_DeathclawFriendValue, akOwner.GetValue(MTNM01_DeathclawFriendValue) + 1.0)
+    If controller.Deathclaw
+        controller.Deathclaw.ForceRefTo(targetActor)
+    EndIf
+    controller.SetStage(controller.KillDeathClawStage)
     If UIPerkAudio
         UIPerkAudio.Play(akOwner)
     EndIf

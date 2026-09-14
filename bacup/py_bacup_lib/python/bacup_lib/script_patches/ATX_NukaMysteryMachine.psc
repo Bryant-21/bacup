@@ -1,3 +1,8 @@
+; OnSyncVariableNetworkChanged("AnimateUpdate") replayed the dispense animation on
+; remote clients. OnActivate below already plays "Play01" locally, so the
+; replication handler is redundant in single-player.
+; @drop-member OnSyncVariableNetworkChanged
+
 Event OnActivate(ObjectReference akActionRef)
     Actor activatingPlayer = akActionRef as Actor
 

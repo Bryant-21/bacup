@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-def test_loading_overlay_uses_cross_version_path_stroke_signature():
+def test_loading_overlay_stays_inside_the_viewport():
     from ui.editor import app as app_module
 
     app = app_module.NifEditorApp.__new__(app_module.NifEditorApp)
@@ -28,7 +28,11 @@ def test_loading_overlay_uses_cross_version_path_stroke_signature():
     fake_imgui.ImVec2.side_effect = lambda x, y: SimpleNamespace(x=x, y=y)
     fake_imgui.calc_text_size.return_value = SimpleNamespace(x=80.0)
 
-    with patch.object(app_module, "imgui", fake_imgui):
+    with patch.object(app_module, "imgui", fake_imgui), patch.object(app_module, "loading_panel") as loading_panel:
         app._draw_viewport()
 
-    draw_list.path_stroke.assert_called_once_with(0xFFFFFFFF, thickness=3.0)
+    loading_panel.assert_called_once()
+    assert loading_panel.call_args.args == ("Working", "Loading example.nif…", None)
+    pos, size = loading_panel.call_args.kwargs["bounds"]
+    assert (pos.x, pos.y, size.x, size.y) == (10, 20, 320, 200)
+    draw_list.path_stroke.assert_not_called()

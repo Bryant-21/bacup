@@ -18,6 +18,7 @@ materials_native     = { path = "../../../../py_creation_lib/native/materials" }
 terrain_native       = { path = "../../../../py_creation_lib/native/terrain" }
 directxtex_native    = { path = "../../../../py_creation_lib/native/directxtex" }
 db_native            = { path = "../../../../py_creation_lib/native/db" }
+papyrus_core         = { path = "../../../../py_creation_lib/native/papyrus_core" }
 bitflags             = "2"
 blake3               = "1"
 bytes                = "1.7"

@@ -1,8 +1,6 @@
 //! `enum_map` transform — maps string (or list-of-string) enum values to new
 //! string (or numeric) values via an explicit lookup table.
 //!
-//! Python source: `translator.py` lines 756-783.
-//!
 //! Config keys:
 //! - `map` (object): string-keyed lookup table. Keys are the stringified source
 //!   values; values are the replacement values (any JSON scalar).
@@ -34,8 +32,8 @@ impl EnumMapTransform {
             FieldValue::Bool(b) => b.to_string(),
             FieldValue::None => "None".into(),
             FieldValue::List(items) => {
-                // Mirrors Python's `str([...])` — rarely used in practice but
-                // the Python code checks `str_key in mapping` before the list branch.
+                // A list stringifies as `[a, b]` so a whole list can match a `map`
+                // key before the per-element branch runs. Rarely used.
                 let inner: Vec<String> = items.iter().map(|v| Self::to_str_key(ctx, v)).collect();
                 format!("[{}]", inner.join(", "))
             }

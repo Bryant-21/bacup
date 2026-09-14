@@ -3,6 +3,34 @@ Bool Function IsLocalLaunchPrepComplete()
     Return personalQuest != None && personalQuest.IsStageDone(530)
 EndFunction
 
+Bool Function HasLocalCodePiece(Actor akPlayer)
+    Int firstFormID = 0x003DA648
+    ActorValue bravoLaunchCard = Game.GetFormFromFile(0x003E58A1, "SeventySix.esm") as ActorValue
+    ActorValue charlieLaunchCard = Game.GetFormFromFile(0x003E58A2, "SeventySix.esm") as ActorValue
+    If LaunchCardValue == bravoLaunchCard
+        firstFormID = 0x004DE233
+    ElseIf LaunchCardValue == charlieLaunchCard
+        firstFormID = 0x004DE23B
+    EndIf
+    Int i = 0
+    While i < 8
+        Form codePage = Game.GetFormFromFile(firstFormID + i, "SeventySix.esm")
+        If codePage != None && akPlayer.GetItemCount(codePage) > 0
+            Return True
+        EndIf
+        i += 1
+    EndWhile
+    Return False
+EndFunction
+
+Bool Function HasLocalSiloAccess(Actor akPlayer)
+    If EN05_MQ_Officer != None && (EN05_MQ_Officer.IsCompleted() || EN05_MQ_Officer.IsStageDone(110))
+        Return True
+    EndIf
+    ActorValue completedValue = Game.GetFormFromFile(0x00182162, "SeventySix.esm") as ActorValue
+    Return akPlayer != None && completedValue != None && akPlayer.GetValue(completedValue) >= 1.0
+EndFunction
+
 Function SayLocalTopic(Topic akTopic)
     Actor launchVoice = NuclearLaunchVoice.GetReference() as Actor
     If launchVoice != None && akTopic != None
@@ -23,6 +51,24 @@ Event OnActivate(ObjectReference akActionRef)
     If akActionRef != player || !bPermitActivation
         Return
     EndIf
+    If LinkedAccessPanel != None
+        If !HasLocalSiloAccess(player)
+            SayLocalTopic(EN07_MilitaryPersonelOnly)
+            Return
+        EndIf
+        Quest exteriorMasterQuest = GetOwningQuest()
+        EN07_NukeMasterScript exteriorMaster = exteriorMasterQuest as EN07_NukeMasterScript
+        If exteriorMaster == None || !exteriorMaster.PrepareLocalSiloEntry(LaunchCardValue, GetReference())
+            SayLocalTopic(EN07_MilitaryPersonelOnly)
+            Return
+        EndIf
+        ObjectReference accessPanel = LinkedAccessPanel.GetReference()
+        If accessPanel != None
+            accessPanel.BlockActivation(False, False)
+        EndIf
+        SayLocalTopic(EN07_AccessGranted)
+        Return
+    EndIf
     If !IsLocalLaunchPrepComplete()
         SayLocalTopic(EN07_LaunchPrepRequired)
         Return
@@ -33,6 +79,10 @@ Event OnActivate(ObjectReference akActionRef)
     EndIf
     If player.GetValue(PlayerLaunchCooldown) > Utility.GetCurrentGameTime()
         SayLocalTopic(EN07_PlayerInCooldown)
+        Return
+    EndIf
+    If !HasLocalCodePiece(player)
+        SayLocalTopic(EN07_IncorrectCode)
         Return
     EndIf
 
@@ -47,13 +97,6 @@ Event OnActivate(ObjectReference akActionRef)
     If keypadRef != None
         keypadRef.BlockActivation(True, False)
     EndIf
-    If LinkedAccessPanel != None
-        ObjectReference accessPanel = LinkedAccessPanel.GetReference()
-        If accessPanel != None
-            accessPanel.BlockActivation(False, False)
-        EndIf
-    EndIf
-
     Quest masterQuest = Game.GetFormFromFile(0x002D0F67, "SeventySix.esm") as Quest
     EN07_NukeMasterScript masterScript = masterQuest as EN07_NukeMasterScript
     If masterScript != None

@@ -577,6 +577,7 @@ fn strip_asset_prefix<'a>(path: &'a str, asset_prefix: &str) -> &'a str {
 }
 
 fn normalize_bgsm_texture_paths(bgsm: &mut bgsm::BgsmData, asset_prefix: &str) {
+    bgsm.CastShadows = true;
     bgsm.DiffuseTexture = material_texture_output_path(&bgsm.DiffuseTexture, asset_prefix);
     bgsm.NormalTexture = material_texture_output_path(&bgsm.NormalTexture, asset_prefix);
     bgsm.SmoothSpecTexture = material_texture_output_path(&bgsm.SmoothSpecTexture, asset_prefix);
@@ -701,6 +702,16 @@ mod tests {
             material_texture_output_path("fo76/Landscape/Plants/Bramble01_n.dds", "fo76"),
             "Landscape/Plants/Bramble01_n.dds"
         );
+    }
+
+    #[test]
+    fn normalized_grass_material_casts_shadows() {
+        let mut material = bgsm::BgsmData::default();
+        material.CastShadows = false;
+
+        normalize_bgsm_texture_paths(&mut material, "fo76");
+
+        assert!(material.CastShadows);
     }
 
     #[test]

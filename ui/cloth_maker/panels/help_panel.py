@@ -163,12 +163,15 @@ class HelpPanel:
     """Dockable user guide panel with markdown rendering."""
 
     def draw(self):
+        padding = imgui.get_font_size() * 0.5
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(padding, padding))
         visible, _ = imgui.begin("Help##cloth_maker")
+        imgui.pop_style_var()
         if not visible:
             imgui.end()
             return
 
-        imgui.begin_child("##help_scroll")
+        imgui.begin_child("##help_scroll", window_flags=imgui.WindowFlags_.no_background)
         imgui_md.render(_GUIDE)
         imgui.end_child()
 

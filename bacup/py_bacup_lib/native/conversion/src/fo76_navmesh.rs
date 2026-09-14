@@ -112,6 +112,31 @@ pub(crate) fn rewrite_record_nvnm_with_context(
     source: &FormIdContext,
     target: &FormIdContext,
 ) -> Result<NvnmRewriteReport, NvnmRewriteError> {
+    rewrite_record_nvnm_with_cleanup_policy(record, mapper, source, target, NvnmCleanupPolicy::Fo76)
+}
+
+pub(crate) fn rewrite_legacy_record_nvnm_with_context(
+    record: &mut Record,
+    mapper: &mut FormKeyMapper<'_>,
+    source: &FormIdContext,
+    target: &FormIdContext,
+) -> Result<NvnmRewriteReport, NvnmRewriteError> {
+    rewrite_record_nvnm_with_cleanup_policy(
+        record,
+        mapper,
+        source,
+        target,
+        NvnmCleanupPolicy::LegacyFallout,
+    )
+}
+
+fn rewrite_record_nvnm_with_cleanup_policy(
+    record: &mut Record,
+    mapper: &mut FormKeyMapper<'_>,
+    source: &FormIdContext,
+    target: &FormIdContext,
+    cleanup_policy: NvnmCleanupPolicy,
+) -> Result<NvnmRewriteReport, NvnmRewriteError> {
     let mut report = NvnmRewriteReport::default();
     let mut retained: SmallVec<[FieldEntry; 8]> = SmallVec::with_capacity(record.fields.len());
     let mut triangle_count = None;
@@ -133,7 +158,7 @@ pub(crate) fn rewrite_record_nvnm_with_context(
             continue;
         }
 
-        let geometry_report = rewrite_geometry_nvnm(bytes, mapper, source, target)?;
+        let geometry_report = rewrite_geometry_nvnm(bytes, mapper, source, target, cleanup_policy)?;
         report.formids_rewritten += geometry_report.formids_rewritten;
         triangle_count = Some(geometry_report.triangle_count);
         triangle_remap = geometry_report.triangle_remap;
@@ -200,11 +225,18 @@ struct GeometryRewriteReport {
     triangle_remap: Option<Vec<Option<usize>>>,
 }
 
+#[derive(Clone, Copy)]
+enum NvnmCleanupPolicy {
+    Fo76,
+    LegacyFallout,
+}
+
 fn rewrite_geometry_nvnm(
     data: &mut SmallVec<[u8; 32]>,
     mapper: &mut FormKeyMapper<'_>,
     source: &FormIdContext,
     target: &FormIdContext,
+    cleanup_policy: NvnmCleanupPolicy,
 ) -> Result<GeometryRewriteReport, NvnmRewriteError> {
     if data.len() < 16 {
         return Err(NvnmRewriteError::MalformedPayload(format!(
@@ -221,7 +253,7 @@ fn rewrite_geometry_nvnm(
         rewritten += rewrite_parent_cell_at(payload, 12, mapper, source, target)?;
     }
 
-    let cleanup_report = cleanup_navmesh_geometry(data)?;
+    let cleanup_report = cleanup_navmesh_geometry(data, cleanup_policy)?;
 
     let payload = data.as_mut_slice();
     let mut offset = 16_usize;
@@ -367,6 +399,7 @@ struct VertexBucket(i32, i32, i32);
 
 fn cleanup_navmesh_geometry(
     data: &mut SmallVec<[u8; 32]>,
+    cleanup_policy: NvnmCleanupPolicy,
 ) -> Result<NvnmCleanupReport, NvnmRewriteError> {
     let mut geometry = NvnmGeometry::parse(data.as_slice())?;
     let vertex_remap = build_vertex_weld_remap(&geometry.vertices)?;
@@ -391,12 +424,15 @@ fn cleanup_navmesh_geometry(
     }
 
     let original_triangles = geometry.triangles.clone();
-    let overlap_removals = find_overlap_sliver_removals(&original_triangles, &geometry.vertices);
+    let overlap_removals =
+        find_overlap_sliver_removals(&original_triangles, &geometry.vertices, cleanup_policy);
     let mut triangle_remap = vec![None; original_triangles.len()];
     let mut kept_old_indices = Vec::new();
     let mut kept_triangles = Vec::new();
     for (old_index, triangle) in original_triangles.iter().enumerate() {
-        if overlap_removals[old_index] || is_degenerate_triangle(triangle, &geometry.vertices) {
+        if overlap_removals[old_index]
+            || is_degenerate_triangle(triangle, &geometry.vertices, cleanup_policy)
+        {
             continue;
         }
         triangle_remap[old_index] = Some(kept_triangles.len());
@@ -660,7 +696,11 @@ fn vertices_within_weld_epsilon(left: NvnmVertex, right: NvnmVertex) -> bool {
         && (left.z - right.z).abs() <= NAVMESH_VERTEX_WELD_EPSILON
 }
 
-fn is_degenerate_triangle(triangle: &NvnmTriangleRow, vertices: &[NvnmVertex]) -> bool {
+fn is_degenerate_triangle(
+    triangle: &NvnmTriangleRow,
+    vertices: &[NvnmVertex],
+    cleanup_policy: NvnmCleanupPolicy,
+) -> bool {
     let [a, b, c] = triangle.vertices;
     if a == b || b == c || c == a {
         return true;
@@ -674,7 +714,12 @@ fn is_degenerate_triangle(triangle: &NvnmTriangleRow, vertices: &[NvnmVertex]) -
     let Some(c) = vertices.get(c as usize) else {
         return true;
     };
-    projected_triangle_area(*a, *b, *c) < NAVMESH_MIN_PROJECTED_TRIANGLE_AREA
+    let area = projected_triangle_area(*a, *b, *c);
+    !area.is_finite()
+        || match cleanup_policy {
+            NvnmCleanupPolicy::Fo76 => area < NAVMESH_MIN_PROJECTED_TRIANGLE_AREA,
+            NvnmCleanupPolicy::LegacyFallout => area <= 0.0,
+        }
 }
 
 fn has_downfacing_projected_normal(triangle: &NvnmTriangleRow, vertices: &[NvnmVertex]) -> bool {
@@ -712,24 +757,22 @@ fn projected_triangle_area(a: NvnmVertex, b: NvnmVertex, c: NvnmVertex) -> f32 {
 }
 
 /// Mark overlapping "sliver" triangles for removal. Two upfacing triangles that
-/// emit the SAME oriented edge (after the winding flip) sit on the same side of
-/// that edge — they overlap in projection (FO76 zigzag/sliver fans). Creation
-/// Kit derives triangle adjacency from shared-edge geometry on Finalize, links
-/// such a pair, and then logs "opposite normals but linked / edges should be
-/// linked but are not / vertices do not match". CK does NOT repair this, so the
-/// overlap has to be gone before export. Greedily drop the smallest-area
-/// triangle from each same-oriented-edge conflict until none remain; the FO76
-/// fans always have one small central sliver wedged between two larger,
-/// non-overlapping neighbours, so this culls exactly the redundant triangle.
+/// emit the same oriented edge (after the winding flip) overlap in projection
+/// (FO76 zigzag/sliver fans). CK derives adjacency from shared edges on
+/// Finalize, links such a pair, and logs "opposite normals but linked / edges
+/// should be linked but are not / vertices do not match" without repairing it.
+/// Greedily drop the smallest triangle of each conflict; FO76 fans have one
+/// small central sliver between two larger neighbours, so this culls just it.
 fn find_overlap_sliver_removals(
     triangles: &[NvnmTriangleRow],
     vertices: &[NvnmVertex],
+    cleanup_policy: NvnmCleanupPolicy,
 ) -> Vec<bool> {
     let mut removed = vec![false; triangles.len()];
     loop {
         let mut edge_owners: FxHashMap<[u16; 2], SmallVec<[usize; 2]>> = FxHashMap::default();
         for (index, triangle) in triangles.iter().enumerate() {
-            if removed[index] || is_degenerate_triangle(triangle, vertices) {
+            if removed[index] || is_degenerate_triangle(triangle, vertices, cleanup_policy) {
                 continue;
             }
             for slot in 0..3 {
@@ -1520,6 +1563,45 @@ mod tests {
         row
     }
 
+    fn geometry_with_single_triangle(
+        vertices: [(f32, f32, f32); 3],
+        triangle: [u16; 3],
+    ) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&15_u32.to_le_bytes());
+        data.extend_from_slice(&0_u32.to_le_bytes());
+        data.extend_from_slice(&raw(0x000900));
+        data.extend_from_slice(&0_i16.to_le_bytes());
+        data.extend_from_slice(&0_i16.to_le_bytes());
+        data.extend_from_slice(&3_u32.to_le_bytes());
+        for (x, y, z) in vertices {
+            push_vertex(&mut data, x, y, z);
+        }
+        data.extend_from_slice(&1_u32.to_le_bytes());
+        data.extend_from_slice(&triangle_row(triangle));
+        for _ in 0..6 {
+            zero_count(&mut data);
+        }
+        data
+    }
+
+    fn geometry_with_small_external_edge() -> Vec<u8> {
+        let mut data = geometry_with_single_triangle(
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)],
+            [0, 1, 2],
+        );
+        let triangle_offset = 20 + 3 * 12 + 4;
+        data[triangle_offset + 10..triangle_offset + 12].copy_from_slice(&0_i16.to_le_bytes());
+        data[triangle_offset + TRIANGLE_FLAGS_OFFSET..triangle_offset + TRIANGLE_FLAGS_OFFSET + 2]
+            .copy_from_slice(&triangle_edge_extra_info_flag(2).to_le_bytes());
+        let edge_count_offset = triangle_offset + TRIANGLE_ROW_SIZE;
+        data[edge_count_offset..edge_count_offset + 4].copy_from_slice(&1_u32.to_le_bytes());
+        data.splice(edge_count_offset + 4..edge_count_offset + 4, [0_u8; 11]);
+        let edge_target_offset = edge_count_offset + 4 + 4;
+        data[edge_target_offset..edge_target_offset + 4].copy_from_slice(&raw(0x000901));
+        data
+    }
+
     fn geometry_with_two_triangles() -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(&15_u32.to_le_bytes());
@@ -1896,6 +1978,104 @@ mod tests {
     }
 
     #[test]
+    fn legacy_rewrite_retains_small_triangle_and_remaps_external_target() {
+        let interner = StringInterner::new();
+        let mut mapper = mapper(&interner);
+        let source = FormIdContext::new("FalloutNV.esm", &[]);
+        let target = FormIdContext::new("Output.esp", &["Fallout4.esm"]);
+        mapper.add_mapping(
+            FormKey::parse("000900@FalloutNV.esm", &interner).unwrap(),
+            FormKey::parse("000100@Output.esp", &interner).unwrap(),
+        );
+        mapper.add_mapping(
+            FormKey::parse("000901@FalloutNV.esm", &interner).unwrap(),
+            FormKey::parse("000101@Output.esp", &interner).unwrap(),
+        );
+        let mut record = make_record(geometry_with_small_external_edge(), &interner);
+
+        let report =
+            rewrite_legacy_record_nvnm_with_context(&mut record, &mut mapper, &source, &target)
+                .unwrap();
+
+        assert_eq!(report.formids_rewritten, 2);
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("expected NVNM bytes");
+        };
+        let target_nvnm = esp_authoring_core::nvnm::parse_nvnm(bytes).expect("parse NVNM");
+        assert_eq!(target_nvnm.triangles.len(), 1);
+        assert_eq!(target_nvnm.edge_links.len(), 1);
+        assert_eq!(
+            u32::from_le_bytes(target_nvnm.edge_links[0].row[4..8].try_into().unwrap()),
+            0x01000101
+        );
+        assert_eq!(target_nvnm.triangles[0].links[2], 0);
+    }
+
+    #[test]
+    fn legacy_rewrite_has_fnv_and_fo3_parity() {
+        fn rewrite(source_plugin: &str) -> Vec<u8> {
+            let interner = StringInterner::new();
+            let mut mapper = mapper(&interner);
+            let source = FormIdContext::new(source_plugin, &[]);
+            let target = FormIdContext::new("Output.esp", &["Fallout4.esm"]);
+            mapper.add_mapping(
+                FormKey::parse(&format!("000900@{source_plugin}"), &interner).unwrap(),
+                FormKey::parse("000100@Output.esp", &interner).unwrap(),
+            );
+            mapper.add_mapping(
+                FormKey::parse(&format!("000901@{source_plugin}"), &interner).unwrap(),
+                FormKey::parse("000101@Output.esp", &interner).unwrap(),
+            );
+            let mut record = make_record(geometry_with_small_external_edge(), &interner);
+            rewrite_legacy_record_nvnm_with_context(&mut record, &mut mapper, &source, &target)
+                .unwrap();
+            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+                panic!("expected NVNM bytes");
+            };
+            bytes.to_vec()
+        }
+
+        assert_eq!(rewrite("FalloutNV.esm"), rewrite("Fallout3.esm"));
+    }
+
+    #[test]
+    fn legacy_cleanup_keeps_nonzero_subunit_triangle_without_weakening_fo76_policy() {
+        let geometry = geometry_with_single_triangle(
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)],
+            [0, 1, 2],
+        );
+        let mut legacy = SmallVec::from_vec(geometry.clone());
+        let mut fo76 = SmallVec::from_vec(geometry);
+
+        let legacy_report = cleanup_navmesh_geometry(&mut legacy, NvnmCleanupPolicy::LegacyFallout)
+            .expect("legacy cleanup");
+        let fo76_report =
+            cleanup_navmesh_geometry(&mut fo76, NvnmCleanupPolicy::Fo76).expect("FO76 cleanup");
+
+        assert_eq!(legacy_report.triangle_count, 1);
+        assert_eq!(fo76_report.triangle_count, 0);
+    }
+
+    #[test]
+    fn legacy_cleanup_rejects_repeated_index_and_zero_area_triangles() {
+        let repeated = geometry_with_single_triangle(
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)],
+            [0, 1, 1],
+        );
+        let zero_area = geometry_with_single_triangle(
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+            [0, 1, 2],
+        );
+
+        for geometry in [repeated, zero_area] {
+            let mut data = SmallVec::from_vec(geometry);
+            let report = cleanup_navmesh_geometry(&mut data, NvnmCleanupPolicy::LegacyFallout)
+                .expect("legacy cleanup");
+            assert_eq!(report.triangle_count, 0);
+        }
+    }
+
+    #[test]
     fn rewrites_parent_cell_when_parent_world_is_null() {
         let interner = StringInterner::new();
         let mut mapper = mapper(&interner);
@@ -2135,7 +2315,7 @@ mod tests {
     #[test]
     fn culls_overlapping_sliver_triangle() {
         let mut data: SmallVec<[u8; 32]> = SmallVec::from_vec(geometry_with_overlapping_sliver());
-        let report = cleanup_navmesh_geometry(&mut data).expect("cleanup");
+        let report = cleanup_navmesh_geometry(&mut data, NvnmCleanupPolicy::Fo76).expect("cleanup");
         assert_eq!(
             report.triangle_count, 1,
             "the overlapping sliver triangle must be culled"

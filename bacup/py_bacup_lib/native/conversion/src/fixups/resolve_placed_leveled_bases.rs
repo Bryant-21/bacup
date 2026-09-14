@@ -1,36 +1,22 @@
 //! Fixup: resolve placed references whose base object is a leveled item list.
 //!
-//! # Why
-//! FO76 allows a placed world reference (REFR / ACHR / PGRE / PHZD) to name a
-//! **leveled item list (LVLI)** as its base object — the engine rolls the list at
-//! spawn time. FO4 does NOT: a placed ref's `NAME` base must be a concrete object.
-//! When such a ref survives conversion with its LVLI base intact, the CK reports
-//! "Missing/Invalid base object for reference" and drops (or, for some types,
-//! crashes on) the ref.
+//! FO76 lets a placed ref (REFR / ACHR / PGRE / PHZD) name an LVLI directly. FO4
+//! puts a concrete dummy base in `NAME` and the list in `XLIB`; a direct LVLI `NAME`
+//! makes the CK report "Missing/Invalid base object for reference" and may drop the
+//! ref. The cell-slice copy already writes exterior refs that way; interior-cell
+//! emit passes the exact placed FormKeys that still need it.
 //!
-//! The cell-slice copy path (`esp_authoring_core::cell_slice::replace_placed_lvli_base`)
-//! already resolves this for EXTERIOR / projected placed children: it flattens the
-//! LVLI and picks one concrete entry. The interior-cell emit path
-//! (`run::emit_interior_cells`) uses a separate translate/insert path that never
-//! invokes it, so interior placed-LVLI refs reach the output unresolved.
-//!
-//! # How
-//! This pass runs in the POST-COPY hook (`ConversionRun::repair_placed_child_refs`),
-//! where ALL placed children — interior and exterior — are present in the output
-//! (REFR ∈ `skip_records`, so the in-phase fixups run before any placed child
-//! exists; mirrors `strip_refr_placed_child_subrecords`). It is path-independent:
-//! it inspects the finished output, so a future copy path can't bypass it.
-//!
-//! For each placed ref whose `NAME` base resolves to an output or target-master
-//! LVLI, it flattens that LVLI to its valid placeable leaf entries (recursing
-//! into nested LVLI, depth-bounded, cycle-guarded), then rewrites `NAME` to one
-//! entry chosen by the SAME deterministic hash the cell-slice path uses (`seed =
-//! (ref_raw << 32) ^ base_raw`), so the choice is reproducible across regens.
-//! Already-resolved exterior refs have a non-LVLI base, so they are a no-op
-//! (idempotent).
+//! Runs in the post-copy hook (`ConversionRun::repair_placed_child_refs`), after
+//! interior children exist (REFR is in `skip_records`, so in-phase fixups run before
+//! them). Production passes an exact candidate list; the all-record entry point
+//! serves focused tools and tests. FO76→FO4 object refs get `NAME` = Fallout4.esm's
+//! dummy MISC and `XLIB` = the translated LVLI, evaluated at runtime. Other pairs,
+//! actor lists, invalid lists, and non-REFR placed records use the deterministic
+//! concrete-leaf fallback.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::fixups::gate_runtime_controlled_placed_refs::NUKED_FLORA_BASE_MARKER;
 use crate::fixups::ref_index::build_target_fk_sig_map;
 use crate::fixups::{FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -52,6 +38,8 @@ const MAX_LEVELED_DEPTH: usize = 8;
 /// LVLO raw-entry FO4 reference FormID offset (entry payload is `[count?][FormID]`;
 /// FO4 stores the reference at byte offset 4) — matches `clean_leveled_item_entries`.
 const LVLO_REFERENCE_OFFSET: usize = 4;
+const FO4_DUMMY_TEMPLATE_OBJECT_ID: u32 = 0x0928C8;
+const FO4_DUMMY_TEMPLATE_PLUGIN: &str = "Fallout4.esm";
 
 /// Classification of a leveled-list entry's base object.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -320,7 +308,13 @@ fn target_record_signature(
     interner: &StringInterner,
 ) -> Option<SigCode> {
     if fk.plugin == own_sym {
-        return output_fk_to_sig.get(&(fk.local, fk.plugin)).copied();
+        if let Some(sig) = output_fk_to_sig.get(&(fk.local, fk.plugin)).copied() {
+            return Some(sig);
+        }
+        return session
+            .indexed_raw_form_id_and_signature(fk, interner)
+            .ok()
+            .map(|(_, signature)| signature);
     }
     let handle_id = target_master_handle_for_fk(fk, masters, target_master_handle_ids, interner)?;
     let plugin_name = interner.resolve(fk.plugin)?;
@@ -348,6 +342,19 @@ fn target_record_decoded(
     session
         .record_decoded_in_handle(handle_id, fk, target_schema, interner)
         .ok()
+}
+
+fn is_fo76_to_fo4(session: &PluginSession) -> bool {
+    session
+        .source_slot_opt()
+        .and_then(|slot| slot.parsed.game.as_deref())
+        .is_some_and(|game| game.eq_ignore_ascii_case("fo76"))
+        && session
+            .target_slot()
+            .parsed
+            .game
+            .as_deref()
+            .is_some_and(|game| game.eq_ignore_ascii_case("fo4"))
 }
 
 /// Extract the leveled-entry reference FormKeys (LVLO / LVLE subrecords) of a
@@ -566,8 +573,9 @@ enum PlacedBaseAction {
 struct PlacedLeveledRef {
     fk: FormKey,
     ref_raw: u32,
-    base_raw: u32,
-    base_fk: FormKey,
+    name_raw: u32,
+    leveled_raw: u32,
+    leveled_fk: FormKey,
 }
 
 fn placed_base_action(
@@ -650,41 +658,93 @@ fn build_default_leaf_preferences(
     out
 }
 
+/// FO76 nuke/radstorm variants (`FloraRad*`) only exist inside an active blast
+/// zone, which FO4 has no equivalent of. A flattened placed base must never land
+/// on one while a normal-world leaf is available — the same intent as the
+/// nuked-flora rule in [`crate::fixups::gate_runtime_controlled_placed_refs`],
+/// which only sees placements whose *source* base is already the variant.
+fn drop_nuked_leaves(
+    session: &mut PluginSession,
+    leaves_map: &mut FxHashMap<FormKey, Vec<FormKey>>,
+) {
+    for leaves in leaves_map.values_mut() {
+        if leaves.len() < 2 {
+            continue;
+        }
+        let retained: Vec<FormKey> = leaves
+            .iter()
+            .copied()
+            .filter(|leaf| {
+                !read_editor_id(session, leaf).is_some_and(|eid| is_nuked_leaf_edid(&eid))
+            })
+            .collect();
+        if !retained.is_empty() && retained.len() < leaves.len() {
+            *leaves = retained;
+        }
+    }
+}
+
+fn is_nuked_leaf_edid(edid: &str) -> bool {
+    edid.as_bytes()
+        .windows(NUKED_FLORA_BASE_MARKER.len())
+        .any(|window| window.eq_ignore_ascii_case(NUKED_FLORA_BASE_MARKER.as_bytes()))
+}
+
 fn resolved_base_is_invalid_for_placed_sig(placed_sig: &str, base_sig: &str) -> bool {
     placed_sig == "ACHR" && !matches!(base_sig, "NPC_" | "LVLN")
 }
 
-/// Resolve placed leveled-list bases in the finished output plugin. Mirrors
-/// `validate_reference_target_types::strip_refr_placed_child_subrecords`: called
-/// from the post-copy hook so it sees every placed child.
+/// Resolve placed leveled-list bases in the finished output plugin.
 ///
-/// Object placements (REFR/PHZD/PGRE/PGRD) whose base is an LVLI are flattened to a
-/// concrete non-LVLI object; actor placements (ACHR) whose base is an LVLN are
-/// flattened to a concrete NPC_ (FO4 ACHR base allows only NPC_). The LVLN path is
-/// defensive — current FO76 data places leveled actors as concrete NPC_ already, so
-/// it is normally a no-op, but it guards against an LVLN base reaching the output.
+/// FO76→FO4 REFR records whose translated LVLI remains usable are normalized to a
+/// vanilla FO4 dummy `NAME` plus the LVLI in `XLIB`. Non-REFR placements, actor
+/// lists, and lists with no usable translated entries fall back to a concrete leaf.
 pub fn resolve_placed_leveled_bases(
     session: &mut PluginSession,
     mapper: &mut FormKeyMapper,
     config: &FixupConfig,
 ) -> Result<FixupReport, FixupError> {
+    resolve_placed_leveled_bases_impl(session, mapper, config, None)
+}
+
+pub fn resolve_placed_leveled_bases_for_refs(
+    session: &mut PluginSession,
+    mapper: &mut FormKeyMapper,
+    config: &FixupConfig,
+    placed_refs: &[FormKey],
+) -> Result<FixupReport, FixupError> {
+    resolve_placed_leveled_bases_impl(session, mapper, config, Some(placed_refs))
+}
+
+fn resolve_placed_leveled_bases_impl(
+    session: &mut PluginSession,
+    mapper: &mut FormKeyMapper,
+    config: &FixupConfig,
+    placed_refs: Option<&[FormKey]>,
+) -> Result<FixupReport, FixupError> {
     let mut report = FixupReport::empty();
+
+    if placed_refs.is_some_and(|refs| refs.is_empty()) {
+        return Ok(report);
+    }
 
     let target_schema = config
         .target_schema
         .as_deref()
         .ok_or_else(|| FixupError::Other("missing target schema in fixup config".into()))?;
 
-    // Cheap gate: need a placed-ref type. Leveled bases can live in the output
-    // or in target masters, so an output-only LVLI/LVLN presence check is not
-    // sufficient.
-    let present_sigs = session
-        .target_signatures()
-        .map_err(|e| FixupError::HandleError(e.to_string()))?;
-    let has_placed = PLACED_SIGS
-        .iter()
-        .any(|p| present_sigs.iter().any(|s| s.as_str() == *p));
-    if !has_placed {
+    let present_sigs = if placed_refs.is_none() {
+        session
+            .target_signatures()
+            .map_err(|e| FixupError::HandleError(e.to_string()))?
+    } else {
+        Vec::new()
+    };
+    if placed_refs.is_none()
+        && !PLACED_SIGS
+            .iter()
+            .any(|placed| present_sigs.iter().any(|sig| sig.as_str() == *placed))
+    {
         return Ok(report);
     }
 
@@ -692,32 +752,16 @@ pub fn resolve_placed_leveled_bases(
     let own_name = session.target_slot().parsed.plugin_name.clone();
     let own_sym = interner.intern(&own_name);
     let masters = session.target_masters().to_vec();
-    let source_info_owned = session.source_slot_opt().map(|slot| {
-        let own_name = slot.parsed.plugin_name.clone();
-        let own_sym = interner.intern(&own_name);
-        (slot.parsed.header.masters.clone(), own_name, own_sym)
-    });
-    let source_info = match (config.source_schema.as_deref(), source_info_owned.as_ref()) {
-        (Some(schema), Some((source_masters, source_own_name, source_own_sym))) => {
-            Some(SourcePluginInfo {
-                schema,
-                masters: source_masters.as_slice(),
-                own_name: source_own_name.as_str(),
-                own_sym: *source_own_sym,
-            })
-        }
-        _ => None,
-    };
+    let runtime_dummy_pair = is_fo76_to_fo4(session);
 
-    let fk_to_sig = build_target_fk_sig_map(session, interner)?;
-    if fk_to_sig.is_empty() {
+    let mut fk_to_sig = if placed_refs.is_some() {
+        FxHashMap::default()
+    } else {
+        build_target_fk_sig_map(session, interner)?
+    };
+    if placed_refs.is_none() && fk_to_sig.is_empty() {
         return Ok(report);
     }
-    let target_to_source: FxHashMap<FormKey, FormKey> = mapper
-        .source_to_target_iter()
-        .map(|(source, target)| (target, source))
-        .collect();
-
     let mut object_refs = Vec::<PlacedLeveledRef>::new();
     let mut actor_refs = Vec::<PlacedLeveledRef>::new();
     let mut object_base_set = FxHashSet::default();
@@ -726,33 +770,77 @@ pub fn resolve_placed_leveled_bases(
     let mut actor_bases = Vec::<FormKey>::new();
     let mut drop_refs = Vec::<FormKey>::new();
 
-    for &placed in PLACED_SIGS {
-        if !present_sigs.iter().any(|s| s.as_str() == placed) {
-            continue;
-        }
-        let Ok(sig) = SigCode::from_str(placed) else {
-            continue;
-        };
-        let fks = session
-            .form_keys_of_sig(sig, interner)
-            .map_err(|e| FixupError::HandleError(e.to_string()))?;
-        for fk in fks {
-            let Some(name_bytes) = session
-                .first_subrecord_bytes(&fk, "NAME")
-                .map_err(|e| FixupError::HandleError(e.to_string()))?
-            else {
+    let mut candidates = Vec::<(SigCode, FormKey)>::new();
+    if let Some(placed_refs) = placed_refs {
+        for &fk in placed_refs {
+            let Ok((_, sig)) = session.indexed_raw_form_id_and_signature(&fk, interner) else {
                 continue;
             };
-            if name_bytes.len() < 4 {
+            if PLACED_SIGS.contains(&sig.as_str()) {
+                fk_to_sig.insert((fk.local, fk.plugin), sig);
+                candidates.push((sig, fk));
+            }
+        }
+    } else {
+        for &placed in PLACED_SIGS {
+            if !present_sigs.iter().any(|sig| sig.as_str() == placed) {
                 continue;
             }
-            let base_raw =
-                u32::from_le_bytes([name_bytes[0], name_bytes[1], name_bytes[2], name_bytes[3]]);
-            if base_raw & 0x00FF_FFFF == 0 {
+            let Ok(sig) = SigCode::from_str(placed) else {
+                continue;
+            };
+            let fks = session
+                .form_keys_of_sig(sig, interner)
+                .map_err(|e| FixupError::HandleError(e.to_string()))?;
+            candidates.extend(fks.into_iter().map(|fk| (sig, fk)));
+        }
+    }
+
+    for (placed_sig, fk) in candidates {
+        let placed = placed_sig.as_str();
+        let Some(name_bytes) = session
+            .first_subrecord_bytes(&fk, "NAME")
+            .map_err(|e| FixupError::HandleError(e.to_string()))?
+        else {
+            continue;
+        };
+        if name_bytes.len() < 4 {
+            continue;
+        }
+        let name_raw =
+            u32::from_le_bytes([name_bytes[0], name_bytes[1], name_bytes[2], name_bytes[3]]);
+        let supports_runtime_dummy = runtime_dummy_pair && placed == "REFR";
+        let carried_xlib = if supports_runtime_dummy {
+            session
+                .first_subrecord_bytes(&fk, "XLIB")
+                .map_err(|e| FixupError::HandleError(e.to_string()))?
+                .filter(|bytes| bytes.len() >= 4)
+                .and_then(|bytes| {
+                    let raw = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                    let list_fk = decode_form_id(raw, &masters, &own_name, interner)?;
+                    let sig = target_record_signature(
+                        session,
+                        &list_fk,
+                        &fk_to_sig,
+                        &masters,
+                        &config.target_master_handle_ids,
+                        own_sym,
+                        interner,
+                    )?;
+                    (sig.as_str() == "LVLI").then_some((raw, list_fk))
+                })
+        } else {
+            None
+        };
+
+        let (leveled_raw, leveled_fk) = if let Some(carried) = carried_xlib {
+            carried
+        } else {
+            if name_raw & 0x00FF_FFFF == 0 {
                 drop_refs.push(fk);
                 continue;
             }
-            let Some(base_fk) = decode_form_id(base_raw, &masters, &own_name, interner) else {
+            let Some(base_fk) = decode_form_id(name_raw, &masters, &own_name, interner) else {
                 drop_refs.push(fk);
                 continue;
             };
@@ -776,25 +864,43 @@ pub fn resolve_placed_leveled_bases(
             if base_sig.as_str() != target_leveled_sig {
                 continue;
             }
-            let Some(ref_raw) = encode_form_id(&fk, &masters, &own_name, interner) else {
+            (name_raw, base_fk)
+        };
+        if supports_runtime_dummy {
+            let dummy_fk = FormKey {
+                local: FO4_DUMMY_TEMPLATE_OBJECT_ID,
+                plugin: interner.intern(FO4_DUMMY_TEMPLATE_PLUGIN),
+            };
+            let Some(dummy_raw) = encode_form_id(&dummy_fk, &masters, &own_name, interner) else {
                 continue;
             };
-            let placed_ref = PlacedLeveledRef {
-                fk,
-                ref_raw,
-                base_raw,
-                base_fk,
-            };
-            if placed == "ACHR" {
-                actor_refs.push(placed_ref);
-                if actor_base_set.insert(base_fk) {
-                    actor_bases.push(base_fk);
-                }
-            } else {
-                object_refs.push(placed_ref);
-                if object_base_set.insert(base_fk) {
-                    object_bases.push(base_fk);
-                }
+            let changed = session
+                .rewrite_placed_leveled_reference(&fk, name_raw, dummy_raw, Some(leveled_raw))
+                .map_err(|e| FixupError::HandleError(e.to_string()))?;
+            if changed {
+                report.records_changed = report.records_changed.saturating_add(1);
+            }
+            continue;
+        }
+        let Some(ref_raw) = encode_form_id(&fk, &masters, &own_name, interner) else {
+            continue;
+        };
+        let placed_ref = PlacedLeveledRef {
+            fk,
+            ref_raw,
+            name_raw,
+            leveled_raw,
+            leveled_fk,
+        };
+        if placed == "ACHR" {
+            actor_refs.push(placed_ref);
+            if actor_base_set.insert(leveled_fk) {
+                actor_bases.push(leveled_fk);
+            }
+        } else {
+            object_refs.push(placed_ref);
+            if object_base_set.insert(leveled_fk) {
+                object_bases.push(leveled_fk);
             }
         }
     }
@@ -809,8 +915,29 @@ pub fn resolve_placed_leveled_bases(
         return Ok(report);
     }
 
+    let source_info_owned = session.source_slot_opt().map(|slot| {
+        let own_name = slot.parsed.plugin_name.clone();
+        let own_sym = interner.intern(&own_name);
+        (slot.parsed.header.masters.clone(), own_name, own_sym)
+    });
+    let source_info = match (config.source_schema.as_deref(), source_info_owned.as_ref()) {
+        (Some(schema), Some((source_masters, source_own_name, source_own_sym))) => {
+            Some(SourcePluginInfo {
+                schema,
+                masters: source_masters.as_slice(),
+                own_name: source_own_name.as_str(),
+                own_sym: *source_own_sym,
+            })
+        }
+        _ => None,
+    };
+    let target_to_source: FxHashMap<FormKey, FormKey> = mapper
+        .source_to_target_iter()
+        .map(|(source, target)| (target, source))
+        .collect();
+
     // Object-placement bases: LVLI → any concrete non-LVLI object.
-    let lvli_leaves = build_leveled_leaf_map(
+    let mut lvli_leaves = build_leveled_leaf_map(
         session,
         target_schema,
         source_info,
@@ -844,20 +971,21 @@ pub fn resolve_placed_leveled_bases(
         &|sig| sig == "NPC_",
     )?;
 
+    drop_nuked_leaves(session, &mut lvli_leaves);
+
     let lvli_preferred = build_default_leaf_preferences(session, &object_bases, &lvli_leaves);
     let lvln_preferred = build_default_leaf_preferences(session, &actor_bases, &lvln_leaves);
-
     for (placed_refs, leaves_map, preferred) in [
         (object_refs.as_slice(), &lvli_leaves, &lvli_preferred),
         (actor_refs.as_slice(), &lvln_leaves, &lvln_preferred),
     ] {
         for placed_ref in placed_refs {
-            let seed = ((placed_ref.ref_raw as u64) << 32) ^ placed_ref.base_raw as u64;
+            let seed = ((placed_ref.ref_raw as u64) << 32) ^ placed_ref.leveled_raw as u64;
             let pick = match placed_base_action(
-                &placed_ref.base_fk,
+                &placed_ref.leveled_fk,
                 leaves_map,
                 seed,
-                preferred.get(&placed_ref.base_fk).copied(),
+                preferred.get(&placed_ref.leveled_fk).copied(),
             ) {
                 PlacedBaseAction::Keep => continue,
                 PlacedBaseAction::Drop => {
@@ -869,21 +997,8 @@ pub fn resolve_placed_leveled_bases(
             let Some(rep) = encode_form_id(&pick, &masters, &own_name, interner) else {
                 continue;
             };
-            if rep == placed_ref.base_raw {
-                continue;
-            }
             let changed = session
-                .patch_subrecord_bytes(&placed_ref.fk, "NAME", |buf| {
-                    if buf.len() < 4 {
-                        return false;
-                    }
-                    let current = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-                    if current != placed_ref.base_raw {
-                        return false;
-                    }
-                    buf[0..4].copy_from_slice(&rep.to_le_bytes());
-                    true
-                })
+                .rewrite_placed_leveled_reference(&placed_ref.fk, placed_ref.name_raw, rep, None)
                 .map_err(|e| FixupError::HandleError(e.to_string()))?;
             if changed {
                 report.records_changed = report.records_changed.saturating_add(1);
@@ -907,8 +1022,13 @@ pub fn resolve_placed_leveled_bases(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formkey_mapper::{MapperOptions, MapperState};
     use crate::ids::SubrecordSig;
     use crate::record::{FieldEntry, RecordFlags};
+    use crate::session::open_session;
+    use esp_authoring_core::plugin_runtime::{
+        plugin_handle_add_master_native, plugin_handle_close_native, plugin_handle_new_native,
+    };
 
     fn fk(hex: &str, plugin: &str, interner: &StringInterner) -> FormKey {
         FormKey::parse(&format!("{hex}@{plugin}"), interner).unwrap()
@@ -1199,6 +1319,14 @@ mod tests {
     }
 
     #[test]
+    fn nuked_leaf_edids_are_recognized_case_insensitively() {
+        assert!(is_nuked_leaf_edid("FloraRadRhododendron01"));
+        assert!(is_nuked_leaf_edid("UseLPI_florarADThistle01"));
+        assert!(!is_nuked_leaf_edid("UseLPI_FloraRhododendron"));
+        assert!(!is_nuked_leaf_edid("FloraThistle01"));
+    }
+
+    #[test]
     fn source_key_falls_back_to_same_local_for_output_owned_lvli() {
         let interner = StringInterner::new();
         let source_own = interner.intern("Source.esm");
@@ -1442,5 +1570,186 @@ mod tests {
         };
         let rec = lvli_record(vec![llct], &interner);
         assert!(leveled_entry_form_keys(&rec, &masters(), OWN, &interner).is_empty());
+    }
+
+    #[test]
+    fn fo76_to_fo4_refr_uses_vanilla_dummy_and_xlib_idempotently() {
+        let interner = StringInterner::new();
+        let fallout4 = interner.intern(FO4_DUMMY_TEMPLATE_PLUGIN);
+        let output_name = "B21_PlacedLvliTest.esp";
+        let output = interner.intern(output_name);
+        let source_handle = plugin_handle_new_native("SeventySixSource.esm", Some("fo76")).unwrap();
+        let fallout4_handle =
+            plugin_handle_new_native(FO4_DUMMY_TEMPLATE_PLUGIN, Some("fo4")).unwrap();
+        let target_handle = plugin_handle_new_native(output_name, Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target_handle, FO4_DUMMY_TEMPLATE_PLUGIN, None).unwrap();
+        let target_schema = AuthoringSchema::for_game("fo4").unwrap();
+        let source_schema = AuthoringSchema::for_game("fo76").unwrap();
+
+        let record_with_edid = |sig: &str, form_key: FormKey, editor_id: &str| {
+            let editor_id = interner.intern(editor_id);
+            let mut record = Record::new(SigCode::from_str(sig).unwrap(), form_key);
+            record.eid = Some(editor_id);
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("EDID").unwrap(),
+                value: FieldValue::String(editor_id),
+            });
+            record
+        };
+        {
+            let mut session = open_session(fallout4_handle, None).unwrap();
+            session
+                .add_record(
+                    record_with_edid(
+                        "MISC",
+                        FormKey {
+                            local: FO4_DUMMY_TEMPLATE_OBJECT_ID,
+                            plugin: fallout4,
+                        },
+                        "DummyNoEdit_Weap_All_Big",
+                    ),
+                    target_schema.as_ref(),
+                    &interner,
+                )
+                .unwrap();
+        }
+
+        let leaf_fk = FormKey {
+            local: 0x000801,
+            plugin: output,
+        };
+        let list_fk = FormKey {
+            local: 0x000900,
+            plugin: output,
+        };
+        let ref_fk = FormKey {
+            local: 0x000A00,
+            plugin: output,
+        };
+        let unlisted_ref_fk = FormKey {
+            local: 0x000A01,
+            plugin: output,
+        };
+        {
+            let mut session = open_session(target_handle, None).unwrap();
+            session
+                .add_record(
+                    record_with_edid("MISC", leaf_fk, "B21_TestLeaf"),
+                    target_schema.as_ref(),
+                    &interner,
+                )
+                .unwrap();
+
+            let mut list = record_with_edid("LVLI", list_fk, "B21_TestList");
+            let mut lvlo = smallvec::smallvec![0u8; 12];
+            lvlo[LVLO_REFERENCE_OFFSET..LVLO_REFERENCE_OFFSET + 4]
+                .copy_from_slice(&0x0100_0801_u32.to_le_bytes());
+            list.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("LVLO").unwrap(),
+                value: FieldValue::Bytes(lvlo),
+            });
+            session
+                .add_record(list, target_schema.as_ref(), &interner)
+                .unwrap();
+
+            let mut placed = Record::new(SigCode::from_str("REFR").unwrap(), ref_fk);
+            placed.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("NAME").unwrap(),
+                value: FieldValue::FormKey(list_fk),
+            });
+            session
+                .add_record(placed, target_schema.as_ref(), &interner)
+                .unwrap();
+
+            let mut unlisted = Record::new(SigCode::from_str("REFR").unwrap(), unlisted_ref_fk);
+            unlisted.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("NAME").unwrap(),
+                value: FieldValue::FormKey(list_fk),
+            });
+            session
+                .add_record(unlisted, target_schema.as_ref(), &interner)
+                .unwrap();
+        }
+
+        let mut state = MapperState::new(
+            std::iter::empty(),
+            MapperOptions {
+                output_plugin_name: output_name.into(),
+                ..Default::default()
+            },
+        );
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        mapper.reserve_object_ids([
+            leaf_fk.local,
+            list_fk.local,
+            ref_fk.local,
+            unlisted_ref_fk.local,
+        ]);
+        let config = FixupConfig {
+            target_master_handle_ids: vec![fallout4_handle],
+            target_schema: Some(target_schema.clone()),
+            source_schema: Some(source_schema),
+            ..Default::default()
+        };
+        let mut session = open_session(target_handle, Some(source_handle)).unwrap();
+
+        let first =
+            resolve_placed_leveled_bases_for_refs(&mut session, &mut mapper, &config, &[ref_fk])
+                .unwrap();
+        assert_eq!(first.records_added, 0);
+        assert_eq!(first.records_changed, 1);
+
+        let name = session
+            .first_subrecord_bytes(&ref_fk, "NAME")
+            .unwrap()
+            .unwrap();
+        let xlib = session
+            .first_subrecord_bytes(&ref_fk, "XLIB")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            u32::from_le_bytes([name[0], name[1], name[2], name[3]]),
+            FO4_DUMMY_TEMPLATE_OBJECT_ID
+        );
+        assert_eq!(
+            u32::from_le_bytes([xlib[0], xlib[1], xlib[2], xlib[3]]),
+            0x0100_0900
+        );
+        let unlisted_name = session
+            .first_subrecord_bytes(&unlisted_ref_fk, "NAME")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            u32::from_le_bytes([
+                unlisted_name[0],
+                unlisted_name[1],
+                unlisted_name[2],
+                unlisted_name[3],
+            ]),
+            0x0100_0900
+        );
+        assert!(
+            session
+                .first_subrecord_bytes(&unlisted_ref_fk, "XLIB")
+                .unwrap()
+                .is_none()
+        );
+
+        let second =
+            resolve_placed_leveled_bases_for_refs(&mut session, &mut mapper, &config, &[ref_fk])
+                .unwrap();
+        assert!(second.is_no_op());
+        assert_eq!(
+            session
+                .form_keys_of_sig(SigCode::from_str("MISC").unwrap(), &interner)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        drop(session);
+        assert!(plugin_handle_close_native(target_handle));
+        assert!(plugin_handle_close_native(fallout4_handle));
+        assert!(plugin_handle_close_native(source_handle));
     }
 }

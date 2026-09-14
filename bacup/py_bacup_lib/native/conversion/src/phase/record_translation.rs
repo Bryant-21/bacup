@@ -9,10 +9,7 @@
 //! }
 //! ```
 //!
-//! # Responsibility
-//! After this phase runs, the caller can be confident that all embedded
-//! translation-map YAML files parse correctly.  The translator itself uses the
-//! embedded maps via `crate::embedded::PRIMARY_MAPS`.
+//! The translator itself reads the embedded maps via `crate::embedded::PRIMARY_MAPS`.
 
 use crate::embedded;
 use crate::phase::{LogLevel, Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
@@ -140,6 +137,39 @@ mod tests {
             obj.contains_key("skip_records"),
             "fnv_to_fo4 should have a skip_records section"
         );
+        let npc_drops = obj["NPC_"]["drop"]
+            .as_array()
+            .expect("NPC_ drop list")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(!npc_drops.contains(&"CNTO"));
+        assert!(!npc_drops.contains(&"COED"));
+    }
+
+    #[test]
+    fn fnv_to_fo4_map_skips_imod() {
+        // FNV IMOD DATA is `struct:I,f` (8 bytes); FO4 OMOD DATA is `omod_data`
+        // with a 28-byte minimum. Routing IMOD to OMOD made the FO4 loader read
+        // an attach-parent-slot count past the end of the chunk and crash in
+        // BGSAttachParentArray::Load before the main menu.
+        let value: serde_json::Value =
+            serde_saphyr::from_str(embedded::FNV_TO_FO4).expect("fnv_to_fo4 should parse");
+        let obj = value.as_object().expect("fnv_to_fo4 should be a mapping");
+        let skipped = obj["skip_records"]
+            .as_array()
+            .expect("skip_records list")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(
+            skipped.contains(&"IMOD"),
+            "IMOD must stay in skip_records until weapon_attachment_synth is live"
+        );
+        assert!(
+            !obj.contains_key("IMOD"),
+            "IMOD must not carry a record block while it is skipped"
+        );
     }
 
     #[test]
@@ -166,7 +196,7 @@ mod tests {
     fn embedded_map_count_matches_expected() {
         assert_eq!(
             embedded::ALL_YAMLS.len(),
-            27,
+            29,
             "ALL_YAMLS entry count changed — update this test"
         );
     }

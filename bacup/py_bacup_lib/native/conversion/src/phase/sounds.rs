@@ -3,7 +3,7 @@
 // Params shape (JSON):
 // { "sound_paths": [ { "source_path": "...", "resolved_path": "/abs/..." } ] }
 //
-// Parity contract = creation_lib/conversion/pipeline/sounds.py::copy_sounds:
+// Parity contract = bacup_lib/pipeline/sounds.py::copy_sounds:
 //   - dedup against ctx.target_extracted_dir using the UN-stripped
 //     "sound/"-rooted subpath  -> PhaseReport.records_dropped
 //   - missing/unresolved source -> PhaseReport.warnings + rate-limited

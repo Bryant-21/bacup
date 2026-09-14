@@ -1,56 +1,29 @@
-//! Fixup: repair/null VMAD script-property Object FormIDs
-//! that resolve to neither the output plugin nor any target master.
+//! Fixup: repair/null VMAD script-property Object FormIDs that resolve to neither
+//! the output plugin nor any target master.
 //!
-//! # Root cause
-//! VMAD script properties carry Object-union FormIDs *inside* the opaque VMAD
-//! subrecord blob. `FormKeyMapper::rewrite_vmad_formids` (the translate-time
-//! codec) walks that blob and remaps every object FormID whose source record
-//! WAS translated — those land on a `07`-prefix output record and resolve fine
-//! (verified: all 859 ACTI 07-prefix VMAD refs resolve, 0 dangling). The
-//! residue is object FormIDs that point at FO76 source records living OUTSIDE
-//! the converted APPALACHIA slice (interior REFR/CELL/ACHR, un-emitted SCEN /
-//! CHAL): the codec finds no mapping, so it leaves the source `00`-prefix
-//! value, which then dangles as `Fallout4.esm:00xxxxxx` in the output.
+//! VMAD Object-union FormIDs sit inside the opaque VMAD blob.
+//! `FormKeyMapper::rewrite_vmad_formids` remaps every object whose source record was
+//! translated, but objects in FO76 records outside the converted Appalachia slice
+//! (interior REFR/CELL/ACHR, un-emitted SCEN/CHAL) keep their source `00` prefix and
+//! dangle as `Fallout4.esm:00xxxxxx`. Census of 00-prefix VMAD objects on
+//! ACTI/TERM/DOOR/NOTE/CONT/MGEF: 754 resolve in Fallout4.esm (kept), 0 codec
+//! misses, ~217 never emitted (REFR 163, CELL 41, ACHR 8, SCEN 4, CHAL 1).
 //!
-//! Census of every 00-prefix VMAD object FormID across the touched record
-//! types (ACTI/TERM/DOOR/NOTE/CONT/MGEF): 754 resolve in Fallout4.esm
-//! (legitimate base-game refs — KEPT byte-identical), 0 were a codec miss
-//! (an emitted 07 own-record the codec failed to remap), and ~217 point at
-//! source records that were never emitted (REFR 163, CELL 41, ACHR 8, SCEN 4,
-//! CHAL 1). The FO4-correct representation of a script property whose target
-//! legitimately does not exist is NULL.
+//! Each FormID is judged on its encoded `(master_index, object_id)`. One that
+//! resolves in its addressed handle is left byte-identical; one absent from its
+//! master but present in the output is repaired to the output master byte; one that
+//! resolves nowhere is nulled.
 //!
-//! # Post-copy deferral (whole-plugin FO76→FO4)
-//! When interiors ARE emitted (`include_interior`), the interior CELL + its
-//! placed children (incl. teleport-marker REFRs) land in the output only in the
-//! post-copy asset wave — AFTER this pre-copy sweep. Nulling here would clobber a
-//! VMAD Object property whose target is present post-copy (e.g. a shelter door's
-//! `ShelterCell` / `ShelterCellTeleportPosition`). So under
-//! `FixupConfig::defer_placed_child_ref_class` the pre-copy sweep runs with
-//! `defer_null` — it still REPAIRS refs that already resolve but LEAVES refs that
-//! resolve nowhere intact; `repair_dangling_vmad_refs` (called from
-//! `ConversionRun::repair_placed_child_refs`) then runs the authoritative
-//! repair/null over the now-complete output. Mirrors the deferral in
-//! `null_dangling_own_plugin_refs`.
+//! With `include_interior`, interior cells and their placed children (e.g. the
+//! targets of a shelter door's `ShelterCell` / `ShelterCellTeleportPosition`) arrive
+//! post-copy. Under `FixupConfig::defer_placed_child_ref_class` the pre-copy sweep
+//! repairs but does not null; `repair_dangling_vmad_refs` (from
+//! `ConversionRun::repair_placed_child_refs`) nulls over the complete output.
 //!
-//! This is the VMAD-blob counterpart of `null_dangling_own_plugin_refs`,
-//! which handles the typed FormKey-leaf and value-selected-union ref
-//! slots but explicitly does NOT walk inside the VMAD blob (VMAD decodes to an
-//! opaque `Bytes` field). The two passes are disjoint by subrecord domain.
-//!
-//! # Plugin-aware
-//! Each object FormID is judged on its full encoded `(master_index, object_id)`
-//! against the authoritative object-id sets of the output plugin and each named
-//! master. A FormID that resolves in its addressed handle is left byte-identical
-//! — the legitimate Fallout4.esm refs (and any master ref) are never clobbered.
-//! If the addressed master does not contain the object but the output plugin
-//! does, the FormID is repaired to the output master byte. Only a FormID that
-//! resolves NOWHERE is nulled.
-//!
-//! The byte traversal mirrors `FormKeyMapper::rewrite_vmad_formids` exactly so
-//! the same property-value layouts (types 1/7/11/17) are reached and the same
-//! 4-byte FormID slot is acted on. On any malformed/truncated blob the walk
-//! aborts (returns no change for that record) rather than guess.
+//! VMAD-blob counterpart of `null_dangling_own_plugin_refs`, which never walks inside
+//! VMAD; the two are disjoint by subrecord. The byte walk mirrors
+//! `FormKeyMapper::rewrite_vmad_formids` (property types 1/7/11/17) and aborts with
+//! no change on a malformed or truncated blob.
 
 use std::sync::Arc;
 
@@ -61,25 +34,126 @@ use crate::formkey_mapper::FormKeyMapper;
 use crate::record::{FieldValue, Record};
 use crate::session::PluginSession;
 
-/// Record signatures whose VMAD script-property Object FormIDs are checked.
-/// Restricting to this allow-list bounds the per-record decode work and keeps
-/// the pass off record types whose VMAD danglers (if any) are out of scope.
-///
-/// INFO carries VMAD script-property Object FormIDs in the standard Scripts
-/// section, which the blob walk traverses. The walk stops after `script_count`
-/// scripts and never reads the INFO fragment trailer, so listing INFO only
-/// reaches the script-property objects.
-///
-/// BOOK/FURN/MISC/MSTT/NPC_/REFR/ACHR and SCEN fragment scripts carry the same
-/// standard VMAD object-property layouts and use this same resolver policy:
-/// keep resolving target-master/output refs; null only slots that resolve
-/// nowhere.
+use super::validate_reference_target_types::FO4_HARDCODED_AVIF_LOCAL_IDS;
+
+/// Record signatures whose VMAD script-property Object FormIDs are checked; the
+/// allow-list bounds decode work. All use the standard VMAD object-property layouts.
+/// For INFO the walk stops after `script_count` scripts and never reads the fragment
+/// trailer, so only script-property objects are reached.
 pub(crate) const TOUCHED_RECORD_SIGS: &[&str] = &[
     "ACTI", "TERM", "DOOR", "NOTE", "CONT", "MGEF", "PACK", "INFO", "QUST", "BOOK", "FURN", "MISC",
     "MSTT", "NPC_", "REFR", "ACHR", "SCEN",
 ];
 
-const FO4_INTRINSIC_AGGRESSION_ACTOR_VALUE: u32 = 0x0002_BC;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QustVmadLane {
+    TopLevel,
+    Fragment,
+    Alias,
+}
+
+struct ForcedOutputBinding {
+    quest_object_id: u32,
+    lane: QustVmadLane,
+    alias_index: Option<i16>,
+    script_name: &'static [u8],
+    property_name: &'static [u8],
+    target_object_id: u32,
+}
+
+/// FO76 QUST VMAD bindings whose source-local target collides with a real
+/// Fallout4.esm record at the same object ID. Only these exact binding paths
+/// may prefer the output record over the addressed master.
+const QUST_FORCED_OUTPUT_BINDINGS: &[ForcedOutputBinding] = &[
+    ForcedOutputBinding {
+        quest_object_id: 0x0007_1505,
+        lane: QustVmadLane::Alias,
+        alias_index: Some(0),
+        script_name: b"EN01_BunkerAccessPadAliasScript",
+        property_name: b"InvisibleBunkerDoor",
+        target_object_id: 0x001A_E92D,
+    },
+    ForcedOutputBinding {
+        quest_object_id: 0x0010_E201,
+        lane: QustVmadLane::Fragment,
+        alias_index: None,
+        script_name: b"Fragments:Quests:QF_TW002_0010E201",
+        property_name: b"TW002Hunter01Ref",
+        target_object_id: 0x0010_E216,
+    },
+    ForcedOutputBinding {
+        quest_object_id: 0x0010_E201,
+        lane: QustVmadLane::Fragment,
+        alias_index: None,
+        script_name: b"Fragments:Quests:QF_TW002_0010E201",
+        property_name: b"TW002Hunter02Ref",
+        target_object_id: 0x0010_E218,
+    },
+    ForcedOutputBinding {
+        quest_object_id: 0x0010_E201,
+        lane: QustVmadLane::Fragment,
+        alias_index: None,
+        script_name: b"Fragments:Quests:QF_TW002_0010E201",
+        property_name: b"TW002Hunter03Ref",
+        target_object_id: 0x0010_E217,
+    },
+    ForcedOutputBinding {
+        quest_object_id: 0x0034_43FB,
+        lane: QustVmadLane::TopLevel,
+        alias_index: None,
+        script_name: b"MTR07_EarthQuestScript",
+        property_name: b"MTR07_EarthIgnitionCoreReactorTrigger04Ref",
+        target_object_id: 0x0013_AAEE,
+    },
+    ForcedOutputBinding {
+        quest_object_id: 0x0034_43FB,
+        lane: QustVmadLane::TopLevel,
+        alias_index: None,
+        script_name: b"MTR07_EarthQuestScript",
+        property_name: b"myWorkshop",
+        target_object_id: 0x0018_43FC,
+    },
+    ForcedOutputBinding {
+        quest_object_id: 0x0034_43FB,
+        lane: QustVmadLane::Fragment,
+        alias_index: None,
+        script_name: b"Fragments:Quests:QF_MTR07_Earth_003443FB",
+        property_name: b"MountBlairWorkshopRef",
+        target_object_id: 0x0018_43FC,
+    },
+    ForcedOutputBinding {
+        quest_object_id: 0x002C_460C,
+        lane: QustVmadLane::Alias,
+        alias_index: Some(22),
+        script_name: b"DefaultAliasOnContainerChangedFrom",
+        property_name: b"ItemChangedFromReferences",
+        target_object_id: 0x0023_D302,
+    },
+    ForcedOutputBinding {
+        quest_object_id: 0x002A_93F5,
+        lane: QustVmadLane::TopLevel,
+        alias_index: None,
+        script_name: b"CB04_QuestScript",
+        property_name: b"CB04_Reward_LootPrewar_SafeRef",
+        target_object_id: 0x0023_AD3C,
+    },
+    ForcedOutputBinding {
+        quest_object_id: 0x002A_93F5,
+        lane: QustVmadLane::TopLevel,
+        alias_index: None,
+        script_name: b"CB04_QuestScript",
+        property_name: b"EBSActor",
+        target_object_id: 0x0022_278C,
+    },
+    ForcedOutputBinding {
+        quest_object_id: 0x0013_1033,
+        lane: QustVmadLane::TopLevel,
+        alias_index: None,
+        script_name: b"SFL02_Track_QuestScript",
+        property_name: b"SFL02_Track_RadioSignalMarkerRef",
+        target_object_id: 0x0013_3D6A,
+    },
+];
 
 pub struct NullDanglingVmadRefsFixup;
 
@@ -108,11 +182,8 @@ impl Fixup for NullDanglingVmadRefsFixup {
     }
 }
 
-/// Post-copy authoritative VMAD resolve. Pairs with the pre-copy deferral: when
-/// `defer_placed_child_ref_class` is set the pre-copy sweep LEFT VMAD Object refs
-/// that resolved nowhere intact (interior CELL/REFR + placed children are emitted
-/// post-copy). This runs over the now-complete output — repairing the emitted
-/// targets to the output master byte and nulling only the genuine residue.
+/// Post-copy VMAD resolve over the complete output: repairs emitted targets to the
+/// output master byte and nulls the residue a deferred pre-copy sweep left intact.
 /// Called from `ConversionRun::repair_placed_child_refs`.
 pub fn repair_dangling_vmad_refs(
     session: &mut PluginSession,
@@ -197,6 +268,7 @@ fn run_vmad_resolution(
 
 /// Resolves an encoded `[master_index << 24 | object_id]` FormID (as it sits in
 /// a VMAD object slot) against the output plugin and target masters.
+#[derive(Clone)]
 pub(crate) struct VmadResolver {
     pub(crate) output_objids: FxHashSet<u32>,
     /// master_index → object-id set, parallel to the target master load order.
@@ -207,13 +279,9 @@ pub(crate) struct VmadResolver {
     fo4_base_master_index: Option<u32>,
     /// Number of target masters; the output plugin's own master byte is this.
     output_master_index: u32,
-    /// When set, a slot that resolves NOWHERE is LEFT intact instead of nulled
-    /// (still repaired if it resolves). Used by the pre-copy pass on whole-plugin
-    /// FO76→FO4 runs where interior CELL/REFR + placed children are emitted
-    /// post-copy: nulling here would clobber a VMAD Object property (e.g. a
-    /// shelter door's `ShelterCell` / `ShelterCellTeleportPosition`) whose target
-    /// is present only after the copy. The post-copy pass runs with this false to
-    /// perform the authoritative repair/null over the now-complete output.
+    /// Leave a slot that resolves nowhere intact instead of nulling it (resolving
+    /// slots are still repaired). Set by the pre-copy pass on whole-plugin FO76→FO4
+    /// runs, whose interior targets arrive post-copy; the post-copy pass clears it.
     defer_null: bool,
 }
 
@@ -272,16 +340,20 @@ impl VmadResolver {
     /// Returns a replacement encoded FormID when a VMAD slot needs repair/null.
     /// A null FormID, a FormID resolving in its addressed handle, or one whose
     /// master index is beyond the known masters (can't prove it dangles) is kept.
-    fn replacement_for(&self, raw: u32) -> Option<u32> {
+    fn replacement_for(&self, raw: u32, force_output: bool) -> Option<u32> {
         if raw == 0 {
             return None;
         }
         let master_index = raw >> 24;
         let object_id = raw & 0x00FF_FFFF;
-        // Aggression is an engine-intrinsic FO4 ActorValue used in vanilla VMAD
-        // bindings, but it has no physical AVIF record in Fallout4.esm.
+        if force_output && self.output_objids.contains(&object_id) {
+            let replacement = (self.output_master_index << 24) | object_id;
+            return (raw != replacement).then_some(replacement);
+        }
+        // FO4 exposes engine-intrinsic ActorValues in VMAD bindings even though
+        // Fallout4.esm contains no physical AVIF rows for them.
         if self.fo4_base_master_index == Some(master_index)
-            && object_id == FO4_INTRINSIC_AGGRESSION_ACTOR_VALUE
+            && FO4_HARDCODED_AVIF_LOCAL_IDS.contains(&object_id)
         {
             return None;
         }
@@ -329,12 +401,53 @@ pub(crate) fn null_dangling_in_record(record: &mut Record, resolver: &VmadResolv
             continue;
         }
         if let FieldValue::Bytes(bytes) = &mut entry.value {
-            if null_dangling_in_vmad_blob(bytes.as_mut_slice(), resolver, &rec_sig) {
+            if null_dangling_in_vmad_blob_for_record(
+                bytes.as_mut_slice(),
+                resolver,
+                &rec_sig,
+                Some(record.form_key.local),
+            ) {
                 changed = true;
             }
         }
     }
     changed
+}
+
+#[derive(Clone, Copy)]
+struct QustLaneScope {
+    quest_object_id: u32,
+    lane: QustVmadLane,
+    alias_index: Option<i16>,
+}
+
+struct QustPropertyScope<'a> {
+    lane: QustLaneScope,
+    script_name: &'a [u8],
+    property_name: &'a [u8],
+}
+
+fn is_forced_output_binding(
+    scope: Option<&QustPropertyScope<'_>>,
+    raw: u32,
+    resolver: &VmadResolver,
+) -> bool {
+    let Some(scope) = scope else {
+        return false;
+    };
+    if resolver.fo4_base_master_index.is_none() {
+        return false;
+    }
+    let target_object_id = raw & 0x00FF_FFFF;
+    resolver.output_objids.contains(&target_object_id)
+        && QUST_FORCED_OUTPUT_BINDINGS.iter().any(|binding| {
+            binding.quest_object_id == scope.lane.quest_object_id
+                && binding.lane == scope.lane.lane
+                && binding.alias_index == scope.lane.alias_index
+                && binding.script_name == scope.script_name
+                && binding.property_name == scope.property_name
+                && binding.target_object_id == target_object_id
+        })
 }
 
 /// Walk the VMAD blob, repairing or nulling each dangling object FormID. Mirrors
@@ -344,6 +457,15 @@ fn null_dangling_in_vmad_blob(
     data: &mut [u8],
     resolver: &VmadResolver,
     record_sig: &[u8; 4],
+) -> bool {
+    null_dangling_in_vmad_blob_for_record(data, resolver, record_sig, None)
+}
+
+fn null_dangling_in_vmad_blob_for_record(
+    data: &mut [u8],
+    resolver: &VmadResolver,
+    record_sig: &[u8; 4],
+    record_object_id: Option<u32>,
 ) -> bool {
     let Some(version) = read_u16(data, 0) else {
         return false;
@@ -357,10 +479,31 @@ fn null_dangling_in_vmad_blob(
     if version == 0 || !matches!(object_format, 1 | 2) {
         return false;
     }
+    let quest_object_id = record_object_id.filter(|record_object_id| {
+        record_sig == b"QUST"
+            && resolver.fo4_base_master_index.is_some()
+            && QUST_FORCED_OUTPUT_BINDINGS
+                .iter()
+                .any(|binding| binding.quest_object_id == *record_object_id)
+    });
     let mut offset = 6usize;
     let mut changed = false;
     for _ in 0..script_count {
-        if walk_script_entry(data, &mut offset, object_format, resolver, &mut changed).is_none() {
+        let scope = quest_object_id.map(|quest_object_id| QustLaneScope {
+            quest_object_id,
+            lane: QustVmadLane::TopLevel,
+            alias_index: None,
+        });
+        if walk_script_entry(
+            data,
+            &mut offset,
+            object_format,
+            resolver,
+            &mut changed,
+            scope,
+        )
+        .is_none()
+        {
             return changed;
         }
     }
@@ -391,6 +534,7 @@ fn null_dangling_in_vmad_blob(
                     object_format,
                     resolver,
                     &mut changed,
+                    quest_object_id,
                 );
             }
             _ => {}
@@ -408,7 +552,7 @@ fn null_dangling_info_pack_scen_after_scripts(
 ) -> Option<()> {
     advance(offset, 1, data.len())?; // i8 version
     advance(offset, 1, data.len())?; // u8 flags
-    walk_script_entry(data, offset, object_format, resolver, changed)
+    walk_script_entry(data, offset, object_format, resolver, changed, None)
 }
 
 fn null_dangling_perk_term_after_scripts(
@@ -419,7 +563,7 @@ fn null_dangling_perk_term_after_scripts(
     changed: &mut bool,
 ) -> Option<()> {
     advance(offset, 1, data.len())?; // i8 version
-    walk_script_entry(data, offset, object_format, resolver, changed)
+    walk_script_entry(data, offset, object_format, resolver, changed, None)
 }
 
 /// Mirrors `FormKeyMapper::rewrite_vmad_qust_after_scripts` — skips fragment
@@ -431,21 +575,40 @@ fn null_dangling_qust_after_scripts(
     object_format: u16,
     resolver: &VmadResolver,
     changed: &mut bool,
+    quest_object_id: Option<u32>,
 ) -> Option<()> {
     advance(offset, 1, data.len())?; // i8 version
     let fragment_count = read_u16_advance(data, offset)? as usize;
 
     // Walk fragment script header (same as in formkey_mapper.rs).
-    let script_name_len = read_u16_advance(data, offset)? as usize;
-    if script_name_len > 0 {
-        advance(offset, script_name_len, data.len())?;
+    let (script_name, script_name_is_empty) =
+        read_vmad_string_if(data, offset, quest_object_id.is_some())?;
+    if !script_name_is_empty {
         advance(offset, 1, data.len())?; // u8 flags
         let prop_count = read_u16_advance(data, offset)? as usize;
         for _ in 0..prop_count {
-            skip_vmad_string(data, offset)?;
+            let (property_name, _) = read_vmad_string_if(data, offset, quest_object_id.is_some())?;
             let prop_type = read_u8_advance(data, offset)?;
             advance(offset, 1, data.len())?;
-            walk_property_value(data, offset, prop_type, object_format, resolver, changed)?;
+            let lane = quest_object_id.map(|quest_object_id| QustLaneScope {
+                quest_object_id,
+                lane: QustVmadLane::Fragment,
+                alias_index: None,
+            });
+            let scope = lane.map(|lane| QustPropertyScope {
+                lane,
+                script_name: &script_name,
+                property_name: &property_name,
+            });
+            walk_property_value(
+                data,
+                offset,
+                prop_type,
+                object_format,
+                resolver,
+                changed,
+                scope.as_ref(),
+            )?;
         }
     }
 
@@ -462,12 +625,18 @@ fn null_dangling_qust_after_scripts(
     // Walk alias entries.
     let alias_count = read_u16_advance(data, offset)? as usize;
     for _ in 0..alias_count {
-        walk_object(data, offset, object_format, resolver, changed)?;
+        let alias_index = object_alias(data, *offset, object_format)?;
+        walk_object(data, offset, object_format, resolver, changed, None)?;
         advance(offset, 2, data.len())?; // i16 version
         let alias_obj_format = read_u16_advance(data, offset)?;
         let alias_script_count = read_u16_advance(data, offset)? as usize;
         for _ in 0..alias_script_count {
-            walk_script_entry(data, offset, alias_obj_format, resolver, changed)?;
+            let scope = quest_object_id.map(|quest_object_id| QustLaneScope {
+                quest_object_id,
+                lane: QustVmadLane::Alias,
+                alias_index: Some(alias_index),
+            });
+            walk_script_entry(data, offset, alias_obj_format, resolver, changed, scope)?;
         }
     }
     Some(())
@@ -479,12 +648,21 @@ fn walk_script_entry(
     object_format: u16,
     resolver: &VmadResolver,
     changed: &mut bool,
+    lane: Option<QustLaneScope>,
 ) -> Option<()> {
-    skip_vmad_string(data, offset)?;
+    let (script_name, _) = read_vmad_string_if(data, offset, lane.is_some())?;
     advance(offset, 1, data.len())?;
     let property_count = read_u16_advance(data, offset)? as usize;
     for _ in 0..property_count {
-        walk_property_entry(data, offset, object_format, resolver, changed)?;
+        walk_property_entry(
+            data,
+            offset,
+            object_format,
+            resolver,
+            changed,
+            lane,
+            &script_name,
+        )?;
     }
     Some(())
 }
@@ -495,10 +673,17 @@ fn walk_property_entry(
     object_format: u16,
     resolver: &VmadResolver,
     changed: &mut bool,
+    lane: Option<QustLaneScope>,
+    script_name: &[u8],
 ) -> Option<()> {
-    skip_vmad_string(data, offset)?;
+    let (property_name, _) = read_vmad_string_if(data, offset, lane.is_some())?;
     let property_type = read_u8_advance(data, offset)?;
     advance(offset, 1, data.len())?;
+    let scope = lane.map(|lane| QustPropertyScope {
+        lane,
+        script_name,
+        property_name: &property_name,
+    });
     walk_property_value(
         data,
         offset,
@@ -506,6 +691,7 @@ fn walk_property_entry(
         object_format,
         resolver,
         changed,
+        scope.as_ref(),
     )
 }
 
@@ -516,24 +702,25 @@ fn walk_property_value(
     object_format: u16,
     resolver: &VmadResolver,
     changed: &mut bool,
+    scope: Option<&QustPropertyScope<'_>>,
 ) -> Option<()> {
     match property_type {
         0 | 6 => Some(()),
-        1 => walk_object(data, offset, object_format, resolver, changed),
+        1 => walk_object(data, offset, object_format, resolver, changed, scope),
         2 => {
             skip_vmad_string(data, offset)?;
             Some(())
         }
         3 | 4 => advance(offset, 4, data.len()),
         5 => advance(offset, 1, data.len()),
-        7 => walk_struct(data, offset, object_format, resolver, changed),
+        7 => walk_struct(data, offset, object_format, resolver, changed, scope),
         11 => {
             let count = read_i32_advance(data, offset)?;
             if count < 0 {
                 return None;
             }
             for _ in 0..count {
-                walk_object(data, offset, object_format, resolver, changed)?;
+                walk_object(data, offset, object_format, resolver, changed, scope)?;
             }
             Some(())
         }
@@ -568,7 +755,7 @@ fn walk_property_value(
                 return None;
             }
             for _ in 0..count {
-                walk_struct(data, offset, object_format, resolver, changed)?;
+                walk_struct(data, offset, object_format, resolver, changed, scope)?;
             }
             Some(())
         }
@@ -582,6 +769,7 @@ fn walk_struct(
     object_format: u16,
     resolver: &VmadResolver,
     changed: &mut bool,
+    scope: Option<&QustPropertyScope<'_>>,
 ) -> Option<()> {
     let count = read_i32_advance(data, offset)?;
     if count < 0 {
@@ -591,7 +779,15 @@ fn walk_struct(
         skip_vmad_string(data, offset)?;
         let member_type = read_u8_advance(data, offset)?;
         advance(offset, 1, data.len())?;
-        walk_property_value(data, offset, member_type, object_format, resolver, changed)?;
+        walk_property_value(
+            data,
+            offset,
+            member_type,
+            object_format,
+            resolver,
+            changed,
+            scope,
+        )?;
     }
     Some(())
 }
@@ -602,6 +798,7 @@ fn walk_object(
     object_format: u16,
     resolver: &VmadResolver,
     changed: &mut bool,
+    scope: Option<&QustPropertyScope<'_>>,
 ) -> Option<()> {
     let formid_offset = if object_format == 2 {
         let formid_offset = (*offset).checked_add(4)?;
@@ -613,7 +810,8 @@ fn walk_object(
         formid_offset
     };
     let raw = read_u32(data, formid_offset)?;
-    if let Some(replacement) = resolver.replacement_for(raw) {
+    let force_output = is_forced_output_binding(scope, raw, resolver);
+    if let Some(replacement) = resolver.replacement_for(raw, force_output) {
         data.get_mut(formid_offset..formid_offset.checked_add(4)?)?
             .copy_from_slice(&replacement.to_le_bytes());
         *changed = true;
@@ -642,6 +840,10 @@ fn read_u16_advance(data: &[u8], offset: &mut usize) -> Option<u16> {
     Some(value)
 }
 
+fn read_i16(data: &[u8], offset: usize) -> Option<i16> {
+    read_u16(data, offset).map(|value| value as i16)
+}
+
 fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
     let bytes = data.get(offset..offset.checked_add(4)?)?;
     Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
@@ -665,6 +867,24 @@ fn advance(offset: &mut usize, by: usize, len: usize) -> Option<()> {
 fn skip_vmad_string(data: &[u8], offset: &mut usize) -> Option<()> {
     let len = read_u16_advance(data, offset)? as usize;
     advance(offset, len, data.len())
+}
+
+fn read_vmad_string_if(data: &[u8], offset: &mut usize, capture: bool) -> Option<(Vec<u8>, bool)> {
+    let len = read_u16_advance(data, offset)? as usize;
+    let end = offset.checked_add(len)?;
+    let bytes = data.get(*offset..end)?;
+    let value = if capture { bytes.to_vec() } else { Vec::new() };
+    *offset = end;
+    Some((value, len == 0))
+}
+
+fn object_alias(data: &[u8], offset: usize, object_format: u16) -> Option<i16> {
+    let alias_offset = if object_format == 2 {
+        offset.checked_add(2)?
+    } else {
+        offset.checked_add(4)?
+    };
+    read_i16(data, alias_offset)
 }
 
 #[cfg(test)]
@@ -745,6 +965,79 @@ mod tests {
             offsets.push(push_objfmt2_object(&mut out, 0, *raw));
         }
         (out, offsets)
+    }
+
+    fn push_named_object_property(
+        out: &mut Vec<u8>,
+        property_name: &str,
+        raw: u32,
+        is_array: bool,
+    ) -> usize {
+        push_string(out, property_name);
+        out.push(if is_array { 11 } else { 1 });
+        out.push(0);
+        if is_array {
+            out.extend_from_slice(&1i32.to_le_bytes());
+        }
+        push_objfmt2_object(out, -1, raw)
+    }
+
+    fn push_named_script(
+        out: &mut Vec<u8>,
+        script_name: &str,
+        property_name: &str,
+        raw: u32,
+        is_array: bool,
+    ) -> usize {
+        push_string(out, script_name);
+        out.push(0);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        push_named_object_property(out, property_name, raw, is_array)
+    }
+
+    fn qust_scoped_vmad_objfmt2(
+        lane: QustVmadLane,
+        alias_index: Option<i16>,
+        script_name: &str,
+        property_name: &str,
+        raw: u32,
+        is_array: bool,
+    ) -> (Vec<u8>, usize) {
+        let mut out = Vec::new();
+        out.extend_from_slice(&5u16.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(
+            &(if lane == QustVmadLane::TopLevel {
+                1u16
+            } else {
+                0u16
+            })
+            .to_le_bytes(),
+        );
+        if lane == QustVmadLane::TopLevel {
+            let offset = push_named_script(&mut out, script_name, property_name, raw, is_array);
+            return (out, offset);
+        }
+
+        out.push(4);
+        out.extend_from_slice(&0u16.to_le_bytes());
+        if lane == QustVmadLane::Fragment {
+            push_string(&mut out, script_name);
+            out.push(0);
+            out.extend_from_slice(&1u16.to_le_bytes());
+            let offset = push_named_object_property(&mut out, property_name, raw, is_array);
+            out.extend_from_slice(&0u16.to_le_bytes());
+            return (out, offset);
+        }
+
+        push_string(&mut out, "");
+        out.extend_from_slice(&1u16.to_le_bytes());
+        push_objfmt2_object(&mut out, alias_index.expect("alias lane index"), 0);
+        out.extend_from_slice(&6i16.to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        let offset = push_named_script(&mut out, script_name, property_name, raw, is_array);
+        (out, offset)
     }
 
     fn vmad_objfmt1(props: &[u32]) -> (Vec<u8>, Vec<usize>) {
@@ -839,6 +1132,173 @@ mod tests {
     }
 
     #[test]
+    fn exact_quest_bindings_prefer_output_collisions_and_are_idempotent() {
+        for binding in QUST_FORCED_OUTPUT_BINDINGS {
+            let is_array = binding.property_name == b"ItemChangedFromReferences";
+            let script_name = std::str::from_utf8(binding.script_name).unwrap();
+            let property_name = std::str::from_utf8(binding.property_name).unwrap();
+            let (mut b, offset) = qust_scoped_vmad_objfmt2(
+                binding.lane,
+                binding.alias_index,
+                script_name,
+                property_name,
+                binding.target_object_id,
+                is_array,
+            );
+            let r = resolver_for_target(
+                &[binding.target_object_id],
+                &[&[binding.target_object_id]],
+                Some("fo4"),
+                &["Fallout4.esm"],
+            );
+
+            assert!(
+                null_dangling_in_vmad_blob_for_record(
+                    &mut b,
+                    &r,
+                    b"QUST",
+                    Some(binding.quest_object_id),
+                ),
+                "{script_name}.{property_name} should prefer the output collision"
+            );
+            assert_eq!(raw_at(&b, offset), (1 << 24) | binding.target_object_id);
+            assert!(
+                !null_dangling_in_vmad_blob_for_record(
+                    &mut b,
+                    &r,
+                    b"QUST",
+                    Some(binding.quest_object_id),
+                ),
+                "{script_name}.{property_name} should be idempotent"
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_master_collision_outside_exact_quest_binding_scope() {
+        let binding = &QUST_FORCED_OUTPUT_BINDINGS[4];
+        let different_object_id = binding.target_object_id + 1;
+        let colliding_object_ids = [binding.target_object_id, different_object_id];
+        let r = resolver_for_target(
+            &colliding_object_ids,
+            &[&colliding_object_ids],
+            Some("fo4"),
+            &["Fallout4.esm"],
+        );
+        let near_misses = [
+            (
+                binding.quest_object_id + 1,
+                binding.lane,
+                binding.alias_index,
+                std::str::from_utf8(binding.script_name).unwrap(),
+                std::str::from_utf8(binding.property_name).unwrap(),
+                binding.target_object_id,
+            ),
+            (
+                binding.quest_object_id,
+                QustVmadLane::Fragment,
+                None,
+                std::str::from_utf8(binding.script_name).unwrap(),
+                std::str::from_utf8(binding.property_name).unwrap(),
+                binding.target_object_id,
+            ),
+            (
+                binding.quest_object_id,
+                binding.lane,
+                binding.alias_index,
+                "DifferentScript",
+                std::str::from_utf8(binding.property_name).unwrap(),
+                binding.target_object_id,
+            ),
+            (
+                binding.quest_object_id,
+                binding.lane,
+                binding.alias_index,
+                std::str::from_utf8(binding.script_name).unwrap(),
+                "DifferentProperty",
+                binding.target_object_id,
+            ),
+            (
+                binding.quest_object_id,
+                binding.lane,
+                binding.alias_index,
+                std::str::from_utf8(binding.script_name).unwrap(),
+                std::str::from_utf8(binding.property_name).unwrap(),
+                different_object_id,
+            ),
+        ];
+
+        for (quest_object_id, lane, alias_index, script_name, property_name, raw) in near_misses {
+            let (mut b, offset) =
+                qust_scoped_vmad_objfmt2(lane, alias_index, script_name, property_name, raw, false);
+            assert!(!null_dangling_in_vmad_blob_for_record(
+                &mut b,
+                &r,
+                b"QUST",
+                Some(quest_object_id),
+            ));
+            assert_eq!(raw_at(&b, offset), raw);
+        }
+    }
+
+    #[test]
+    fn alias_collision_requires_exact_alias_index() {
+        let binding = QUST_FORCED_OUTPUT_BINDINGS
+            .iter()
+            .find(|binding| binding.alias_index == Some(22))
+            .unwrap();
+        let r = resolver_for_target(
+            &[binding.target_object_id],
+            &[&[binding.target_object_id]],
+            Some("fo4"),
+            &["Fallout4.esm"],
+        );
+        let (mut b, offset) = qust_scoped_vmad_objfmt2(
+            binding.lane,
+            Some(21),
+            std::str::from_utf8(binding.script_name).unwrap(),
+            std::str::from_utf8(binding.property_name).unwrap(),
+            binding.target_object_id,
+            true,
+        );
+
+        assert!(!null_dangling_in_vmad_blob_for_record(
+            &mut b,
+            &r,
+            b"QUST",
+            Some(binding.quest_object_id),
+        ));
+        assert_eq!(raw_at(&b, offset), binding.target_object_id);
+    }
+
+    #[test]
+    fn exact_binding_does_not_force_target_absent_from_output() {
+        let binding = &QUST_FORCED_OUTPUT_BINDINGS[0];
+        let r = resolver_for_target(
+            &[],
+            &[&[binding.target_object_id]],
+            Some("fo4"),
+            &["Fallout4.esm"],
+        );
+        let (mut b, offset) = qust_scoped_vmad_objfmt2(
+            binding.lane,
+            binding.alias_index,
+            std::str::from_utf8(binding.script_name).unwrap(),
+            std::str::from_utf8(binding.property_name).unwrap(),
+            binding.target_object_id,
+            false,
+        );
+
+        assert!(!null_dangling_in_vmad_blob_for_record(
+            &mut b,
+            &r,
+            b"QUST",
+            Some(binding.quest_object_id),
+        ));
+        assert_eq!(raw_at(&b, offset), binding.target_object_id);
+    }
+
+    #[test]
     fn nulls_dangling_fallout4_prefixed_formid() {
         // 0x008A5475 addresses Fallout4.esm (byte 0) but isn't an FO4 record and
         // its source CELL wasn't emitted → null.
@@ -859,6 +1319,27 @@ mod tests {
         let (mut objfmt2, objfmt2_offsets) = qust_fragment_vmad_objfmt2(&[0x0000_02BC]);
         assert!(!null_dangling_in_vmad_blob(&mut objfmt2, &r, b"QUST"));
         assert_eq!(raw_at(&objfmt2, objfmt2_offsets[0]), 0x0000_02BC);
+    }
+
+    #[test]
+    fn keeps_radical_power_generated_quest_binding() {
+        let r = resolver_for_target(&[], &[&[]], Some("fo4"), &["Fallout4.esm"]);
+        let (mut vmad, offset) = qust_scoped_vmad_objfmt2(
+            QustVmadLane::TopLevel,
+            None,
+            "W05_002P_Radical_QuestScript",
+            "PowerGenerated",
+            0x0000_032E,
+            false,
+        );
+
+        assert!(!null_dangling_in_vmad_blob_for_record(
+            &mut vmad,
+            &r,
+            b"QUST",
+            Some(0x0040_F5BE),
+        ));
+        assert_eq!(raw_at(&vmad, offset), 0x0000_032E);
     }
 
     #[test]

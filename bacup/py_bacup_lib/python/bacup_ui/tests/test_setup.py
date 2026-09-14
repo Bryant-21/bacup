@@ -1,7 +1,9 @@
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, call
 
+import bacup_ui.setup as bacup_setup_module
 from bacup_ui.setup import (
     _ALPHA_ACCEPTED_KEY,
     _CURRENT_RELEASE_ID,
@@ -13,9 +15,9 @@ from bacup_ui.setup import (
     _FEATURE_STATUS_TITLE,
     _FEATURE_STATUS_WORKS_BEST,
     _PERSONAL_USE_ACCEPTED_KEY,
-    _STEAM_OWNERSHIP_ACCEPTED_KEY,
-    _STEAM_OWNERSHIP_CHECKBOX,
-    _STEAM_REQUIREMENT_TEXT,
+    _STORE_OWNERSHIP_ACCEPTED_KEY,
+    _STORE_OWNERSHIP_CHECKBOX,
+    _STORE_REQUIREMENT_TEXT,
     AppalachiaSetup,
     BacupProjectPicker,
     BacupProjectSetup,
@@ -29,6 +31,7 @@ from bacup_ui.setup import (
     games_needing_extraction,
     get_active_project,
     get_pending_project_setup,
+    get_project_profile,
     get_project_setup_ownership,
     project_setup_needed,
     project_owns_extracted_path,
@@ -42,7 +45,7 @@ def _agreement_settings():
     return {
         _ALPHA_ACCEPTED_KEY: True,
         _PERSONAL_USE_ACCEPTED_KEY: True,
-        _STEAM_OWNERSHIP_ACCEPTED_KEY: True,
+        _STORE_OWNERSHIP_ACCEPTED_KEY: True,
     }
 
 
@@ -123,6 +126,33 @@ def test_games_needing_extraction_lists_only_missing():
         fo76={"root_dir": "C:/FO76"},
     )
     assert games_needing_extraction(s) == ["fo76"]
+
+
+def test_empty_selected_extracted_dir_needs_extraction(tmp_path):
+    empty = tmp_path / "selected"
+    empty.mkdir()
+    s = _settings(
+        fo4={"root_dir": "C:/FO4"},
+        fo76={"root_dir": "C:/FO76", "extracted_dir": str(empty)},
+        workspace=_agreement_settings(),
+    )
+
+    assert games_needing_extraction(s) == ["fo76"]
+    assert appalachia_setup_needed(s) is True
+
+
+def test_nonempty_selected_extracted_dir_is_reused(tmp_path):
+    extracted = tmp_path / "selected"
+    extracted.mkdir()
+    (extracted / "meshes").mkdir()
+    s = _settings(
+        fo4={"root_dir": "C:/FO4"},
+        fo76={"root_dir": "C:/FO76", "extracted_dir": str(extracted)},
+        workspace=_agreement_settings(),
+    )
+
+    assert games_needing_extraction(s) == []
+    assert appalachia_setup_needed(s) is False
 
 
 def test_next_step_advances(monkeypatch):
@@ -215,13 +245,13 @@ def test_setup_uses_current_upgrade_manifest_release_notes():
     assert _CURRENT_RELEASE_NOTES == current.notes_for_conversion("fo76:fo4")
 
 
-def test_steam_requirement_copy_is_explicit():
-    copy = f"{_STEAM_REQUIREMENT_TEXT}\n{_STEAM_OWNERSHIP_CHECKBOX}"
+def test_store_requirement_copy_is_explicit():
+    copy = f"{_STORE_REQUIREMENT_TEXT}\n{_STORE_OWNERSHIP_CHECKBOX}"
 
-    assert "Steam copies are required" in copy
-    assert "own the selected project's games on Steam" in copy
+    assert "Steam or GOG copies are required" in copy
+    assert "own the selected project's games on Steam or GOG" in copy
     assert "Microsoft Store" in copy
-    assert "GOG" in copy
+    assert "Fallout 76 has no GOG release" in copy
     assert "have not pirated them" in copy
 
 
@@ -245,7 +275,7 @@ def test_footer_primary_enabled_tracks_agreements_and_extraction():
     assert setup.footer_primary_enabled() is False
     setup._alpha_accepted = True
     setup._personal_use_accepted = True
-    setup._steam_ownership_accepted = True
+    setup._store_ownership_accepted = True
     assert setup.footer_primary_enabled() is True
 
     setup.step = AppalachiaSetup.STEP_EXTRACT
@@ -256,7 +286,7 @@ def test_footer_primary_enabled_tracks_agreements_and_extraction():
     assert setup.footer_primary_enabled() is True
 
 
-def test_paths_valid_requires_both_steam_installs(monkeypatch):
+def test_paths_valid_requires_both_store_installs(monkeypatch):
     setup = AppalachiaSetup(_settings())
     setup._roots["fo4"] = "C:/FO4"
     setup._roots["fo76"] = "C:/FO76"
@@ -265,7 +295,7 @@ def test_paths_valid_requires_both_steam_installs(monkeypatch):
         "bacup_ui.setup.validate_game_path", lambda _g, _p: True
     )
     monkeypatch.setattr(
-        "bacup_ui.setup.validate_steam_install_for_game",
+        "bacup_ui.setup.validate_store_install_for_game",
         lambda _g, _p: SimpleNamespace(
             ok=False, message="Fallout 4 install is missing steam_api64.dll."
         ),
@@ -275,18 +305,65 @@ def test_paths_valid_requires_both_steam_installs(monkeypatch):
 
     checked_games = []
 
-    def fake_valid_steam_install(game_id, _path):
+    def fake_valid_store_install(game_id, _path):
         checked_games.append(game_id)
         return SimpleNamespace(ok=True, message=f"{game_id} Steam install verified.")
 
     monkeypatch.setattr(
-        "bacup_ui.setup.validate_steam_install_for_game",
-        fake_valid_steam_install,
+        "bacup_ui.setup.validate_store_install_for_game",
+        fake_valid_store_install,
     )
-    setup._steam_install_cache.clear()
+    setup._store_install_cache.clear()
 
     assert setup._paths_valid() is True
     assert checked_games == ["fo4", "fo76"]
+
+
+def test_path_validation_reason_uses_visible_error_text(monkeypatch):
+    setup = AppalachiaSetup(_settings())
+    setup._games = ("fo4",)
+    setup._source_games = ()
+    setup._roots["fo4"] = "C:/Steam/steamapps/common/Fallout4"
+    setup._start_space_prepare = lambda: None
+    setup._poll_space_prepare = lambda: None
+    setup._space_prepare_state = lambda: (False, "", 0.0)
+    setup._store_install_result = lambda _game: SimpleNamespace(
+        ok=False,
+        message=(
+            "Steam app manifest expects Fallout 4 at:\n"
+            "C:/Steam/steamapps/common/Fallout 4\n"
+            "Selected folder:\n"
+            "C:/Steam/steamapps/common/Fallout4"
+        ),
+    )
+
+    fake_imgui = MagicMock()
+    fake_imgui.ImVec2.side_effect = lambda *values: values
+    fake_imgui.ImVec4.side_effect = lambda *values: values
+    fake_imgui.input_text.side_effect = lambda _label, value: (False, value)
+    fake_imgui.button.return_value = False
+
+    monkeypatch.setattr(bacup_setup_module, "imgui", fake_imgui)
+    monkeypatch.setattr(
+        bacup_setup_module, "_browse_button_width", lambda _label: 80.0
+    )
+    monkeypatch.setattr(
+        bacup_setup_module, "_browse_input_width", lambda _label: 400.0
+    )
+    monkeypatch.setattr(
+        bacup_setup_module, "validate_game_path", lambda _game, _path: True
+    )
+
+    setup._draw_paths()
+
+    reason = (
+        "Reason: Steam app manifest expects Fallout 4 at:\n"
+        "C:/Steam/steamapps/common/Fallout 4\n"
+        "Selected folder:\n"
+        "C:/Steam/steamapps/common/Fallout4"
+    )
+    assert any(args[1] == reason for args, _kwargs in fake_imgui.text_colored.call_args_list)
+    assert call(reason) not in fake_imgui.text_disabled.call_args_list
 
 
 def test_agreements_require_alpha_personal_use_and_steam_ownership():
@@ -299,7 +376,7 @@ def test_agreements_require_alpha_personal_use_and_steam_ownership():
     setup._personal_use_accepted = True
     assert setup.agreements_complete() is False
 
-    setup._steam_ownership_accepted = True
+    setup._store_ownership_accepted = True
     assert setup.agreements_complete() is True
 
 
@@ -308,14 +385,14 @@ def test_persist_agreements_writes_workspace_flags():
     setup = AppalachiaSetup(s)
     setup._alpha_accepted = True
     setup._personal_use_accepted = True
-    setup._steam_ownership_accepted = True
+    setup._store_ownership_accepted = True
 
     setup.persist_agreements()
 
     ws = s.get_workspace_settings("appalachia")
     assert ws[_ALPHA_ACCEPTED_KEY] is True
     assert ws[_PERSONAL_USE_ACCEPTED_KEY] is True
-    assert ws[_STEAM_OWNERSHIP_ACCEPTED_KEY] is True
+    assert ws[_STORE_OWNERSHIP_ACCEPTED_KEY] is True
 
 
 def test_persist_paths_writes_roots():
@@ -453,9 +530,10 @@ def test_project_extractor_receives_only_owned_sources(monkeypatch, tmp_path):
     captured = {}
 
     class FakeExtractor:
-        def __init__(self, games, *, output_root):
+        def __init__(self, games, *, output_root, output_dirs):
             captured["games"] = games
             captured["output_root"] = output_root
+            captured["output_dirs"] = output_dirs
             self.results = {}
 
         def start(self):
@@ -473,6 +551,38 @@ def test_project_extractor_receives_only_owned_sources(monkeypatch, tmp_path):
     assert captured == {
         "games": [("fnv", "C:/FNV"), ("fo3", "C:/FO3")],
         "output_root": tmp_path,
+        "output_dirs": {},
+        "started": True,
+    }
+
+
+def test_project_extractor_fills_selected_empty_dir(monkeypatch, tmp_path):
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    captured = {}
+
+    class FakeExtractor:
+        def __init__(self, games, *, output_root, output_dirs):
+            captured["games"] = games
+            captured["output_root"] = output_root
+            captured["output_dirs"] = output_dirs
+            self.results = {}
+
+        def start(self):
+            captured["started"] = True
+
+    monkeypatch.setattr("bacup_ui.setup._GameExtractor", FakeExtractor)
+    s = _settings(
+        fo4={"root_dir": "C:/FO4"},
+        fo76={"root_dir": "C:/FO76", "extracted_dir": str(selected)},
+    )
+
+    setup = AppalachiaSetup(s)
+    assert setup.start_extraction(output_root=tmp_path / "default") is True
+    assert captured == {
+        "games": [("fo76", "C:/FO76")],
+        "output_root": tmp_path / "default",
+        "output_dirs": {"fo76": selected},
         "started": True,
     }
 
@@ -652,6 +762,30 @@ def test_completed_setup_does_not_force_unconfigured_appalachia(monkeypatch):
     assert _run_bacup_project_setup(s) == (False, True)
 
 
+def test_completed_setup_repairs_empty_active_project_extraction(monkeypatch, tmp_path):
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    calls = []
+    s = _settings(
+        fo4={"root_dir": "C:/FO4"},
+        fo76={"root_dir": "C:/FO76", "extracted_dir": str(selected)},
+        workspace={**_agreement_settings(), "active_conversion_project": "appalachia"},
+    )
+    s.setup_complete = True
+
+    class FakeSetup:
+        def __init__(self, settings, project_id):
+            calls.append((settings, project_id))
+
+        def run(self):
+            return True
+
+    monkeypatch.setattr("bacup_ui.setup.BacupProjectSetup", FakeSetup)
+
+    assert _run_bacup_project_setup(s) == (True, True)
+    assert calls == [(s, "appalachia")]
+
+
 def test_extract_estimate_counts_ba2_and_bsa(tmp_path):
     data = tmp_path / "Data"
     data.mkdir()
@@ -667,11 +801,13 @@ def test_bacup_profile_names_and_build_constants():
         "Tales From Appalachia",
         "Legends of the Wasteland",
         "Fables of the North",
+        "To The Stars",
     ]
     assert [profile.conversion_id for profile in PROJECT_PROFILES.values()] == [
         "fo76:fo4",
         "fnvfo3:fo4",
         "skyrimse:fo4",
+        "starfield:fo4",
     ]
     manifest = load_upgrade_manifest(bundled_upgrade_manifest_path())
     current = next(
@@ -690,6 +826,7 @@ def test_bacup_profile_names_and_build_constants():
     assert '"build\\bacup"' in script
     for mod_name in (
         "SeventySix",
+        "FNV_FO3",
         "FNV_FO3_Merged",
         "MojaveCapital",
         "Skyrim_Merged",
@@ -702,3 +839,15 @@ def test_bacup_profile_names_and_build_constants():
     assert "Assert-NoDeveloperPayload $PayloadRoot" in script
     assert "Bethesda Asset Converter Universal Platform" in script
     assert "Bethesda Asset Converter Universal Platform" in batch
+
+
+def test_stars_profile_resolves_via_get_project_profile():
+    profile = get_project_profile("stars")
+
+    assert profile.id == "stars"
+    assert profile.title == "To The Stars"
+    assert profile.source_label == "Starfield (MVP)"
+    assert profile.conversion_id == "starfield:fo4"
+    assert profile.games == ("fo4", "starfield")
+    assert profile.source_games == ("starfield",)
+    assert profile.generated_mod_name == "Starfield_Ported"

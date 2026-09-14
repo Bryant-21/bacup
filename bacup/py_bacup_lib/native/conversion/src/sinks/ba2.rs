@@ -1,19 +1,20 @@
-//! Ba2ShardWriter — append-as-complete BA2 spill streaming.
+//! Ba2ShardWriter: append-as-complete BA2 spill streaming.
 //!
-//! Backed by TWO `bsarchive_native::incremental::IncrementalFo4Writer`s:
-//! one DX10 spill for the Textures family ("fo4dds" archives) and one GNRL
-//! spill shared by every other family ("fo4" archives). Family
-//! classification routes adds and rejects Terrain sidecars; the per-family
-//! 16 GiB shard SPLITS come from the Python planner at join
-//! (archive_plan.plan_archive_outputs) — one spill can feed multiple
-//! planned shards, including shards whose membership folds several families
-//! together (Strings→Main, Scripts-absorbs-Main), which is why the spills
-//! are format-keyed rather than family-keyed (as-built deviation, declared).
+//! Two `bsarchive_native::incremental::IncrementalFo4Writer` spills: DX10 for
+//! the Textures family ("fo4dds" archives) and GNRL for every other family
+//! ("fo4"). Adds are routed by family; Terrain sidecars are rejected. The
+//! Python planner (`archive_plan.plan_archive_outputs`) splits spills into
+//! 16 GiB shards at join. One spill can feed several shards and one shard can
+//! fold several families together (Strings→Main, Scripts absorbs Main), so
+//! spills are keyed by format rather than family.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use bsarchive_native::incremental::{CompressionSettings, Fo4WriterKind, IncrementalFo4Writer};
+use bsarchive_native::incremental::{
+    CompressionSettings, Fo4WriterKind, IncrementalFo4Writer, PreparedIncrementalFo4Batch,
+};
 
 use super::{classify_family, rejected_by_ba2};
 
@@ -21,6 +22,12 @@ pub struct Ba2ShardWriter {
     spill_dir: PathBuf,
     gnrl: IncrementalFo4Writer,
     dx10: IncrementalFo4Writer,
+    transaction: Mutex<()>,
+}
+
+pub struct PreparedBa2Batch {
+    gnrl: PreparedIncrementalFo4Batch,
+    dx10: PreparedIncrementalFo4Batch,
 }
 
 impl Ba2ShardWriter {
@@ -41,6 +48,7 @@ impl Ba2ShardWriter {
             spill_dir,
             gnrl,
             dx10,
+            transaction: Mutex::new(()),
         })
     }
 
@@ -59,15 +67,72 @@ impl Ba2ShardWriter {
 
     /// First-wins; Ok(false) = already streamed.
     pub fn add_bytes(&self, rel: &str, bytes: &[u8]) -> Result<bool, String> {
+        let _transaction = self.transaction.lock().expect("BA2 transaction poisoned");
         self.writer_for(rel)?.add_bytes(rel, bytes)
     }
 
     /// First-wins; Ok(false) = already streamed.
     pub fn add_file(&self, rel: &str, path: &Path) -> Result<bool, String> {
+        let _transaction = self.transaction.lock().expect("BA2 transaction poisoned");
         self.writer_for(rel)?.add_file(rel, path)
     }
 
+    pub fn prepare_bytes_batch(
+        &self,
+        entries: &[(&str, &[u8])],
+    ) -> Result<PreparedBa2Batch, String> {
+        let _transaction = self.transaction.lock().expect("BA2 transaction poisoned");
+        let mut gnrl = Vec::new();
+        let mut dx10 = Vec::new();
+        for &(rel, bytes) in entries {
+            self.writer_for(rel)?;
+            let entry = (rel, bytes);
+            if classify_family(rel) == "Textures" {
+                dx10.push(entry);
+            } else {
+                gnrl.push(entry);
+            }
+        }
+        Ok(PreparedBa2Batch {
+            gnrl: self.gnrl.prepare_bytes_batch(&gnrl)?,
+            dx10: self.dx10.prepare_bytes_batch(&dx10)?,
+        })
+    }
+
+    pub fn commit_prepared_batch(&self, batch: PreparedBa2Batch) -> Result<(), String> {
+        self.commit_prepared_batch_inner(batch, false)
+    }
+
+    fn commit_prepared_batch_inner(
+        &self,
+        batch: PreparedBa2Batch,
+        fail_after_gnrl: bool,
+    ) -> Result<(), String> {
+        let _transaction = self.transaction.lock().expect("BA2 transaction poisoned");
+        let gnrl = self.gnrl.commit_prepared_batch(batch.gnrl)?;
+        if fail_after_gnrl {
+            self.gnrl.rollback_committed_batch(gnrl)?;
+            return Err("injected BA2 batch failure after GNRL commit".to_string());
+        }
+        if let Err(error) = self.dx10.commit_prepared_batch(batch.dx10) {
+            return match self.gnrl.rollback_committed_batch(gnrl) {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(format!("{error}; GNRL batch rollback failed: {rollback}")),
+            };
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn commit_prepared_batch_with_failure(
+        &self,
+        batch: PreparedBa2Batch,
+    ) -> Result<(), String> {
+        self.commit_prepared_batch_inner(batch, true)
+    }
+
     pub fn contains(&self, rel: &str) -> bool {
+        let _transaction = self.transaction.lock().expect("BA2 transaction poisoned");
         if rejected_by_ba2(rel) {
             return false;
         }
@@ -80,6 +145,7 @@ impl Ba2ShardWriter {
 
     /// Normalized (lowercase, forward-slash) rel paths streamed so far.
     pub fn streamed_rel_paths(&self) -> Vec<String> {
+        let _transaction = self.transaction.lock().expect("BA2 transaction poisoned");
         let mut out = self.gnrl.rel_paths();
         out.extend(self.dx10.rel_paths());
         out.sort_unstable();
@@ -87,6 +153,7 @@ impl Ba2ShardWriter {
     }
 
     pub fn entry_count(&self) -> usize {
+        let _transaction = self.transaction.lock().expect("BA2 transaction poisoned");
         self.gnrl.entry_count() + self.dx10.entry_count()
     }
 
@@ -98,6 +165,7 @@ impl Ba2ShardWriter {
         texture_archive: bool,
         ordered_rels: &[&str],
     ) -> Result<(), String> {
+        let _transaction = self.transaction.lock().expect("BA2 transaction poisoned");
         let writer = if texture_archive {
             &self.dx10
         } else {
@@ -109,12 +177,14 @@ impl Ba2ShardWriter {
     /// Delete the spill files (abort path; the Python side deletes partial
     /// *.ba2 outputs).
     pub fn abort(&self) {
+        let _transaction = self.transaction.lock().expect("BA2 transaction poisoned");
         let _ = fs::remove_file(self.gnrl.spill_path());
         let _ = fs::remove_file(self.dx10.spill_path());
     }
 
     /// Delete the spill directory after a successful join.
     pub fn cleanup(&self) {
+        let _transaction = self.transaction.lock().expect("BA2 transaction poisoned");
         let _ = fs::remove_file(self.gnrl.spill_path());
         let _ = fs::remove_file(self.dx10.spill_path());
         let _ = fs::remove_dir(&self.spill_dir);

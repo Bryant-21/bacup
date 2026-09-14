@@ -9,6 +9,8 @@ from pathlib import Path
 
 from imgui_bundle import imgui
 
+from creation_lib.ui.widgets.modern import expandable_section
+
 # Persistent settings file next to nifeditor.log
 _SETTINGS_PATH = Path(__file__).resolve().parents[1] / "editor_settings.json"
 
@@ -185,100 +187,104 @@ class SettingsPanel:
             return
 
         # -- Controls --
-        if imgui.collapsing_header("Controls", imgui.TreeNodeFlags_.default_open.value):
-            changed, self._nav_style_idx = imgui.combo(
-                "Navigation Style", self._nav_style_idx, self._NAV_LABELS
-            )
-            if changed:
-                key = self._NAV_KEYS[self._nav_style_idx]
-                if hasattr(self.app, 'camera'):
-                    self.app.camera.set_nav_style(key)
-                self._persist()
-
-            # Show a quick reference for the active style
-            nav = self._NAV_KEYS[self._nav_style_idx]
-            imgui.spacing()
-            imgui.text_colored(imgui.ImVec4(0.6, 0.6, 0.6, 1.0), "Quick Reference:")
-            if nav == "3dsmax":
-                self._hint("Alt + MMB Drag", "Orbit")
-                self._hint("MMB Drag", "Pan")
-                self._hint("Scroll", "Zoom")
-            elif nav == "blender":
-                self._hint("MMB Drag", "Orbit")
-                self._hint("Shift + MMB Drag", "Pan")
-                self._hint("Scroll", "Zoom")
-            else:
-                self._hint("Ctrl + LMB Drag", "Orbit")
-                self._hint("MMB Drag", "Pan")
-                self._hint("Scroll", "Zoom")
-            self._hint("LMB Click", "Select")
-            self._hint("RMB Click", "Context Menu")
-            self._hint("Alt + LMB Drag", "Rotate Light")
-            if nav == "blender":
-                self._hint("G", "Move Gizmo")
-                self._hint("R", "Rotate Gizmo")
-                self._hint("S", "Scale Gizmo")
-            else:
-                self._hint("W", "Move Gizmo")
-                self._hint("E", "Rotate Gizmo")
-                self._hint("R", "Scale Gizmo")
-
-        # -- Lighting --
-        if imgui.collapsing_header("Lighting", imgui.TreeNodeFlags_.default_open.value):
-            changed, self._lighting_preset_idx = imgui.combo(
-                "Lighting Preset", self._lighting_preset_idx, self._LIGHTING_LABELS
-            )
-            if changed:
-                key = self._LIGHTING_KEYS[self._lighting_preset_idx]
-                if hasattr(self.app, 'lighting'):
-                    self.app.lighting.set_preset(key)
-                self._persist()
-
-            changed, self._light_type_idx = imgui.combo(
-                "Light Type", self._light_type_idx, self._LIGHT_TYPE_LABELS
-            )
-            if changed:
-                key = self._LIGHT_TYPE_KEYS[self._light_type_idx]
-                if hasattr(self.app, 'lighting'):
-                    self.app.lighting.set_light_type(key)
-                self._persist()
-
-        # -- Appearance --
-        if imgui.collapsing_header("Appearance"):
-            col = imgui.ImVec4(self._bg_color[0], self._bg_color[1], self._bg_color[2], 1.0)
-            changed, col = imgui.color_edit3("Background", col)
-            if changed:
-                self._bg_color = [col.x, col.y, col.z]
-                renderer = getattr(self.app, 'renderer', None)
-                if renderer is not None:
-                    renderer.bg_color = tuple(self._bg_color)
-                self._persist()
-
-            imgui.spacing()
-            changed, self._outline_style_idx = imgui.combo(
-                "Selection Outline", self._outline_style_idx, self._OUTLINE_LABELS
-            )
-            if changed:
-                self._persist()
-
-            if self.outline_style != "none":
-                col = imgui.ImVec4(self._outline_color[0], self._outline_color[1], self._outline_color[2], 1.0)
-                changed, col = imgui.color_edit3("Outline Color", col)
+        with expandable_section("Controls", imgui.TreeNodeFlags_.default_open.value) as expanded:
+            if expanded:
+                changed, self._nav_style_idx = imgui.combo(
+                    "Navigation Style", self._nav_style_idx, self._NAV_LABELS
+                )
                 if changed:
-                    self._outline_color = [col.x, col.y, col.z]
+                    key = self._NAV_KEYS[self._nav_style_idx]
+                    if hasattr(self.app, 'camera'):
+                        self.app.camera.set_nav_style(key)
                     self._persist()
 
+                # Show a quick reference for the active style
+                nav = self._NAV_KEYS[self._nav_style_idx]
+                imgui.spacing()
+                imgui.text_colored(imgui.ImVec4(0.6, 0.6, 0.6, 1.0), "Quick Reference:")
+                if nav == "3dsmax":
+                    self._hint("Alt + MMB Drag", "Orbit")
+                    self._hint("MMB Drag", "Pan")
+                    self._hint("Scroll", "Zoom")
+                elif nav == "blender":
+                    self._hint("MMB Drag", "Orbit")
+                    self._hint("Shift + MMB Drag", "Pan")
+                    self._hint("Scroll", "Zoom")
+                else:
+                    self._hint("Ctrl + LMB Drag", "Orbit")
+                    self._hint("MMB Drag", "Pan")
+                    self._hint("Scroll", "Zoom")
+                self._hint("LMB Click", "Select")
+                self._hint("RMB Click", "Context Menu")
+                self._hint("Alt + LMB Drag", "Rotate Light")
+                if nav == "blender":
+                    self._hint("G", "Move Gizmo")
+                    self._hint("R", "Rotate Gizmo")
+                    self._hint("S", "Scale Gizmo")
+                else:
+                    self._hint("W", "Move Gizmo")
+                    self._hint("E", "Rotate Gizmo")
+                    self._hint("R", "Scale Gizmo")
+
+        # -- Lighting --
+        with expandable_section("Lighting", imgui.TreeNodeFlags_.default_open.value) as expanded:
+            if expanded:
+                changed, self._lighting_preset_idx = imgui.combo(
+                    "Lighting Preset", self._lighting_preset_idx, self._LIGHTING_LABELS
+                )
+                if changed:
+                    key = self._LIGHTING_KEYS[self._lighting_preset_idx]
+                    if hasattr(self.app, 'lighting'):
+                        self.app.lighting.set_preset(key)
+                    self._persist()
+
+                changed, self._light_type_idx = imgui.combo(
+                    "Light Type", self._light_type_idx, self._LIGHT_TYPE_LABELS
+                )
+                if changed:
+                    key = self._LIGHT_TYPE_KEYS[self._light_type_idx]
+                    if hasattr(self.app, 'lighting'):
+                        self.app.lighting.set_light_type(key)
+                    self._persist()
+
+        # -- Appearance --
+        with expandable_section("Appearance") as expanded:
+            if expanded:
+                col = imgui.ImVec4(self._bg_color[0], self._bg_color[1], self._bg_color[2], 1.0)
+                changed, col = imgui.color_edit3("Background", col)
+                if changed:
+                    self._bg_color = [col.x, col.y, col.z]
+                    renderer = getattr(self.app, 'renderer', None)
+                    if renderer is not None:
+                        renderer.bg_color = tuple(self._bg_color)
+                    self._persist()
+
+                imgui.spacing()
+                changed, self._outline_style_idx = imgui.combo(
+                    "Selection Outline", self._outline_style_idx, self._OUTLINE_LABELS
+                )
+                if changed:
+                    self._persist()
+
+                if self.outline_style != "none":
+                    col = imgui.ImVec4(self._outline_color[0], self._outline_color[1], self._outline_color[2], 1.0)
+                    changed, col = imgui.color_edit3("Outline Color", col)
+                    if changed:
+                        self._outline_color = [col.x, col.y, col.z]
+                        self._persist()
+
         # -- File Watching --
-        if imgui.collapsing_header("File Watching", imgui.TreeNodeFlags_.default_open.value):
-            changed, self._nif_reload_prompt = imgui.checkbox(
-                "Prompt before reloading changed NIF files", self._nif_reload_prompt
-            )
-            if changed:
-                self._persist()
-            imgui.text_colored(
-                imgui.ImVec4(0.5, 0.5, 0.5, 1.0),
-                "  When disabled, NIF files reload automatically.",
-            )
+        with expandable_section("File Watching", imgui.TreeNodeFlags_.default_open.value) as expanded:
+            if expanded:
+                changed, self._nif_reload_prompt = imgui.checkbox(
+                    "Prompt before reloading changed NIF files", self._nif_reload_prompt
+                )
+                if changed:
+                    self._persist()
+                imgui.text_colored(
+                    imgui.ImVec4(0.5, 0.5, 0.5, 1.0),
+                    "  When disabled, NIF files reload automatically.",
+                )
 
         imgui.end()
 

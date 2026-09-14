@@ -12,20 +12,34 @@ mappings:
       object_id: 014B90
     fo4:
       plugin: Fallout4.esm
-      object_id: 179620
-    notes: FNV HairDefault ("Clean Cut") -> FO4 BoyHair01 default fallback.
+      object_id: 094D04
+    notes: FNV HairDefault ("Clean Cut") -> FO4 HairMale19.
   - fnv:
       plugin: FalloutNV.esm
       object_id: 05DC75
     fo4:
       plugin: Fallout4.esm
-      object_id: 179D22
-    notes: FNV HairDefaultF ("Clean Cut") -> FO4 GirlHair01 default fallback.
+      object_id: 09C29B
+    notes: FNV HairDefaultF ("Clean Cut") -> FO4 HairFemale19.
+  - fnv:
+      plugin: FalloutNV.esm
+      object_id: 0987D9
+    fo4:
+      plugin: Fallout4.esm
+      object_id: 1477D0
+    notes: FNV HairAfricanAmericanBaseOld -> FO4 HairMale18 ("Combover").
+  - fnv:
+      plugin: FalloutNV.esm
+      object_id: 0987D9
+    fo4:
+      plugin: Fallout4.esm
+      object_id: 1477D0
+    notes: Merged-source HairAfricanAmericanBaseOld -> FO4 HairMale18 ("Combover").
 
 race_defaults:
   human_male:
     plugin: Fallout4.esm
-    object_id: 179620
+    object_id: 094D04
   human_female:
     plugin: Fallout4.esm
-    object_id: 179D22
+    object_id: 09C29B

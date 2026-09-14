@@ -1,30 +1,10 @@
 //! Fixup: strip non-SNDR Sound references from STAG records.
 //!
-
-//!
-//! # What this does
-//! FO76 uses LVLI (leveled sound lists) or other non-SNDR record types in some
-//! STAG `Sound` fields.  FO4 expects SNDR (SoundDescriptor) or NULL.
-//! References to wrong record types produce xEdit errors.
-//!
-//! For each STAG record in the target plugin, this fixup inspects every TNAM
-//! subrecord.  TNAM is decoded as a `FieldValue::Struct` with two fields:
-//! - `sound` — `FieldValue::FormKey` pointing at the referenced sound record.
-//! - `action` — `FieldValue::String` (the animation action tag).
-//!
-//! When the `sound` FK resolves to a record whose signature is not `SNDR`, the
-//! FK is replaced with a null FormKey (local = 0), preserving the `action`
-//! field intact.  TNAM entries whose `sound` is already null, or whose FK does
-//! not resolve at all (external master not loaded), are left unchanged.
-//!
-//! # Algorithm
-//! 1. Build a `FxHashMap<(local, plugin_sym) → SigCode>` for every record in
-//!    the target plugin (one `iter_form_keys_of_sig` call per signature).
-//! 2. For each STAG FormKey in the target plugin, read the record and call
-//!    `apply_to_record`.
-//! 3. `apply_to_record` scans TNAM structs, strips non-SNDR `sound` FKs, and
-//!    returns `true` when any mutation occurred.
-//! 4. Mutated records are written back with `replace_record_native`.
+//! FO76 puts LVLI (leveled sound lists) and other non-SNDR records in some STAG
+//! `Sound` fields; FO4 expects SNDR or NULL, and xEdit flags the rest. A TNAM
+//! (`Struct` of `sound` FormKey + `action` string) whose `sound` resolves to a
+//! non-SNDR record gets a null `sound`, keeping `action`. Null or unresolvable
+//! sounds (external master not loaded) are left alone.
 
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -149,19 +129,8 @@ fn build_fk_sig_map(
 // Record-level mutation (extracted for unit-test access)
 // ---------------------------------------------------------------------------
 
-/// Scan TNAM subrecords in a STAG record and null out the `sound` FK whenever
-/// it references a non-SNDR record type.
-///
-/// Returns `(stripped_count, changed)`:
-/// - `stripped_count` — number of `sound` FKs that were nulled.
-/// - `changed` — whether any mutation occurred (i.e. `stripped_count > 0`).
-///
-/// TNAM entries are kept regardless — only the `sound` field is zeroed, not
-/// the entire entry, preserving the `action` field.
-///
-/// # Parameters
-/// - `sound_sym` — interned `Sym` for the string `"sound"` (struct field name).
-/// - `fk_to_sig` — map from `(local, plugin_sym)` to `SigCode` for target records.
+/// Null each TNAM `sound` FK that references a non-SNDR record, keeping the
+/// entry and its `action`. Returns `(stripped_count, changed)`.
 pub fn apply_to_record(
     record: &mut Record,
     sound_sym: Sym,

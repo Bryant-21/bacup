@@ -1,18 +1,11 @@
 //! Copy creature support files (`*.ssf`, `bonelodsetting.txt`) from the
 //! extracted source tree into the converted mod.
 //!
-//! The pre-native Python walker ported these alongside character-asset NIFs
-//! (`_CHARACTER_ASSETS_EXTENSIONS = {".nif", ".txt", ".ssf"}`); the native
-//! pipeline lost them — FO76 ships 217 `.ssf` under actors/ and we emitted
-//! zero. `.ssf` carries bone-delta/morph data, `bonelodsetting.txt` bone LOD.
-//! Working fan ports ship both.
-//!
-//! Every support file under a source creature dir is mirrored (subdirectories
-//! created as needed) for each creature present in the output — variant
-//! subtrees like `floater/overgrown/` included.
-//!
-//! # FixupReport mapping
-//! `records_changed` = files copied.
+//! `.ssf` carries bone-delta/morph data (FO76 ships 217 under actors/) and
+//! `bonelodsetting.txt` bone LOD; working fan ports ship both. Every support
+//! file under a source creature dir, variant subtrees like `floater/overgrown/`
+//! included, is mirrored for each creature in the output. `records_changed`
+//! counts files copied.
 
 use std::path::{Path, PathBuf};
 

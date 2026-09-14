@@ -43,7 +43,7 @@ pub(crate) fn normalize_skyrim_weather(record: &mut Record, interner: &StringInt
     normalize_weather_volumetric_lighting(record);
     record.fields.retain(|entry| entry.sig.0 != *b"DNAM");
 
-    let mut pnam_rows = 1_usize;
+    let pnam_rows = DEFAULT_CLOUD_ROWS;
     for entry in &mut record.fields {
         match entry.sig.0 {
             sig if sig == *b"LNAM" || sig == *b"MNAM" || sig == *b"NNAM" => {
@@ -73,12 +73,10 @@ pub(crate) fn normalize_skyrim_weather(record: &mut Record, interner: &StringInt
             },
             sig if sig == *b"PNAM" => {
                 if raw(&entry.value).is_some() {
-                    if let Some(rows) =
-                        expand_weather_period_rows(&mut entry.value, 4, already_target_layout)
+                    if expand_weather_period_rows(&mut entry.value, 4, already_target_layout)
+                        .is_none()
+                        || !resize_raw_row_array(&mut entry.value, 32, DEFAULT_CLOUD_ROWS)
                     {
-                        pnam_rows = rows;
-                    } else {
-                        pnam_rows = DEFAULT_CLOUD_ROWS;
                         entry.value = raw_value(vec![0_u8; pnam_rows * 32]);
                     }
                 } else {
@@ -138,13 +136,14 @@ pub(crate) fn normalize_skyrim_weather(record: &mut Record, interner: &StringInt
                         ],
                         interner,
                     );
-                    pnam_rows = structured_rows(&entry.value).unwrap_or(1).max(1);
+                    resize_structured_row_array(&mut entry.value, DEFAULT_CLOUD_ROWS);
                 }
             }
             sig if sig == *b"JNAM" => {
                 if raw(&entry.value).is_some() {
                     if expand_weather_period_rows(&mut entry.value, 4, already_target_layout)
                         .is_none()
+                        || !resize_raw_row_array(&mut entry.value, 32, DEFAULT_CLOUD_ROWS)
                     {
                         entry.value = raw_value(vec![0_u8; pnam_rows * 32]);
                     }
@@ -169,12 +168,13 @@ pub(crate) fn normalize_skyrim_weather(record: &mut Record, interner: &StringInt
                         ],
                         interner,
                     );
+                    resize_structured_row_array(&mut entry.value, DEFAULT_CLOUD_ROWS);
                 }
             }
             sig if sig == *b"NAM0" => rebuild_nam0(&mut entry.value),
             sig if sig == *b"NAM4" => {
-                if let FieldValue::Bytes(bytes) = &entry.value
-                    && (bytes.is_empty() || bytes.len() % 4 != 0)
+                if raw(&entry.value).is_some()
+                    && !resize_raw_row_array(&mut entry.value, 4, DEFAULT_CLOUD_ROWS)
                 {
                     entry.value = raw_value(vec![0_u8; pnam_rows * 4]);
                 }
@@ -245,7 +245,6 @@ pub(crate) fn normalize_skyrim_weather(record: &mut Record, interner: &StringInt
 
     if !record.fields.iter().any(|entry| entry.sig.0 == *b"PNAM") {
         push_zero_field(record, *b"PNAM", DEFAULT_CLOUD_ROWS * 32);
-        pnam_rows = DEFAULT_CLOUD_ROWS;
     }
     if !record.fields.iter().any(|entry| entry.sig.0 == *b"JNAM") {
         push_zero_field(record, *b"JNAM", pnam_rows * 32);
@@ -274,11 +273,11 @@ pub(crate) fn normalize_skyrim_weather(record: &mut Record, interner: &StringInt
         (*b"IMSP", 32),
         (*b"WGDR", 32),
         (*b"UNAM", 24),
-        (*b"VNAM", 4),
-        (*b"WNAM", 4),
     ] {
         ensure_single_required(record, sig, len);
     }
+    ensure_single_weather_multiplier(record, *b"VNAM");
+    ensure_single_weather_multiplier(record, *b"WNAM");
 
     record
         .fields
@@ -497,7 +496,10 @@ fn rebuild_nam0(value: &mut FieldValue) {
     if source.len() == FO4_WTHR_NAM0_SIZE {
         return;
     }
-    if source.len() != 272 {
+    // Skyrim's form-version gates produce 13-, 14-, or 17-row NAM0 blocks
+    // (208/224/272 bytes). Expand every complete row that exists and retain
+    // zeros only for target categories absent from that source record.
+    if source.is_empty() || source.len() % 16 != 0 || source.len() > 272 {
         *value = raw_value(vec![0_u8; FO4_WTHR_NAM0_SIZE]);
         return;
     }
@@ -526,11 +528,28 @@ fn normalize_byte_array_or_default(value: &mut FieldValue, len: usize) {
     }
 }
 
-fn structured_rows(value: &FieldValue) -> Option<usize> {
-    match value {
-        FieldValue::List(rows) => Some(rows.len()),
-        FieldValue::Struct(_) => Some(1),
-        _ => None,
+fn resize_raw_row_array(value: &mut FieldValue, row_width: usize, target_rows: usize) -> bool {
+    let Some(bytes) = raw(value) else {
+        return false;
+    };
+    if row_width == 0 || bytes.len() % row_width != 0 {
+        return false;
+    }
+    let target_len = row_width * target_rows;
+    let mut target = bytes[..bytes.len().min(target_len)].to_vec();
+    target.resize(target_len, 0);
+    *value = raw_value(target);
+    true
+}
+
+fn resize_structured_row_array(value: &mut FieldValue, target_rows: usize) {
+    if matches!(value, FieldValue::Struct(_)) {
+        let first = std::mem::replace(value, FieldValue::None);
+        *value = FieldValue::List(vec![first]);
+    }
+    if let FieldValue::List(rows) = value {
+        rows.truncate(target_rows);
+        rows.resize_with(target_rows, || FieldValue::Struct(Vec::new()));
     }
 }
 
@@ -554,6 +573,32 @@ fn ensure_single_required(record: &mut Record, sig: [u8; 4], len: usize) {
         normalize_fixed_or_default(&mut entry.value, len);
     } else {
         push_zero_field(record, sig, len);
+    }
+}
+
+fn ensure_single_weather_multiplier(record: &mut Record, sig: [u8; 4]) {
+    let mut seen = false;
+    record.fields.retain(|entry| {
+        if entry.sig.0 != sig {
+            return true;
+        }
+        if seen {
+            return false;
+        }
+        seen = true;
+        true
+    });
+    if let Some(entry) = record.fields.iter_mut().find(|entry| entry.sig.0 == sig) {
+        if matches!(&entry.value, FieldValue::Bytes(bytes) if bytes.len() == 4)
+            || matches!(entry.value, FieldValue::Float(_))
+        {
+            return;
+        }
+        entry.value = raw_value(1.0_f32.to_le_bytes().to_vec());
+    } else {
+        record
+            .fields
+            .push(field(sig, raw_value(1.0_f32.to_le_bytes().to_vec())));
     }
 }
 
@@ -798,6 +843,13 @@ mod tests {
             .unwrap()
     }
 
+    fn period_values(bytes: &[u8]) -> Vec<u32> {
+        bytes
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect()
+    }
+
     const REQUIRED_ORDER: &[&str] = &[
         "LNAM", "MNAM", "NNAM", "RNAM", "QNAM", "PNAM", "JNAM", "NAM0", "NAM4", "FNAM", "DATA",
         "NAM1", "IMSP", "WGDR", "DALC", "DALC", "DALC", "DALC", "DALC", "DALC", "DALC", "DALC",
@@ -966,7 +1018,7 @@ mod tests {
 
         normalize_skyrim_weather(&mut record, &interner);
 
-        assert_required_contract(&record, 1);
+        assert_required_contract(&record, DEFAULT_CLOUD_ROWS);
         let expected_periods = [
             source_periods[0],
             source_periods[1],
@@ -977,18 +1029,20 @@ mod tests {
             source_periods[1],
             source_periods[2],
         ];
-        for sig in [*b"PNAM", *b"JNAM", *b"IMSP"] {
+        for sig in [*b"PNAM", *b"JNAM"] {
             let actual = bytes(&record, &sig)
                 .chunks_exact(4)
                 .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
                 .collect::<Vec<_>>();
             assert_eq!(
-                actual,
+                &actual[..8],
                 expected_periods,
                 "{}",
                 std::str::from_utf8(&sig).unwrap()
             );
+            assert!(actual[8..].iter().all(|value| *value == 0));
         }
+        assert_eq!(period_values(bytes(&record, b"IMSP")), expected_periods);
         for row in 0..17 {
             let actual = bytes(&record, b"NAM0")[row * 32..row * 32 + 32]
                 .chunks_exact(4)
@@ -1019,6 +1073,14 @@ mod tests {
         assert_eq!(bytes(&record, b"DATA")[19], 0);
         assert_eq!(&bytes(&record, b"FNAM")[..32], &[0x40; 32]);
         assert!(bytes(&record, b"FNAM")[32..].iter().all(|byte| *byte == 0));
+        assert_eq!(
+            f32::from_le_bytes(bytes(&record, b"VNAM").try_into().unwrap()),
+            1.0
+        );
+        assert_eq!(
+            f32::from_le_bytes(bytes(&record, b"WNAM").try_into().unwrap()),
+            1.0
+        );
 
         let once = record.fields.clone();
         normalize_skyrim_weather(&mut record, &interner);
@@ -1133,7 +1195,8 @@ mod tests {
         else {
             panic!("structured PNAM list");
         };
-        for (row_index, row) in pnam_rows.iter().enumerate() {
+        assert_eq!(pnam_rows.len(), DEFAULT_CLOUD_ROWS);
+        for (row_index, row) in pnam_rows.iter().take(2).enumerate() {
             let FieldValue::Struct(fields) = row else {
                 panic!("structured PNAM row");
             };
@@ -1150,13 +1213,17 @@ mod tests {
             }
         }
 
-        let FieldValue::Struct(jnam) = &record
+        let FieldValue::List(jnam_rows) = &record
             .fields
             .iter()
             .find(|entry| entry.sig.0 == *b"JNAM")
             .unwrap()
             .value
         else {
+            panic!("structured JNAM rows");
+        };
+        assert_eq!(jnam_rows.len(), DEFAULT_CLOUD_ROWS);
+        let FieldValue::Struct(jnam) = &jnam_rows[0] else {
             panic!("structured JNAM");
         };
         for (name, expected) in [
@@ -1200,6 +1267,45 @@ mod tests {
         let once = record.fields.clone();
         normalize_skyrim_weather(&mut record, &interner);
         assert_eq!(record.fields, once);
+    }
+
+    #[test]
+    fn shorter_skyrim_nam0_variants_preserve_every_source_lighting_row() {
+        for source_len in [208_usize, 224] {
+            let mut interner = StringInterner::new();
+            let mut record = weather(&mut interner);
+            let mut source = vec![0_u8; source_len];
+            for (row, bytes) in source.chunks_exact_mut(16).enumerate() {
+                for period in 0..4 {
+                    let value = ((row as u32 + 1) << 8) | period as u32;
+                    bytes[period * 4..period * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            push_bytes(&mut record, *b"NAM0", source);
+
+            normalize_skyrim_weather(&mut record, &interner);
+
+            assert_required_contract(&record, DEFAULT_CLOUD_ROWS);
+            let source_rows = source_len / 16;
+            for row in 0..source_rows {
+                let actual = period_values(&bytes(&record, b"NAM0")[row * 32..row * 32 + 32]);
+                let source = (0..4)
+                    .map(|period| ((row as u32 + 1) << 8) | period)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    actual,
+                    vec![
+                        source[0], source[1], source[2], source[3], source[3], source[0],
+                        source[1], source[2]
+                    ]
+                );
+            }
+            assert!(
+                bytes(&record, b"NAM0")[source_rows * 32..]
+                    .iter()
+                    .all(|byte| *byte == 0)
+            );
+        }
     }
 
     #[test]

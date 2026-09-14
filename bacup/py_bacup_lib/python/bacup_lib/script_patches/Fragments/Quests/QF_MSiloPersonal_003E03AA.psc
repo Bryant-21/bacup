@@ -1,7 +1,7 @@
 Function HandleStage(Int aiStage)
     Quest personalQuest = Game.GetFormFromFile(0x003E03AA, "SeventySix.esm") as Quest
-    If personalQuest != None && !personalQuest.IsRunning()
-        personalQuest.Start()
+    If personalQuest == None || !personalQuest.IsRunning()
+        Return
     EndIf
     (personalQuest as MSiloPersonalQuestScript).HandleStage(aiStage)
 EndFunction

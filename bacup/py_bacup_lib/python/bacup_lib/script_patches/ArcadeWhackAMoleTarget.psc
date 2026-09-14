@@ -15,7 +15,7 @@ Function SendRMIToServer(String functionName, Var[] arguments)
     ; Deliberate local no-op: the useful calls are handled directly above.
 EndFunction
 
-Event OnHit(ObjectReference akTarget, ObjectReference akAggressor, Form akSource, Projectile akProjectile, Bool abPowerAttack, Bool abSneakAttack, Bool abBashAttack, Bool abHitBlocked, Bool abCritAttack, String asMaterialName)
+Event OnHit(ObjectReference akTarget, ObjectReference akAggressor, Form akSource, Projectile akProjectile, Bool abPowerAttack, Bool abSneakAttack, Bool abBashAttack, Bool abHitBlocked, String asMaterialName)
     If !vulnerable
         Return
     EndIf

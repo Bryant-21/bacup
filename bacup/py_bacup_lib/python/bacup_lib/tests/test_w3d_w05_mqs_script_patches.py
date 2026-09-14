@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,11 @@ from bacup_lib.tests.test_terminal_fragment_script_patches import _fo4_base_sour
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 DEPLOYED_SCRIPTS_ROOT = REPO_ROOT / "mods" / "SeventySix" / "data" / "Scripts"
+STATUS = REPO_ROOT / "bacup" / "docs" / "stub_restoration" / "status.csv"
+PACK_CLOSURE_CONTRACT = "contracts/w05-mqs-204-controller-pack-closure.md"
+BODYLESS_PACKAGE_CLOSURE_CONTRACT = (
+    "contracts/w05-mqs-package-client-body-closure.md"
+)
 
 TRADE_SECRETS_OBJECTIVES = (
     100,
@@ -47,7 +53,7 @@ TRADE_SECRETS_OBJECTIVES = (
     1000,
     1200,
 )
-TRADE_SECRETS_NEGATIVE_STAGES = (
+TRADE_SECRETS_RESTORED_STAGES = (
     1,
     125,
     311,
@@ -57,7 +63,7 @@ TRADE_SECRETS_NEGATIVE_STAGES = (
     9999,
     10000,
 )
-MQS_205_NEGATIVE_STAGES = (
+MQS_205_RESTORED_STAGES = (
     500,
     800,
     950,
@@ -77,37 +83,70 @@ def _fragment_member(stage: int) -> str:
 PATCH_CASES = {
     "DefaultCollectionAliasOnDeathA": ("ondeath",),
     "W05_Jen205_Script": ("activatestealth", "ontimer"),
+    "Fragments:Packages:PF_W05_MQS_204P_RaidersTrave_00574019": (
+        "fragment_end",
+    ),
     "Fragments:Quests:QF_W05_MQS_205P_0041CB6D": tuple(
         _fragment_member(stage)
         for stage in (
-            20, 10, 30, 40, 50, 100, 200, 250, 300, 350, 400, 450, 700,
-            900, 1000, 1050, 1100, 1300, 1400, 1900, 2000, 2100, 2200,
-            2300, 9000,
+            20, 10, 30, 40, 50, 100, 200, 250, 300, 350, 400, 450, 500,
+            700, 800, 900, 950, 1000, 1050, 1100, 1300, 1400, 1500, 1600,
+            1800, 1900, 1950, 2000, 2100, 2200, 2300, 9000, 10000,
         )
     ),
     "Fragments:Quests:QF_W05_MQSettlers_201P_Indus_003F28C3": tuple(
         _fragment_member(stage)
         for stage in (
-            10, 100, 150, 175, 200, 225, 250, 300, 310, 325, 400, 425,
-            426, 427, 428, 429, 449, 450, 490, 500, 510, 525, 550, 600,
+            1, 10, 100, 125, 150, 175, 200, 225, 250, 300, 310, 311, 325,
+            400, 425, 426, 427, 428, 429, 430, 431, 432, 449, 450, 490, 500,
+            510, 525, 550, 600,
             700, 625, 725, 730, 731, 750, 800, 810, 825, 850, 851, 875,
             900, 901, 902, 925, 950, 951, 952, 953, 975, 1000, 1010,
-            1025, 1200, 1225, 9000,
+            1025, 1200, 1225, 9000, 9999, 10000,
         )
     ),
 }
 
 UNPATCHED_JOIN_CASES = (
-    "DefaultSetStageOnInstanceLoadQuest",
     "Fragments:Terminals:TERM_W05_MQS_201P_Motherlode_003F514D",
     "W05_MQS_201P_MotherlodeWaveScript",
     "W05_MQS_201P_QuestScript",
-    "W05_MQS_202P_QuestScript",
     "W05_MQS_203P_QuestScript",
-    "W05_MQS_204P_FakeWallScript",
-    "W05_MQS_204P_PlayerScript",
     "W05_MQS_204P_QuestScript",
 )
+
+BODYLESS_PACKAGE_CASES = (
+    "Fragments:Packages:PF_W05_MQS_201P_HQ_PaigeTrav_00597801",
+    "Fragments:Packages:PF_W05_MQS_201P_HWS_DefaultS_00590450",
+    "Fragments:Packages:PF_W05_MQS_201P_HWS_DefaultS_00590451",
+    "Fragments:Packages:PF_W05_MQS_201P_HWS_DefaultS_00590452",
+    "Fragments:Packages:PF_W05_MQS_201P_HWS_PenTrave_00587308",
+    "Fragments:Packages:PF_W05_MQS_202P_HQ_JenTravel_00583E9A",
+    "Fragments:Packages:PF_W05_MQS_202P_HQ_JenTravel_005A1232",
+    "Fragments:Packages:PF_W05_MQS_202P_HQ_JenTravel_005A1233",
+    "Fragments:Packages:PF_W05_MQS_202P_HQ_JenTravel_005A1234",
+    "Fragments:Packages:PF_W05_MQS_202P_HQ_PenTravel_00583E9B",
+    "Fragments:Packages:PF_W05_MQS_203P_Bunker_Furn__0059DB1E",
+    "Fragments:Packages:PF_W05_MQS_203P_Bunker_Furn__0059DB1F",
+    "Fragments:Packages:PF_W05_MQS_203P_Bunker_Furn__0059DB20",
+    "Fragments:Packages:PF_W05_MQS_203P_Bunker_Furn__0059DB21",
+    "Fragments:Packages:PF_W05_MQS_203P_Bunker_Furn__0059DB22",
+    "Fragments:Packages:PF_W05_MQS_203P_Bunker_Furn__0059DB23",
+    "Fragments:Packages:PF_W05_MQS_203P_Bunker_Furn__0059DB24",
+    "Fragments:Packages:PF_W05_MQS_203P_Bunker_Furn__0059DB25",
+    "Fragments:Packages:PF_W05_MQS_203P_RadcliffRobc_005A26E2",
+    "Fragments:Packages:PF_W05_MQS_203P_Robobrain_En_005A26E3",
+    "Fragments:Packages:PF_W05_MQS_205P_07_PennyLeav_00570D66",
+    "Fragments:Packages:pf_w05_mqs_202p_hq_paigetrav_00597802",
+    "Fragments:Packages:pf_w05_mqs_202p_tl_mochou_st_00594816",
+    "Fragments:Packages:pf_w05_mqs_203p_hq_paigetrav_00597800",
+)
+
+DOCUMENTARY_NOOP_PACKAGES = {
+    "Fragments:Packages:PF_W05_MQS_202P_HQ_JenTravel_00583E9A",
+    "Fragments:Packages:PF_W05_MQS_202P_HQ_JenTravel_005A1232",
+    "Fragments:Packages:PF_W05_MQS_202P_HQ_JenTravel_005A1233",
+}
 
 
 def _member_names(source: str) -> list[str]:
@@ -211,10 +250,10 @@ def test_mqs_205_manifest_preserves_jen_alias_and_progression():
     assert "playerRef.SetValue(W05_MQS_205P_Started, 1.0)" in _member_body(
         patch, _fragment_member(10)
     )
-    assert len(MQS_205_NEGATIVE_STAGES) == 8
+    assert len(MQS_205_RESTORED_STAGES) == 8
     assert all(
-        _fragment_member(stage) not in patch_members
-        for stage in MQS_205_NEGATIVE_STAGES
+        _fragment_member(stage) in patch_members
+        for stage in MQS_205_RESTORED_STAGES
     )
     for forbidden in ("Community", "Bounty", "Reputation_AV_", "defaultquestencounterwavescript"):
         assert forbidden not in patch
@@ -227,12 +266,49 @@ def test_trade_secrets_manifest_is_exact_and_excludes_online_surfaces():
 
     assert _member_names(patch) == list(PATCH_CASES[script_name])
     assert all(
-        _fragment_member(stage) not in _member_names(patch)
-        for stage in TRADE_SECRETS_NEGATIVE_STAGES
+        _fragment_member(stage) in _member_names(patch)
+        for stage in TRADE_SECRETS_RESTORED_STAGES
     )
     assert patch.count("SetObjectiveDisplayed(") == len(TRADE_SECRETS_OBJECTIVES)
     for forbidden in ("Community", "Bounty", "Reputation_AV_", "defaultquestencounterwavescript"):
         assert forbidden not in patch
+
+
+def test_204_root_and_raiders_package_have_current_terminal_dispositions():
+    with STATUS.open(encoding="utf-8", newline="") as status_file:
+        rows = {row["script_name"]: row for row in csv.DictReader(status_file)}
+
+    root = rows["W05_MQS_204P_QuestScript"]
+    assert root["terminal_state"] == "non-defect"
+    assert root["evidence"] == PACK_CLOSURE_CONTRACT
+
+    package = rows["Fragments:Packages:PF_W05_MQS_204P_RaidersTrave_00574019"]
+    assert package["terminal_state"] == "patched"
+    assert package["evidence"] == PACK_CLOSURE_CONTRACT
+
+
+def test_bodyless_package_record_dependencies_are_closed_as_nondefects():
+    with STATUS.open(encoding="utf-8", newline="") as status_file:
+        rows = {row["script_name"].lower(): row for row in csv.DictReader(status_file)}
+
+    assert len(BODYLESS_PACKAGE_CASES) == 24
+    for script_name in BODYLESS_PACKAGE_CASES:
+        row = rows[script_name.lower()]
+        assert row["terminal_state"] == "non-defect"
+        assert row["evidence"] == BODYLESS_PACKAGE_CLOSURE_CONTRACT
+
+
+def test_bodyless_package_rows_do_not_invent_client_side_effects():
+    for script_name in BODYLESS_PACKAGE_CASES:
+        patch = _script_patch_source(script_name)
+        if script_name not in DOCUMENTARY_NOOP_PACKAGES:
+            assert patch is None
+            continue
+
+        assert patch is not None
+        assert _member_names(patch) == ["fragment_begin"]
+        body = _member_body(patch, "fragment_begin").splitlines()[1:-1]
+        assert all(not line.strip() or line.strip().startswith(";") for line in body)
 
 
 @pytest.mark.parametrize("script_name", UNPATCHED_JOIN_CASES)

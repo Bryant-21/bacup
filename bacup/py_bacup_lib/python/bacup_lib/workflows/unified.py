@@ -1,8 +1,8 @@
-"""Unified FO76→FO4 regen driver: record track + concurrent asset waves, the
-sink join (loose-tree reconcile + BA2 plan/finalize), and the cache manifest."""
+"""Unified FO76→FO4 regen driver: record track, concurrent asset waves, and
+sink join (loose-tree reconcile + BA2 plan/finalize)."""
+
 from __future__ import annotations
 
-import hashlib
 import contextlib
 import gc
 import json
@@ -18,31 +18,33 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
+from pathlib import Path, PurePosixPath
+from queue import Empty, Queue
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
 from creation_lib.build.archive_plan import (
     DEFAULT_ARCHIVE_MAX_BYTES,
+    ArchiveEntry,
     PlannedArchive,
     discover_mod_archives,
+    estimate_archive_size,
     plan_archive_outputs,
 )
 from creation_lib.build.packer import (
     _inventory_data_entries,
     _inventory_root_strings_entries,
+    _run_native_pack_entries,
     _run_native_pack_plans,
     _validate_archive_size,
 )
-from bacup_lib import pipeline
+from bacup_lib import papyrus_header_cache, pipeline
 from bacup_lib.asset_paths import normalize_asset_source_path
 from bacup_lib.base_asset_dedupe import (
     resolve_base_asset_namespace,
     resolve_base_asset_relocation_mesh_roots,
 )
 from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-from bacup_lib.generated_ids import (
-    generated_object_id_floor as _generated_object_id_floor,
-)
 from bacup_lib.models import (
     AssetProvenance,
     AssetRef,
@@ -55,14 +57,15 @@ from bacup_lib.models import (
     PluginPortRequest,
     RecordNode,
     RunResult,
+    WorkshopSnapPoint,
     WorldspaceCellBounds,
 )
-from bacup_lib.native_maps import native_face_resources_dir
+from bacup_lib.native_maps import native_face_resources_dir, native_translation_maps_dir
 from bacup_lib.native_runtime import load_native_module
 from bacup_lib.record.translation_map_data import (
     load_translation_map_overrides,
 )
-from bacup_lib.runner import Drainer, emit_runner_status
+from bacup_lib.runner import Drainer
 from bacup_lib.target_masters import (
     close_plugin_handles,
     resolve_required_target_master_path,
@@ -86,6 +89,21 @@ _FO76_WEB_MAP_PNG_REL = Path(
     "PrismaUI_F4/views/B21_FullScreenMap/maps/appalachia/map.png"
 )
 _FO4_PIPBOY_MAP_SIZE = (2048, 2048)
+_ANIM_TEXT_PROGRESS_HEARTBEAT_SECONDS = 15.0
+_CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+_PAPYRUS_CLASS_NAME_MAX_LENGTH = 38
+_MVP_MELEE_TARGET_PROFILES = frozenset(
+    {
+        "unarmed",
+        "power_fist_unarmed",
+        "machete_one_hand",
+        "grognak_two_hand",
+        "ripper_continuous",
+    }
+)
+_PSC_SCRIPT_NAME_RE = re.compile(
+    r"^\s*ScriptName\s+([A-Za-z_][A-Za-z0-9_]*)\b", re.IGNORECASE | re.MULTILINE
+)
 _FO76_VAULTBOY_SWF_TREES = (
     (
         Path("interface/components/vaultboys"),
@@ -211,7 +229,18 @@ def _finalize_fo76_pipboy_map_texture(
     ctx: ConversionContext,
     runner: "ConversionRunner | None",
 ) -> None:
-    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+    pair = (request.source_game.lower(), request.target_game.lower())
+    if pair != ("fo76", "fo4"):
+        from bacup_lib.fullscreen_map import finalize_converted_world_maps
+
+        exported = finalize_converted_world_maps(request, ctx)
+        if exported:
+            _safe_emit_log(
+                runner,
+                "INFO",
+                "Wrote FullScreenMap packs for converted worldspaces: "
+                + ", ".join(exported),
+            )
         return
     if not request.options.convert_textures:
         return
@@ -242,11 +271,32 @@ def _finalize_fo76_pipboy_map_texture(
 
     output_path = Path(ctx.mod_path) / "data" / _FO76_PIPBOY_MAP_REL
     web_map_path = Path(ctx.mod_path) / _FO76_WEB_MAP_PNG_REL
+    web_manifest_path = web_map_path.with_name("map.json")
     image = load_image(str(source_path), mode="RGBA")
     web_image = image.copy()
     try:
         web_map_path.parent.mkdir(parents=True, exist_ok=True)
         web_image.save(web_map_path, format="PNG", optimize=True)
+        web_manifest_path.write_text(
+            json.dumps(
+                {
+                    "worldspace": "Appalachia",
+                    "title": "APPALACHIA",
+                    "image": "map.png",
+                    "discovery": "proximity",
+                    "calibration": {
+                        "mode": "survey",
+                        "centerX": 340,
+                        "centerY": 135,
+                        "maxRange": 582500,
+                        "mapPx": 4096,
+                    },
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
         # FO4's Pip-Boy map UI expects vanilla-style legacy DXT map textures.
         if image.size != _FO4_PIPBOY_MAP_SIZE:
@@ -272,7 +322,7 @@ def _finalize_fo76_pipboy_map_texture(
     _safe_emit_log(
         runner,
         "INFO",
-        f"Wrote generated Appalachia fullscreen map image: {web_map_path}",
+        f"Wrote generated Appalachia fullscreen map pack: {web_map_path.parent}",
     )
 
 
@@ -302,8 +352,8 @@ def _copy_fo76_vaultboy_swfs(
         for source_file in sorted(source_tree.rglob("*.swf")):
             if not source_file.is_file():
                 continue
-            output_file = output_root / output_relative / source_file.relative_to(
-                source_tree
+            output_file = (
+                output_root / output_relative / source_file.relative_to(source_tree)
             )
             output_file.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_file, output_file)
@@ -387,14 +437,21 @@ def inventory_packable_entries(mod_root: Path) -> list:
     inventoried (sidecars stay loose)."""
     mod_root = Path(mod_root)
     entries = _inventory_data_entries(mod_root / "data", include_textures=True)
-    entries.extend(_inventory_root_strings_entries(mod_root / "Strings"))
+    root_strings = _inventory_root_strings_entries(mod_root / "Strings")
+    if root_strings:
+        root_string_paths = {entry.relative_path.casefold() for entry in root_strings}
+        entries = [
+            entry
+            for entry in entries
+            if entry.relative_path.casefold() not in root_string_paths
+        ]
+        entries.extend(root_strings)
     return entries
 
 
 def _archive_label_selected(label: str, labels: tuple[str, ...]) -> bool:
     return any(
-        label == wanted
-        or (label.startswith(wanted) and label[len(wanted) :].isdigit())
+        label == wanted or (label.startswith(wanted) and label[len(wanted) :].isdigit())
         for wanted in labels
     )
 
@@ -410,6 +467,7 @@ def finalize_sinks_for_mod(
     *,
     mod_name: str,
     archive_max_bytes: int = DEFAULT_ARCHIVE_MAX_BYTES,
+    ba2_compression_level: int | None = None,
     game: str = "fo4",
     reconcile_workers: int | None = None,
     direct_pack_textures: bool = True,
@@ -421,11 +479,10 @@ def finalize_sinks_for_mod(
     archive_labels: tuple[str, ...] | None = None,
     pack_progress: Callable[[dict], bool | None] | None = None,
 ) -> list[PlannedArchive]:
-    """The sink join: reconcile the loose tree into the spills, plan shards with
-    the legacy planner, finalize non-texture archives from the spills, and
-    direct-pack texture archives from the loose tree. Texture direct-pack
-    preserves the legacy parallel archive shape; the incremental DX10 spill is
-    slower on the full FO76 corpus.
+    """The sink join: reconcile the loose tree into the spills, plan shards,
+    finalize non-texture archives from the spills, and direct-pack texture
+    archives from the loose tree (the incremental DX10 spill is slower on the
+    full FO76 corpus).
 
     On any error: spills are aborted and every archive written by THIS call
     (including the partial in-flight one) is deleted.
@@ -435,7 +492,9 @@ def finalize_sinks_for_mod(
     """
     native = load_native_module()
     mod_root = Path(mod_root)
-    archive_root = Path(archive_output_dir) if archive_output_dir is not None else mod_root
+    archive_root = (
+        Path(archive_output_dir) if archive_output_dir is not None else mod_root
+    )
     archive_root.mkdir(parents=True, exist_ok=True)
     use_temp_outputs = not os.path.samefile(archive_root, mod_root)
     entries = inventory_packable_entries(mod_root)
@@ -462,10 +521,13 @@ def finalize_sinks_for_mod(
         for planned in plans
         for entry in planned.entries
     }
+    custom_compression = ba2_compression_level is not None
     direct_pack_rels = {
         _normalize_streamed_rel(entry.relative_path)
         for planned in plans
-        if direct_pack_all or (direct_pack_textures and planned.texture_archive)
+        if custom_compression
+        or direct_pack_all
+        or (direct_pack_textures and planned.texture_archive)
         for entry in planned.entries
     }
 
@@ -504,12 +566,18 @@ def finalize_sinks_for_mod(
         direct_pack_plans = [
             planned
             for planned in plans
-            if direct_pack_all or (direct_pack_textures and planned.texture_archive)
+            if custom_compression
+            or direct_pack_all
+            or (direct_pack_textures and planned.texture_archive)
         ]
         spill_plans = [
             planned
             for planned in plans
-            if not (direct_pack_all or (direct_pack_textures and planned.texture_archive))
+            if not (
+                custom_compression
+                or direct_pack_all
+                or (direct_pack_textures and planned.texture_archive)
+            )
         ]
         og_target = fo4_ba2_target == "og"
         if og_target and spill_plans:
@@ -525,6 +593,7 @@ def finalize_sinks_for_mod(
                 str(output),
                 planned.texture_archive,
                 json.dumps([entry.relative_path for entry in planned.entries]),
+                reconcile_workers,
             )
             commit_output(output, final_output)
 
@@ -537,7 +606,7 @@ def finalize_sinks_for_mod(
             output, final_output = output_paths(planned.output_name)
             written.append(output)
             direct_outputs.append((planned, output, final_output))
-        if direct_pack_plans:
+        if direct_pack_plans and ba2_compression_level is None:
             _run_native_pack_plans(
                 [(planned, output) for planned, output, _final in direct_outputs],
                 game,
@@ -545,6 +614,37 @@ def finalize_sinks_for_mod(
                 total_workers=requested_pack_workers,
                 progress=pack_progress,
             )
+        elif direct_pack_plans:
+            total_archives = len(direct_outputs)
+            for index, (planned, output, _final) in enumerate(direct_outputs):
+                if pack_progress is not None:
+                    pack_progress(
+                        {
+                            "message": f"Packing archive {planned.output_name}",
+                            "completed": index,
+                            "total": total_archives,
+                        }
+                    )
+                _run_native_pack_entries(
+                    planned.entries,
+                    str(output),
+                    game,
+                    texture_archive=planned.texture_archive,
+                    og=og_target,
+                    compression_level=ba2_compression_level,
+                    jobs=requested_pack_workers,
+                )
+                if pack_progress is not None:
+                    pack_progress(
+                        {
+                            "message": (
+                                "Archive packed native: name="
+                                f"{planned.output_name}"
+                            ),
+                            "completed": index + 1,
+                            "total": total_archives,
+                        }
+                    )
         for _planned, output, final_output in direct_outputs:
             _validate_archive_size(output, archive_max_bytes)
             commit_output(output, final_output)
@@ -582,153 +682,251 @@ def finalize_sinks_for_mod(
 
 
 # ---------------------------------------------------------------------------
-# Cache manifest
+# fo4:starfield packaging tail
+#
+# Starfield auto-loads ONLY `<plugin> - Main.ba2`, `- Textures.ba2`,
+# `- Voices_<lang>.ba2`, `- Localization.ba2` for a mod plugin
+# (bacup/docs/starfield_target/R1-esm-wrld-btd.md). The generic
+# `finalize_sinks_for_mod`/`plan_archive_outputs` path above is not reused:
+# (1) its default `expanded_archives=True` splits terrain/meshes/materials into
+# per-family archives Starfield never opens for a mod (silent total content
+# loss); (2) it has no per-archive compression override, and `terrain/*.btd`
+# (and, like vanilla `SFBGS00D - Main.ba2`, the whole Main archive) must ship
+# UNCOMPRESSED. `_run_native_pack_entries` (unlike `_run_native_pack_plans`)
+# takes a per-archive `compress`, so this tail builds exactly the two archives
+# Starfield opens.
 # ---------------------------------------------------------------------------
 
-# Bump a phase's version on ANY output-affecting converter change — this is a
-# manual contract: --cache trusts (source blake3, converter version, params
-# digest, outputs-exist) as the full reuse key.
-CONVERTER_VERSIONS: dict[str, str] = {
-    "textures": "1",
-    "materials": "1",
-    "nifs": "1",
-    "btos": "1",
-    "sounds": "1",
-    "havok": "1",
-    "animations": "1",
-    "drivers": "1",
-    "scripts": "3",
-}
-
-MANIFEST_NAME = "manifest.json"
-
-# Entry-list keys excluded from params digests: the digest captures
-# conversion KNOBS, not the input set.
-_ENTRY_LIST_PARAM_KEYS = (
-    "textures",
-    "nifs",
-    "btos",
-    "materials",
-    "sound_paths",
-    "havok_paths",
-    "animations",
-    "entries",
+FO4_STARFIELD_MAIN_LABEL = "Main"
+FO4_STARFIELD_TEXTURES_LABEL = "Textures"
+#: The only archive labels Starfield auto-loads for a mod plugin.
+FO4_STARFIELD_PACKED_LABELS: tuple[str, ...] = (
+    FO4_STARFIELD_MAIN_LABEL,
+    FO4_STARFIELD_TEXTURES_LABEL,
 )
+#: `data/`-relative top-level dirs that pack into the general, uncompressed
+#: Main archive: .mesh + .nif, terrain/*.btd, and sound/soundbanks/**, like
+#: `SFBGS00D - Main.ba2`, whose meshes+geometries+terrain+sound carry zero
+#: compressed chunks.
+_FO4_STARFIELD_MAIN_DIRS = frozenset({"meshes", "geometries", "terrain", "sound"})
 
 
 @dataclass(frozen=True)
-class CacheAssetEntry:
-    """One convertible source asset for the cache manifest."""
+class Fo4StarfieldPackFlags:
+    """Runtime knobs for :func:`build_pack_plan`.
 
-    source_path: str
-    phase: str
-    params_digest: str
-    outputs: tuple[str, ...]  # data-relative outputs
+    Kept separate from :class:`PackJob` so the pure classifier can be
+    unit-tested without constructing a full mod tree or a conversion request.
+    """
 
-
-def params_digest(params: Mapping) -> str:
-    """sha256 of the canonical JSON of the phase params MINUS the entry
-    lists, so the digest captures conversion knobs, not the input set."""
-    filtered = {k: v for k, v in params.items() if k not in _ENTRY_LIST_PARAM_KEYS}
-    canonical = json.dumps(filtered, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    mod_name: str = "Fallout4_SF"
 
 
-def write_cache_manifest(
-    mod_root: Path,
-    entries: Iterable[CacheAssetEntry],
-    *,
-    hash_workers: int | None = None,
-) -> Path:
-    """Write ``mods/<mod>/manifest.json`` (EVERY run, at join). Sources are
-    batch-hashed via the native blake3 hasher; missing sources are recorded
-    with a null hash (they can never cache-hit)."""
-    native = load_native_module()
-    mod_root = Path(mod_root)
-    entries = list(entries)
+@dataclass(frozen=True)
+class PackJob:
+    """One file's fo4:starfield packaging destination (R1 SD-8 / R3 / R5).
 
-    hashable = [e for e in entries if os.path.isfile(e.source_path)]
-    hashes = (
-        native.conversion_hash_files_blake3([e.source_path for e in hashable], hash_workers)
-        if hashable
-        else []
+    ``destination`` is either an output BA2 filename (e.g.
+    ``"Fallout4_SF - Main.ba2"``) or the literal string ``"loose"`` for files
+    that must never be archived.
+    """
+
+    relative_path: str  # forward-slash path relative to the mod's `data/` root
+    source_path: Path
+    destination: str
+    pack_kind: str | None  # "starfield" | "starfielddds" | None when loose
+    compress: bool
+
+
+def _fo4_starfield_archive_name(mod_name: str, label: str) -> str:
+    return f"{mod_name} - {label}.ba2"
+
+
+def _classify_fo4_starfield_path(relative_path: str) -> tuple[str, str | None, bool]:
+    """Returns ``(label, pack_kind, compress)`` for one `data/`-relative path.
+
+    ``label`` is ``"Main"``, ``"Textures"``, or ``"loose"``. Raises
+    ``ValueError`` for anything outside the R-doc-mandated destinations —
+    SD-8's failure mode is silent misfiling, so an unrecognized asset class
+    fails loud instead of guessing a bucket for it.
+    """
+    top = relative_path.split("/", 1)[0].lower()
+    if top == "materials":
+        # R5: zero of ~1.26M vanilla archived files are .mat; ship loose.
+        return "loose", None, False
+    if top == "textures":
+        return FO4_STARFIELD_TEXTURES_LABEL, "starfielddds", True
+    if top in _FO4_STARFIELD_MAIN_DIRS:
+        return FO4_STARFIELD_MAIN_LABEL, "starfield", False
+    raise ValueError(
+        f"fo4:starfield packaging: {relative_path!r} is outside the R-doc "
+        "packaging rules (materials/, textures/, meshes/, geometries/, "
+        "terrain/, sound/) — extend _classify_fo4_starfield_path instead of "
+        "silently bucketing it (SD-8)."
     )
-    digest_by_source = dict(zip((e.source_path for e in hashable), hashes, strict=True))
 
-    manifest = {
-        "version": 1,
-        "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "converters": dict(CONVERTER_VERSIONS),
-        "assets": {
-            entry.source_path: {
-                "blake3": digest_by_source.get(entry.source_path),
-                "phase": entry.phase,
-                "params_digest": entry.params_digest,
-                "outputs": list(entry.outputs),
-            }
-            for entry in entries
-        },
+
+def build_pack_plan(
+    mod_dir: Path, r_flags: Fo4StarfieldPackFlags | None = None
+) -> list[PackJob]:
+    """Classify every file under an fo4:starfield mod's `data/` tree into its
+    packaging destination (R1 SD-8 / R3 mesh packability / R5 loose .mat).
+
+    Pure — does no packing and calls no native code; ``mod_dir`` is the mod's
+    `data/` root (the same root ``pack_fo4_starfield_archives`` derives as
+    ``mod_root / "data"``). Actual archive writes happen in
+    :func:`pack_fo4_starfield_archives`.
+    """
+    mod_dir = Path(mod_dir)
+    flags = r_flags or Fo4StarfieldPackFlags()
+    jobs: list[PackJob] = []
+    for path in sorted(mod_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        relative_path = path.relative_to(mod_dir).as_posix()
+        label, pack_kind, compress = _classify_fo4_starfield_path(relative_path)
+        destination = (
+            "loose"
+            if label == "loose"
+            else _fo4_starfield_archive_name(flags.mod_name, label)
+        )
+        jobs.append(PackJob(relative_path, path, destination, pack_kind, compress))
+    return jobs
+
+
+def pack_fo4_starfield_archives(
+    mod_root: Path,
+    *,
+    mod_name: str | None = None,
+    archive_max_bytes: int = DEFAULT_ARCHIVE_MAX_BYTES,
+    archive_output_dir: Path | None = None,
+    expanded_archives: bool = False,
+    ba2_compression_level: int | None = None,
+    pack_progress: Callable[[dict], bool | None] | None = None,
+) -> list[PlannedArchive]:
+    """The fo4:starfield packaging tail.
+
+    Packs ``terrain/*.btd`` (plus meshes/geometries/sound) uncompressed into
+    ``<mod_name> - Main.ba2`` and textures (compressed) into
+    ``<mod_name> - Textures.ba2``; ``materials/**.mat`` is left loose.
+    Asserts the produced archive name set is EXACTLY
+    ``{"<mod_name> - Main.ba2", "<mod_name> - Textures.ba2"}`` and fails
+    loudly instead of sharding when an archive would exceed
+    ``archive_max_bytes``: Starfield never auto-loads `-Main1`/`-Main2` or
+    any per-family archive for a mod plugin.
+    """
+    if expanded_archives:
+        raise RuntimeError(
+            "fo4:starfield packaging refuses expanded_archives=True (R1 "
+            "SD-8): Starfield auto-loads only '<plugin> - Main.ba2' and "
+            "'- Textures.ba2' for a mod plugin. Per-family archives "
+            "('- Terrain.ba2', '- Meshes.ba2', '- Materials.ba2', ...) are "
+            "never opened by the engine for a mod plugin — only vanilla's "
+            "Starfield.ini-registered archives are — so expanding would be "
+            "silent total content loss. Pass expanded_archives=False (the "
+            "pin for this pair)."
+        )
+    mod_root = Path(mod_root)
+    mod_name = mod_name or mod_root.name
+    data_root = mod_root / "data"
+    archive_root = (
+        Path(archive_output_dir) if archive_output_dir is not None else mod_root
+    )
+    archive_root.mkdir(parents=True, exist_ok=True)
+
+    required_names = {
+        _fo4_starfield_archive_name(mod_name, label)
+        for label in FO4_STARFIELD_PACKED_LABELS
     }
-    path = mod_root / MANIFEST_NAME
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
-    os.replace(tmp, path)
-    return path
 
+    plan = build_pack_plan(data_root, Fo4StarfieldPackFlags(mod_name=mod_name))
+    by_destination: dict[str, list[PackJob]] = {}
+    for job in plan:
+        by_destination.setdefault(job.destination, []).append(job)
+    by_destination.pop("loose", None)
 
-def consult_cache(
-    manifest_path: Path,
-    candidates: Iterable[CacheAssetEntry],
-    *,
-    mod_root: Path,
-    hash_workers: int | None = None,
-) -> set[str]:
-    """Return the skip-set (source_path values) for ``--cache``: candidates
-    whose recorded hash + converter version + params digest all match AND
-    whose recorded outputs all exist under ``mod_root``. A changed source
-    byte, a converter bump, a knob change, or a missing output re-converts."""
-    manifest_path = Path(manifest_path)
-    if not manifest_path.is_file():
-        return set()
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    if manifest.get("version") != 1:
-        return set()
-    assets = manifest.get("assets", {})
-    recorded_converters = manifest.get("converters", {})
-    mod_root = Path(mod_root)
-    native = load_native_module()
+    unexpected = sorted(set(by_destination) - required_names)
+    if unexpected:
+        raise RuntimeError(
+            "fo4:starfield packaging (R1 SD-8): build_pack_plan produced "
+            f"unexpected archive destination(s) {unexpected}; the only "
+            f"names Starfield auto-loads for this plugin are "
+            f"{sorted(required_names)}"
+        )
 
-    cheap_pass: list[CacheAssetEntry] = []
-    for entry in candidates:
-        rec = assets.get(entry.source_path)
-        if not rec or not rec.get("blake3"):
+    planned: list[PlannedArchive] = []
+    for label in FO4_STARFIELD_PACKED_LABELS:
+        archive_name = _fo4_starfield_archive_name(mod_name, label)
+        jobs = by_destination.get(archive_name, [])
+        if not jobs:
             continue
-        if recorded_converters.get(entry.phase) != CONVERTER_VERSIONS.get(entry.phase):
-            continue
-        if rec.get("params_digest") != entry.params_digest:
-            continue
-        outputs = rec.get("outputs") or []
-        if not outputs:
-            continue
-        if not all((mod_root / "data" / out).is_file() for out in outputs):
-            continue
-        if not os.path.isfile(entry.source_path):
-            continue
-        cheap_pass.append(entry)
+        entries = tuple(
+            ArchiveEntry(
+                job.relative_path, job.source_path, job.source_path.stat().st_size
+            )
+            for job in jobs
+        )
+        estimated_size = estimate_archive_size(entries)
+        if estimated_size > archive_max_bytes:
+            raise RuntimeError(
+                f"fo4:starfield packaging (R1 SD-8): {archive_name} would be "
+                f"~{estimated_size / 1024**3:.2f} GiB, over the "
+                f"{archive_max_bytes / 1024**3:.0f} GiB BA2 cap. Sharding to "
+                f"'{mod_name} - {label}1.ba2'/'-{label}2.ba2' is refused: "
+                "those names are never auto-loaded by Starfield for a mod "
+                "plugin. Re-run with a smaller --terrain-extent-cells crop, "
+                "or deploy this mod with loose files (--deploy-loose) "
+                "instead of packed archives."
+            )
+        output_path = archive_root / archive_name
+        texture_archive = label == FO4_STARFIELD_TEXTURES_LABEL
+        _run_native_pack_entries(
+            entries,
+            str(output_path),
+            "starfield",
+            texture_archive=texture_archive,
+            compress=jobs[0].compress,
+            compression_level=(
+                ba2_compression_level if jobs[0].compress else None
+            ),
+        )
+        _validate_archive_size(output_path, archive_max_bytes)
+        planned.append(
+            PlannedArchive(
+                family=label,
+                label=label,
+                output_name=archive_name,
+                entries=entries,
+                texture_archive=texture_archive,
+            )
+        )
+        if pack_progress is not None:
+            pack_progress(
+                {
+                    "message": f"Archive packed native: name={archive_name} files={len(entries)}",
+                    "total": len(FO4_STARFIELD_PACKED_LABELS),
+                    "completed": len(planned),
+                }
+            )
 
-    if not cheap_pass:
-        return set()
-    hashes = native.conversion_hash_files_blake3(
-        [e.source_path for e in cheap_pass], hash_workers
-    )
-    skip: set[str] = set()
-    for entry, digest in zip(cheap_pass, hashes, strict=True):
-        if assets[entry.source_path]["blake3"] == digest:
-            skip.add(entry.source_path)
-    return skip
+    produced_names = {p.output_name for p in planned}
+    if produced_names != required_names:
+        raise RuntimeError(
+            "fo4:starfield packaging (R1 SD-8): produced archive set "
+            f"{sorted(produced_names)} != the required "
+            f"{sorted(required_names)} — Starfield only auto-loads "
+            "'- Main.ba2'/'- Textures.ba2' for a mod plugin; a missing "
+            "archive here means an asset class silently failed to convert."
+        )
+
+    # Stale-output cleanup: remove any leftover archive for this mod (e.g. a
+    # per-family archive from a prior expanded_archives=True run) that isn't
+    # one of the two names this pair is allowed to produce.
+    for archive in discover_mod_archives(archive_root, mod_name, extensions=(".ba2",)):
+        if archive.name not in produced_names:
+            archive.unlink()
+
+    return planned
 
 
 # ---------------------------------------------------------------------------
@@ -795,7 +993,10 @@ def _record_timing(
     started_at: float,
     **fields: object,
 ) -> None:
-    _timing_report(ctx).record(name, time.perf_counter() - started_at, **fields)
+    report = _timing_report(ctx)
+    if fields.get("scope") == "detail" and "offset_seconds" not in fields:
+        fields["offset_seconds"] = max(started_at - report.started_at, 0.0)
+    report.record(name, time.perf_counter() - started_at, **fields)
 
 
 def _memory_stage(ctx: ConversionContext | None, stage: str, **fields: object):
@@ -868,8 +1069,6 @@ def _validation_issue_text(issue: object) -> str:
     return message
 
 
-_SCRIPT_CONDITION_FUNCTION_IDS = {629, 659, 660}
-_SCRIPT_REF_SUBRECORD_SIGNATURES = ["VMAD", "CTDA"]
 _SCRIPT_WARNING_LIMIT = 75
 
 
@@ -885,6 +1084,14 @@ class _ScriptReference:
     condition_inferred: bool = False
 
 
+# Statuses meaning "the toolchain was unusable", not "this script is bad".
+_INFRASTRUCTURE_FAILURE_STATUSES = frozenset({"compiler_unavailable"})
+
+# Above this many attempted scripts, compiling none of them is systemic rather
+# than a run where every script happened to be broken.
+_ZERO_COMPILED_ABORT_THRESHOLD = 10
+
+
 @dataclass(slots=True)
 class _ScriptResolution:
     script_name: str
@@ -895,6 +1102,57 @@ class _ScriptResolution:
     @property
     def ok(self) -> bool:
         return self.status in {"target", "compiled"}
+
+    @property
+    def is_infrastructure_failure(self) -> bool:
+        """The toolchain never ran, so this says nothing about the script.
+
+        Stripping a record's VMAD is only defensible when *that script* failed
+        to compile. A missing compiler fails every script at once, and treating
+        that as 6742 individual script failures is what silently gutted a
+        shipped ESM of 13624 bindings.
+        """
+        return self.status in _INFRASTRUCTURE_FAILURE_STATUSES
+
+
+def _assert_script_toolchain_healthy(
+    resolutions: Iterable[_ScriptResolution],
+) -> None:
+    """Abort before a broken toolchain gets mistaken for broken scripts.
+
+    Downstream, every non-ok resolution strips that script's VMAD binding off
+    its records. That is correct for a script that genuinely failed to compile
+    and catastrophic for a compiler that never ran: a user reported
+    ``compiled=0 failed=6742 stripped_vmad=13624`` from a run that still
+    reported success, leaving a 1GB plugin whose records had lost their script
+    attachments entirely.
+    """
+    resolutions = list(resolutions)
+
+    unavailable = [r for r in resolutions if r.is_infrastructure_failure]
+    if unavailable:
+        detail = unavailable[0].message or unavailable[0].status
+        raise RuntimeError(
+            f"Papyrus toolchain unavailable: {detail}. "
+            f"{len(unavailable)} script(s) could not be compiled because the "
+            "compiler itself could not run. Aborting instead of shipping a "
+            "plugin with its script bindings stripped."
+        )
+
+    # Backstop for unanticipated causes where no status marks the failure as
+    # systemic. `target` scripts defer to the base game's own PEX by design and
+    # never compile, so they don't count. Scale-bounded: one script failing alone
+    # still just strips its own binding, so this fires only once a clean sweep of
+    # failures stops being a plausible coincidence. Real conversions attempt thousands.
+    attempted = [r for r in resolutions if r.status != "target"]
+    if len(attempted) > _ZERO_COMPILED_ABORT_THRESHOLD and not any(
+        r.status == "compiled" for r in attempted
+    ):
+        raise RuntimeError(
+            f"Papyrus compilation produced no output: 0 of {len(attempted)} "
+            "script(s) compiled. Aborting instead of shipping a plugin with "
+            "its script bindings stripped."
+        )
 
 
 def _script_key(script_name: str) -> str:
@@ -923,20 +1181,272 @@ def _script_relative_path(script_name: str, suffix: str) -> Path:
 # or appending a missing one), so the game-derived declarations stay intact and
 # this directory holds ONLY original code — never Papyrus decompiled from the game.
 _SCRIPT_PATCH_DIR = Path(__file__).resolve().parents[1] / "script_patches"
+_SCRIPT_ADDITION_DIR = Path(__file__).resolve().parents[1] / "script_additions"
+_QUEST_RUNTIME_UNSUPPORTED_MANIFEST = (
+    Path(__file__).resolve().parents[1]
+    / "resources"
+    / "conversion"
+    / "fo76_fo4_quest_runtime_support.yaml"
+)
+_SCRIPT_ADDITION_MANIFEST = {
+    ("fo76", "fo4"): (
+        "B21TwoStateActivator76",
+        "B21MusicInstrumentScript",
+        "B21_PlayerFear",
+        "B21:FurnitureBuff",
+        "B21:StoryEventOnTriggerEnter",
+        "B21:StoryEventOnActivateStartScene",
+        "B21:QuestRewards",
+        "B21:ExpeditionMissionRewards",
+        "B21:LocalEncounterMaterializer",
+        "B21:HolotapeStageOnPlay",
+        "B21:PlanLearnOnRead",
+        "B21:WorkshopCollector",
+    ),
+}
 
 _FO76_TO_FO4_SCRIPT_VARIABLE_ADDITIONS = {
+    _script_key("EN02_OrbitalStrikeMarkerScript"): (("Int", "remainingDelayCount"),),
+    _script_key("W05_ActorNukeReactionScript"): (
+        ("Bool", "bReactingToNuke"),
+        ("Bool", "bHazmatOutfitApplied"),
+    ),
     _script_key("DefaultAliasInventoryManagement"): (
         ("ObjectReference", "ShutdownReferenceCache"),
+    ),
+    _script_key("DefaultQuestTriggerRespawnVIPScript"): (
+        ("ObjectReference[]", "PlayerVIPTriggerCache"),
+    ),
+    # FO76 CustomEvent declarations are lost in decompilation while the
+    # SendCustomEvent/RegisterForCustomEvent call sites survive; restore them.
+    _script_key("MTR02_EquipmentTerminalScript"): (("CustomEvent", "PageAccessed"),),
+    _script_key("KlaxonManagerScript"): (
+        ("CustomEvent", "KlaxonManagerStateChangedClient"),
+    ),
+    _script_key("LC080_MODUSRevealManagerScript"): (
+        ("CustomEvent", "MODUSRevealReset"),
+        ("CustomEvent", "MODUSRevealStart"),
+        ("CustomEvent", "MODUSRevealLoad"),
+    ),
+    # FO76's keypad menu and its native success event have no FO4 equivalent, so
+    # the adapter keeps the digit-entry state here and announces the result the
+    # way the quest aliases can hear it.
+    _script_key("DefaultKeypadScript"): (
+        ("CustomEvent", "KeypadSuccess"),
+        ("Bool", "bCompletionDelegated"),
+        ("Bool", "bDigitInProgress"),
+        ("Bool", "bKeypadSolved"),
+        ("Int", "iEntryDigit"),
+        ("Int", "iEntryPosition"),
+        ("Int", "iEnteredCode"),
+    ),
+}
+
+# Properties the FO76 decompiler re-declares on a child script that Fallout 4's
+# parent already owns. Papyrus matches property names case-insensitively, so the
+# redeclaration is a hard `already defined on parent` error under stock
+# PapyrusCompiler.exe and the whole script fails to compile — which costs the
+# record its binding. Dropping the child's copy leaves the inherited property,
+# which the record's VMAD still binds by name.
+_FO76_TO_FO4_SCRIPT_PROPERTY_REMOVALS = {
+    _script_key("DefaultAliasSetStageOnKeypadSuccess"): (
+        # DefaultAlias declares `StageToSet` and `PrereqStage`, both Auto Const
+        # and defaulting to -1, plus the TryToSetStage() that consumes them.
+        "StageToSet",
+        "preReqStage",
     ),
 }
 
 _FO76_TO_FO4_SCRIPT_PROPERTY_ADDITIONS = {
+    _script_key("W05_ActorNukeReactionScript"): (
+        ("Outfit", "BaseOutfit", "Outfit Property BaseOutfit Auto"),
+    ),
+    _script_key("Fragments:Packages:PF_RD01_Enc04_EyebotPackage_0078BEC3"): (
+        (
+            "RefCollectionAlias",
+            "Generators",
+            "RefCollectionAlias Property Generators Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Scenes:SF_V94_1_0015FB0A"): (
+        (
+            "Keyword",
+            "V94AccessQuestKeyword",
+            "Keyword Property V94AccessQuestKeyword Auto Mandatory",
+        ),
+        (
+            "Scene",
+            "V94Radio_1",
+            "Scene Property V94Radio_1 Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Scenes:SF_V94_3_0015FB12"): (
+        (
+            "Keyword",
+            "V94AccessQuestKeyword",
+            "Keyword Property V94AccessQuestKeyword Auto Mandatory",
+        ),
+        (
+            "Scene",
+            "V94Radio_3",
+            "Scene Property V94Radio_3 Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Terminals:TERM_MTR08_ClaimTokenExchang_0004C6E5"): (
+        (
+            "MiscObject",
+            "MTR08_ClaimToken",
+            "MiscObject Property MTR08_ClaimToken Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Terminals:TERM_Arcade_PrizeTerminal_Ti_0065CEC5"): (
+        ("ActorValue", "PointsAV", "ActorValue Property PointsAV Auto Mandatory"),
+    ),
+    _script_key("Fragments:Terminals:TERM_Arcade_PrizeTerminal_Ti_0065CEC6"): (
+        ("ActorValue", "PointsAV", "ActorValue Property PointsAV Auto Mandatory"),
+    ),
+    _script_key("Fragments:Terminals:TERM_Arcade_PrizeTerminal_Ti_0065CEC7"): (
+        ("ActorValue", "PointsAV", "ActorValue Property PointsAV Auto Mandatory"),
+    ),
+    _script_key("Fragments:Terminals:TERM_Arcade_PrizeTerminal_Ti_0065CEC8"): (
+        ("ActorValue", "PointsAV", "ActorValue Property PointsAV Auto Mandatory"),
+    ),
+    _script_key("Fragments:Terminals:TERM_Arcade_PrizeTerminal__0065CEC9_1"): (
+        ("ActorValue", "PointsAV", "ActorValue Property PointsAV Auto Mandatory"),
+    ),
+    _script_key("Fragments:Terminals:TERM_EN06_PresidentialVendor_0052BDE0"): (
+        (
+            "MiscObject",
+            "EN06_PresidentialSeal",
+            "MiscObject Property EN06_PresidentialSeal Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Quests:QF_76ExitEventQuest_003ADDF9"): (
+        (
+            "Quest",
+            "p76ExitEventAnnounce",
+            "Quest Property p76ExitEventAnnounce Auto Mandatory",
+        ),
+        (
+            "Keyword",
+            "p76ExitEventAnnounce_Keyword",
+            "Keyword Property p76ExitEventAnnounce_Keyword Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Quests:QF_BS02_E01_Metal_005FE4D7"): (
+        (
+            "MusicType",
+            "Music_CombatMusic",
+            "MusicType Property Music_CombatMusic Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Quests:QF_P02L_McCreary_FetchQuest_0041B865"): (
+        (
+            "Int",
+            "SuppliesCount",
+            "Int Property SuppliesCount Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Quests:QF_RSVP00_Quest_Master_0050A2EE"): (
+        (
+            "Keyword",
+            "pRSVP00_Keyword_QuestActive_VectorToFlatwoods",
+            "Keyword Property pRSVP00_Keyword_QuestActive_VectorToFlatwoods Auto Mandatory",
+        ),
+        (
+            "ReferenceAlias",
+            "Alias_Container_Mailbox_BridgeStreet14_Jeremiah",
+            "ReferenceAlias Property Alias_Container_Mailbox_BridgeStreet14_Jeremiah Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Quests:QF_Storm_SE09_00783A58"): (
+        (
+            "ReferenceAlias",
+            "Trigger_CallStrikes",
+            "ReferenceAlias Property Trigger_CallStrikes Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Terminals:TERM_CB02_Vending_Terminal_T_0051AA03"): (
+        (
+            "LeveledItem",
+            "LGND_PossibleLegendaryItemBaseLists",
+            "LeveledItem Property LGND_PossibleLegendaryItemBaseLists Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Terminals:TERM_nativeRobotTerminalSubM_002C506F"): (
+        (
+            "Keyword",
+            "LinkTerminalProtectron",
+            "Keyword Property LinkTerminalProtectron Auto Mandatory",
+        ),
+        (
+            "ActorValue",
+            "MiscStatRobotHasBeenDisabled",
+            "ActorValue Property MiscStatRobotHasBeenDisabled Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Terminals:TERM_SFL02_Track_VertibotTer_00184A03"): (
+        (
+            "GlobalVariable",
+            "LCP_BoSZ01",
+            "GlobalVariable Property LCP_BoSZ01 Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:Terminals:TERM_V94_Access_Terminal_002FB273"): (
+        (
+            "Holotape",
+            "V94_AccessCodeHolotape",
+            "Holotape Property V94_AccessCodeHolotape Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:TopicInfos:TIF_V94_3_Personal_003EE27B"): (
+        (
+            "ActorValue",
+            "V94_3_Pump_RobotHasPlayedSpawnLineValue",
+            "ActorValue Property V94_3_Pump_RobotHasPlayedSpawnLineValue Auto Mandatory",
+        ),
+    ),
+    _script_key("Fragments:TopicInfos:TIF_V94_3_Personal_003EE27E"): (
+        (
+            "ActorValue",
+            "V94_3_Pump_RobotHasPlayedSpawnLineValue",
+            "ActorValue Property V94_3_Pump_RobotHasPlayedSpawnLineValue Auto Mandatory",
+        ),
+    ),
+    _script_key("DefaultAliasOnActivateGiveItem"): (
+        (
+            "ActorValue",
+            "RequiredActorValue",
+            "ActorValue Property RequiredActorValue Auto",
+        ),
+        (
+            "Int",
+            "RequiredActorValueValue",
+            "Int Property RequiredActorValueValue Auto",
+        ),
+    ),
+    _script_key("WeaponTestingRangeSpellScript"): (
+        ("Potion", "Stimpak", "Potion Property Stimpak Auto Mandatory"),
+    ),
     _script_key("RadioGeneral_MasterScript"): (
         ("Int[]", "songFormIDs", "Int[] Property songFormIDs Auto Const Mandatory"),
+    ),
+    _script_key("RadioDramaRadio_MasterScript"): (
+        ("Int[]", "songFormIDs", "Int[] Property songFormIDs Auto Const Mandatory"),
+        ("Int[]", "dramaFormIDs", "Int[] Property dramaFormIDs Auto Const Mandatory"),
+        (
+            "Int[]",
+            "commercialFormIDs",
+            "Int[] Property commercialFormIDs Auto Const Mandatory",
+        ),
     ),
 }
 
 _PAPYRUS_SCRIPT_HEADER = re.compile(r"^\s*Scriptname\s+", re.IGNORECASE)
+_PAPYRUS_SCRIPT_DECLARATION = re.compile(
+    r"^\s*Scriptname\s+(?P<name>[A-Za-z_][\w:]*)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
 _PAPYRUS_TOP_LEVEL_VARIABLE = re.compile(
     r"^\s*(?P<type>[A-Za-z_][\w:]*(?:\[\])*)\s+(?P<name>[A-Za-z_]\w*)\b",
     re.IGNORECASE,
@@ -947,12 +1457,29 @@ _PAPYRUS_TOP_LEVEL_PROPERTY = re.compile(
     re.IGNORECASE,
 )
 
+# A single-line `Auto` property declaration: everything after `Auto` is a
+# modifier list, so there is no getter or setter body to lose.
+_PAPYRUS_AUTO_PROPERTY_TAIL = re.compile(
+    r"\bAuto\b(?:\s+(?:Const|Mandatory|Hidden|Conditional))*\s*(?:;.*)?$",
+    re.IGNORECASE,
+)
 _PAPYRUS_MEMBER_START = re.compile(
-    r"^\s*(?:(?P<ret>[A-Za-z_][\w\[\]]*)\s+)?(?P<kind>Function|Event)\s+"
+    r"^\s*(?:(?P<ret>[A-Za-z_][\w:]*(?:\[\])*)\s+)?(?P<kind>Function|Event)\s+"
     r"(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*\(",
     re.IGNORECASE,
 )
+_PAPYRUS_PATCH_MEMBER_CANDIDATE = re.compile(
+    r"^\s*(?!;)(?:\S+\s+)?(?:Function|Event)\s+"
+    r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?\s*\(",
+    re.IGNORECASE,
+)
+_PAPYRUS_REMOTE_EVENT_PSEUDO_MEMBER_START = re.compile(
+    r"^\s*(?:[A-Za-z_][\w\[\]]*\s+)?Function\s+::remote_"
+    r"(?P<name>[A-Za-z_]\w*)\s*\(",
+    re.IGNORECASE,
+)
 _PAPYRUS_MEMBER_END = re.compile(r"^\s*End(?:Function|Event)\b", re.IGNORECASE)
+_PAPYRUS_FUNCTION_END = re.compile(r"^\s*EndFunction\b", re.IGNORECASE)
 _PAPYRUS_STATE_START = re.compile(
     r"^(?P<indent>\s*)(?P<auto>Auto\s+)?State\s+(?P<name>[A-Za-z_]\w*)\b",
     re.IGNORECASE,
@@ -961,6 +1488,14 @@ _PAPYRUS_STATE_END = re.compile(r"^\s*EndState\b", re.IGNORECASE)
 _PAPYRUS_STATE_RENAME = re.compile(
     r"^\s*;\s*@state-rename\s+(?P<old>[A-Za-z_]\w*)\s+"
     r"(?P<new>[A-Za-z_]\w*)\s*$",
+    re.IGNORECASE,
+)
+_PAPYRUS_DROP_MEMBER = re.compile(
+    r"^\s*;\s*@drop-member\s+(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*$",
+    re.IGNORECASE,
+)
+_PAPYRUS_DROP_PROPERTY = re.compile(
+    r"^\s*;\s*@drop-property\s+(?P<name>[A-Za-z_]\w*)\s*$",
     re.IGNORECASE,
 )
 
@@ -973,14 +1508,102 @@ def _script_patch_source(script_name: str) -> str | None:
     return None
 
 
+def _script_addition_sources(
+    source_game: str,
+    target_game: str,
+) -> dict[str, tuple[str, Path]]:
+    pair = (source_game.lower(), target_game.lower())
+    pair_root = _SCRIPT_ADDITION_DIR / f"{pair[0]}_{pair[1]}"
+    additions: dict[str, tuple[str, Path]] = {}
+    for script_name in _SCRIPT_ADDITION_MANIFEST.get(pair, ()):
+        source_path = pair_root / _script_relative_path(script_name, ".psc")
+        if source_path.is_file():
+            additions[_script_key(script_name)] = (script_name, source_path)
+    return additions
+
+
+def _requires_script_addition(
+    script_name: str,
+    *,
+    source_game: str,
+    target_game: str,
+) -> bool:
+    pair = (source_game.lower(), target_game.lower())
+    required_keys = {
+        _script_key(required_name)
+        for required_name in _SCRIPT_ADDITION_MANIFEST.get(pair, ())
+    }
+    return _script_key(script_name) in required_keys
+
+
+def _install_script_addition(
+    mod_path: Path,
+    script_name: str,
+    source_path: Path,
+) -> Path:
+    source = source_path.read_text(encoding="utf-8")
+    declaration = _PAPYRUS_SCRIPT_DECLARATION.search(source)
+    declared_name = declaration.group("name") if declaration is not None else None
+    if declared_name is None:
+        raise ValueError(f"{source_path} has no Scriptname declaration")
+    if _script_key(declared_name) != _script_key(script_name):
+        raise ValueError(
+            f"{source_path} declares {declared_name}, expected {script_name}"
+        )
+
+    target_path = (
+        mod_path
+        / "Scripts"
+        / "Source"
+        / "User"
+        / _script_relative_path(script_name, ".psc")
+    )
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(source, encoding="utf-8")
+    return target_path
+
+
+def _without_top_level_papyrus_properties(
+    lines: list[str],
+    property_names: Sequence[str],
+) -> list[str]:
+    """Drop single-line top-level `Auto` property declarations by name.
+
+    A property written as a multi-line block keeps a getter or setter body, so
+    it is left alone rather than half-removed; the caller pins the shape it
+    expects with a test.
+    """
+    wanted = {name.lower() for name in property_names}
+    excluded: set[int] = set()
+    for _name, start, end in _iter_papyrus_states(lines):
+        excluded.update(range(start, end + 1))
+    for _kind, _name, start, end in _iter_top_level_papyrus_members(lines):
+        excluded.update(range(start, end + 1))
+    kept: list[str] = []
+    for index, line in enumerate(lines):
+        match = _PAPYRUS_TOP_LEVEL_PROPERTY.match(line)
+        if (
+            index not in excluded
+            and match is not None
+            and match.group("name").lower() in wanted
+            and _PAPYRUS_AUTO_PROPERTY_TAIL.search(line) is not None
+        ):
+            continue
+        kept.append(line)
+    return kept
+
+
 def _augment_fo76_to_fo4_script_skeleton(script_name: str, skeleton: str) -> str:
     script_key = _script_key(script_name)
     variable_additions = _FO76_TO_FO4_SCRIPT_VARIABLE_ADDITIONS.get(script_key, ())
     property_additions = _FO76_TO_FO4_SCRIPT_PROPERTY_ADDITIONS.get(script_key, ())
-    if not variable_additions and not property_additions:
+    property_removals = _FO76_TO_FO4_SCRIPT_PROPERTY_REMOVALS.get(script_key, ())
+    if not variable_additions and not property_additions and not property_removals:
         return skeleton
 
     lines = skeleton.splitlines()
+    if property_removals:
+        lines = _without_top_level_papyrus_properties(lines, property_removals)
     header_indexes = [
         index for index, line in enumerate(lines) if _PAPYRUS_SCRIPT_HEADER.match(line)
     ]
@@ -1037,7 +1660,10 @@ def _augment_fo76_to_fo4_script_skeleton(script_name: str, skeleton: str) -> str
             )
 
         if declarations:
-            if len(declarations) != 1 or declarations[0][0].lower() != type_name.lower():
+            if (
+                len(declarations) != 1
+                or declarations[0][0].lower() != type_name.lower()
+            ):
                 found = ", ".join(line for _found_type, line in declarations)
                 raise ValueError(
                     f"conflicting Papyrus declaration for {variable_name} in "
@@ -1154,6 +1780,57 @@ def _iter_top_level_papyrus_members(
     return members
 
 
+def _iter_top_level_papyrus_remote_event_pseudo_members(
+    lines: list[str],
+) -> list[tuple[str, int, int]]:
+    members: list[tuple[str, int, int]] = []
+    depth = 0
+    i, n = 0, len(lines)
+    while i < n:
+        if _PAPYRUS_STATE_END.match(lines[i]):
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+        start_match = _PAPYRUS_REMOTE_EVENT_PSEUDO_MEMBER_START.match(lines[i])
+        if start_match:
+            end = i + 1
+            while end < n and not _PAPYRUS_FUNCTION_END.match(lines[end]):
+                end += 1
+            if depth == 0 and end < n:
+                members.append((start_match.group("name").lower(), i, end))
+            i = end + 1
+            continue
+        if _PAPYRUS_STATE_START.match(lines[i]):
+            depth += 1
+        i += 1
+    return members
+
+
+def _iter_papyrus_remote_event_pseudo_members_in_state(
+    lines: list[str], state_start: int, state_end: int
+) -> list[tuple[str, int, int]]:
+    members: list[tuple[str, int, int]] = []
+    i = state_start + 1
+    while i < state_end:
+        start_match = _PAPYRUS_REMOTE_EVENT_PSEUDO_MEMBER_START.match(lines[i])
+        if start_match is None:
+            i += 1
+            continue
+        end = i + 1
+        while end < state_end and not _PAPYRUS_FUNCTION_END.match(lines[end]):
+            end += 1
+        if end >= state_end:
+            return members
+        members.append((start_match.group("name").lower(), i, end))
+        i = end + 1
+    return members
+
+
+def _remote_event_pseudo_name(event_name: str) -> str:
+    sender_type, event = event_name.split(".", 1)
+    return f"{sender_type}_{event}".lower()
+
+
 def _iter_papyrus_states(lines: list[str]) -> list[tuple[str, int, int]]:
     """Return ``(lower_name, declaration, endstate)`` spans.
 
@@ -1208,6 +1885,32 @@ def _iter_papyrus_members_in_state(
     return members
 
 
+def _assert_patch_member_headers_recognized(patch_lines: list[str]) -> None:
+    recognized = {
+        start
+        for _kind, _name, start, _end in _iter_top_level_papyrus_members(patch_lines)
+    }
+    for _state_name, state_start, state_end in _iter_papyrus_states(patch_lines):
+        recognized.update(
+            start
+            for _kind, _name, start, _end in _iter_papyrus_members_in_state(
+                patch_lines, state_start, state_end
+            )
+        )
+    candidates = {
+        index
+        for index, line in enumerate(patch_lines)
+        if _PAPYRUS_PATCH_MEMBER_CANDIDATE.match(line)
+    }
+    unrecognized = sorted(candidates - recognized)
+    if unrecognized:
+        line_number = unrecognized[0] + 1
+        raise ValueError(
+            "unrecognized Papyrus patch member declaration at "
+            f"line {line_number}: {patch_lines[unrecognized[0]].strip()}"
+        )
+
+
 def _state_rename_directives(patch_lines: list[str]) -> list[tuple[str, str]]:
     directives: list[tuple[str, str]] = []
     for line in patch_lines:
@@ -1215,6 +1918,67 @@ def _state_rename_directives(patch_lines: list[str]) -> list[tuple[str, str]]:
         if match is not None:
             directives.append((match.group("old"), match.group("new")))
     return directives
+
+
+def _drop_member_directives(patch_lines: list[str]) -> set[str]:
+    names: set[str] = set()
+    for line in patch_lines:
+        match = _PAPYRUS_DROP_MEMBER.match(line)
+        if match is not None:
+            names.add(match.group("name").lower())
+    return names
+
+
+def _drop_papyrus_members_anywhere(skeleton_lines: list[str], names: set[str]) -> None:
+    """Delete matching Function/Event blocks at any state depth."""
+    if not names:
+        return
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(skeleton_lines)
+    while i < n:
+        start_match = _PAPYRUS_MEMBER_START.match(skeleton_lines[i])
+        if start_match is None:
+            i += 1
+            continue
+        end = i + 1
+        while end < n and not _PAPYRUS_MEMBER_END.match(skeleton_lines[end]):
+            end += 1
+        if start_match.group("name").lower() in names:
+            spans.append((i, min(end, n - 1)))
+        i = end + 1
+    for start, end in reversed(spans):
+        del skeleton_lines[start : end + 1]
+
+
+def _drop_property_directives(patch_lines: list[str]) -> set[str]:
+    names: set[str] = set()
+    for line in patch_lines:
+        match = _PAPYRUS_DROP_PROPERTY.match(line)
+        if match is not None:
+            names.add(match.group("name").lower())
+    return names
+
+
+def _drop_declared_papyrus_properties(
+    skeleton_lines: list[str], names: set[str]
+) -> None:
+    """Delete single-line auto-property declarations the target parent already owns."""
+    if not names:
+        return
+    excluded: set[int] = set()
+    for _name, start, end in _iter_papyrus_states(skeleton_lines):
+        excluded.update(range(start, end + 1))
+    for _kind, _member, start, end in _iter_top_level_papyrus_members(skeleton_lines):
+        excluded.update(range(start, end + 1))
+    for index in range(len(skeleton_lines) - 1, -1, -1):
+        if index in excluded:
+            continue
+        match = _PAPYRUS_TOP_LEVEL_PROPERTY.match(skeleton_lines[index])
+        if match is None or match.group("name").lower() not in names:
+            continue
+        if not re.search(r"\bAuto\b", skeleton_lines[index], re.IGNORECASE):
+            continue
+        del skeleton_lines[index]
 
 
 def _apply_papyrus_state_renames(
@@ -1261,6 +2025,128 @@ def _apply_papyrus_state_renames(
     return rename_map
 
 
+def _script_patch_member_specs(
+    patch_lines: list[str],
+) -> list[tuple[str, str, str, list[str]]]:
+    rename_map = {
+        old.lower(): new.lower() for old, new in _state_rename_directives(patch_lines)
+    }
+    specs: list[tuple[str, str, str, list[str]]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(state_name: str, kind: str, name: str, start: int, end: int) -> None:
+        key = (state_name, kind, name)
+        if key in seen:
+            location = state_name or "default state"
+            raise ValueError(f"duplicate Papyrus patch member in {location}: {kind} {name}")
+        seen.add(key)
+        specs.append((state_name, kind, name, patch_lines[start : end + 1]))
+
+    for kind, name, start, end in _iter_top_level_papyrus_members(patch_lines):
+        add("", kind, name, start, end)
+    for patch_state, state_start, state_end in _iter_papyrus_states(patch_lines):
+        target_state = rename_map.get(patch_state, patch_state)
+        for kind, name, start, end in _iter_papyrus_members_in_state(
+            patch_lines, state_start, state_end
+        ):
+            add(target_state, kind, name, start, end)
+    return specs
+
+
+def _assert_script_patch_members_merged(patch: str, merged: str) -> None:
+    patch_lines = patch.splitlines()
+    _assert_patch_member_headers_recognized(patch_lines)
+    merged_lines = merged.splitlines()
+    top_level = _iter_top_level_papyrus_members(merged_lines)
+    states = _iter_papyrus_states(merged_lines)
+
+    for state_name, kind, name, expected_block in _script_patch_member_specs(patch_lines):
+        if state_name:
+            matching_states = [span for span in states if span[0] == state_name]
+            if len(matching_states) != 1:
+                raise ValueError(
+                    f"Papyrus patch delivery expected one {state_name!r} state; "
+                    f"found {len(matching_states)}"
+                )
+            _state, state_start, state_end = matching_states[0]
+            members = _iter_papyrus_members_in_state(
+                merged_lines, state_start, state_end
+            )
+        else:
+            members = top_level
+        matches = [
+            (start, end)
+            for found_kind, found_name, start, end in members
+            if (found_kind, found_name) == (kind, name)
+        ]
+        if len(matches) != 1:
+            location = state_name or "default state"
+            raise ValueError(
+                f"Papyrus patch delivery expected exactly one {kind} {name} in "
+                f"{location}; found {len(matches)}"
+            )
+        start, end = matches[0]
+        if merged_lines[start : end + 1] != expected_block:
+            location = state_name or "default state"
+            raise ValueError(
+                f"Papyrus patch delivery changed {kind} {name} in {location}"
+            )
+
+    merged_member_names = {
+        name
+        for _kind, name, _start, _end in _iter_top_level_papyrus_members(
+            merged_lines
+        )
+    }
+    for _state, state_start, state_end in states:
+        merged_member_names.update(
+            name
+            for _kind, name, _start, _end in _iter_papyrus_members_in_state(
+                merged_lines, state_start, state_end
+            )
+        )
+    retained_drops = sorted(_drop_member_directives(patch_lines) & merged_member_names)
+    if retained_drops:
+        raise ValueError(
+            "Papyrus patch delivery retained dropped member(s): "
+            + ", ".join(retained_drops)
+        )
+
+    merged_property_names = {
+        match.group("name").lower()
+        for line in merged_lines
+        if (match := _PAPYRUS_TOP_LEVEL_PROPERTY.match(line)) is not None
+    }
+    retained_properties = sorted(
+        _drop_property_directives(patch_lines) & merged_property_names
+    )
+    if retained_properties:
+        raise ValueError(
+            "Papyrus patch delivery retained dropped property(s): "
+            + ", ".join(retained_properties)
+        )
+
+    merged_state_names = [name for name, _start, _end in states]
+    for old, new in _state_rename_directives(patch_lines):
+        old_key = old.lower()
+        new_key = new.lower()
+        if old_key != new_key and old_key in merged_state_names:
+            raise ValueError(f"Papyrus patch delivery retained renamed state {old}")
+        old_target = re.compile(
+            rf'\b(?:Self\.)?GoToState\s*\(\s*"{re.escape(old)}"\s*\)',
+            re.IGNORECASE,
+        )
+        if old_key != new_key and any(old_target.search(line) for line in merged_lines):
+            raise ValueError(
+                f"Papyrus patch delivery retained renamed state target {old}"
+            )
+        if merged_state_names.count(new_key) != 1:
+            raise ValueError(
+                f"Papyrus patch delivery expected exactly one renamed state {new}; "
+                f"found {merged_state_names.count(new_key)}"
+            )
+
+
 def _merge_named_state_method_patches(
     skeleton_lines: list[str],
     patch_lines: list[str],
@@ -1281,7 +2167,9 @@ def _merge_named_state_method_patches(
             continue
 
         target_states = [
-            span for span in _iter_papyrus_states(skeleton_lines) if span[0] == target_name
+            span
+            for span in _iter_papyrus_states(skeleton_lines)
+            if span[0] == target_name
         ]
         if len(target_states) != 1:
             raise ValueError(
@@ -1306,11 +2194,31 @@ def _merge_named_state_method_patches(
             if key in blocks:
                 replacements.append((start, end, blocks[key]))
                 matched.add(key)
+        remote_event_blocks = {
+            _remote_event_pseudo_name(name): (kind, name)
+            for kind, name in blocks
+            if kind == "event" and "." in name
+        }
+        for (
+            pseudo_name,
+            start,
+            end,
+        ) in _iter_papyrus_remote_event_pseudo_members_in_state(
+            skeleton_lines,
+            target_start,
+            target_end,
+        ):
+            key = remote_event_blocks.get(pseudo_name)
+            if key is not None:
+                replacements.append((start, end, blocks[key]))
+                matched.add(key)
         for start, end, block in sorted(replacements, reverse=True):
             skeleton_lines[start : end + 1] = block
 
         target_states = [
-            span for span in _iter_papyrus_states(skeleton_lines) if span[0] == target_name
+            span
+            for span in _iter_papyrus_states(skeleton_lines)
+            if span[0] == target_name
         ]
         insert_at = target_states[0][2]
         additions: list[str] = []
@@ -1333,13 +2241,24 @@ def _merge_script_method_patches(skeleton: str, patch: str) -> str:
     exclusively from the skeleton.
     """
     patch_lines = patch.splitlines()
+    _assert_patch_member_headers_recognized(patch_lines)
     patch_members = _iter_top_level_papyrus_members(patch_lines)
     patch_states = _iter_papyrus_states(patch_lines)
     rename_directives = _state_rename_directives(patch_lines)
-    if not patch_members and not patch_states and not rename_directives:
+    drop_members = _drop_member_directives(patch_lines)
+    drop_properties = _drop_property_directives(patch_lines)
+    if (
+        not patch_members
+        and not patch_states
+        and not rename_directives
+        and not drop_members
+        and not drop_properties
+    ):
         return skeleton
 
     skel_lines = skeleton.splitlines()
+    _drop_declared_papyrus_properties(skel_lines, drop_properties)
+    _drop_papyrus_members_anywhere(skel_lines, drop_members)
     rename_map = _apply_papyrus_state_renames(skel_lines, rename_directives)
     _merge_named_state_method_patches(skel_lines, patch_lines, rename_map)
 
@@ -1352,14 +2271,172 @@ def _merge_script_method_patches(skeleton: str, patch: str) -> str:
         for kind, name, start, end in _iter_top_level_papyrus_members(skel_lines)
         if (kind, name) in blocks
     ]
+    patched_remote_events = {
+        _remote_event_pseudo_name(name)
+        for kind, name in blocks
+        if kind == "event" and "." in name
+    }
+    to_remove.extend(
+        (start, end)
+        for pseudo_name, start, end in (
+            _iter_top_level_papyrus_remote_event_pseudo_members(skel_lines)
+        )
+        if pseudo_name in patched_remote_events
+    )
     for start, end in sorted(to_remove, reverse=True):
         del skel_lines[start : end + 1]
 
     merged = "\n".join(skel_lines).rstrip()
     if blocks:
         injected = "\n\n".join(blocks.values())
-        return f"{merged}\n\n{injected}\n"
-    return f"{merged}\n"
+        merged = f"{merged}\n\n{injected}\n"
+    else:
+        merged = f"{merged}\n"
+    _assert_script_patch_members_merged(patch, merged)
+    return merged
+
+
+@dataclass(frozen=True, slots=True)
+class _ScriptPatchEntry:
+    script_name: str
+    path: Path
+    source: str
+    member_count: int
+    directive_count: int
+
+    @property
+    def is_functional(self) -> bool:
+        return self.member_count > 0 or self.directive_count > 0
+
+
+def _script_patch_inventory() -> dict[str, _ScriptPatchEntry]:
+    inventory: dict[str, _ScriptPatchEntry] = {}
+    if not _SCRIPT_PATCH_DIR.is_dir():
+        return inventory
+    for patch_path in _SCRIPT_PATCH_DIR.rglob("*.psc"):
+        relative = patch_path.relative_to(_SCRIPT_PATCH_DIR).with_suffix("")
+        script_name = ":".join(relative.parts)
+        key = _script_key(script_name)
+        if key in inventory:
+            raise ValueError(
+                "duplicate case-insensitive Papyrus patch path: "
+                f"{inventory[key].path} and {patch_path}"
+            )
+        source = patch_path.read_text(encoding="utf-8")
+        patch_lines = source.splitlines()
+        _assert_patch_member_headers_recognized(patch_lines)
+        inventory[key] = _ScriptPatchEntry(
+            script_name=script_name,
+            path=patch_path,
+            source=source,
+            member_count=len(_script_patch_member_specs(patch_lines)),
+            directive_count=(
+                len(_state_rename_directives(patch_lines))
+                + len(_drop_member_directives(patch_lines))
+                + len(_drop_property_directives(patch_lines))
+            ),
+        )
+    return inventory
+
+
+def _compiled_patch_member_name(kind: str, name: str) -> str:
+    if kind == "event" and "." in name:
+        sender_type, event_name = name.split(".", 1)
+        return f"::remote_{sender_type}_{event_name}".lower()
+    return name.lower()
+
+
+def _assert_compiled_script_patch_members(pex_path: Path, patch: str) -> None:
+    from collections import Counter
+
+    from creation_lib.pex import parse_pex
+
+    compiled: Counter[tuple[str, str]] = Counter()
+    compiled_member_names: Counter[str] = Counter()
+    compiled_state_names: Counter[str] = Counter()
+    compiled_property_names: Counter[str] = Counter()
+    pex = parse_pex(pex_path)
+    for obj in pex.objects:
+        for variable in obj.variables:
+            compiled_property_names[str(variable.name).lower()] += 1
+        for prop in obj.properties:
+            compiled_property_names[str(prop.name).lower()] += 1
+        for state in obj.states:
+            state_name = str(state.name or "").lower()
+            compiled_state_names[state_name] += 1
+            for function in state.functions:
+                function_name = str(function.name).lower()
+                compiled[(state_name, function_name)] += 1
+                compiled_member_names[function_name] += 1
+
+    missing: list[str] = []
+    for state_name, kind, name, _block in _script_patch_member_specs(
+        patch.splitlines()
+    ):
+        compiled_name = _compiled_patch_member_name(kind, name)
+        count = compiled[(state_name, compiled_name)]
+        if count != 1:
+            location = state_name or "default state"
+            missing.append(f"{kind} {name} in {location} (found {count})")
+    if missing:
+        raise ValueError(
+            "compiled PEX did not retain Papyrus patch member(s): "
+            + "; ".join(missing[:5])
+        )
+
+    patch_lines = patch.splitlines()
+    retained_drops = sorted(
+        name
+        for name in _drop_member_directives(patch_lines)
+        if compiled_member_names[name] > 0
+    )
+    if retained_drops:
+        raise ValueError(
+            "compiled PEX retained dropped Papyrus member(s): "
+            + ", ".join(retained_drops)
+        )
+    retained_properties = sorted(
+        name
+        for name in _drop_property_directives(patch_lines)
+        if compiled_property_names[name] > 0
+    )
+    if retained_properties:
+        raise ValueError(
+            "compiled PEX retained dropped Papyrus property(s): "
+            + ", ".join(retained_properties)
+        )
+    for old, new in _state_rename_directives(patch_lines):
+        old_key = old.lower()
+        new_key = new.lower()
+        if old_key != new_key and compiled_state_names[old_key] > 0:
+            raise ValueError(f"compiled PEX retained renamed Papyrus state {old}")
+        if compiled_state_names[new_key] != 1:
+            raise ValueError(
+                f"compiled PEX expected exactly one renamed Papyrus state {new}; "
+                f"found {compiled_state_names[new_key]}"
+            )
+
+
+def _assert_functional_script_patches_delivered(
+    inventory: Mapping[str, _ScriptPatchEntry],
+    resolutions: Mapping[str, _ScriptResolution],
+) -> None:
+    failures: list[str] = []
+    for key, entry in inventory.items():
+        if not entry.is_functional:
+            continue
+        resolution = resolutions.get(key)
+        if resolution is None:
+            failures.append(f"{entry.script_name}: not selected for script conversion")
+            continue
+        if resolution.status != "compiled" or resolution.pex_path is None:
+            detail = f": {resolution.message}" if resolution.message else ""
+            failures.append(f"{entry.script_name}: {resolution.status}{detail}")
+    if failures:
+        raise RuntimeError(
+            "functional Papyrus patch delivery failed for "
+            f"{len(failures)} script(s): " + "; ".join(failures[:10])
+        )
 
 
 def _native_papyrus_diagnostics_message(diagnostics: Iterable[object]) -> str:
@@ -1375,284 +2452,6 @@ def _native_papyrus_diagnostics_message(diagnostics: Iterable[object]) -> str:
         else:
             messages.append(str(diagnostic))
     return "; ".join(messages[:3]) if messages else "native compiler returned no output"
-
-
-def _read_zstring(data: bytes | bytearray) -> str:
-    raw = bytes(data)
-    raw = raw.split(b"\x00", 1)[0]
-    return raw.decode("cp1252", errors="replace").strip()
-
-
-def _ctda_function_id(data: bytes | bytearray) -> int | None:
-    raw = bytes(data)
-    if len(raw) < 12:
-        return None
-    return int.from_bytes(raw[8:12], byteorder="little", signed=False)
-
-
-def _ctda_param1_form_id(data: bytes | bytearray) -> int | None:
-    raw = bytes(data)
-    if len(raw) < 16:
-        return None
-    return int.from_bytes(raw[12:16], byteorder="little", signed=False)
-
-
-def _condition_script_data_at(
-    subrecords: list[Any],
-    index: int,
-) -> tuple[str | None, str | None, int, int | None] | None:
-    sub = subrecords[index]
-    if getattr(sub, "signature", "") != "CTDA":
-        return None
-    data = getattr(sub, "data", b"")
-    function_id = _ctda_function_id(data)
-    if function_id not in _SCRIPT_CONDITION_FUNCTION_IDS:
-        return None
-
-    script_name: str | None = None
-    variable_name: str | None = None
-    cursor = index + 1
-    while cursor < len(subrecords):
-        sig = getattr(subrecords[cursor], "signature", "")
-        if sig == "CIS1":
-            script_name = _read_zstring(getattr(subrecords[cursor], "data", b""))
-            cursor += 1
-            continue
-        if sig == "CIS2":
-            variable_name = _read_zstring(getattr(subrecords[cursor], "data", b""))
-            cursor += 1
-            continue
-        break
-    return script_name, variable_name, cursor, _ctda_param1_form_id(data)
-
-
-def _form_id_lookup_keys(form_id: int | None) -> tuple[int, ...]:
-    if form_id is None:
-        return ()
-    raw = int(form_id) & 0xFFFFFFFF
-    object_id = raw & 0x00FFFFFF
-    if raw == object_id:
-        return (raw,)
-    return (raw, object_id)
-
-
-def _condition_script_names(
-    script_name: str | None,
-    target_form_id: int | None,
-    scripts_by_form_id: Mapping[int, list[str]] | None,
-) -> list[str]:
-    if script_name:
-        return [script_name]
-    if scripts_by_form_id is None:
-        return []
-    for key in _form_id_lookup_keys(target_form_id):
-        scripts = scripts_by_form_id.get(key)
-        if scripts:
-            return scripts
-    return []
-
-
-def _condition_script_ref_at(
-    subrecords: list[Any],
-    index: int,
-) -> tuple[str, str | None, int] | None:
-    found = _condition_script_data_at(subrecords, index)
-    if found is None:
-        return None
-    script_name, variable_name, cursor, _target_form_id = found
-    if script_name is None:
-        return None
-    return script_name, variable_name, cursor
-
-
-def _iter_condition_script_refs(
-    record: Any,
-    *,
-    form_key: str,
-    scripts_by_form_id: Mapping[int, list[str]] | None = None,
-) -> list[_ScriptReference]:
-    refs: list[_ScriptReference] = []
-    subrecords = list(getattr(record, "subrecords", []) or [])
-    editor_id = str(getattr(record, "editor_id", None) or "")
-    record_sig = str(getattr(record, "signature", ""))
-    form_id = int(getattr(record, "form_id", 0)) & 0xFFFFFFFF
-    for index, sub in enumerate(subrecords):
-        if getattr(sub, "signature", "") != "CTDA":
-            continue
-        found = _condition_script_data_at(subrecords, index)
-        if found is None:
-            continue
-        script_name, variable_name, _cursor, target_form_id = found
-        condition_inferred = script_name is None
-        for resolved_script_name in _condition_script_names(
-            script_name,
-            target_form_id,
-            scripts_by_form_id,
-        ):
-            refs.append(
-                _ScriptReference(
-                    script_name=resolved_script_name,
-                    variable_name=variable_name,
-                    form_key=form_key,
-                    form_id=form_id,
-                    record_sig=record_sig,
-                    editor_id=editor_id,
-                    kind="condition",
-                    condition_inferred=condition_inferred,
-                )
-            )
-    return refs
-
-
-def _iter_script_names(value: Any) -> Iterable[str]:
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            if key == "ScriptName" and isinstance(item, str) and item.strip():
-                yield item.strip()
-                continue
-            yield from _iter_script_names(item)
-        return
-    if isinstance(value, list):
-        for item in value:
-            yield from _iter_script_names(item)
-
-
-def _iter_vmad_script_refs(
-    record_payload: Mapping[str, Any],
-    record: Any,
-    *,
-    form_key: str,
-) -> list[_ScriptReference]:
-    refs: list[_ScriptReference] = []
-    fields = record_payload.get("fields")
-    if not isinstance(fields, list):
-        return refs
-    editor_id = str(getattr(record, "editor_id", None) or "")
-    record_sig = str(getattr(record, "signature", ""))
-    form_id = int(getattr(record, "form_id", 0)) & 0xFFFFFFFF
-    seen: set[str] = set()
-    for field in fields:
-        if not isinstance(field, Mapping):
-            continue
-        vmad = field.get("VirtualMachineAdapter")
-        if not isinstance(vmad, Mapping):
-            continue
-        for script_name in _iter_script_names(vmad):
-            key = _script_key(script_name)
-            if key in seen:
-                continue
-            seen.add(key)
-            refs.append(
-                _ScriptReference(
-                    script_name=script_name,
-                    variable_name=None,
-                    form_key=form_key,
-                    form_id=form_id,
-                    record_sig=record_sig,
-                    editor_id=editor_id,
-                    kind="vmad",
-                )
-            )
-    return refs
-
-
-def _record_from_native_subrecords(
-    *,
-    form_id: int,
-    signature: str,
-    editor_id: str | None,
-    subrecords: list[tuple[str, bytes, str | None]],
-) -> Any:
-    from creation_lib.esp.model import Record, Subrecord
-
-    record = Record(
-        signature=str(signature),
-        form_id=int(form_id) & 0xFFFFFFFF,
-        subrecords=[
-            Subrecord(str(sig), bytes(data), semantic_type)
-            for sig, data, semantic_type in subrecords
-        ],
-    )
-    setattr(record, "editor_id", editor_id or "")
-    return record
-
-
-def _script_ref_form_key(
-    form_id: int,
-    *,
-    plugin_name: str,
-) -> str:
-    object_id = int(form_id) & 0x00FFFFFF
-    if plugin_name:
-        return f"{object_id:06X}:{plugin_name}"
-    return f"{int(form_id) & 0xFFFFFFFF:08X}"
-
-
-def _subrecord_payloads_after_script_strip(
-    record: Any,
-    *,
-    failed_script_keys: set[str],
-    invalid_condition_keys: set[tuple[str, str]],
-    strip_vmad: bool,
-    scripts_by_form_id: Mapping[int, list[str]] | None = None,
-) -> tuple[list[dict[str, bytes]], int, int]:
-    subrecords = list(getattr(record, "subrecords", []) or [])
-    payloads: list[dict[str, bytes]] = []
-    stripped_conditions = 0
-    stripped_vmad = 0
-    index = 0
-    while index < len(subrecords):
-        sub = subrecords[index]
-        sig = str(getattr(sub, "signature", ""))
-        if strip_vmad and sig == "VMAD":
-            stripped_vmad += 1
-            index += 1
-            continue
-        if sig == "CTDA":
-            found = _condition_script_data_at(subrecords, index)
-            if found is not None:
-                script_name, variable_name, cursor, target_form_id = found
-                resolved_script_names = _condition_script_names(
-                    script_name,
-                    target_form_id,
-                    scripts_by_form_id,
-                )
-                unresolved_script_names = []
-                for resolved_script_name in resolved_script_names:
-                    script_key = _script_key(resolved_script_name)
-                    condition_key = (script_key, _variable_key(variable_name))
-                    if (
-                        script_key in failed_script_keys
-                        or condition_key in invalid_condition_keys
-                    ):
-                        unresolved_script_names.append(resolved_script_name)
-                should_strip = bool(unresolved_script_names) and (
-                    script_name is not None
-                    or len(unresolved_script_names) == len(resolved_script_names)
-                )
-                if should_strip:
-                    stripped_conditions += 1
-                    index = cursor
-                    continue
-        payloads.append({"signature": sig, "data": bytes(getattr(sub, "data", b""))})
-        index += 1
-    if stripped_conditions:
-        _sync_single_citc_condition_count(payloads)
-    return payloads, stripped_conditions, stripped_vmad
-
-
-def _sync_single_citc_condition_count(payloads: list[dict[str, bytes]]) -> None:
-    citc_indexes = [
-        index for index, item in enumerate(payloads) if item["signature"] == "CITC"
-    ]
-    if len(citc_indexes) != 1:
-        return
-    data = bytearray(payloads[citc_indexes[0]]["data"])
-    if len(data) < 4:
-        return
-    condition_count = sum(1 for item in payloads if item["signature"] == "CTDA")
-    data[0:4] = int(condition_count).to_bytes(4, byteorder="little", signed=False)
-    payloads[citc_indexes[0]]["data"] = bytes(data)
 
 
 def _dedupe_paths(paths: list[Path]) -> list[Path]:
@@ -1737,12 +2536,8 @@ def _build_target_pex_index(
     index: dict[str, Path | None] = dict(_build_pex_index(roots))
     if target_asset_store is None:
         return index
-    for asset_path in target_asset_store.list_assets(
-        prefix="scripts/", suffix=".pex"
-    ):
-        script_name = _script_name_from_relative_pex(
-            Path(asset_path), Path("scripts")
-        )
+    for asset_path in target_asset_store.list_assets(prefix="scripts/", suffix=".pex"):
+        script_name = _script_name_from_relative_pex(Path(asset_path), Path("scripts"))
         index.setdefault(_script_key(script_name), None)
     return index
 
@@ -1773,7 +2568,6 @@ _FO76_TO_FO4_SOURCE_SCRIPT_SKIP_KEYS = {
     "creatures:radscorpionracescript",
     "creatures:smbehemothracescript",
 }
-
 
 def _fo76_to_fo4_script_type(type_name: str) -> str:
     suffix = ""
@@ -1856,27 +2650,6 @@ def _extend_script_names_with_ancestor_closure(
         queue.append(parent_name)
 
 
-def _pex_member_names(path: Path) -> set[str]:
-    from creation_lib.pex import parse_pex
-
-    pex = parse_pex(path)
-    names: set[str] = set()
-    for obj in pex.objects:
-        for variable in obj.variables:
-            names.add(str(variable.name).lower())
-        for prop in obj.properties:
-            names.add(str(prop.name).lower())
-            if prop.auto_var:
-                names.add(str(prop.auto_var).lower())
-    return names
-
-
-def _script_has_variable(path: Path, variable_name: str | None) -> bool:
-    if not variable_name:
-        return True
-    return _variable_key(variable_name) in _pex_member_names(path)
-
-
 def _script_worker_count(requested_workers: int | None, script_count: int) -> int:
     if script_count <= 1:
         return 1
@@ -1915,8 +2688,19 @@ def _path_before_error(text: str) -> str:
     return text.split(" -> ", 1)[0]
 
 
+def _path_through_extension(text: str, extension: str) -> str:
+    end = text.lower().find(extension.lower())
+    return text[: end + len(extension)] if end >= 0 else _path_before_error(text)
+
+
 def _is_bgsm_path(path: str) -> bool:
     return ".bgsm" in path.lower()
+
+
+def _exact_mvp_creature_profile(ctx) -> str | None:
+    if getattr(ctx, "mvp_creature_corpus_policy", None) is not None:
+        return None
+    return getattr(ctx, "mvp_creature_profile", None)
 
 
 class _UnifiedRecordRuntime:
@@ -1925,12 +2709,14 @@ class _UnifiedRecordRuntime:
         self._registry = ConvertedPluginRegistry()
         self._aggregate_summary = ConversionSummary(mod_path=str(request.output_root))
         self._run_result = RunResult()
+        self._legacy_nif_basename_indexes: dict[
+            tuple[str, ...], dict[str, tuple[Path, ...]]
+        ] = {}
+        self._source_asset_inventory = None
 
     @property
-
     def run_result(self) -> RunResult:
         return self._run_result
-
 
     def _topo_sort(self, plugins: list[Path], runner: "ConversionRunner") -> list[Path]:
         canonical_names = {path: self._plugin_name(path) for path in plugins}
@@ -1976,7 +2762,6 @@ class _UnifiedRecordRuntime:
             visit(canonical_names[path])
         return [path_by_name[name] for name in ordered]
 
-
     def _read_master_chain(self, source_plugin: Path) -> list[str]:
         if source_plugin.is_file():
             try:
@@ -1993,7 +2778,6 @@ class _UnifiedRecordRuntime:
         return []
 
     @staticmethod
-
     def _is_target_master(name: str) -> bool:
         lowered = name.lower()
         return (
@@ -2003,7 +2787,6 @@ class _UnifiedRecordRuntime:
         )
 
     @staticmethod
-
     def _source_name_candidates(plugin_name: str) -> list[str]:
         path = Path(plugin_name)
         candidates = [plugin_name]
@@ -2022,10 +2805,7 @@ class _UnifiedRecordRuntime:
             result.append(candidate)
         return result
 
-
-    def _merge_addon_index_map(
-        self, ctx: ConversionContext, decisions: list
-    ) -> None:
+    def _merge_addon_index_map(self, ctx: ConversionContext, decisions: list) -> None:
         """Fold `addon_node_index_remap` decisions (message ``"old->new"``)
         emitted by the ESP ADDN fixup into ``ctx.addon_index_map``. The NIF
         phase consumes this map to repoint `BSValueNode` addon-node blocks to
@@ -2044,7 +2824,6 @@ class _UnifiedRecordRuntime:
                 continue
         if current:
             ctx.addon_index_map = current
-
 
     def _emit_run_warnings_inline(
         self,
@@ -2065,11 +2844,11 @@ class _UnifiedRecordRuntime:
             existing.extend(decisions)
             ctx.conversion_decisions = existing
             self._merge_addon_index_map(ctx, decisions)
-        for w in warnings:
-            runner.emit_log("WARN", w)
+        for warning, count in Counter(warnings).items():
+            message = warning if count == 1 else f"{warning} ({count} occurrences)"
+            runner.emit_log("WARN", message)
         if warnings:
             ctx.summary.records_warnings += len(warnings)
-
 
     def _drain_and_drop_rust_run(self, ctx: ConversionContext) -> None:
         """Drain decisions/warnings from a stashed Rust ConversionRun, then
@@ -2109,7 +2888,6 @@ class _UnifiedRecordRuntime:
             pass
 
     @staticmethod
-
     def _clean_stale_authoring_for_direct_esp(mod_path: Path) -> None:
         yaml_dir = mod_path / "yaml"
         records_dir = yaml_dir / "records"
@@ -2119,7 +2897,6 @@ class _UnifiedRecordRuntime:
         if plugin_yaml.exists():
             plugin_yaml.unlink()
         yaml_dir.mkdir(parents=True, exist_ok=True)
-
 
     def _emit_authoring_yaml_for_build(
         self,
@@ -2134,7 +2911,6 @@ class _UnifiedRecordRuntime:
             )
             return False
         return emit_authoring_yaml
-
 
     def _validate_output_plugin(
         self,
@@ -2189,6 +2965,49 @@ class _UnifiedRecordRuntime:
                 f"{len(errors)} error(s), {len(warnings)} warning(s)"
             )
 
+    def _check_output_runtime_hazards(
+        self,
+        ctx: ConversionContext,
+        runner: "ConversionRunner",
+    ) -> None:
+        output_path = ctx.mod_path / ctx.output_plugin_name
+        if not output_path.is_file():
+            raise FileNotFoundError(
+                f"missing output plugin for runtime-hazard scan: {output_path}"
+            )
+
+        from creation_lib.esp.editor.runtime_hazards import (
+            FO4_TARGET_SHAPE_PROFILE,
+            scan_runtime_hazards_path,
+        )
+
+        started_at = time.perf_counter()
+        runner.emit_log(
+            "INFO", f"Checking FO4 target shapes in {ctx.output_plugin_name}"
+        )
+        report = scan_runtime_hazards_path(
+            output_path,
+            game=self._req.target_game,
+            profile=FO4_TARGET_SHAPE_PROFILE,
+        )
+
+        runner.emit_log(
+            "INFO",
+            f"FO4 target-shape check finished for {ctx.output_plugin_name}: "
+            f"hazards={len(report)} "
+            f"elapsed={_format_elapsed_seconds(_elapsed_seconds(started_at))}",
+        )
+        for hazard in report.hazards[:25]:
+            runner.emit_log("ERROR", f"runtime hazard: {hazard.message}")
+        if len(report) > 25:
+            runner.emit_log(
+                "ERROR", f"runtime hazard: additional hazards omitted: {len(report) - 25}"
+            )
+        if report.hazards:
+            raise RuntimeError(
+                f"FO4 target-shape check failed for {ctx.output_plugin_name}: "
+                f"{len(report)} runtime hazard(s)"
+            )
 
     def _validation_master_search_paths(self, output_path: Path) -> list[Path]:
         paths: list[Path] = []
@@ -2217,7 +3036,6 @@ class _UnifiedRecordRuntime:
         add(self._req.target_data_dir)
         return paths
 
-
     def _build_context(
         self,
         source_plugin: Path,
@@ -2226,8 +3044,6 @@ class _UnifiedRecordRuntime:
         runner: "ConversionRunner | None" = None,
     ) -> ConversionContext:
         timing_report = getattr(self._req, "timing_report", None)
-        target_master_paths = _conversion_target_master_inputs(self._req)
-
         def record_setup_timing(
             name: str,
             started_at: float,
@@ -2241,16 +3057,29 @@ class _UnifiedRecordRuntime:
                     **fields,
                 )
 
+        master_started = time.perf_counter()
+        target_master_paths = _conversion_target_master_inputs(self._req)
+        record_setup_timing("setup_master_inputs", master_started)
+        maps_started = time.perf_counter()
         material_overrides = load_translation_map_overrides(
             self._req.source_game, self._req.target_game
         )
+        record_setup_timing("setup_translation_maps", maps_started)
         target_asset_store = None
         if self._req.target_game == "fo4" and self._req.target_data_dir is not None:
+            store_started = time.perf_counter()
             target_asset_store = build_target_asset_store(
                 target_data_dir=self._req.target_data_dir,
                 catalog_path=self._req.target_asset_catalog_path,
                 cache_dir=self._req.target_asset_cache_dir,
                 overlay_dir=self._req.target_extracted_dir,
+            )
+            store_timings = target_asset_store.open_timings() if target_asset_store else {}
+            record_setup_timing(
+                "setup_target_asset_store", store_started, components=store_timings
+            )
+            _safe_emit_log(
+                runner, "INFO", f"Target asset store timings: {store_timings}"
             )
         target_asset_index = None
         if self._has_asset_phases(self._req.options):
@@ -2363,9 +3192,13 @@ class _UnifiedRecordRuntime:
                 target_data_dir=self._req.target_data_dir,
                 source_data_dir=self._req.source_data_dir,
                 additional_source_asset_roots=tuple(
-                    Path(root)
-                    for root in self._req.additional_source_asset_roots
+                    Path(root) for root in self._req.additional_source_asset_roots
                 ),
+                skyrim_quest_runtime_converted_asset_roots=tuple(
+                    Path(root)
+                    for root in self._req.skyrim_quest_runtime_converted_asset_roots
+                ),
+                legacy_music_tracks=tuple(self._req.legacy_music_tracks),
                 formkey_mapper=formkey_mapper,
                 fixups=None,
                 material_overrides=material_overrides,
@@ -2442,9 +3275,7 @@ class _UnifiedRecordRuntime:
             close_plugin_handles(target_master_handles)
             raise
 
-
     @staticmethod
-
     def _close_source_handle(ctx: ConversionContext) -> None:
         source_handle = getattr(ctx, "source_plugin_handle", None)
         if source_handle is not None:
@@ -2452,14 +3283,12 @@ class _UnifiedRecordRuntime:
             setattr(ctx, "source_plugin_handle", None)
 
     @staticmethod
-
     def _close_target_master_handles(ctx: ConversionContext) -> None:
         target_master_handles = getattr(ctx, "target_master_handles", [])
         close_plugin_handles(target_master_handles)
         setattr(ctx, "target_master_handles", [])
 
     @staticmethod
-
     def _has_asset_phases(opts) -> bool:
         return (
             opts.convert_nifs
@@ -2469,7 +3298,6 @@ class _UnifiedRecordRuntime:
             or opts.convert_animations
             or opts.copy_sounds
         )
-
 
     def _collect_assets_native(
         self,
@@ -2481,6 +3309,7 @@ class _UnifiedRecordRuntime:
         from creation_lib.esp.plugin import Plugin
 
         opts = self._req.options
+        setattr(ctx, "source_asset_inventory", None)
         enabled_kinds: list[str] = []
         if opts.convert_nifs:
             enabled_kinds.append("nif")
@@ -2545,17 +3374,57 @@ class _UnifiedRecordRuntime:
             kinds=",".join(enabled_kinds),
         )
 
+        inventory = load_native_module().SourceAssetInventory()
+        self._source_asset_inventory = inventory
+        self._legacy_nif_basename_indexes.clear()
+        try:
+            assets = self._resolve_and_expand_native_assets(
+                raw_assets, source_plugin, ctx, runner
+            )
+            if bool(getattr(ctx, "is_whole_plugin", False)) and (
+                opts.convert_textures or opts.convert_materials or opts.convert_havok
+            ):
+                setattr(ctx, "source_asset_inventory", inventory)
+            return assets
+        except BaseException:
+            setattr(ctx, "source_asset_inventory", None)
+            raise
+        finally:
+            self._source_asset_inventory = None
+            self._legacy_nif_basename_indexes.clear()
+
+    def _resolve_and_expand_native_assets(
+        self,
+        raw_assets: list,
+        source_plugin: Path,
+        ctx: ConversionContext,
+        runner: "ConversionRunner | None" = None,
+    ) -> list[AssetRef]:
+        opts = self._req.options
         resolve_started = time.perf_counter()
         assets = [
             self._asset_ref_from_native_item(item, source_plugin, ctx)
             for item in raw_assets
         ]
+        _record_timing(
+            ctx, "collect_assets_reference_paths", resolve_started, assets=len(assets)
+        )
         if opts.copy_sounds:
+            audio_started = time.perf_counter()
             assets = self._augment_fo76_audio_tree_assets(
                 assets,
                 source_plugin,
                 ctx,
                 runner,
+            )
+            from bacup_lib.legacy_music import augment_legacy_music_assets
+
+            assets = augment_legacy_music_assets(
+                assets,
+                self._legacy_music_track_manifest(ctx),
+            )
+            _record_timing(
+                ctx, "collect_assets_audio_expansion", audio_started, assets=len(assets)
             )
         _record_timing(
             ctx,
@@ -2583,8 +3452,171 @@ class _UnifiedRecordRuntime:
                 ctx,
                 runner,
             )
+        assets = self._augment_creature_mvp_asset_closure(
+            assets,
+            source_plugin,
+            ctx,
+            runner,
+        )
         assets = self._augment_fo76_pipboy_map_asset(assets, source_plugin, ctx, runner)
+        if self._source_asset_inventory is not None:
+            _safe_emit_log(
+                runner, "INFO", f"Source asset inventory: {self._source_asset_inventory.stats()}"
+            )
         return assets
+
+    def _augment_weapon_mvp_asset_closure(
+        self,
+        assets: list[AssetRef],
+        source_plugin: Path,
+        ctx: ConversionContext,
+        runner: "ConversionRunner | None" = None,
+    ) -> list[AssetRef]:
+        from bacup_lib.weapon_mvp_assets import weapon_mvp_asset_closure
+
+        closure = weapon_mvp_asset_closure(
+            self._req.source_game,
+            self._req.target_game,
+            assets,
+        )
+        if closure is None:
+            return assets
+        activator = closure.activating_assets(assets)[0]
+        provenance = getattr(activator, "provenance", None)
+        expanded = list(assets)
+        for asset in expanded:
+            if not closure.allows(asset) or asset.resolved_path:
+                continue
+            asset.resolved_path, asset.resolution_error = (
+                self._resolve_native_asset_path(
+                    asset.asset_type,
+                    asset.source_path,
+                    source_plugin,
+                    ctx,
+                    source_plugin_names=(closure.activators[0].source_plugin,),
+                )
+            )
+        for asset_type, source_path in closure.missing_entries(expanded):
+            resolved_path, resolution_error = self._resolve_native_asset_path(
+                asset_type,
+                source_path,
+                source_plugin,
+                ctx,
+                source_plugin_names=(closure.activators[0].source_plugin,),
+            )
+            expanded.append(
+                AssetRef(
+                    asset_type=asset_type,
+                    source_path=source_path,
+                    resolved_path=resolved_path,
+                    resolution_error=resolution_error,
+                    provenance=AssetProvenance(
+                        added_by_record_fk=str(
+                            getattr(provenance, "added_by_record_fk", "") or ""
+                        ),
+                        added_by_record_eid=str(
+                            getattr(provenance, "added_by_record_eid", "") or ""
+                        ),
+                        added_by_field="NIF texture closure",
+                        walk_depth=0,
+                        walker_pass="weapon_mvp_asset_closure",
+                        added_by_record_sig=str(
+                            getattr(provenance, "added_by_record_sig", "") or ""
+                        ),
+                    ),
+                )
+            )
+        added = len(expanded) - len(assets)
+        if added:
+            _safe_emit_log(
+                runner,
+                "INFO",
+                f"Expanded {added} exact {closure.label} MVP asset(s)",
+            )
+        return expanded
+
+    def _augment_fnv_weapon_mvp_asset_closure(
+        self,
+        assets: list[AssetRef],
+        source_plugin: Path,
+        ctx: ConversionContext,
+        runner: "ConversionRunner | None" = None,
+    ) -> list[AssetRef]:
+        return self._augment_weapon_mvp_asset_closure(
+            assets, source_plugin, ctx, runner
+        )
+
+    def _augment_creature_mvp_asset_closure(
+        self,
+        assets: list[AssetRef],
+        source_plugin: Path,
+        ctx: ConversionContext,
+        runner: "ConversionRunner | None" = None,
+    ) -> list[AssetRef]:
+        from bacup_lib.creature_mvp_assets import creature_mvp_asset_closure
+
+        profile = _exact_mvp_creature_profile(ctx)
+        closure = creature_mvp_asset_closure(profile, assets)
+        if closure is None:
+            return assets
+        activator = closure.activating_assets(assets)[0]
+        provenance = getattr(activator, "provenance", None)
+        expanded = list(assets)
+        for asset in expanded:
+            if not closure.allows(asset):
+                continue
+            output_subpath = closure.output_subpath_for(asset)
+            if output_subpath is not None:
+                asset.output_subpath = output_subpath
+            if asset.resolved_path:
+                continue
+            asset.resolved_path, asset.resolution_error = (
+                self._resolve_native_asset_path(
+                    asset.asset_type,
+                    asset.source_path,
+                    source_plugin,
+                    ctx,
+                    source_plugin_names=(closure.activator.source_plugin,),
+                )
+            )
+        for asset_type, source_path in closure.missing_entries(expanded):
+            resolved_path, resolution_error = self._resolve_native_asset_path(
+                asset_type,
+                source_path,
+                source_plugin,
+                ctx,
+                source_plugin_names=(closure.activator.source_plugin,),
+            )
+            asset = AssetRef(
+                asset_type=asset_type,
+                source_path=source_path,
+                resolved_path=resolved_path,
+                resolution_error=resolution_error,
+                provenance=AssetProvenance(
+                    added_by_record_fk=str(
+                        getattr(provenance, "added_by_record_fk", "") or ""
+                    ),
+                    added_by_record_eid=str(
+                        getattr(provenance, "added_by_record_eid", "") or ""
+                    ),
+                    added_by_field="source-rig creature MVP closure",
+                    walk_depth=0,
+                    walker_pass="creature_mvp_asset_closure",
+                    added_by_record_sig=str(
+                        getattr(provenance, "added_by_record_sig", "") or ""
+                    ),
+                ),
+            )
+            asset.output_subpath = closure.output_subpath_for(asset)
+            expanded.append(asset)
+        added = len(expanded) - len(assets)
+        if added:
+            _safe_emit_log(
+                runner,
+                "INFO",
+                f"Expanded {added} exact {closure.label} MVP asset(s)",
+            )
+        return expanded
 
     def _augment_fo76_audio_tree_assets(
         self,
@@ -2677,11 +3709,16 @@ class _UnifiedRecordRuntime:
     ) -> int:
         added = 0
         for root in roots:
-            for source_file in sorted(root.rglob("*")):
-                if not source_file.is_file():
-                    continue
-                if source_file.suffix.lower() not in extensions:
-                    continue
+            inventory = self._source_asset_inventory
+            source_files = (
+                (Path(path) for path in inventory.files(str(root), sorted(extensions), True))
+                if inventory is not None
+                else (
+                    path for path in root.rglob("*")
+                    if path.is_file() and path.suffix.lower() in extensions
+                )
+            )
+            for source_file in sorted(source_files):
                 rel = source_file.relative_to(root).as_posix()
                 source_path = f"{output_prefix}/{rel}"
                 key = ("sound", self._sound_asset_copy_key(source_path))
@@ -2773,10 +3810,14 @@ class _UnifiedRecordRuntime:
         output_subpath = "textures/interface/pip-boy/papermap_city_d.dds"
 
         def _texture_output_key(asset: AssetRef) -> str:
-            explicit = str(getattr(asset, "output_subpath", "") or "").replace("\\", "/")
+            explicit = str(getattr(asset, "output_subpath", "") or "").replace(
+                "\\", "/"
+            )
             if explicit:
                 return explicit.lower()
-            rel = self._normalize_asset_source_path(asset.source_path).replace("\\", "/")
+            rel = self._normalize_asset_source_path(asset.source_path).replace(
+                "\\", "/"
+            )
             if not rel.lower().startswith("textures/"):
                 rel = f"textures/{rel}"
             return rel.lower()
@@ -2824,7 +3865,6 @@ class _UnifiedRecordRuntime:
                 )
         return expanded
 
-
     def _augment_full_plugin_nif_inventory(
         self,
         assets: list[AssetRef],
@@ -2859,7 +3899,7 @@ class _UnifiedRecordRuntime:
         nifs_added = 0
 
         for mesh_root in mesh_roots:
-            nif_files = self._iter_nif_files(mesh_root, workers=workers)
+            nif_files = self._source_nif_files(mesh_root, workers=workers)
             nifs_seen += len(nif_files)
             for child in nif_files:
                 source_path = self._mesh_root_relative_nif_source_path(mesh_root, child)
@@ -3038,6 +4078,14 @@ class _UnifiedRecordRuntime:
             key=lambda path: str(path).replace("\\", "/").lower(),
         )
 
+    def _source_nif_files(self, mesh_root: Path, workers: int | None = None) -> list[Path]:
+        if self._source_asset_inventory is None:
+            return self._iter_nif_files(mesh_root, workers=workers)
+        return sorted(
+            (Path(path) for path in self._source_asset_inventory.files(str(mesh_root), [".nif"])),
+            key=lambda path: str(path).replace("\\", "/").lower(),
+        )
+
     @staticmethod
     def _nif_scan_tasks(
         mesh_root: Path,
@@ -3078,10 +4126,9 @@ class _UnifiedRecordRuntime:
                             if entry.is_dir(follow_symlinks=False):
                                 if recursive:
                                     stack.append(Path(entry.path))
-                            elif (
-                                entry.is_file(follow_symlinks=False)
-                                and entry.name.lower().endswith(".nif")
-                            ):
+                            elif entry.is_file(
+                                follow_symlinks=False
+                            ) and entry.name.lower().endswith(".nif"):
                                 paths.append(Path(entry.path))
                         except OSError:
                             continue
@@ -3142,9 +4189,13 @@ class _UnifiedRecordRuntime:
                 continue
             scanned_dirs.add(disk_key)
 
-            for child in sorted(disk_dir.iterdir(), key=lambda path: path.name.lower()):
-                if not child.is_file() or child.suffix.lower() != ".nif":
-                    continue
+            inventory = self._source_asset_inventory
+            children = (
+                (Path(path) for path in inventory.files(str(disk_dir), [".nif"], True, False))
+                if inventory is not None
+                else (path for path in disk_dir.iterdir() if path.is_file() and path.suffix.lower() == ".nif")
+            )
+            for child in sorted(children, key=lambda path: path.name.lower()):
                 source_path = f"{source_dir}/{child.name}".replace("\\", "/")
                 key = self._nif_source_path_key(source_path)
                 if key in seen_paths:
@@ -3171,7 +4222,9 @@ class _UnifiedRecordRuntime:
     def _character_assets_source_dir(cls, source_path: str) -> str | None:
         parts = [
             part
-            for part in cls._normalize_asset_source_path(source_path).replace("\\", "/").split("/")
+            for part in cls._normalize_asset_source_path(source_path)
+            .replace("\\", "/")
+            .split("/")
             if part
         ]
         for index, part in enumerate(parts):
@@ -3205,7 +4258,6 @@ class _UnifiedRecordRuntime:
             added_by_record_sig=provenance.added_by_record_sig,
         )
 
-
     def _augment_havok_behavior_bundles(
         self,
         assets: list[AssetRef],
@@ -3220,8 +4272,7 @@ class _UnifiedRecordRuntime:
             return assets
 
         seen_paths = {
-            self._havok_source_path_key(asset.source_path)
-            for asset in assets
+            self._havok_source_path_key(asset.source_path) for asset in assets
         }
         expanded: list[AssetRef] = list(assets)
         project_assets = [
@@ -3255,7 +4306,12 @@ class _UnifiedRecordRuntime:
             )
             companions: list[AssetRef] = []
             for root in roots:
-                companions.extend(expand_behavior_bundle(project_asset, str(root)))
+                if self._source_asset_inventory is None:
+                    companions.extend(expand_behavior_bundle(project_asset, str(root)))
+                else:
+                    companions.extend(expand_behavior_bundle(
+                        project_asset, str(root), inventory=self._source_asset_inventory
+                    ))
             return asset, companions
 
         if workers <= 1 or len(project_assets) == 1:
@@ -3317,7 +4373,6 @@ class _UnifiedRecordRuntime:
         return expanded
 
     @classmethod
-
     def _is_havok_project_asset(cls, asset: AssetRef) -> bool:
         if asset.asset_type != "behavior":
             return False
@@ -3329,18 +4384,15 @@ class _UnifiedRecordRuntime:
         return not any(part in companion_dirs for part in path_parts[:-1])
 
     @classmethod
-
     def _havok_companion_asset_type(cls, source_path: str) -> str:
         path_parts = cls._strip_meshes_prefix(source_path).lower().split("/")
         return "animation" if "animations" in path_parts[:-1] else "behavior"
 
     @classmethod
-
     def _havok_source_path_key(cls, source_path: str) -> str:
         return cls._strip_meshes_prefix(source_path).lower()
 
     @classmethod
-
     def _strip_meshes_prefix(cls, source_path: str) -> str:
         rel_path = cls._normalize_asset_source_path(source_path)
         if rel_path.lower().startswith("meshes/"):
@@ -3358,7 +4410,6 @@ class _UnifiedRecordRuntime:
     }
     _SOUND_EXTS = (".wav", ".xwm", ".fuz")
 
-
     def _asset_ref_from_native_item(
         self,
         item: object,
@@ -3375,11 +4426,34 @@ class _UnifiedRecordRuntime:
             ctx,
             source_plugin_names=source_plugin_names,
         )
+        raw_wire_point = item.get("workshop_wire_point")
+        workshop_wire_point = (
+            tuple(float(value) for value in raw_wire_point)
+            if isinstance(raw_wire_point, (list, tuple)) and len(raw_wire_point) == 3
+            else None
+        )
+        workshop_snap_points = tuple(
+            WorkshopSnapPoint(
+                name=str(point[0]),
+                translation=tuple(float(value) for value in point[1]),
+                rotation=tuple(float(value) for value in point[2]),
+                scale=float(point[3]),
+            )
+            for point in (item.get("workshop_snap_points") or ())
+            if isinstance(point, (list, tuple))
+            and len(point) == 4
+            and isinstance(point[1], (list, tuple))
+            and len(point[1]) == 3
+            and isinstance(point[2], (list, tuple))
+            and len(point[2]) == 4
+        )
         return AssetRef(
             asset_type=asset_type,
             source_path=source_path,
             resolved_path=resolved_path,
             resolution_error=resolution_error,
+            workshop_wire_point=workshop_wire_point,
+            workshop_snap_points=workshop_snap_points,
             provenance=AssetProvenance(
                 added_by_record_fk=str(item.get("source_form_key") or ""),
                 added_by_record_eid="",
@@ -3391,12 +4465,10 @@ class _UnifiedRecordRuntime:
         )
 
     @staticmethod
-
     def _normalize_asset_source_path(source_path: str) -> str:
         return normalize_asset_source_path(source_path)
 
     @classmethod
-
     def _source_plugin_names_from_native_item(cls, item: object) -> tuple[str, ...]:
         get = getattr(item, "get", None)
         if not callable(get):
@@ -3453,7 +4525,6 @@ class _UnifiedRecordRuntime:
             aliases.append("/".join([*prefix, "SCOL", name, *parts[2:]]))
         return aliases
 
-
     def _resolve_native_asset_path(
         self,
         asset_type: str,
@@ -3464,11 +4535,17 @@ class _UnifiedRecordRuntime:
         source_plugin_names: tuple[str, ...] = (),
     ) -> tuple[str | None, str | None]:
         rel_path = source_path.replace("\\", "/")
+        inventory = self._source_asset_inventory
+        allow_directories = asset_type == "sound"
+
+        def exists(path: Path, allow_dirs: bool = allow_directories) -> bool:
+            if inventory is not None:
+                return inventory.exists(str(path), allow_dirs)
+            return path.is_file() or (allow_dirs and path.is_dir())
+
         direct_path = Path(rel_path)
         if direct_path.is_absolute():
-            if direct_path.is_file() or (
-                asset_type == "sound" and direct_path.is_dir()
-            ):
+            if exists(direct_path):
                 return str(direct_path), None
             return None, f"File not found: {direct_path}"
 
@@ -3499,7 +4576,7 @@ class _UnifiedRecordRuntime:
                 for candidate in candidates:
                     full = base.joinpath(*candidate.split("/"))
                     tried.append(str(full))
-                    if full.is_file() or (asset_type == "sound" and full.is_dir()):
+                    if exists(full):
                         return str(full), None
                     if asset_type == "sound":
                         stem = full.with_suffix("")
@@ -3510,8 +4587,17 @@ class _UnifiedRecordRuntime:
                                     continue
                                 alt = stem.with_suffix(alt_ext)
                                 tried.append(str(alt))
-                                if alt.is_file():
+                                if exists(alt, False):
                                     return str(alt), None
+
+        fallback = self._resolve_unique_legacy_nif_basename(
+            asset_type,
+            rel_path,
+            roots,
+            workers=getattr(ctx, "conversion_workers", None),
+        )
+        if fallback is not None:
+            return str(fallback), None
 
         if not roots:
             return None, "Source asset root not configured."
@@ -3520,8 +4606,48 @@ class _UnifiedRecordRuntime:
             tried_preview += f" (+{len(tried) - 6} more)"
         return None, f"File not found in source roots. Searched: {tried_preview}"
 
-    @staticmethod
+    def _resolve_unique_legacy_nif_basename(
+        self,
+        asset_type: str,
+        source_path: str,
+        roots: list[Path],
+        *,
+        workers: int | None,
+    ) -> Path | None:
+        if (
+            asset_type != "nif"
+            or not source_path.lower().endswith(".nif")
+            or self._req.source_game.lower() not in {"fnv", "fo3"}
+            or self._req.target_game.lower() != "fo4"
+        ):
+            return None
 
+        mesh_roots: list[Path] = []
+        seen_roots: set[str] = set()
+        for root in roots:
+            for mesh_root in self._mesh_root_candidates(root):
+                key = self._path_key(mesh_root)
+                if key in seen_roots:
+                    continue
+                seen_roots.add(key)
+                mesh_roots.append(mesh_root)
+        cache_key = tuple(self._path_key(root) for root in mesh_roots)
+        index = self._legacy_nif_basename_indexes.get(cache_key)
+        if index is None:
+            by_name: dict[str, dict[str, Path]] = {}
+            for mesh_root in mesh_roots:
+                for path in self._source_nif_files(mesh_root, workers=workers):
+                    relative_key = path.relative_to(mesh_root).as_posix().lower()
+                    by_name.setdefault(path.name.lower(), {}).setdefault(
+                        relative_key, path
+                    )
+            index = {name: tuple(paths.values()) for name, paths in by_name.items()}
+            self._legacy_nif_basename_indexes[cache_key] = index
+
+        candidates = index.get(Path(source_path).name.lower(), ())
+        return candidates[0] if len(candidates) == 1 else None
+
+    @staticmethod
     def _native_asset_source_roots(
         source_plugin: Path,
         ctx: ConversionContext,
@@ -3548,6 +4674,43 @@ class _UnifiedRecordRuntime:
             deduped.append(root)
         return deduped
 
+    def _legacy_music_track_manifest(
+        self,
+        ctx: ConversionContext,
+    ) -> list[dict[str, str]]:
+        cached = getattr(ctx, "_legacy_music_track_manifest", None)
+        if cached is not None:
+            return cached
+
+        configured = list(getattr(ctx, "legacy_music_tracks", ()) or ())
+        if configured:
+            setattr(ctx, "_legacy_music_track_manifest", configured)
+            return configured
+
+        from bacup_lib.legacy_music import discover_legacy_music_tracks
+
+        primary_roots: list[Path] = []
+        for value in (
+            getattr(ctx, "source_data_dir", None),
+            getattr(ctx, "source_extracted_dir", None),
+            self._req.source_data_dir,
+        ):
+            if value:
+                primary_roots.append(Path(value))
+        manifest = discover_legacy_music_tracks(
+            source_game=self._req.source_game,
+            target_game=self._req.target_game,
+            output_plugin_name=str(
+                getattr(ctx, "output_plugin_name", "") or "Converted.esm"
+            ),
+            primary_roots=primary_roots,
+            additional_roots=(
+                Path(root)
+                for root in getattr(ctx, "additional_source_asset_roots", ()) or ()
+            ),
+        )
+        setattr(ctx, "_legacy_music_track_manifest", manifest)
+        return manifest
 
     def _defers_placed_child_ref_class(self, ctx: ConversionContext) -> bool:
         """True only for whole-plugin FO76->FO4 worldspace runs, where the phase-6
@@ -3569,9 +4732,100 @@ class _UnifiedRecordRuntime:
             and self._req.target_game == "fo4"
         )
 
-
     def _native_run_config(self, ctx: ConversionContext) -> dict:
         opts = self._req.options
+        fnv_quest_slice = self._is_fnv_quest_slice()
+        exclude_signatures = getattr(opts, "exclude_signatures", frozenset())
+        requested_exclude_signatures = frozenset(exclude_signatures)
+        quest_slice_records: dict[str, list[int]] = {}
+        if (
+            self._req.source_game.lower() == "starfield"
+            and self._req.target_game.lower() == "fo4"
+        ):
+            # starfield:fo4 has no non-world-only mode; enforce the
+            # fence here so callers that forgot --mvp / the UI override still
+            # get it, matching the fnv/skyrim quest-slice blocks' shape below.
+            from bacup_lib.source_pairs import STARFIELD_MVP_EXCLUDE_SIGNATURES
+
+            exclude_signatures = (
+                frozenset(exclude_signatures) | STARFIELD_MVP_EXCLUDE_SIGNATURES
+            )
+        if fnv_quest_slice:
+            if not opts.convert_placed_records:
+                raise RuntimeError(
+                    "strict FNV quest slice requires placed-record conversion"
+                )
+            from bacup_lib.source_pairs import (
+                FNV_MVP_EXCLUDE_SIGNATURES,
+                FNV_QUEST_SLICE_EXCLUDE_SIGNATURES,
+                FNV_QUEST_SLICE_RECORD_FORM_IDS,
+                fnv_quest_slice_record_form_ids,
+            )
+
+            normalized_excludes = frozenset(
+                str(signature).strip().upper() for signature in exclude_signatures
+            )
+            conflicts = sorted(
+                frozenset(FNV_QUEST_SLICE_RECORD_FORM_IDS)
+                & (normalized_excludes - FNV_QUEST_SLICE_EXCLUDE_SIGNATURES)
+            )
+            if conflicts:
+                raise RuntimeError(
+                    "strict FNV quest slice excludes required record signatures: "
+                    + ", ".join(conflicts)
+                )
+            exclude_signatures = (
+                frozenset(exclude_signatures) | FNV_MVP_EXCLUDE_SIGNATURES
+            )
+            quest_slice_records = fnv_quest_slice_record_form_ids()
+        from bacup_lib.source_pairs import (
+            mvp_creature_corpus_policy_payload,
+            mvp_creature_profile_payload,
+            mvp_melee_policy_payload,
+            mvp_record_exception_payload,
+        )
+
+        pair_id = {
+            ("fnv", "fo4"): "fnvfo3:fo4",
+            ("skyrimse", "fo4"): "skyrimse:fo4",
+        }.get((self._req.source_game.lower(), self._req.target_game.lower()))
+        mvp_melee_policy = (
+            mvp_melee_policy_payload(pair_id, requested_exclude_signatures)
+            if pair_id is not None and not fnv_quest_slice
+            else None
+        )
+        mvp_record_exceptions = (
+            []
+            if mvp_melee_policy is not None
+            else (
+                mvp_record_exception_payload(pair_id, requested_exclude_signatures)
+                if pair_id is not None and not fnv_quest_slice
+                else []
+            )
+        )
+        mvp_creature_corpus_policy = (
+            mvp_creature_corpus_policy_payload(pair_id, requested_exclude_signatures)
+            if pair_id is not None
+            and not fnv_quest_slice
+            and not getattr(opts, "mvp_melee_only", False)
+            else None
+        )
+        mvp_creature_profile = (
+            mvp_creature_profile_payload(pair_id, requested_exclude_signatures)
+            if pair_id is not None
+            and not fnv_quest_slice
+            and not getattr(opts, "mvp_melee_only", False)
+            and mvp_creature_corpus_policy is None
+            else None
+        )
+        if getattr(opts, "mvp_melee_only", False) and mvp_melee_policy is None:
+            raise RuntimeError(
+                "melee-only conversion requires the complete bulk_melee_v1 MVP fence"
+            )
+        ctx.mvp_record_exceptions = mvp_record_exceptions
+        ctx.mvp_melee_policy = mvp_melee_policy
+        ctx.mvp_creature_corpus_policy = mvp_creature_corpus_policy
+        ctx.mvp_creature_profile = mvp_creature_profile
         source_extracted = (
             getattr(ctx, "source_data_dir", None) or self._req.source_data_dir
         )
@@ -3582,6 +4836,7 @@ class _UnifiedRecordRuntime:
         return {
             "output_plugin_name": getattr(ctx, "output_plugin_name", "Output.esm"),
             "preserve_source_ids": bool(getattr(ctx, "preserve_source_ids", True)),
+            "overwrite_existing": bool(getattr(ctx, "overwrite_existing", False)),
             "use_base_game_assets": True,
             "is_whole_plugin": bool(getattr(ctx, "is_whole_plugin", False)),
             "root_sig": None,
@@ -3591,6 +4846,7 @@ class _UnifiedRecordRuntime:
                 str(root)
                 for root in getattr(ctx, "additional_source_asset_roots", ()) or ()
             ],
+            "legacy_music_tracks": self._legacy_music_track_manifest(ctx),
             "target_extracted_dir": str(target_extracted) if target_extracted else None,
             "target_data_dir": str(target_data) if target_data else None,
             "target_asset_catalog_path": (
@@ -3621,11 +4877,22 @@ class _UnifiedRecordRuntime:
             "warning_policy": "warn_playable",
             "skip_record_signatures": _skip_record_signatures_payload(
                 convert_placed_records=opts.convert_placed_records,
-                exclude_signatures=getattr(opts, "exclude_signatures", frozenset()),
+                exclude_signatures=exclude_signatures,
+            ),
+            "fnv_quest_slice": fnv_quest_slice,
+            "mvp_melee_only": bool(getattr(opts, "mvp_melee_only", False)),
+            "fnv_quest_slice_records": quest_slice_records,
+            "mvp_record_exceptions": mvp_record_exceptions,
+            "fnv_force_greet_donor_form_key": (
+                "05B307@Fallout4.esm" if fnv_quest_slice else None
             ),
             "defer_placed_child_ref_class": self._defers_placed_child_ref_class(ctx),
             "legacy_pack_origins": [
                 row.to_dict() for row in self._req.legacy_pack_origins
+            ],
+            "legacy_runtime_origins": [
+                dict(row)
+                for row in getattr(self._req, "legacy_runtime_origins", ()) or ()
             ],
             "legacy_pack_raw_source_counts": (
                 self._req.legacy_pack_raw_source_counts.to_dict()
@@ -3649,6 +4916,351 @@ class _UnifiedRecordRuntime:
             },
         }
 
+    @staticmethod
+    def _mvp_melee_asset_receipt_rows(
+        metadata_rows: Iterable[Mapping[str, object]],
+        policy: Mapping[str, object],
+    ) -> tuple[dict[str, object], ...]:
+        policy_id = str(policy.get("policy_id") or "")
+        receipt_rows: list[dict[str, object]] = []
+        for metadata in metadata_rows:
+            row = dict(metadata)
+            native_status = str(row.get("status") or "").casefold()
+            row["policy"] = str(row.get("policy") or policy_id)
+            row["role"] = str(row.get("role") or row.get("weapon_role") or "unknown")
+
+            if native_status not in {"admitted", "rejected"}:
+                row["status"] = "rejected"
+                row["reason_code"] = "missing_native_admission_receipt"
+            elif native_status == "admitted":
+                target_profile = str(row.get("target_profile") or "").casefold()
+                first_person_resolution = str(
+                    row.get("first_person_resolution") or ""
+                ).casefold()
+                if target_profile in _MVP_MELEE_TARGET_PROFILES:
+                    row["role"] = "melee"
+                record_only = (
+                    target_profile != "unarmed"
+                    and first_person_resolution == "none"
+                    and not str(row.get("world_model") or "")
+                    and not str(row.get("first_person_model") or "")
+                )
+                if not target_profile:
+                    row["status"] = "rejected"
+                    row["reason_code"] = "missing_target_profile"
+                elif target_profile not in _MVP_MELEE_TARGET_PROFILES:
+                    row["status"] = "rejected"
+                    row["reason_code"] = "invalid_target_profile"
+                elif record_only:
+                    row["asset_disposition"] = "record_only"
+                elif target_profile != "unarmed" and not str(
+                    row.get("world_model") or ""
+                ):
+                    row["status"] = "rejected"
+                    row["reason_code"] = "missing_world_model"
+                elif target_profile != "unarmed" and not str(
+                    row.get("first_person_model") or ""
+                ):
+                    row["status"] = "rejected"
+                    row["reason_code"] = "missing_first_person_model"
+            receipt_rows.append(row)
+        return tuple(receipt_rows)
+
+    def _run_mvp_melee_phase(
+        self,
+        run,
+        ctx: ConversionContext,
+        runner: "ConversionRunner",
+    ) -> dict[str, object] | None:
+        policy = getattr(ctx, "mvp_melee_policy", None)
+        if policy is None:
+            return None
+        if str(policy.get("policy_id") or "") != "bulk_melee_v1":
+            raise RuntimeError("unsupported MVP melee policy")
+
+        started = time.perf_counter()
+        report = dict(
+            run.run_phase(
+                "mvp_melee",
+                mod_path="",
+                params={"policy": policy},
+            )
+            or {}
+        )
+        if "records_added" not in report or "records_dropped" not in report:
+            raise RuntimeError("mvp_melee returned an unaccounted phase report")
+
+        from bacup_lib.weapon_mvp_assets import build_weapon_mvp_asset_plan
+        from bacup_lib.weapon_report import weapon_metadata_rows
+
+        metadata_source = SimpleNamespace(
+            graph=SimpleNamespace(all_records=[]),
+            _rust_conversion_run=run,
+            _record_type_signature=lambda record_type: record_type,
+        )
+        native_rows = weapon_metadata_rows(metadata_source)
+        records_added = int(report.get("records_added", 0) or 0)
+        records_dropped = int(report.get("records_dropped", 0) or 0)
+        if records_added + records_dropped != len(native_rows):
+            raise RuntimeError(
+                "mvp_melee report does not account for its source corpus: "
+                f"metadata={len(native_rows)} added={records_added} "
+                f"dropped={records_dropped}"
+            )
+
+        native_receipt_complete = all(
+            str(row.get("status") or "").casefold() in {"admitted", "rejected"}
+            for row in native_rows
+        )
+        native_admitted = sum(
+            str(row.get("status") or "").casefold() == "admitted" for row in native_rows
+        )
+        native_rejected = sum(
+            str(row.get("status") or "").casefold() == "rejected" for row in native_rows
+        )
+        invalid_output_profiles = sorted(
+            {
+                str(row.get("target_profile") or "").casefold()
+                for row in native_rows
+                if str(row.get("status") or "").casefold() == "admitted"
+                and str(row.get("target_profile") or "").casefold()
+                not in _MVP_MELEE_TARGET_PROFILES
+            }
+        )
+        ranged_output = sum(
+            str(row.get("status") or "").casefold() == "admitted"
+            and str(row.get("target_profile") or "").casefold()
+            not in _MVP_MELEE_TARGET_PROFILES
+            for row in native_rows
+        )
+        if ranged_output:
+            raise RuntimeError(
+                "mvp_melee violated ranged_output=0: "
+                f"admitted={ranged_output} target_profiles={invalid_output_profiles}"
+            )
+        if native_receipt_complete and (
+            native_admitted != records_added or native_rejected != records_dropped
+        ):
+            raise RuntimeError(
+                "mvp_melee metadata receipt disagrees with its phase report: "
+                f"receipt_admitted={native_admitted} report_added={records_added} "
+                f"receipt_rejected={native_rejected} report_dropped={records_dropped}"
+            )
+
+        receipt_rows = self._mvp_melee_asset_receipt_rows(native_rows, policy)
+        asset_plan = build_weapon_mvp_asset_plan(
+            str(ctx.source_game),
+            str(ctx.target_game),
+            getattr(ctx, "assets", ()),
+            receipt_rows,
+        )
+        ctx._weapon_metadata_rows = receipt_rows
+        ctx._weapon_mvp_asset_plan = asset_plan
+        ctx.native_mvp_melee_stats = {
+            "candidates": len(native_rows),
+            "records_added": records_added,
+            "records_dropped": records_dropped,
+            "receipt_complete": native_receipt_complete,
+            "asset_admitted": asset_plan.admitted_count,
+            "asset_rejected": asset_plan.rejected_count,
+            "asset_conflicts": asset_plan.conflict_count,
+            "ranged_output": 0,
+        }
+        _timing_report(ctx).record(
+            "mvp_melee",
+            _elapsed_seconds(started),
+            **ctx.native_mvp_melee_stats,
+        )
+        runner.emit_log(
+            "INFO",
+            "Native backend: mvp_melee done "
+            f"(candidates={len(native_rows)}, admitted={records_added}, "
+            f"rejected={records_dropped}, asset_admitted={asset_plan.admitted_count}, "
+            "ranged_output=0)",
+        )
+        return report
+
+    def _run_mvp_creature_dependency_plan(
+        self,
+        run,
+        ctx: ConversionContext,
+        runner: "ConversionRunner",
+    ) -> dict[str, object] | None:
+        policy = getattr(ctx, "mvp_creature_corpus_policy", None)
+        if policy is None:
+            return None
+        if not isinstance(policy, Mapping):
+            raise RuntimeError("creature corpus policy must be a typed mapping")
+        if str(policy.get("policy_id") or "") != "all_creatures_v1":
+            raise RuntimeError("unsupported creature corpus policy")
+        missing_fields = [
+            field
+            for field in (
+                "pair_id",
+                "source_games",
+                "source_plugins",
+                "execution_mode",
+                "debug_dir",
+            )
+            if not policy.get(field)
+        ]
+        if missing_fields:
+            raise RuntimeError(
+                "all_creatures_v1 policy is missing required fields: "
+                + ", ".join(missing_fields)
+            )
+        if str(policy["execution_mode"]) != "strict":
+            raise RuntimeError("all_creatures_v1 requires strict execution")
+        debug_dir = str(policy["debug_dir"])
+        if debug_dir != "debug/creature_corpus":
+            raise RuntimeError("all_creatures_v1 has an invalid debug directory")
+        source_extracted = (
+            getattr(ctx, "source_data_dir", None) or self._req.source_data_dir
+        )
+        report = dict(
+            run.run_phase(
+                "plan_creature_dependencies",
+                mod_path=str(ctx.mod_path),
+                source_extracted_dir=(
+                    str(source_extracted) if source_extracted else ""
+                ),
+                params={"debug_dir": debug_dir},
+            )
+            or {}
+        )
+        ctx.native_creature_dependency_stats = report
+        runner.emit_log(
+            "INFO",
+            "Native backend: all_creatures_v1 recursive dependency allow-set "
+            "planned from the retained source run",
+        )
+        return report
+
+    def _run_mvp_creature_corpus_discovery(
+        self,
+        run,
+        ctx: ConversionContext,
+        runner: "ConversionRunner",
+    ) -> dict[str, object] | None:
+        policy = getattr(ctx, "mvp_creature_corpus_policy", None)
+        if policy is None:
+            return None
+        if not isinstance(policy, Mapping):
+            raise RuntimeError("creature corpus policy must be a typed mapping")
+        if str(policy.get("policy_id") or "") != "all_creatures_v1":
+            raise RuntimeError("unsupported creature corpus policy")
+        missing_fields = [
+            field
+            for field in (
+                "pair_id",
+                "source_games",
+                "source_plugins",
+                "execution_mode",
+                "debug_dir",
+            )
+            if not policy.get(field)
+        ]
+        if missing_fields:
+            raise RuntimeError(
+                "all_creatures_v1 policy is missing required fields: "
+                + ", ".join(missing_fields)
+            )
+        if str(policy["execution_mode"]) != "strict":
+            raise RuntimeError("all_creatures_v1 requires strict execution")
+        debug_dir = str(policy["debug_dir"])
+        if debug_dir != "debug/creature_corpus":
+            raise RuntimeError("all_creatures_v1 has an invalid debug directory")
+        source_extracted = (
+            getattr(ctx, "source_data_dir", None) or self._req.source_data_dir
+        )
+        target_extracted = (
+            getattr(ctx, "target_extracted_dir", None) or self._req.target_extracted_dir
+        )
+        target_data = getattr(ctx, "target_data_dir", None) or self._req.target_data_dir
+        report = dict(
+            run.run_phase(
+                "discover_creature_corpus",
+                mod_path=str(ctx.mod_path),
+                source_extracted_dir=(
+                    str(source_extracted) if source_extracted else ""
+                ),
+                target_extracted_dir=(
+                    str(target_extracted) if target_extracted else None
+                ),
+                target_data_dir=str(target_data) if target_data else None,
+                params={
+                    "profile": "all_creatures_v1",
+                    "debug_dir": debug_dir,
+                },
+            )
+            or {}
+        )
+        ctx.native_creature_corpus_discovery_stats = report
+        ctx._creature_corpus_discovered = True
+        prepared_job_count = int(report.get("records_deferred", 0) or 0)
+        ctx._creature_corpus_has_jobs = prepared_job_count > 0
+        runner.emit_log(
+            "INFO",
+            "Native backend: all_creatures_v1 corpus discovery completed on the "
+            f"retained source run ({prepared_job_count} native prepared jobs)",
+        )
+        return report
+
+    def _run_mvp_creature_corpus_execution(
+        self,
+        run,
+        ctx: ConversionContext,
+        runner: "ConversionRunner",
+    ) -> dict[str, object] | None:
+        policy = getattr(ctx, "mvp_creature_corpus_policy", None)
+        if policy is None:
+            return None
+        if str(policy.get("policy_id") or "") != "all_creatures_v1":
+            raise RuntimeError("unsupported creature corpus policy")
+        if not getattr(ctx, "_creature_corpus_discovered", False):
+            raise RuntimeError(
+                "all_creatures_v1 corpus discovery did not complete on the retained "
+                "source run"
+            )
+        if getattr(ctx, "_creature_corpus_executed", False):
+            raise RuntimeError("all_creatures_v1 corpus execution already completed")
+        if not getattr(ctx, "_creature_corpus_has_jobs", False):
+            ctx._creature_corpus_executed = True
+            return None
+
+        source_extracted = (
+            getattr(ctx, "source_data_dir", None) or self._req.source_data_dir
+        )
+        target_extracted = (
+            getattr(ctx, "target_extracted_dir", None) or self._req.target_extracted_dir
+        )
+        target_data = getattr(ctx, "target_data_dir", None) or self._req.target_data_dir
+        report = dict(
+            run.run_phase(
+                "execute_creature_corpus",
+                mod_path=str(ctx.mod_path),
+                source_extracted_dir=(
+                    str(source_extracted) if source_extracted else ""
+                ),
+                target_extracted_dir=(
+                    str(target_extracted) if target_extracted else None
+                ),
+                target_data_dir=str(target_data) if target_data else None,
+                params={
+                    "plan_path": f"{policy['debug_dir']}/plan.json",
+                    "mode": str(policy["execution_mode"]),
+                },
+            )
+            or {}
+        )
+        ctx.native_creature_corpus_execution_stats = report
+        ctx._creature_corpus_executed = True
+        runner.emit_log(
+            "INFO",
+            "Native backend: all_creatures_v1 corpus executed on the retained "
+            "record run",
+        )
+        return report
 
     def _translate_records_rust(
         self,
@@ -3659,13 +5271,10 @@ class _UnifiedRecordRuntime:
     ) -> None:
         """Run the translate-records phase via the native Rust ConversionRun pipeline.
 
-        The ConversionRun is stashed on ``ctx._rust_conversion_run`` and kept
-        alive past this phase so the optional FNV-legacy phase can reuse the
-        same mapper state. The outer ``_convert_one_plugin``
-        ``finally`` block is responsible for draining decisions/warnings and
-        dropping the run. Decisions/warnings emitted by this translate phase
-        accumulate on the Rust side and are drained together with any
-        FNV-phase warnings at scope end.
+        The ConversionRun is stashed on ``ctx._rust_conversion_run`` and outlives
+        this phase so the optional FNV-legacy phase can reuse its mapper state.
+        The ``finally`` in ``_convert_one_plugin`` drains the decisions/warnings
+        both phases accumulate on the Rust side and drops the run.
         """
         from bacup_lib.run import ConversionRun
 
@@ -3719,10 +5328,37 @@ class _UnifiedRecordRuntime:
             "record_translation_maps", mod_path="", params={"validate_only": False}
         )
         _record_timing(ctx, "record_translation_maps", maps_started)
-        runner.emit_log(
-            "INFO",
-            f"Native backend: ConversionRun created (id={run.id}); calling translate_all",
+        self._prepare_skyrim_minimal_quest_actions(
+            run=run,
+            ctx=ctx,
+            runner=runner,
         )
+        if ctx.source_game.lower() == "starfield" and ctx.target_game.lower() == "fo4":
+            terrain_dir = config.get("source_extracted_dir")
+            if not terrain_dir:
+                raise RuntimeError(
+                    "starfield:fo4 requires a resolved source_extracted_dir to "
+                    "run the starfield_worldspace_gate phase"
+                )
+            gate_started = time.perf_counter()
+            gate_report = run.run_phase(
+                "starfield_worldspace_gate",
+                mod_path="",
+                params={"terrain_dir": str(Path(terrain_dir) / "terrain")},
+            )
+            _record_timing(ctx, "starfield_worldspace_gate", gate_started)
+            runner.emit_log(
+                "INFO",
+                "Native backend: starfield_worldspace_gate dropped "
+                f"{gate_report.get('records_dropped', 0)} record(s) "
+                "(worldspace without baked terrain); calling translate_all",
+            )
+        else:
+            runner.emit_log(
+                "INFO",
+                f"Native backend: ConversionRun created (id={run.id}); calling translate_all",
+            )
+        self._run_mvp_creature_dependency_plan(run, ctx, runner)
         translate_started = time.perf_counter()
         report = run.run_phase("translate_v2", mod_path="", params={})
         stats = self._translate_stats_from_report(report)
@@ -3742,8 +5378,44 @@ class _UnifiedRecordRuntime:
             f"translated={stats.get('records_translated', 0)}, "
             f"dropped={stats.get('records_dropped', 0)}, "
             f"deferred={stats.get('records_deferred', 0)}, "
-            f"failed={stats.get('records_failed', 0)}; calling Story Manager subset",
+            f"failed={stats.get('records_failed', 0)}",
         )
+        self._compile_and_attach_skyrim_minimal_quests(
+            run=run,
+            ctx=ctx,
+            runner=runner,
+        )
+        self._copy_skyrim_quest_runtime_assets(
+            run=run,
+            ctx=ctx,
+            runner=runner,
+        )
+        if ctx.source_game.lower() == "fnv" and ctx.target_game.lower() == "fo4":
+            legacy_started = time.perf_counter()
+            if self._is_fnv_world_only_mvp():
+                runner.emit_log(
+                    "INFO",
+                    "FNV world-only MVP: skipping legacy scripting and PSC emission",
+                )
+            else:
+                runner.emit_log(
+                    "INFO",
+                    "Native backend: translate_all done; calling FNV legacy scripting "
+                    "before Story Manager and fixups",
+                )
+                self._run_fnv_legacy_phase_from_rust_run(
+                    ctx,
+                    Path(source_plugin_path),
+                    runner,
+                    run,
+                )
+            ctx._fnv_legacy_completed = True
+            _timing_report(ctx).record(
+                "fnv_legacy_scripting",
+                _elapsed_seconds(legacy_started),
+                phase_order="after_translate_v2_before_story_manager",
+            )
+        runner.emit_log("INFO", "Native backend: calling Story Manager subset")
         story_manager_started = time.perf_counter()
         story_manager_report = run.run_phase(
             "emit_story_manager_subset", mod_path="", params={}
@@ -3753,7 +5425,9 @@ class _UnifiedRecordRuntime:
         story_manager_changed = int(story_manager_report.get("records_changed", 0))
         story_manager_skipped = int(story_manager_report.get("records_dropped", 0))
         ctx.native_story_manager_stats = dict(story_manager_report)
-        stats["records_translated"] = int(stats.get("records_translated", 0)) + story_manager_added
+        stats["records_translated"] = (
+            int(stats.get("records_translated", 0)) + story_manager_added
+        )
         _timing_report(ctx).record(
             "emit_story_manager_subset",
             story_manager_elapsed,
@@ -3773,7 +5447,12 @@ class _UnifiedRecordRuntime:
         # _convert_one_plugin batches anything emitted after this).
         self._emit_run_warnings_inline(run, runner, ctx)
         fixups_started = time.perf_counter()
-        fixups_v2_report = run.run_phase("fixups_v2", mod_path="", params={})
+        fixups_v2_report = run.run_phase("fixups_v2",
+            mod_path="",
+            params={
+                "defer_havok_postprocess": _has_havok_postprocess(ctx, self._req.options),
+            },
+        )
         fixups_elapsed = _elapsed_seconds(fixups_started)
         ctx.native_fixup_reports = []
         total_changed = int(fixups_v2_report.get("records_changed", 0))
@@ -3796,6 +5475,15 @@ class _UnifiedRecordRuntime:
             f"dropped={total_dropped}, "
             f"warnings={total_warnings})",
         )
+        mvp_melee_report = self._run_mvp_melee_phase(run, ctx, runner)
+        if mvp_melee_report is not None:
+            stats["records_translated"] = int(stats.get("records_translated", 0)) + int(
+                mvp_melee_report.get("records_added", 0) or 0
+            )
+            stats["records_dropped"] = int(stats.get("records_dropped", 0)) + int(
+                mvp_melee_report.get("records_dropped", 0) or 0
+            )
+        self._run_mvp_creature_corpus_discovery(run, ctx, runner)
         runner.emit_log(
             "INFO",
             f"Native backend timing: translate_all={translate_elapsed:.3f}s "
@@ -3810,6 +5498,32 @@ class _UnifiedRecordRuntime:
             _elapsed_seconds(mswp_started),
             changed=int(mswp_report.get("records_changed", 0)),
         )
+        mvp_creature_profile = _exact_mvp_creature_profile(ctx)
+        if mvp_creature_profile is not None:
+            creature_started = time.perf_counter()
+            creature_report = run.run_phase(
+                "emit_mvp_creature",
+                mod_path=str(ctx.mod_path),
+                params={"profile": mvp_creature_profile},
+            )
+            added = int(creature_report.get("records_added", 0))
+            if added != 6:
+                raise RuntimeError(
+                    f"{mvp_creature_profile} MVP emitted {added} records; expected 6"
+                )
+            total_added += added
+            _timing_report(ctx).record(
+                "emit_mvp_creature",
+                _elapsed_seconds(creature_started),
+                added=added,
+                assets=int(creature_report.get("assets_written", 0)),
+            )
+            runner.emit_log(
+                "INFO",
+                f"MVP creature emitted: profile={mvp_creature_profile} "
+                f"records={added} scaffold_hkx="
+                f"{int(creature_report.get('assets_written', 0))}",
+            )
         self._emit_run_warnings_inline(run, runner, ctx)
 
         self._apply_placed_record_position_offset(ctx, runner)
@@ -3856,9 +5570,7 @@ class _UnifiedRecordRuntime:
         temp_output_path: Path | None = None
         try:
             source_extracted = str(
-                getattr(ctx, "source_data_dir", None)
-                or self._req.source_data_dir
-                or ""
+                getattr(ctx, "source_data_dir", None) or self._req.source_data_dir or ""
             )
             with ConversionRun.open_existing(
                 str(ctx.source_game),
@@ -3866,8 +5578,7 @@ class _UnifiedRecordRuntime:
                 str(source_plugin),
                 str(output_path),
                 master_plugin_paths=[
-                    str(path)
-                    for path in getattr(ctx, "target_master_plugin_paths", [])
+                    str(path) for path in getattr(ctx, "target_master_plugin_paths", [])
                 ],
                 source_strings_dir=_resolve_source_strings_dir(
                     source_plugin,
@@ -3881,9 +5592,7 @@ class _UnifiedRecordRuntime:
                     mod_path=str(ctx.mod_path),
                     source_extracted_dir=source_extracted,
                     params={
-                        "conversion_workers": getattr(
-                            ctx, "conversion_workers", None
-                        ),
+                        "conversion_workers": getattr(ctx, "conversion_workers", None),
                     },
                 )
                 self._emit_run_warnings_inline(run, runner, ctx)
@@ -3941,7 +5650,6 @@ class _UnifiedRecordRuntime:
         )
 
     @staticmethod
-
     def _terrain_copy_bounds(
         terrain, worldspace_editor_id: str
     ) -> WorldspaceCellBounds:
@@ -3968,7 +5676,6 @@ class _UnifiedRecordRuntime:
             max_y=max_y,
             include_worldspace_persistent_cell=False,
         )
-
 
     def _copy_fo76_projected_placed_children(
         self,
@@ -4029,7 +5736,6 @@ class _UnifiedRecordRuntime:
         progress.completed_items = total_inserted
         progress.status = "completed"
         runner.emit_item_progress(progress)
-
 
     def _copy_fo76_projected_placed_children_for_terrain(
         self,
@@ -4149,7 +5855,6 @@ class _UnifiedRecordRuntime:
             + " ".join(f"{name}={secs:.3f}s" for name, secs in timings.items()),
         )
         return placed, inserted
-
 
     def _synthesize_worldspace_persistent_cells(
         self,
@@ -4278,7 +5983,9 @@ class _UnifiedRecordRuntime:
                     )
             # A bounded per-ref sample (source FormKey | base | reason) for the
             # exact dropped refs — pairs with the histogram for spot-checking.
-            sample_children = [str(value) for value in result.get("skipped_children") or []]
+            sample_children = [
+                str(value) for value in result.get("skipped_children") or []
+            ]
             for entry in sample_children[:25]:
                 runner.emit_log(
                     "WARN",
@@ -4306,7 +6013,6 @@ class _UnifiedRecordRuntime:
         progress.status = "completed"
         runner.emit_item_progress(progress)
 
-
     def _sync_fo76_projected_cell_locations(
         self,
         ctx: ConversionContext,
@@ -4316,7 +6022,9 @@ class _UnifiedRecordRuntime:
         rust_run = getattr(ctx, "_rust_conversion_run", None)
         if rust_run is None:
             raise RuntimeError("projected cell location sync requires a conversion run")
-        result = load_native_module().conversion_run_sync_cell_locations_from_lctn(rust_run.id)
+        result = load_native_module().conversion_run_sync_cell_locations_from_lctn(
+            rust_run.id
+        )
         locations = int(result.get("locations_indexed", 0) or 0)
         conflicts = int(result.get("location_conflicts", 0) or 0)
         changed = int(result.get("cells_changed", 0) or 0)
@@ -4334,7 +6042,6 @@ class _UnifiedRecordRuntime:
         )
         for warning in [str(value) for value in result.get("warnings") or []][:25]:
             runner.emit_log("WARN", f"projected cell location sync: {warning}")
-
 
     def _repair_placed_child_refs(
         self,
@@ -4380,7 +6087,6 @@ class _UnifiedRecordRuntime:
         progress.completed_items = progress.total_items
         progress.status = "completed"
         runner.emit_item_progress(progress)
-
 
     def _synthesize_encounter_zones(
         self,
@@ -4485,9 +6191,7 @@ class _UnifiedRecordRuntime:
         """
         rust_run = getattr(ctx, "_rust_conversion_run", None)
         if rust_run is None:
-            runner.emit_log(
-                "WARN", "synthesize_vendor_dialogue: no rust run; skipping"
-            )
+            runner.emit_log("WARN", "synthesize_vendor_dialogue: no rust run; skipping")
             progress.total_items = 0
             progress.completed_items = 0
             progress.status = "completed"
@@ -4539,6 +6243,11 @@ class _UnifiedRecordRuntime:
         source handle closes since the carry reads the source WRLD. Best-effort:
         a failure here is logged, never raised, so it can't mask the real result.
         """
+        if not (
+            self._req.source_game.lower() == "fo76"
+            and self._req.target_game.lower() == "fo4"
+        ):
+            return
         opts = self._req.options
         if not (opts.build_esp and opts.convert_terrain):
             return
@@ -4562,7 +6271,7 @@ class _UnifiedRecordRuntime:
 
             from bacup_lib.pipeline.terrain import fo76_btd_work_items
             from bacup_lib.worldspace_services import (
-                patch_target_worldspace_subrecords,
+                patch_target_worldspaces_subrecords,
             )
 
             try:
@@ -4573,19 +6282,23 @@ class _UnifiedRecordRuntime:
                 return
 
             output_esp_path = Path(ctx.mod_path) / ctx.output_plugin_name
+            source_worldspaces = []
             for terrain, _btd_path, _worldspace_eid in terrain_items:
-                source_worldspace = (
-                    getattr(terrain, "source_worldspace_editor_id", "")
-                    or getattr(terrain, "worldspace_editor_id", "")
-                )
-                if not source_worldspace:
-                    continue
-                copied = patch_target_worldspace_subrecords(
-                    source_plugin=source_handle,
-                    target_plugin_path=output_esp_path,
-                    worldspace_editor_id=source_worldspace,
-                    target_game=self._req.target_game,
-                )
+                source_worldspace = getattr(
+                    terrain, "source_worldspace_editor_id", ""
+                ) or getattr(terrain, "worldspace_editor_id", "")
+                if source_worldspace:
+                    source_worldspaces.append(source_worldspace)
+
+            copied_by_worldspace = patch_target_worldspaces_subrecords(
+                source_plugin=source_handle,
+                target_plugin_path=output_esp_path,
+                worldspace_editor_ids=source_worldspaces,
+                target_game=self._req.target_game,
+            )
+            for source_worldspace, copied in zip(
+                source_worldspaces, copied_by_worldspace, strict=True
+            ):
                 _emit_best_effort_runner_log(
                     runner,
                     "INFO",
@@ -4643,7 +6356,9 @@ class _UnifiedRecordRuntime:
         try:
             temp_path.unlink(missing_ok=True)
             target_handle = Plugin.load(output_path, game=self._req.target_game)
-            changes = target_handle.repair_term_marker_parameters_from_source(source_handle)
+            changes = target_handle.repair_term_marker_parameters_from_source(
+                source_handle
+            )
             if changes:
                 target_handle.save(temp_path, backend="native")
             target_handle.close()
@@ -4679,7 +6394,6 @@ class _UnifiedRecordRuntime:
             "audit_modified=0",
         )
 
-
     def _run_convert_scripts_phase(
         self,
         ctx: ConversionContext,
@@ -4694,13 +6408,35 @@ class _UnifiedRecordRuntime:
                 runner.emit_log("WARN", "[Scripts] no target plugin handle; skipping")
                 return
             refs: list[_ScriptReference] = []
-            candidate_records: dict[int, object] = {}
+            candidate_count = 0
             runner.emit_log(
                 "INFO", "[Scripts] source-only run; no target plugin will be modified"
             )
         else:
-            refs, candidate_records = self._collect_script_references(
+            collect_started = time.perf_counter()
+            refs, candidate_count = self._collect_script_references(
                 rust_run.id, runner
+            )
+            profile = getattr(self, "_script_reference_profile", None)
+            if isinstance(profile, Mapping):
+                report = _timing_report(ctx)
+                offset_seconds = max(collect_started - report.started_at, 0.0)
+                profile_fields = {
+                    "scope": "detail",
+                    "parent": "Convert Scripts",
+                    "offset_seconds": offset_seconds,
+                    **profile["counters"],
+                }
+                for name, elapsed in profile["timings"]:
+                    report.record(name, elapsed, **profile_fields)
+            _record_timing(
+                ctx,
+                "convert_scripts_collect_references",
+                collect_started,
+                scope="detail",
+                parent="Convert Scripts",
+                references=len(refs),
+                candidate_records=candidate_count,
             )
 
         started = time.perf_counter()
@@ -4710,19 +6446,77 @@ class _UnifiedRecordRuntime:
         if not refs:
             runner.emit_log("INFO", "[Scripts] no Papyrus script references found")
 
+        target_index_started = time.perf_counter()
         target_index = _build_target_pex_index(
             target_data_dir=self._req.target_data_dir,
             target_extracted_dir=self._req.target_extracted_dir,
             target_asset_store=getattr(ctx, "target_asset_store", None),
         )
+        _record_timing(
+            ctx,
+            "convert_scripts_target_index",
+            target_index_started,
+            scope="detail",
+            parent="Convert Scripts",
+            entries=len(target_index),
+        )
+        fo76_to_fo4 = (
+            self._req.source_game.lower() == "fo76"
+            and self._req.target_game.lower() == "fo4"
+        )
+        authoritative_target_index = target_index
+        if fo76_to_fo4:
+            authoritative_index_started = time.perf_counter()
+            authoritative_target_index = _build_target_pex_index(
+                target_data_dir=None,
+                target_extracted_dir=self._req.target_extracted_dir,
+                target_asset_store=getattr(ctx, "target_asset_store", None),
+            )
+            _record_timing(
+                ctx,
+                "convert_scripts_authoritative_target_index",
+                authoritative_index_started,
+                scope="detail",
+                parent="Convert Scripts",
+                entries=len(authoritative_target_index),
+            )
+        source_index_started = time.perf_counter()
         source_roots = _source_script_roots(
             self._req.source_data_dir,
             self._req.additional_source_asset_roots,
         )
         source_index = _build_pex_index(source_roots)
+        _record_timing(
+            ctx,
+            "convert_scripts_source_index",
+            source_index_started,
+            scope="detail",
+            parent="Convert Scripts",
+            roots=len(source_roots),
+            entries=len(source_index),
+        )
+        discovery_started = time.perf_counter()
+        script_additions = _script_addition_sources(
+            self._req.source_game,
+            self._req.target_game,
+        )
+        script_patch_inventory = _script_patch_inventory() if fo76_to_fo4 else {}
+        self._script_patch_sources_by_key = {
+            key: entry.source for key, entry in script_patch_inventory.items()
+        }
+        _record_timing(
+            ctx,
+            "convert_scripts_patch_addition_discovery",
+            discovery_started,
+            scope="detail",
+            parent="Convert Scripts",
+            additions=len(script_additions),
+            patches=len(script_patch_inventory),
+        )
 
         resolutions: dict[str, _ScriptResolution] = {}
         source_script_names: list[str] = []
+        addition_script_names: list[str] = []
         script_names_by_key = {
             _script_key(ref.script_name): ref.script_name for ref in refs
         }
@@ -4741,14 +6535,103 @@ class _UnifiedRecordRuntime:
                 "INFO",
                 f"[Scripts] including all {len(source_index)} indexed source script(s)",
             )
+        resolution_started = time.perf_counter()
+        if fo76_to_fo4 and _script_key("Creatures:WendigoColossusRaceScript") in script_names_by_key:
+            script_names_by_key[_script_key("B21_PlayerFear")] = "B21_PlayerFear"
         _extend_script_names_with_ancestor_closure(
             script_names_by_key,
             source_index=source_index,
-            target_index=target_index,
+            target_index=authoritative_target_index,
             runner=runner,
         )
+        recovered_skyrim_script_keys: set[str] = set()
+        if (
+            self._req.source_game.lower() == "skyrimse"
+            and self._req.target_game.lower() == "fo4"
+        ):
+            missing_skyrim_scripts = [
+                script_name
+                for key, script_name in script_names_by_key.items()
+                if key not in source_index and key not in target_index
+            ]
+            if missing_skyrim_scripts:
+                from bacup_lib.skyrim_papyrus import (
+                    SkyrimScriptIntent,
+                    discover_skyrim_psc_artifacts,
+                )
+
+                import_roots = self._papyrus_import_roots(ctx, runner)
+                if import_roots:
+                    flags_path = papyrus_header_cache.flags_file(import_roots[0])
+                    production = discover_skyrim_psc_artifacts(
+                        [
+                            SkyrimScriptIntent(script_name, "record-vmad", required=False)
+                            for script_name in missing_skyrim_scripts
+                        ],
+                        source_data_dir=self._req.source_data_dir,
+                        additional_source_asset_roots=(
+                            self._req.additional_source_asset_roots
+                        ),
+                        fo4_import_dirs=import_roots,
+                        fo4_flags=str(flags_path) if flags_path is not None else None,
+                    )
+                    psc_root = Path(ctx.mod_path) / "Scripts" / "Source" / "User"
+                    for artifact in production.artifacts:
+                        psc_path = psc_root / _script_relative_path(
+                            artifact.class_name, ".psc"
+                        )
+                        psc_path.parent.mkdir(parents=True, exist_ok=True)
+                        psc_path.write_text(artifact.source, encoding="utf-8")
+                        recovered_skyrim_script_keys.add(
+                            _script_key(artifact.class_name)
+                        )
+                    if recovered_skyrim_script_keys:
+                        runner.emit_log(
+                            "INFO",
+                            "[Scripts] recovered "
+                            f"{len(recovered_skyrim_script_keys)} Skyrim script(s) "
+                            "from loose files or BSA archives",
+                        )
         for script_name in sorted(script_names_by_key.values(), key=str.lower):
             key = _script_key(script_name)
+            addition = script_additions.get(key)
+            if addition is not None:
+                addition_name, addition_path = addition
+                try:
+                    _install_script_addition(
+                        Path(ctx.mod_path),
+                        addition_name,
+                        addition_path,
+                    )
+                except (OSError, ValueError) as exc:
+                    resolutions[key] = _ScriptResolution(
+                        addition_name,
+                        "addition_install_failed",
+                        message=f"could not install full-script addition: {exc}",
+                    )
+                else:
+                    addition_script_names.append(addition_name)
+                    runner.emit_log(
+                        "INFO",
+                        f"[Scripts] installed target-only full script {addition_name}",
+                    )
+                continue
+            if _requires_script_addition(
+                script_name,
+                source_game=self._req.source_game,
+                target_game=self._req.target_game,
+            ):
+                expected_path = (
+                    _SCRIPT_ADDITION_DIR
+                    / f"{self._req.source_game.lower()}_{self._req.target_game.lower()}"
+                    / _script_relative_path(script_name, ".psc")
+                )
+                resolutions[key] = _ScriptResolution(
+                    script_name,
+                    "addition_missing",
+                    message=f"required pair-scoped source artifact not found: {expected_path}",
+                )
+                continue
             if _skip_fo76_to_fo4_source_script(
                 key,
                 source_game=self._req.source_game,
@@ -4761,10 +6644,19 @@ class _UnifiedRecordRuntime:
                         "WARN",
                         f"[Scripts] failed to remove stale script output {error}",
                     )
-                resolutions[key] = _ScriptResolution(script_name, "target")
+                resolutions[key] = _ScriptResolution(
+                    script_name,
+                    "unsupported",
+                    message=(
+                        "FO76 creature specialization has no target PEX; "
+                        "do not replace the FO4/DLC script layer"
+                    ),
+                )
                 continue
-            if key in target_index:
-                target_pex = target_index[key]
+            if key in authoritative_target_index:
+                # Hard invariant: a target-game script identity always wins.
+                # Never ship a converted PSC/PEX over a base FO4 or DLC script.
+                target_pex = authoritative_target_index[key]
                 for error in _remove_generated_script_outputs(
                     Path(ctx.mod_path), script_name
                 ):
@@ -4775,8 +6667,25 @@ class _UnifiedRecordRuntime:
                 resolutions[key] = _ScriptResolution(script_name, "target", target_pex)
                 continue
 
+            if key in recovered_skyrim_script_keys:
+                addition_script_names.append(script_name)
+                continue
+
             source_pex = source_index.get(key)
             if source_pex is None:
+                if key in target_index:
+                    target_pex = target_index[key]
+                    for error in _remove_generated_script_outputs(
+                        Path(ctx.mod_path), script_name
+                    ):
+                        runner.emit_log(
+                            "WARN",
+                            f"[Scripts] failed to remove stale script output {error}",
+                        )
+                    resolutions[key] = _ScriptResolution(
+                        script_name, "target", target_pex
+                    )
+                    continue
                 for error in _remove_generated_script_outputs(
                     Path(ctx.mod_path), script_name
                 ):
@@ -4789,6 +6698,18 @@ class _UnifiedRecordRuntime:
 
             source_script_names.append(script_name)
 
+        _record_timing(
+            ctx,
+            "convert_scripts_resolution",
+            resolution_started,
+            scope="detail",
+            parent="Convert Scripts",
+            requested=len(script_names_by_key),
+            source=len(source_script_names),
+            additions=len(addition_script_names),
+            resolved=len(resolutions),
+        )
+
         script_workers = _script_worker_count(
             self._req.options.conversion_workers,
             len(source_script_names),
@@ -4800,7 +6721,8 @@ class _UnifiedRecordRuntime:
                 f"with {script_workers} worker(s)",
             )
 
-        decompiled_script_names: list[str] = []
+        script_names_to_compile: list[str] = list(addition_script_names)
+        decompile_started = time.perf_counter()
         for script_name, resolution in self._decompile_source_scripts_for_fo4(
             source_script_names,
             source_index=source_index,
@@ -4810,24 +6732,76 @@ class _UnifiedRecordRuntime:
         ):
             key = _script_key(script_name)
             if resolution is None:
-                decompiled_script_names.append(script_name)
+                script_names_to_compile.append(script_name)
             else:
                 resolutions[key] = resolution
 
+        _record_timing(
+            ctx,
+            "convert_scripts_decompile_port",
+            decompile_started,
+            scope="detail",
+            parent="Convert Scripts",
+            source=len(source_script_names),
+            compile_candidates=len(script_names_to_compile),
+        )
+
+        compile_started = time.perf_counter()
         for script_name, resolution in self._compile_decompiled_scripts_for_fo4(
-            decompiled_script_names,
+            script_names_to_compile,
             source_index=source_index,
             ctx=ctx,
             runner=runner,
             workers=script_workers,
         ):
+            patch_entry = script_patch_inventory.get(_script_key(script_name))
+            if (
+                patch_entry is not None
+                and patch_entry.is_functional
+                and resolution.status == "compiled"
+            ):
+                if resolution.pex_path is None:
+                    resolution = _ScriptResolution(
+                        script_name,
+                        "patch_delivery_failed",
+                        message="compiler reported success without a PEX output path",
+                    )
+                else:
+                    try:
+                        _assert_compiled_script_patch_members(
+                            resolution.pex_path, patch_entry.source
+                        )
+                    except Exception as exc:
+                        resolution = _ScriptResolution(
+                            script_name,
+                            "patch_delivery_failed",
+                            resolution.pex_path,
+                            str(exc),
+                        )
             resolutions[_script_key(script_name)] = resolution
+
+        _record_timing(
+            ctx,
+            "convert_scripts_compile",
+            compile_started,
+            scope="detail",
+            parent="Convert Scripts",
+            candidates=len(script_names_to_compile),
+        )
+
+        reconcile_started = time.perf_counter()
+        _assert_script_toolchain_healthy(resolutions.values())
+        _assert_functional_script_patches_delivered(
+            script_patch_inventory, resolutions
+        )
 
         for resolution in resolutions.values():
             if resolution.status in {
                 "compile_failed",
                 "compile_timeout",
                 "compiler_unavailable",
+                "addition_install_failed",
+                "addition_missing",
             }:
                 for error in _remove_generated_script_outputs(
                     Path(ctx.mod_path),
@@ -4838,100 +6812,63 @@ class _UnifiedRecordRuntime:
                         f"[Scripts] failed to remove stale script output {error}",
                     )
 
-        failed_script_keys = {
-            key for key, resolution in resolutions.items() if not resolution.ok
-        }
-        invalid_condition_keys: set[tuple[str, str]] = set()
-        invalid_condition_notes: list[str] = []
-        inferred_condition_checks: dict[
-            tuple[int, str], list[tuple[_ScriptReference, bool, tuple[str, str] | None]]
-        ] = {}
-        for ref in refs:
-            if ref.kind != "condition" or not ref.variable_name:
-                continue
-            script_key = _script_key(ref.script_name)
-            resolution = resolutions.get(script_key)
-            if resolution is not None and resolution.status == "target":
-                if ref.condition_inferred:
-                    inferred_condition_checks.setdefault(
-                        (ref.form_id, _variable_key(ref.variable_name)),
-                        [],
-                    ).append((ref, True, None))
-                continue
-            if resolution is None or not resolution.ok or resolution.pex_path is None:
-                if ref.condition_inferred:
-                    inferred_condition_checks.setdefault(
-                        (ref.form_id, _variable_key(ref.variable_name)),
-                        [],
-                    ).append((ref, False, None))
-                continue
-            try:
-                if _script_has_variable(resolution.pex_path, ref.variable_name):
-                    if ref.condition_inferred:
-                        inferred_condition_checks.setdefault(
-                            (ref.form_id, _variable_key(ref.variable_name)),
-                            [],
-                        ).append((ref, True, None))
-                    continue
-            except Exception as exc:
-                failed_script_keys.add(script_key)
-                resolutions[script_key] = _ScriptResolution(
-                    script_name=ref.script_name,
-                    status="parse_failed",
-                    pex_path=resolution.pex_path,
-                    message=str(exc),
-                )
-                if ref.condition_inferred:
-                    inferred_condition_checks.setdefault(
-                        (ref.form_id, _variable_key(ref.variable_name)),
-                        [],
-                    ).append((ref, False, None))
-                continue
-            condition_key = (script_key, _variable_key(ref.variable_name))
-            if ref.condition_inferred:
-                inferred_condition_checks.setdefault(
-                    (ref.form_id, _variable_key(ref.variable_name)),
-                    [],
-                ).append((ref, False, condition_key))
-                continue
-            invalid_condition_keys.add(condition_key)
-            invalid_condition_notes.append(
-                f"{ref.record_sig} {ref.editor_id or ref.form_key}: "
-                f"{ref.script_name}.{ref.variable_name}"
+        resolution_evidence = [
+            (
+                key,
+                resolution.script_name,
+                resolution.status,
+                str(resolution.pex_path) if resolution.pex_path is not None else None,
             )
-
-        for checks in inferred_condition_checks.values():
-            if any(has_variable for _ref, has_variable, _condition_key in checks):
-                continue
-            note_ref: _ScriptReference | None = None
-            for ref, _has_variable, condition_key in checks:
-                note_ref = note_ref or ref
-                if condition_key is not None:
-                    invalid_condition_keys.add(condition_key)
-            if note_ref is not None:
-                invalid_condition_notes.append(
-                    f"{note_ref.record_sig} {note_ref.editor_id or note_ref.form_key}: "
-                    f"{note_ref.variable_name} not found on any script for condition form"
-                )
-
-        vmad_strip_form_ids = {
-            ref.form_id
-            for ref in refs
-            if ref.kind == "vmad" and _script_key(ref.script_name) in failed_script_keys
-        }
+            for key, resolution in resolutions.items()
+        ]
         if rust_run is None:
             stripped_conditions = 0
             stripped_vmad = 0
             changed_records = 0
+            invalid_condition_count = 0
+            vmad_notes: list[str] = []
+            unreached_reward_notes: list[str] = []
+            invalid_condition_notes: list[str] = []
+            parse_failures: list[tuple[str, str, str, str]] = []
+            pex_member_requests = 0
+            pex_member_distinct_paths = 0
+            pex_member_cache_hits = 0
         else:
-            stripped_conditions, stripped_vmad, changed_records = (
-                self._strip_failed_script_refs(
-                    rust_run.id,
-                    candidate_records,
-                    failed_script_keys=failed_script_keys,
-                    invalid_condition_keys=invalid_condition_keys,
-                    vmad_strip_form_ids=vmad_strip_form_ids,
+            (
+                stripped_conditions,
+                stripped_vmad,
+                changed_records,
+                invalid_condition_count,
+                vmad_notes,
+                unreached_reward_notes,
+                invalid_condition_notes,
+                parse_failures,
+                pex_member_requests,
+                pex_member_distinct_paths,
+                pex_member_cache_hits,
+            ) = self._reconcile_script_references(
+                rust_run.id,
+                resolution_evidence,
+            )
+            for script_key, script_name, pex_path, message in parse_failures:
+                resolutions[str(script_key)] = _ScriptResolution(
+                    script_name=str(script_name),
+                    status="parse_failed",
+                    pex_path=Path(pex_path),
+                    message=str(message),
                 )
+
+        for note in unreached_reward_notes:
+            runner.emit_log("WARN", f"[Scripts] {note}")
+
+        for note in vmad_notes[:_SCRIPT_WARNING_LIMIT]:
+            runner.emit_log("WARN", f"[Scripts] VMAD {note}")
+        extra_vmad = len(vmad_notes) - _SCRIPT_WARNING_LIMIT
+        if extra_vmad > 0:
+            runner.emit_log(
+                "WARN",
+                f"[Scripts] suppressed {extra_vmad} additional VMAD change logs; "
+                "the full list is in script_port_report.json",
             )
 
         for note in invalid_condition_notes[:_SCRIPT_WARNING_LIMIT]:
@@ -4961,7 +6898,28 @@ class _UnifiedRecordRuntime:
 
         compiled = sum(1 for r in resolutions.values() if r.status == "compiled")
         target_existing = sum(1 for r in resolutions.values() if r.status == "target")
-        ctx.summary.scripts_flagged += len(failed) + len(invalid_condition_keys)
+        ctx.summary.scripts_flagged += len(failed) + invalid_condition_count
+        _record_timing(
+            ctx,
+            "convert_scripts_reconciliation",
+            reconcile_started,
+            scope="detail",
+            parent="Convert Scripts",
+            failed=len(failed),
+            invalid_conditions=invalid_condition_count,
+            changed_records=changed_records,
+            pex_member_requests=pex_member_requests,
+            pex_member_distinct_paths=pex_member_distinct_paths,
+            pex_member_cache_hits=pex_member_cache_hits,
+        )
+        runner.emit_log(
+            "INFO",
+            "[Scripts] reconciliation PEX member cache: "
+            f"requests={pex_member_requests} "
+            f"distinct_paths={pex_member_distinct_paths} "
+            f"cache_hits={pex_member_cache_hits}",
+        )
+        report_started = time.perf_counter()
         self._write_script_port_report(
             ctx,
             resolutions=resolutions,
@@ -4969,6 +6927,14 @@ class _UnifiedRecordRuntime:
             stripped_conditions=stripped_conditions,
             stripped_vmad=stripped_vmad,
             changed_records=changed_records,
+            vmad_notes=vmad_notes,
+        )
+        _record_timing(
+            ctx,
+            "convert_scripts_report",
+            report_started,
+            scope="detail",
+            parent="Convert Scripts",
         )
         _record_timing(
             ctx,
@@ -4989,89 +6955,112 @@ class _UnifiedRecordRuntime:
             f"stripped_conditions={stripped_conditions} stripped_vmad={stripped_vmad}",
         )
 
-
     def _collect_script_references(
         self,
         run_id: int,
         runner: "ConversionRunner",
-    ) -> tuple[list[_ScriptReference], dict[int, Any]]:
-        plugin_name, native_rows = (
-            load_native_module().conversion_run_script_reference_records(
-                run_id, list(_SCRIPT_REF_SUBRECORD_SIGNATURES)
-            )
-        )
-        plugin_name = str(plugin_name or "")
-        refs: list[_ScriptReference] = []
-        candidate_records: dict[int, Any] = {}
-        seen_refs: set[tuple[str, str, int, str]] = set()
-        records: list[tuple[Any, list[tuple[str, bytes, str | None]], str]] = []
-        vmad_refs_by_form_id: dict[int, list[_ScriptReference]] = {}
-        scripts_by_form_id: dict[int, list[str]] = {}
-
-        for form_id, signature, editor_id, subrecords, authoring_text in native_rows:
-            record = _record_from_native_subrecords(
+    ) -> tuple[list[_ScriptReference], int]:
+        native = load_native_module()
+        native_started = time.perf_counter()
+        (
+            _plugin_name,
+            native_refs,
+            counters,
+            candidate_count,
+            alias_records_changed,
+            alias_bindings_changed,
+            warnings,
+        ) = native.conversion_run_inspect_script_references(run_id)
+        native_seconds = time.perf_counter() - native_started
+        refs = [
+            _ScriptReference(
+                script_name=str(script_name),
+                variable_name=(str(variable_name) if variable_name is not None else None),
+                form_key=str(form_key),
                 form_id=int(form_id) & 0xFFFFFFFF,
-                signature=str(signature),
-                editor_id=editor_id,
-                subrecords=subrecords,
+                record_sig=str(record_sig),
+                editor_id=str(editor_id or ""),
+                kind=str(kind),
+                condition_inferred=bool(condition_inferred),
             )
-            form_key = _script_ref_form_key(record.form_id, plugin_name=plugin_name)
-            records.append((record, subrecords, form_key))
-            script_refs_for_record: list[_ScriptReference] = []
+            for (
+                script_name,
+                variable_name,
+                form_key,
+                form_id,
+                record_sig,
+                editor_id,
+                kind,
+                condition_inferred,
+            ) in native_refs
+        ]
+        (
+            native_row_count,
+            vmad_row_count,
+            ctda_row_count,
+            subrecord_count,
+            raw_payload_bytes,
+            authoring_bytes,
+        ) = (int(value) for value in counters)
 
-            if any(sig == "VMAD" for sig, _data, _semantic_type in subrecords):
-                if authoring_text:
-                    try:
-                        script_refs_for_record.extend(
-                            _iter_vmad_script_refs(
-                                json.loads(authoring_text),
-                                record,
-                                form_key=form_key,
-                            )
-                        )
-                    except (TypeError, json.JSONDecodeError) as exc:
-                        runner.emit_log(
-                            "WARN",
-                            f"[Scripts] failed to inspect VMAD for {form_key}: {exc}",
-                        )
+        self._script_reference_profile = {
+            "timings": (("convert_scripts_collect_native", native_seconds),),
+            "counters": {
+                "native_rows": native_row_count,
+                "vmad_rows": vmad_row_count,
+                "ctda_rows": ctda_row_count,
+                "subrecords": subrecord_count,
+                "raw_bytes": raw_payload_bytes,
+                "authoring_bytes": authoring_bytes,
+            },
+        }
 
-            if script_refs_for_record:
-                vmad_refs_by_form_id[record.form_id] = script_refs_for_record
-                script_names = [ref.script_name for ref in script_refs_for_record]
-                for key in _form_id_lookup_keys(record.form_id):
-                    scripts_by_form_id[key] = script_names
-
-        self._script_condition_form_scripts = scripts_by_form_id
-
-        for record, _subrecords, form_key in records:
-            script_refs_for_record = _iter_condition_script_refs(
-                record,
-                form_key=form_key,
-                scripts_by_form_id=scripts_by_form_id,
-            )
-            script_refs_for_record.extend(vmad_refs_by_form_id.get(record.form_id, []))
-            if not script_refs_for_record:
-                continue
-            candidate_records[record.form_id] = record
-            for ref in script_refs_for_record:
-                key = (
-                    _script_key(ref.script_name),
-                    _variable_key(ref.variable_name),
-                    ref.form_id,
-                    ref.kind,
-                )
-                if key in seen_refs:
-                    continue
-                seen_refs.add(key)
-                refs.append(ref)
+        runner.emit_log(
+            "INFO",
+            "[Scripts] reference profile: "
+            f"native_ms={native_seconds * 1000:.3f} "
+            f"native_rows={native_row_count} vmad_rows={vmad_row_count} "
+            f"ctda_rows={ctda_row_count} subrecords={subrecord_count} "
+            f"raw_bytes={raw_payload_bytes} authoring_bytes={authoring_bytes}",
+        )
 
         runner.emit_log(
             "INFO",
             f"[Scripts] discovered {len(refs)} Papyrus script reference(s) "
-            f"across {len(candidate_records)} record(s)",
+            f"across {int(candidate_count)} record(s)",
         )
-        return refs, candidate_records
+        for warning in warnings:
+            runner.emit_log("WARN", f"[Scripts] {warning}")
+        if alias_bindings_changed:
+            runner.emit_log(
+                "INFO",
+                f"[Scripts] redirected {alias_bindings_changed} "
+                f"Default2StateActivator binding(s) across "
+                f"{alias_records_changed} FO76 record(s)",
+            )
+        return refs, int(candidate_count)
 
+    @staticmethod
+    def _reconcile_script_references(
+        run_id: int,
+        resolution_evidence: list[tuple[str, str, str, str | None]],
+    ) -> tuple[
+        int,
+        int,
+        int,
+        int,
+        list[str],
+        list[str],
+        list[str],
+        list[tuple[str, str, str, str]],
+        int,
+        int,
+        int,
+    ]:
+        return load_native_module().conversion_run_reconcile_script_references(
+            run_id,
+            resolution_evidence,
+        )
 
     def _decompile_source_scripts_for_fo4(
         self,
@@ -5108,7 +7097,6 @@ class _UnifiedRecordRuntime:
         ) as pool:
             return list(pool.map(run_one, script_names))
 
-
     def _compile_decompiled_scripts_for_fo4(
         self,
         script_names: list[str],
@@ -5117,6 +7105,7 @@ class _UnifiedRecordRuntime:
         ctx: ConversionContext,
         runner: "ConversionRunner",
         workers: int,
+        psc_paths: Mapping[str, Path] | None = None,
     ) -> list[tuple[str, _ScriptResolution]]:
         if not script_names:
             return []
@@ -5124,11 +7113,18 @@ class _UnifiedRecordRuntime:
         selector = getattr(self._req.options, "papyrus_compiler", "native")
         if selector == "exe-batch":
             return self._compile_decompiled_scripts_batch_for_fo4(
-                script_names, ctx=ctx, runner=runner
+                script_names,
+                ctx=ctx,
+                runner=runner,
+                psc_paths=psc_paths,
             )
         if selector == "native":
             return self._compile_decompiled_scripts_native_for_fo4(
-                script_names, ctx=ctx, runner=runner, workers=workers
+                script_names,
+                ctx=ctx,
+                runner=runner,
+                workers=workers,
+                psc_paths=psc_paths,
             )
 
         def run_one(script_name: str) -> tuple[str, _ScriptResolution]:
@@ -5162,6 +7158,83 @@ class _UnifiedRecordRuntime:
         ) as pool:
             return list(pool.map(run_one, script_names))
 
+    def _papyrus_type_universe(
+        self, ctx: object, runner: "ConversionRunner"
+    ) -> Path | None:
+        """Header-only `.psc` synthesized from the target game's own `.pex`.
+
+        Fallout 4 ships no `.psc` — those come with the Creation Kit — so
+        importing the game's source directory made every conversion depend on a
+        CK install, and silently compiled nothing without one. The `.pex` in the
+        user's extracted game carry the same type information.
+        """
+        cached = getattr(self, "_papyrus_headers_root", None)
+        if cached is not None:
+            return cached or None
+
+        corpus = papyrus_header_cache.find_pex_corpus(
+            *(
+                root / "scripts"
+                for root in (self._req.target_extracted_dir, self._req.target_data_dir)
+                if root is not None
+            )
+        )
+        if corpus is None:
+            # Nothing loose on disk is the normal case for a player who never
+            # extracted the game — the .pex are still there, inside the BA2.
+            corpus = papyrus_header_cache.materialize_pex_corpus(
+                getattr(ctx, "target_asset_store", None)
+            )
+            if corpus is not None:
+                runner.emit_log(
+                    "INFO",
+                    "[Scripts] building the Papyrus type universe from the game's "
+                    f"archives ({corpus})",
+                )
+        if corpus is None:
+            # No game to read at all. The shipped corpus carries the same type
+            # surface, so conversion does not require an installed Fallout 4.
+            from creation_lib.pex.corpus import bundled_corpus_root
+
+            bundled = bundled_corpus_root(self._req.target_game)
+            if bundled is not None:
+                runner.emit_log(
+                    "INFO",
+                    f"[Scripts] using the bundled {self._req.target_game} Papyrus "
+                    f"type universe ({bundled})",
+                )
+                self._papyrus_headers_root = bundled
+                return bundled
+            self._papyrus_headers_root = False
+            return None
+
+        # Never under target_data_dir: the game's Data directory is not ours to
+        # write into, and the corpus may well have been found there.
+        extracted = self._req.target_extracted_dir
+        cache_base = Path(extracted) if extracted is not None else Path(
+            self._req.output_root
+        )
+        out_root = cache_base / "Scripts" / "GeneratedHeaders"
+        headers = papyrus_header_cache.ensure_headers(
+            corpus, out_root, emit_log=runner.emit_log
+        )
+        self._papyrus_headers_root = headers
+        return headers
+
+    def _papyrus_import_roots(
+        self, ctx: object, runner: "ConversionRunner"
+    ) -> tuple[Path, ...]:
+        from creation_lib.pex.corpus import bundled_corpus_root
+
+        headers_root = self._papyrus_type_universe(ctx, runner)
+        if headers_root is None:
+            return ()
+        roots = [headers_root]
+        # Loose installs can contain the anchor PEX files without the full API.
+        bundled = bundled_corpus_root(self._req.target_game)
+        if bundled is not None:
+            roots.append(bundled)
+        return tuple(_dedupe_paths(roots))
 
     def _compile_decompiled_scripts_native_for_fo4(
         self,
@@ -5170,6 +7243,7 @@ class _UnifiedRecordRuntime:
         ctx: ConversionContext,
         runner: "ConversionRunner",
         workers: int,
+        psc_paths: Mapping[str, Path] | None = None,
     ) -> list[tuple[str, _ScriptResolution]]:
         from creation_lib.core.game_profiles import get_profile
         from creation_lib.pex.native_runtime import compile_psc
@@ -5179,37 +7253,27 @@ class _UnifiedRecordRuntime:
         output_root.mkdir(parents=True, exist_ok=True)
 
         def _all(status: str, message: str) -> list[tuple[str, _ScriptResolution]]:
-            return [(n, _ScriptResolution(n, status, message=message)) for n in script_names]
+            return [
+                (n, _ScriptResolution(n, status, message=message)) for n in script_names
+            ]
 
         profile = get_profile(self._req.target_game)
-        imports = [psc_root]
-        base_dirs: list[Path] = []
-        for root in (self._req.target_data_dir,):
-            if root is None:
-                continue
-            for source_root in (
-                root / "Scripts" / "Source",
-                root / "scripts" / "source",
-            ):
-                game_user = source_root / "User"
-                game_base = source_root / "Base"
-                if game_user.is_dir():
-                    imports.append(game_user)
-                if game_base.is_dir():
-                    imports.append(game_base)
-                    base_dirs.append(game_base)
-        if len(imports) == 1:
-            return _all("compiler_unavailable", "target script source dir not configured")
-        imports = _dedupe_paths(imports)
+
+        import_roots = self._papyrus_import_roots(ctx, runner)
+        if not import_roots:
+            return _all(
+                "compiler_unavailable",
+                "no Fallout 4 script corpus found in the game's loose scripts "
+                "or its archives; the Papyrus type universe is built from those "
+                ".pex",
+            )
+
+        imports = _dedupe_paths([psc_root, *import_roots])
         import_args = [str(path) for path in imports]
-        flags_arg = None
-        if profile.papyrus_flags:
-            flags_arg = profile.papyrus_flags
-            for game_base in base_dirs:
-                flags_path = game_base / profile.papyrus_flags
-                if flags_path.is_file():
-                    flags_arg = str(flags_path)
-                    break
+        flags_arg = profile.papyrus_flags or None
+        bundled_flags = papyrus_header_cache.flags_file(import_roots[0])
+        if bundled_flags is not None:
+            flags_arg = str(bundled_flags)
 
         runner.emit_log(
             "INFO",
@@ -5217,8 +7281,22 @@ class _UnifiedRecordRuntime:
         )
 
         def run_one(script_name: str) -> tuple[str, _ScriptResolution]:
-            psc_path = psc_root / _script_relative_path(script_name, ".psc")
-            output_pex = output_root / _script_relative_path(script_name, ".pex")
+            psc_path = (
+                psc_paths.get(
+                    script_name, psc_root / _script_relative_path(script_name, ".psc")
+                )
+                if psc_paths is not None
+                else psc_root / _script_relative_path(script_name, ".psc")
+            )
+            try:
+                relative_psc = psc_path.relative_to(psc_root)
+            except ValueError:
+                return script_name, _ScriptResolution(
+                    script_name,
+                    "compile_failed",
+                    message=f"source is outside {psc_root}: {psc_path}",
+                )
+            output_pex = output_root / relative_psc.with_suffix(".pex")
             if output_pex.is_file():
                 try:
                     output_pex.unlink()
@@ -5272,13 +7350,13 @@ class _UnifiedRecordRuntime:
         ) as pool:
             return list(pool.map(run_one, script_names))
 
-
     def _compile_decompiled_scripts_batch_for_fo4(
         self,
         script_names: list[str],
         *,
         ctx: ConversionContext,
         runner: "ConversionRunner",
+        psc_paths: Mapping[str, Path] | None = None,
     ) -> list[tuple[str, _ScriptResolution]]:
         """Compile every decompiled .psc in one PapyrusCompiler.exe -all process.
 
@@ -5287,10 +7365,8 @@ class _UnifiedRecordRuntime:
         batch run produced, preserving the downstream failed-ref stripping in
         _run_convert_scripts_phase.
 
-        -all compiles every .psc under the User root, so the caller must ensure
-        that tree contains only this run's decompiled scripts (stray .psc would be
-        recompiled; the per-script .pex pre-delete above bounds the correctness
-        impact to wasted work).
+        A manifest caller supplies ``psc_paths``; those sources are staged into
+        an isolated input root so ``-all`` cannot compile stale sibling sources.
         """
         from creation_lib.core.game_profiles import get_profile
 
@@ -5299,7 +7375,9 @@ class _UnifiedRecordRuntime:
         output_root.mkdir(parents=True, exist_ok=True)
 
         def _all(status: str, message: str) -> list[tuple[str, _ScriptResolution]]:
-            return [(n, _ScriptResolution(n, status, message=message)) for n in script_names]
+            return [
+                (n, _ScriptResolution(n, status, message=message)) for n in script_names
+            ]
 
         target_data_dir = self._req.target_data_dir
         if target_data_dir is None:
@@ -5308,24 +7386,55 @@ class _UnifiedRecordRuntime:
         if not profile.papyrus_compiler_dir:
             return _all("compiler_unavailable", "target game has no Papyrus compiler")
         compiler = (
-            target_data_dir.parent / profile.papyrus_compiler_dir / "PapyrusCompiler.exe"
+            target_data_dir.parent
+            / profile.papyrus_compiler_dir
+            / "PapyrusCompiler.exe"
         )
         if not compiler.is_file():
             return _all("compiler_unavailable", str(compiler))
+
+        batch_source_root = psc_root
+        staged_source_root: Path | None = None
+        if psc_paths is not None:
+            try:
+                staged_source_root = Path(
+                    tempfile.mkdtemp(prefix="fnv-psc-manifest-", dir=ctx.mod_path)
+                )
+                for script_name in script_names:
+                    source_path = psc_paths.get(script_name)
+                    if source_path is None or not source_path.is_file():
+                        raise FileNotFoundError(
+                            f"missing current-run source for {script_name}"
+                        )
+                    staged_path = staged_source_root / _script_relative_path(
+                        script_name, ".psc"
+                    )
+                    staged_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_path, staged_path)
+                batch_source_root = staged_source_root
+            except (OSError, ValueError) as exc:
+                if staged_source_root is not None:
+                    shutil.rmtree(staged_source_root, ignore_errors=True)
+                return _all("compile_failed", str(exc))
 
         # Pre-delete each target .pex so post-compile presence is a true success
         # signal. mod_path is reused across runs; without this a stale .pex from a
         # prior run would mask a real compile failure as "compiled" (the per-script
         # path is guarded by the subprocess returncode, which -all cannot give us).
+        predelete_failures: dict[str, str] = {}
         for script_name in script_names:
             stale_pex = output_root / _script_relative_path(script_name, ".pex")
             if stale_pex.is_file():
                 try:
                     stale_pex.unlink()
-                except OSError:
-                    pass
+                except OSError as exc:
+                    predelete_failures[_script_key(script_name)] = (
+                        f"could not remove stale output {stale_pex}: {exc}"
+                    )
 
-        imports = [psc_root]
+        imports = [batch_source_root]
+        if batch_source_root != psc_root:
+            imports.append(psc_root)
         game_user = target_data_dir / "Scripts" / "Source" / "User"
         game_base = target_data_dir / "Scripts" / "Source" / "Base"
         if game_user.is_dir():
@@ -5336,7 +7445,7 @@ class _UnifiedRecordRuntime:
 
         cmd = [
             str(compiler),
-            str(psc_root),
+            str(batch_source_root),
             "-all",
             f"-import={import_arg}",
             f"-output={output_root}",
@@ -5356,16 +7465,20 @@ class _UnifiedRecordRuntime:
         try:
             completed = subprocess.run(
                 cmd,
-                cwd=str(psc_root),
+                cwd=str(batch_source_root),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=timeout_seconds,
+                creationflags=_CREATE_NO_WINDOW,
             )
         except subprocess.TimeoutExpired:
             return _all("compile_timeout", "batch compile timeout")
+        finally:
+            if staged_source_root is not None:
+                shutil.rmtree(staged_source_root, ignore_errors=True)
 
         out_text = (completed.stdout or "").strip()
         if out_text:
@@ -5376,9 +7489,24 @@ class _UnifiedRecordRuntime:
         results: list[tuple[str, _ScriptResolution]] = []
         for script_name in script_names:
             output_pex = output_root / _script_relative_path(script_name, ".pex")
-            if output_pex.is_file():
+            predelete_failure = predelete_failures.get(_script_key(script_name))
+            if predelete_failure is not None:
                 results.append(
-                    (script_name, _ScriptResolution(script_name, "compiled", output_pex))
+                    (
+                        script_name,
+                        _ScriptResolution(
+                            script_name,
+                            "compile_failed",
+                            message=predelete_failure,
+                        ),
+                    )
+                )
+            elif output_pex.is_file():
+                results.append(
+                    (
+                        script_name,
+                        _ScriptResolution(script_name, "compiled", output_pex),
+                    )
                 )
             else:
                 results.append(
@@ -5392,7 +7520,6 @@ class _UnifiedRecordRuntime:
                     )
                 )
         return results
-
 
     def _decompile_script_source_for_fo4(
         self,
@@ -5416,6 +7543,15 @@ class _UnifiedRecordRuntime:
         ):
             type_adapter = _fo76_to_fo4_script_type
             drop_script_const = True
+            skip_internal_functions = True
+            fo4_api_compat = True
+        elif (
+            self._req.source_game.lower() == "skyrimse"
+            and self._req.target_game.lower() == "fo4"
+        ):
+            from bacup_lib.skyrim_papyrus import skyrim_type_for_fo4
+
+            type_adapter = skyrim_type_for_fo4
             skip_internal_functions = True
             fo4_api_compat = True
         try:
@@ -5443,7 +7579,11 @@ class _UnifiedRecordRuntime:
         # into the decompiled skeleton, keeping the game-derived declarations. If
         # there is no patch, warn when the FO76 script decompiled with no logic so
         # a modder (or AI) knows it needs one.
-        patch_source = _script_patch_source(script_name)
+        patch_source = getattr(self, "_script_patch_sources_by_key", {}).get(
+            _script_key(script_name)
+        )
+        if patch_source is None:
+            patch_source = _script_patch_source(script_name)
         if patch_source is not None:
             decompiled = _merge_script_method_patches(decompiled, patch_source)
             runner.emit_log(
@@ -5460,7 +7600,6 @@ class _UnifiedRecordRuntime:
             )
         psc_path.write_text(decompiled, encoding="utf-8")
         return None
-
 
     def _compile_decompiled_script_for_fo4(
         self,
@@ -5525,6 +7664,16 @@ class _UnifiedRecordRuntime:
                 script_name, "compiler_unavailable", message=str(compiler)
             )
 
+        if output_pex.is_file():
+            try:
+                output_pex.unlink()
+            except OSError as exc:
+                return _ScriptResolution(
+                    script_name,
+                    "compile_failed",
+                    message=f"could not remove stale output {output_pex}: {exc}",
+                )
+
         imports = [psc_root]
         game_user = target_data_dir / "Scripts" / "Source" / "User"
         game_base = target_data_dir / "Scripts" / "Source" / "Base"
@@ -5557,6 +7706,7 @@ class _UnifiedRecordRuntime:
                 encoding="utf-8",
                 errors="replace",
                 timeout=60,
+                creationflags=_CREATE_NO_WINDOW,
             )
         except subprocess.TimeoutExpired:
             if cleanup_on_failure:
@@ -5590,52 +7740,7 @@ class _UnifiedRecordRuntime:
             )
         return _ScriptResolution(script_name, "compiled", output_pex)
 
-
-    def _strip_failed_script_refs(
-        self,
-        run_id: int,
-        candidate_records: dict[int, Any],
-        *,
-        failed_script_keys: set[str],
-        invalid_condition_keys: set[tuple[str, str]],
-        vmad_strip_form_ids: set[int],
-    ) -> tuple[int, int, int]:
-        stripped_conditions = 0
-        stripped_vmad = 0
-        changed_records = 0
-        for form_id, record in candidate_records.items():
-            payloads, condition_count, vmad_count = (
-                _subrecord_payloads_after_script_strip(
-                    record,
-                    failed_script_keys=failed_script_keys,
-                    invalid_condition_keys=invalid_condition_keys,
-                    strip_vmad=form_id in vmad_strip_form_ids,
-                    scripts_by_form_id=getattr(
-                        self,
-                        "_script_condition_form_scripts",
-                        None,
-                    ),
-                )
-            )
-            if condition_count == 0 and vmad_count == 0:
-                continue
-            subrecords = [
-                (payload["signature"], payload["data"], None) for payload in payloads
-            ]
-            updated = load_native_module().conversion_run_set_record_subrecords(
-                run_id,
-                form_id,
-                subrecords,
-            )
-            if not updated:
-                continue
-            changed_records += 1
-            stripped_conditions += condition_count
-            stripped_vmad += vmad_count
-        return stripped_conditions, stripped_vmad, changed_records
-
     @staticmethod
-
     def _write_script_port_report(
         ctx: ConversionContext,
         *,
@@ -5644,6 +7749,7 @@ class _UnifiedRecordRuntime:
         stripped_conditions: int,
         stripped_vmad: int,
         changed_records: int,
+        vmad_notes: list[str] | None = None,
     ) -> None:
         report_root = Path(getattr(ctx, "diagnostics_root", None) or ctx.mod_path)
         report_root.mkdir(parents=True, exist_ok=True)
@@ -5667,9 +7773,154 @@ class _UnifiedRecordRuntime:
             "stripped_conditions": stripped_conditions,
             "stripped_vmad": stripped_vmad,
             "changed_records": changed_records,
+            # Every record whose script bindings changed, named. A removed VMAD
+            # takes a record's whole script attachment with it, so it must never
+            # be inferable only from a count.
+            "vmad_changes": list(vmad_notes or []),
         }
         report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+    def _run_quest_runtime_inventory_phase(
+        self,
+        ctx: ConversionContext,
+        runner: "ConversionRunner",
+    ) -> None:
+        rust_run = getattr(ctx, "_rust_conversion_run", None)
+        if rust_run is None:
+            runner.emit_log(
+                "WARN", "[Quest Runtime] no target plugin handle; inventory skipped"
+            )
+            return
+
+        input_started = time.perf_counter()
+        source_roots = _source_script_roots(
+            self._req.source_data_dir,
+            self._req.additional_source_asset_roots,
+        )
+        target_roots = _target_script_roots(
+            target_data_dir=self._req.target_data_dir,
+            target_extracted_dir=self._req.target_extracted_dir,
+        )
+        if self._req.options.convert_scripts:
+            target_roots = _dedupe_paths(
+                [Path(ctx.mod_path) / "data" / "Scripts", *target_roots]
+            )
+        else:
+            runner.emit_log(
+                "WARN",
+                "[Quest Runtime] script conversion is disabled; persistent mod-output "
+                "PEX files are not current-run producer evidence",
+            )
+
+        diagnostics_root = Path(
+            getattr(ctx, "diagnostics_root", None) or ctx.mod_path / "diagnostics"
+        )
+        diagnostics_root.mkdir(parents=True, exist_ok=True)
+        report_path = diagnostics_root / "quest_runtime_inventory.json"
+        addition_scripts = [
+            script_name
+            for script_name, _path in _script_addition_sources(
+                self._req.source_game,
+                self._req.target_game,
+            ).values()
+        ]
+        _record_timing(
+            ctx,
+            "quest_runtime_inventory_input_preparation",
+            input_started,
+            scope="detail",
+            parent="Inventory Quest Runtime Routes",
+            source_roots=len(source_roots),
+            target_roots=len(target_roots),
+            additions=len(addition_scripts),
+        )
+        inventory_stage = "quest_runtime_inventory_native"
+        inventory_stage_started = time.perf_counter()
+        try:
+            report_json = (
+                load_native_module().conversion_run_quest_runtime_inventory_json(
+                    rust_run.id,
+                    [str(path) for path in source_roots],
+                    [str(path) for path in target_roots],
+                    str(_SCRIPT_PATCH_DIR),
+                    addition_scripts,
+                    str(_QUEST_RUNTIME_UNSUPPORTED_MANIFEST),
+                    self._req.options.convert_scripts,
+                )
+            )
+            _record_timing(
+                ctx,
+                "quest_runtime_inventory_native",
+                inventory_stage_started,
+                scope="detail",
+                parent="Inventory Quest Runtime Routes",
+                status="ok",
+            )
+            inventory_stage = "quest_runtime_inventory_report_write"
+            inventory_stage_started = time.perf_counter()
+            report_path.write_text(f"{report_json.rstrip()}\n", encoding="utf-8")
+            _record_timing(
+                ctx,
+                "quest_runtime_inventory_report_write",
+                inventory_stage_started,
+                scope="detail",
+                parent="Inventory Quest Runtime Routes",
+                status="ok",
+                bytes=len(report_json.encode("utf-8")),
+            )
+            inventory_stage = "quest_runtime_inventory_json_decode"
+            inventory_stage_started = time.perf_counter()
+            report = json.loads(report_json)
+            _record_timing(
+                ctx,
+                "quest_runtime_inventory_json_decode",
+                inventory_stage_started,
+                scope="detail",
+                parent="Inventory Quest Runtime Routes",
+                status="ok",
+            )
+        except Exception as exc:
+            _record_timing(
+                ctx,
+                inventory_stage,
+                inventory_stage_started,
+                scope="detail",
+                parent="Inventory Quest Runtime Routes",
+                status="failed",
+                error_type=type(exc).__name__,
+            )
+            runner.emit_log(
+                "WARN",
+                f"[Quest Runtime] native inventory could not complete: {exc}",
+            )
+            return
+
+        if report.get("inventory_error"):
+            runner.emit_log(
+                "WARN",
+                "[Quest Runtime] inventory could not complete; "
+                f"report written before continuing: {report['inventory_error']}",
+            )
+            return
+        summary_started = time.perf_counter()
+        summary = report["summary"]
+        level = "INFO" if report["coverage_complete"] else "WARN"
+        runner.emit_log(
+            level,
+            "[Quest Runtime] "
+            f"native={summary['native']} adapted={summary['adapted']} "
+            f"unsupported={summary['explicitly_unsupported']} "
+            f"unclassified={summary['unclassified']}; "
+            "strict enforcement is disabled",
+        )
+        _record_timing(
+            ctx,
+            "quest_runtime_inventory_summary",
+            summary_started,
+            scope="detail",
+            parent="Inventory Quest Runtime Routes",
+            coverage_complete=bool(report["coverage_complete"]),
+        )
 
     def _run_optional_fnv_legacy_phase(
         self,
@@ -5678,6 +7929,8 @@ class _UnifiedRecordRuntime:
         runner: "ConversionRunner",
     ) -> bool:
         if self._req.source_game != "fnv" or self._req.target_game != "fo4":
+            return False
+        if bool(getattr(ctx, "_fnv_legacy_completed", False)):
             return False
         rust_run = getattr(ctx, "_rust_conversion_run", None)
         if rust_run is None:
@@ -5694,12 +7947,944 @@ class _UnifiedRecordRuntime:
         )
         return True
 
+    def _is_fnv_quest_slice(self) -> bool:
+        if (
+            self._req.source_game.lower() != "fnv"
+            or self._req.target_game.lower() != "fo4"
+        ):
+            return False
+        return bool(getattr(self._req.options, "fnv_quest_slice", False))
+
+    def _is_fnv_world_only_mvp(self) -> bool:
+        if (
+            self._req.source_game.lower() != "fnv"
+            or self._req.target_game.lower() != "fo4"
+        ):
+            return False
+        from bacup_lib.source_pairs import FNV_MVP_EXCLUDE_SIGNATURES
+
+        excluded = frozenset(
+            signature.upper()
+            for signature in getattr(self._req.options, "exclude_signatures", ())
+        )
+        return (
+            not self._is_fnv_quest_slice()
+            and FNV_MVP_EXCLUDE_SIGNATURES <= excluded
+        )
+
+    def _active_mvp_creature_profile(self) -> str | None:
+        if self._is_fnv_quest_slice() or getattr(
+            self._req.options, "mvp_melee_only", False
+        ):
+            return None
+        if self._active_mvp_creature_corpus_policy() is not None:
+            return None
+        from bacup_lib.source_pairs import mvp_creature_profile_payload
+
+        pair_id = {
+            ("fnv", "fo4"): "fnvfo3:fo4",
+            ("skyrimse", "fo4"): "skyrimse:fo4",
+        }.get((self._req.source_game.lower(), self._req.target_game.lower()))
+        if pair_id is None:
+            return None
+        return mvp_creature_profile_payload(
+            pair_id,
+            frozenset(getattr(self._req.options, "exclude_signatures", ())),
+        )
+
+    def _active_mvp_creature_corpus_policy(self) -> dict[str, object] | None:
+        if self._is_fnv_quest_slice() or getattr(
+            self._req.options, "mvp_melee_only", False
+        ):
+            return None
+        from bacup_lib.source_pairs import mvp_creature_corpus_policy_payload
+
+        pair_id = {
+            ("fnv", "fo4"): "fnvfo3:fo4",
+            ("skyrimse", "fo4"): "skyrimse:fo4",
+        }.get((self._req.source_game.lower(), self._req.target_game.lower()))
+        if pair_id is None:
+            return None
+        return mvp_creature_corpus_policy_payload(
+            pair_id,
+            frozenset(getattr(self._req.options, "exclude_signatures", ())),
+        )
+
+    def _active_mvp_melee_policy(self) -> dict[str, object] | None:
+        if self._is_fnv_quest_slice():
+            return None
+        from bacup_lib.source_pairs import mvp_melee_policy_payload
+
+        pair_id = {
+            ("fnv", "fo4"): "fnvfo3:fo4",
+            ("skyrimse", "fo4"): "skyrimse:fo4",
+        }.get((self._req.source_game.lower(), self._req.target_game.lower()))
+        if pair_id is None:
+            return None
+        return mvp_melee_policy_payload(
+            pair_id,
+            frozenset(getattr(self._req.options, "exclude_signatures", ())),
+        )
+
+    def _active_mvp_record_exceptions(self) -> list[dict[str, str | int]]:
+        if self._is_fnv_quest_slice():
+            return []
+        if self._active_mvp_melee_policy() is not None:
+            return []
+        from bacup_lib.source_pairs import mvp_record_exception_payload
+
+        pair_id = {
+            ("fnv", "fo4"): "fnvfo3:fo4",
+            ("skyrimse", "fo4"): "skyrimse:fo4",
+        }.get((self._req.source_game.lower(), self._req.target_game.lower()))
+        if pair_id is None:
+            return []
+        return mvp_record_exception_payload(
+            pair_id,
+            frozenset(getattr(self._req.options, "exclude_signatures", ())),
+        )
+
+    @staticmethod
+    def _generated_psc_manifest(
+        result_dict: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        entries = result_dict.get("generated_psc_classes", ()) or ()
+        manifest: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry in entries:
+            if isinstance(entry, Mapping):
+                class_name = entry.get("class_name")
+                relative_source_path = entry.get("relative_source_path")
+                kind = entry.get("kind", "unknown")
+                required = entry.get("required", True)
+            else:
+                class_name = entry
+                relative_source_path = f"{class_name}.psc"
+                kind = "unknown"
+                required = True
+            if not isinstance(class_name, str):
+                raise ValueError(f"invalid generated PSC manifest entry: {entry!r}")
+            normalized_class_name = class_name.strip().removesuffix(".psc")
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", normalized_class_name):
+                raise ValueError(f"invalid generated PSC class name: {class_name!r}")
+            if not isinstance(relative_source_path, str):
+                raise ValueError(f"invalid PSC source path for {class_name!r}")
+            relative_path = Path(relative_source_path.replace("\\", "/"))
+            if (
+                relative_path.is_absolute()
+                or relative_path.suffix.casefold() != ".psc"
+                or ".." in relative_path.parts
+            ):
+                raise ValueError(
+                    f"invalid generated PSC relative source path: {relative_source_path!r}"
+                )
+            key = normalized_class_name.casefold()
+            if key in seen:
+                raise ValueError(f"duplicate generated PSC class name: {class_name!r}")
+            seen.add(key)
+            manifest.append(
+                {
+                    "class_name": normalized_class_name,
+                    "relative_source_path": relative_path.as_posix(),
+                    "kind": str(kind),
+                    "required": bool(required),
+                }
+            )
+        return manifest
+
+    _fnv_generated_psc_manifest = _generated_psc_manifest
+
+    @staticmethod
+    def _generated_psc_validation_errors(
+        manifest: list[dict[str, Any]],
+        psc_paths: Mapping[str, Path],
+        *,
+        current_run_root: Path | None = None,
+    ) -> dict[str, str]:
+        errors: dict[str, str] = {}
+        classes_by_key: dict[str, str] = {}
+        stems_by_key: dict[str, str] = {}
+        paths_by_key: dict[str, str] = {}
+
+        for entry in manifest:
+            class_name = str(entry["class_name"])
+            class_key = class_name.casefold()
+            previous_class = classes_by_key.get(class_key)
+            if previous_class is not None:
+                message = (
+                    "case-insensitive duplicate generated PSC class name: "
+                    f"{previous_class}, {class_name}"
+                )
+                errors[previous_class] = message
+                errors[class_name] = message
+            else:
+                classes_by_key[class_key] = class_name
+            if len(class_name) > _PAPYRUS_CLASS_NAME_MAX_LENGTH:
+                errors[class_name] = (
+                    "Papyrus class name exceeds "
+                    f"{_PAPYRUS_CLASS_NAME_MAX_LENGTH} characters: {class_name}"
+                )
+
+            psc_path = psc_paths.get(class_name)
+            if psc_path is None:
+                errors[class_name] = "missing generated PSC source path"
+                continue
+            path_key = str(psc_path.resolve()).casefold()
+            previous_path = paths_by_key.get(path_key)
+            if previous_path is not None:
+                message = (
+                    f"case-insensitive duplicate generated PSC source path: {psc_path}"
+                )
+                errors[previous_path] = message
+                errors[class_name] = message
+            else:
+                paths_by_key[path_key] = class_name
+            if current_run_root is not None:
+                try:
+                    psc_path.resolve().relative_to(current_run_root.resolve())
+                except ValueError:
+                    errors[class_name] = (
+                        f"generated PSC source is outside current run: {psc_path}"
+                    )
+                    continue
+            stem = psc_path.stem
+            stem_key = stem.casefold()
+            previous_stem = stems_by_key.get(stem_key)
+            if previous_stem is not None:
+                message = (
+                    "case-insensitive duplicate generated PSC filename stem: "
+                    f"{psc_paths[previous_stem].stem}, {stem}"
+                )
+                errors[previous_stem] = message
+                errors[class_name] = message
+            else:
+                stems_by_key[stem_key] = class_name
+            if len(stem) > _PAPYRUS_CLASS_NAME_MAX_LENGTH:
+                errors[class_name] = (
+                    "Papyrus PSC filename stem exceeds "
+                    f"{_PAPYRUS_CLASS_NAME_MAX_LENGTH} characters: {stem}"
+                )
+            if not psc_path.is_file():
+                errors[class_name] = f"missing current-run source {psc_path}"
+                continue
+            try:
+                source = psc_path.read_text(encoding="utf-8-sig")
+            except OSError as exc:
+                errors[class_name] = (
+                    f"could not read current-run source {psc_path}: {exc}"
+                )
+                continue
+            match = _PSC_SCRIPT_NAME_RE.search(source)
+            if match is None:
+                errors[class_name] = (
+                    f"current-run source has no ScriptName declaration: {psc_path}"
+                )
+            elif match.group(1) != class_name:
+                errors[class_name] = (
+                    f"ScriptName {match.group(1)!r} does not match manifest "
+                    f"class_name {class_name!r}"
+                )
+        return errors
+
+    _fnv_generated_psc_validation_errors = _generated_psc_validation_errors
+
+    def _prepare_skyrim_minimal_quest_actions(
+        self,
+        *,
+        run,
+        ctx: ConversionContext,
+        runner: "ConversionRunner",
+    ) -> int:
+        if not (
+            ctx.source_game.lower() == "skyrimse"
+            and ctx.target_game.lower() == "fo4"
+        ):
+            return 0
+        candidates = json.loads(
+            load_native_module().conversion_run_skyrim_minimal_quest_candidates_json(
+                run.id
+            )
+        )
+        if not candidates:
+            return 0
+        from bacup_lib.skyrim_papyrus import (
+            SkyrimScriptIntent,
+            discover_skyrim_psc_artifacts,
+            extract_minimal_quest_fragment_actions,
+        )
+
+        import_roots = self._papyrus_import_roots(ctx, runner)
+        if not import_roots:
+            raise RuntimeError(
+                "Skyrim minimal quest conversion requires the Fallout 4 Papyrus type universe"
+            )
+        flags_path = papyrus_header_cache.flags_file(import_roots[0])
+        production = discover_skyrim_psc_artifacts(
+            [
+                SkyrimScriptIntent(
+                    row["source_script_class"], "quest-fragment", required=True
+                )
+                for row in candidates
+            ],
+            source_data_dir=self._req.source_data_dir,
+            additional_source_asset_roots=self._req.additional_source_asset_roots,
+            fo4_import_dirs=import_roots,
+            fo4_flags=str(flags_path) if flags_path is not None else None,
+        )
+        if not production.supported:
+            raise RuntimeError(
+                "Skyrim minimal quest source recovery failed: "
+                + str(production.unsupported_reason or "unsupported source")
+            )
+        sources = {
+            artifact.class_name.casefold(): artifact.source
+            for artifact in production.artifacts
+        }
+        requests = []
+        for row in candidates:
+            source = sources.get(row["source_script_class"].casefold())
+            if source is None:
+                raise RuntimeError(
+                    "Skyrim minimal quest source recovery omitted required class "
+                    + row["source_script_class"]
+                )
+            requests.append(
+                {
+                    "component_id": row["component_id"],
+                    "actions": extract_minimal_quest_fragment_actions(
+                        source, row["source_fragment_function"]
+                    ),
+                }
+            )
+        raw_prefix = re.sub(r"[^A-Za-z0-9_]", "_", Path(ctx.mod_path).name)
+        class_prefix = (raw_prefix or "Skyrim")[:24]
+        if class_prefix[0].isdigit():
+            class_prefix = f"S_{class_prefix}"[:24]
+        load_native_module().conversion_run_install_skyrim_minimal_quest_actions(
+            run.id,
+            class_prefix,
+            json.dumps(requests, sort_keys=True),
+        )
+        runner.emit_log(
+            "INFO",
+            f"[Skyrim Quest Runtime] admitted action lowering for {len(requests)} minimal quest(s)",
+        )
+        return len(requests)
+
+    def _compile_and_attach_skyrim_minimal_quests(
+        self,
+        *,
+        run,
+        ctx: ConversionContext,
+        runner: "ConversionRunner",
+    ) -> int:
+        if not (
+            ctx.source_game.lower() == "skyrimse"
+            and ctx.target_game.lower() == "fo4"
+        ):
+            return 0
+        manifest = json.loads(
+            load_native_module().conversion_run_emit_skyrim_minimal_quest_psc_manifest_json(
+                run.id, str(ctx.mod_path)
+            )
+        )
+        if not manifest:
+            return 0
+        output_root = (Path(ctx.mod_path) / "data" / "Scripts").resolve()
+        for row in manifest:
+            stale_pex = (output_root / _script_relative_path(row["class_name"], ".pex")).resolve()
+            if output_root not in stale_pex.parents:
+                raise RuntimeError("Skyrim quest PEX path escaped the output root")
+            if stale_pex.is_file():
+                stale_pex.unlink()
+        generic_evidence = self._compile_generated_psc_manifest(
+            manifest=manifest,
+            psc_files_written=len(manifest),
+            ctx=ctx,
+            runner=runner,
+            workflow_label="Skyrim Quest Runtime",
+            report_filename="skyrim_quest_script_compile_manifest.json",
+            report_source="skyrim_minimal_quest_runtime",
+            strict=True,
+            failure_subject="Skyrim minimal quest",
+        )
+        result_by_class = {
+            row["class_name"].casefold(): row for row in generic_evidence
+        }
+        pex_paths = [
+            (output_root / _script_relative_path(row["class_name"], ".pex")).resolve()
+            for row in manifest
+        ]
+        pex_hashes = load_native_module().conversion_hash_files_blake3(
+            [str(path) for path in pex_paths], None
+        )
+        compile_run_id = f"skyrim-quest-{time.time_ns()}"
+        evidence = []
+        for row, pex_path, pex_hash in zip(manifest, pex_paths, pex_hashes, strict=True):
+            result = result_by_class.get(row["class_name"].casefold())
+            if result is None or not result.get("compiled_success"):
+                raise RuntimeError(
+                    f"required Skyrim minimal quest PSC {row['class_name']} was not compiled"
+                )
+            evidence.append(
+                {
+                    "manifest_id": row["manifest_id"],
+                    "class_name": row["class_name"],
+                    "relative_source_path": row["relative_source_path"],
+                    "source_blake3": row["source_blake3"],
+                    "relative_pex_path": f"data/Scripts/{row['class_name']}.pex",
+                    "pex_artifact_path": str(pex_path),
+                    "pex_blake3": pex_hash,
+                    "target_game": "fo4",
+                    "compile_run_id": compile_run_id,
+                    "compiled_success": True,
+                }
+            )
+        attached = int(
+            load_native_module().conversion_run_reconcile_skyrim_minimal_quest_compiler_evidence(
+                run.id, json.dumps(evidence, sort_keys=True)
+            )
+        )
+        if attached != len(manifest):
+            raise RuntimeError(
+                "Skyrim minimal quest VMAD attachment count does not match the compile manifest"
+            )
+        runner.emit_log(
+            "INFO",
+            f"[Skyrim Quest Runtime] compiled and attached {attached} evidence-gated quest VMAD payload(s)",
+        )
+        return attached
+
+    @staticmethod
+    def _find_skyrim_quest_runtime_asset(
+        roots: tuple[Path, ...],
+        relative_candidates: tuple[str, ...],
+        label: str,
+    ) -> tuple[Path, str]:
+        for candidate in relative_candidates:
+            relative = PurePosixPath(candidate.replace("\\", "/"))
+            for root in roots:
+                path = root.joinpath(*relative.parts)
+                if path.is_file():
+                    return path, relative.as_posix()
+                parent = path.parent
+                if parent.is_dir():
+                    match = next(
+                        (
+                            entry
+                            for entry in parent.iterdir()
+                            if entry.is_file()
+                            and entry.name.casefold() == path.name.casefold()
+                        ),
+                        None,
+                    )
+                    if match is not None:
+                        return match, relative.as_posix()
+        raise FileNotFoundError(
+            f"{label} is missing from declared roots: "
+            + ", ".join(relative_candidates)
+        )
+
+    @staticmethod
+    def _skyrim_quest_runtime_evidence(
+        path: Path,
+        relative_path: str,
+        provenance: dict[str, str],
+    ) -> dict[str, object]:
+        digest = load_native_module().conversion_hash_files_blake3(
+            [str(path.resolve())], None
+        )
+        if not isinstance(digest, list) or len(digest) != 1:
+            raise RuntimeError("native BLAKE3 returned an invalid Skyrim quest asset digest")
+        return {
+            "relative_path": relative_path,
+            "exists": True,
+            "byte_len": path.stat().st_size,
+            "blake3": digest[0],
+            "provenance": provenance,
+        }
+
+    @staticmethod
+    def _skyrim_quest_runtime_converted_roots(
+        ctx: ConversionContext,
+    ) -> tuple[Path, ...]:
+        output_data = (Path(ctx.mod_path) / "data").resolve()
+        resolved = (
+            Path(root).resolve()
+            for root in ctx.skyrim_quest_runtime_converted_asset_roots
+            if Path(root).is_dir()
+        )
+        return tuple(
+            dict.fromkeys(
+                root
+                for root in resolved
+                if not (
+                    root == output_data
+                    or root.is_relative_to(output_data)
+                    or output_data.is_relative_to(root)
+                )
+            )
+        )
+
+    def _copy_skyrim_quest_runtime_assets(
+        self,
+        *,
+        run,
+        ctx: ConversionContext,
+        runner: "ConversionRunner",
+    ) -> int:
+        if not (
+            ctx.source_game.lower() == "skyrimse"
+            and ctx.target_game.lower() == "fo4"
+        ):
+            return 0
+        requirements_manifest = json.loads(
+            load_native_module().conversion_run_skyrim_quest_runtime_asset_requirements_json(
+                run.id
+            )
+        )
+        requirements = requirements_manifest.get("requirements", [])
+        if not requirements:
+            return 0
+
+        source_roots = tuple(
+            dict.fromkeys(
+                Path(root).resolve()
+                for root in (
+                    ctx.source_data_dir,
+                    *ctx.additional_source_asset_roots,
+                )
+                if root is not None and Path(root).is_dir()
+            )
+        )
+        output_data = (Path(ctx.mod_path) / "data").resolve()
+        output_data.mkdir(parents=True, exist_ok=True)
+        converted_roots = self._skyrim_quest_runtime_converted_roots(ctx)
+        if not source_roots:
+            raise RuntimeError(
+                "Skyrim quest runtime voice assets require declared source asset roots"
+            )
+        if not converted_roots:
+            raise RuntimeError(
+                "Skyrim quest runtime voice assets require declared converted asset roots"
+            )
+
+        intents: list[dict[str, object]] = []
+        for requirement in requirements:
+            source_directory = str(requirement["source_voice_directory"])
+            source_stems = tuple(str(stem) for stem in requirement["source_stems"])
+            source_fuz_path, source_fuz_relative = self._find_skyrim_quest_runtime_asset(
+                source_roots,
+                tuple(f"{source_directory}/{stem}.fuz" for stem in source_stems),
+                "Skyrim quest source FUZ",
+            )
+            source_lip_path, source_lip_relative = self._find_skyrim_quest_runtime_asset(
+                source_roots,
+                tuple(f"{source_directory}/{stem}.lip" for stem in source_stems),
+                "Skyrim quest source LIP",
+            )
+            source_fuz = self._skyrim_quest_runtime_evidence(
+                source_fuz_path,
+                source_fuz_relative,
+                {"kind": "loose_file"},
+            )
+            source_lip = self._skyrim_quest_runtime_evidence(
+                source_lip_path,
+                source_lip_relative,
+                {"kind": "loose_file"},
+            )
+            target_local = int(str(requirement["target_info"]).split("@", 1)[0], 16)
+            response_number = int(requirement["response_number"])
+            target_stem = f"{target_local:06x}_{response_number:02}"
+            target_directory = str(requirement["target_voice_path"])
+            audio_path, audio_relative = self._find_skyrim_quest_runtime_asset(
+                converted_roots,
+                (
+                    f"{target_directory}/{target_stem}.xwm",
+                    f"{target_directory}/{target_stem}.wav",
+                ),
+                "converted Skyrim quest XWM/WAV",
+            )
+            target_lip_path, target_lip_relative = self._find_skyrim_quest_runtime_asset(
+                converted_roots,
+                (f"{target_directory}/{target_stem}.lip",),
+                "converted Skyrim quest LIP",
+            )
+            audio = self._skyrim_quest_runtime_evidence(
+                audio_path,
+                audio_relative,
+                {
+                    "kind": "converted",
+                    "source_blake3": str(source_fuz["blake3"]),
+                    "converter": "declared-converted-artifact-root",
+                },
+            )
+            target_lip = self._skyrim_quest_runtime_evidence(
+                target_lip_path,
+                target_lip_relative,
+                {
+                    "kind": "converted",
+                    "source_blake3": str(source_lip["blake3"]),
+                    "converter": "declared-converted-artifact-root",
+                },
+            )
+            intents.append(
+                {
+                    "source_info": requirement["source_info"],
+                    "target_info": requirement["target_info"],
+                    "source_speaker": requirement["source_speaker"],
+                    "target_speaker": requirement["target_speaker"],
+                    "response_number": response_number,
+                    "transcript": requirement["transcript"],
+                    "voice_type": requirement["voice_type"],
+                    "source_fuz": source_fuz,
+                    "source_lip": source_lip,
+                    "target_audio": {
+                        "format": audio_path.suffix.removeprefix(".").casefold(),
+                        "evidence": audio,
+                    },
+                    "target_lip": target_lip,
+                    "sequence": None,
+                }
+            )
+        manifest = {
+            "output_plugin": requirements_manifest["output_plugin"],
+            "intents": intents,
+        }
+        canonical_manifest = json.loads(
+            load_native_module().conversion_run_install_skyrim_quest_runtime_asset_manifest_json(
+                run.id, json.dumps(manifest, sort_keys=True)
+            )
+        )
+        from bacup_lib.skyrim_runtime_assets import copy_skyrim_quest_runtime_assets
+
+        receipt = copy_skyrim_quest_runtime_assets(
+            canonical_manifest,
+            source_roots,
+            converted_roots,
+            output_data,
+        )
+        receipt_json = {
+            "rows": [
+                {
+                    "semantic_role": row.semantic_role,
+                    "source_path": row.source_path,
+                    "target_path": row.target_path,
+                    "source_root": row.source_root,
+                    "size": row.size,
+                    "blake3": row.blake3,
+                    "source_blake3": row.source_blake3,
+                }
+                for row in receipt.rows
+            ]
+        }
+        reconciled = int(
+            load_native_module().conversion_run_reconcile_skyrim_quest_runtime_asset_copy_receipt_json(
+                run.id, json.dumps(receipt_json, sort_keys=True)
+            )
+        )
+        if reconciled != receipt.files_copied:
+            raise RuntimeError(
+                "Skyrim quest runtime asset receipt count changed during native reconciliation"
+            )
+        runner.emit_log(
+            "INFO",
+            f"[Skyrim Quest Runtime] copied and reconciled {reconciled} voice/LIP/SEQ artifact(s)",
+        )
+        return reconciled
+
+    def _compile_generated_psc_manifest(
+        self,
+        *,
+        manifest: list[dict[str, Any]],
+        psc_files_written: int,
+        ctx: ConversionContext,
+        runner: "ConversionRunner",
+        workflow_label: str,
+        report_filename: str,
+        report_source: str,
+        strict: bool,
+        failure_subject: str,
+        exact_runtime_tree: bool = False,
+    ) -> list[dict[str, Any]]:
+        report_root = Path(getattr(ctx, "diagnostics_root", None) or ctx.mod_path)
+        report_root.mkdir(parents=True, exist_ok=True)
+        report_path = report_root / report_filename
+        psc_root = Path(ctx.mod_path) / "Scripts" / "Source" / "User"
+        resolutions: dict[str, _ScriptResolution] = {}
+        entries_by_class = {entry["class_name"]: entry for entry in manifest}
+
+        if psc_files_written and not manifest:
+            message = (
+                f"{workflow_label} wrote PSC files without a current-run "
+                "generated_psc_classes manifest"
+            )
+            runner.emit_log("ERROR" if strict else "WARN", message)
+            if strict:
+                raise RuntimeError(message)
+        if psc_files_written != len(manifest):
+            message = (
+                f"{workflow_label} PSC manifest count does not match files written: "
+                f"manifest={len(manifest)} written={psc_files_written}"
+            )
+            runner.emit_log("ERROR" if strict else "WARN", message)
+            if strict:
+                raise RuntimeError(message)
+
+        psc_paths = {}
+        for class_name, entry in entries_by_class.items():
+            relative_source = Path(entry["relative_source_path"])
+            psc_paths[class_name] = (
+                Path(ctx.mod_path) / relative_source
+                if relative_source.parts
+                and relative_source.parts[0].casefold() == "scripts"
+                else psc_root / relative_source
+            )
+        validation_errors = self._generated_psc_validation_errors(
+            manifest,
+            psc_paths,
+            current_run_root=Path(ctx.mod_path),
+        )
+        for class_name, message in validation_errors.items():
+            resolutions[class_name] = _ScriptResolution(
+                class_name,
+                "compile_failed",
+                message=message,
+            )
+        if strict and validation_errors:
+            details = "; ".join(
+                f"{class_name}: {message}"
+                for class_name, message in sorted(validation_errors.items())
+            )
+            runner.emit_log(
+                "ERROR", f"[{workflow_label} Scripts] invalid PSC manifest: {details}"
+            )
+            raise RuntimeError(
+                f"invalid required {failure_subject} PSC manifest: {details}"
+            )
+
+        if exact_runtime_tree:
+            expected_psc = {
+                str(path.resolve()).casefold() for path in psc_paths.values()
+            }
+            actual_psc = {
+                str(path.resolve()).casefold()
+                for path in psc_root.rglob("*.psc")
+                if path.is_file()
+            }
+            unexpected_psc = sorted(actual_psc - expected_psc)
+            if unexpected_psc:
+                raise RuntimeError(
+                    f"{failure_subject} has stale PSC outside the current-run manifest: "
+                    + ", ".join(unexpected_psc[:10])
+                )
+
+            output_root = Path(ctx.mod_path) / "data" / "Scripts"
+            expected_pex = {
+                str(
+                    (output_root / _script_relative_path(name, ".pex")).resolve()
+                ).casefold()
+                for name in entries_by_class
+            }
+            actual_pex = (
+                {
+                    str(path.resolve()).casefold()
+                    for path in output_root.rglob("*.pex")
+                    if path.is_file()
+                }
+                if output_root.is_dir()
+                else set()
+            )
+            unexpected_pex = sorted(actual_pex - expected_pex)
+            if unexpected_pex:
+                raise RuntimeError(
+                    f"{failure_subject} has stale PEX outside the exact runtime inventory: "
+                    + ", ".join(unexpected_pex[:10])
+                )
+            for class_name in entries_by_class:
+                stale_pex = output_root / _script_relative_path(class_name, ".pex")
+                if stale_pex.is_file():
+                    try:
+                        stale_pex.unlink()
+                    except OSError as exc:
+                        raise RuntimeError(
+                            f"could not remove stale current-run PEX {stale_pex}: {exc}"
+                        ) from exc
+
+        compilable = [name for name in entries_by_class if name not in resolutions]
+        if compilable and not self._req.options.convert_scripts:
+            for class_name in compilable:
+                resolutions[class_name] = _ScriptResolution(
+                    class_name,
+                    "compile_disabled",
+                    message="convert_scripts is disabled",
+                )
+        elif compilable:
+            workers = int(getattr(self._req.options, "conversion_workers", 1) or 1)
+            source_index = {
+                _script_key(class_name): psc_path
+                for class_name, psc_path in psc_paths.items()
+            }
+            for class_name, resolution in self._compile_decompiled_scripts_for_fo4(
+                compilable,
+                source_index=source_index,
+                ctx=ctx,
+                runner=runner,
+                workers=max(workers, 1),
+                psc_paths=psc_paths,
+            ):
+                resolutions[class_name] = resolution
+        for class_name in entries_by_class:
+            resolutions.setdefault(
+                class_name,
+                _ScriptResolution(
+                    class_name,
+                    "compile_failed",
+                    message="compiler returned no current-run result",
+                ),
+            )
+
+        if exact_runtime_tree:
+            output_root = (Path(ctx.mod_path) / "data" / "Scripts").resolve()
+            for class_name, resolution in list(resolutions.items()):
+                expected_output = (
+                    output_root / _script_relative_path(class_name, ".pex")
+                ).resolve()
+                if resolution.status != "compiled":
+                    continue
+                if (
+                    resolution.pex_path is None
+                    or resolution.pex_path.resolve() != expected_output
+                    or not expected_output.is_file()
+                    or expected_output.stat().st_size <= 0
+                ):
+                    resolutions[class_name] = _ScriptResolution(
+                        class_name,
+                        "compile_failed",
+                        message="compiler returned no fresh exact-manifest PEX",
+                    )
+            actual_pex = (
+                {
+                    str(path.resolve()).casefold()
+                    for path in output_root.rglob("*.pex")
+                    if path.is_file()
+                }
+                if output_root.is_dir()
+                else set()
+            )
+            expected_pex = {
+                str(
+                    (output_root / _script_relative_path(name, ".pex")).resolve()
+                ).casefold()
+                for name in entries_by_class
+            }
+            if actual_pex - expected_pex:
+                raise RuntimeError(
+                    f"{failure_subject} compiler produced unexpected PEX output: "
+                    + ", ".join(sorted(actual_pex - expected_pex)[:10])
+                )
+
+        payload = {
+            "source": report_source,
+            "psc_root": str(psc_root),
+            "strict_quest_slice": strict,
+            "psc_files_written": psc_files_written,
+            "generated_psc_classes": manifest,
+            "results": [
+                {
+                    "class_name": class_name,
+                    "relative_source_path": entries_by_class[class_name][
+                        "relative_source_path"
+                    ],
+                    "kind": entries_by_class[class_name]["kind"],
+                    "required": entries_by_class[class_name]["required"],
+                    "status": resolution.status,
+                    "pex_path": str(resolution.pex_path)
+                    if resolution.pex_path is not None
+                    else None,
+                    "message": resolution.message,
+                }
+                for class_name, resolution in sorted(
+                    resolutions.items(), key=lambda item: item[0].casefold()
+                )
+            ],
+        }
+        report_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        all_failures = [
+            resolution
+            for resolution in resolutions.values()
+            if resolution.status != "compiled"
+        ]
+        failures = [
+            resolution
+            for resolution in all_failures
+            if (entries_by_class[resolution.script_name]["required"])
+        ]
+        runner.emit_log(
+            "INFO" if not all_failures else "WARN",
+            f"[{workflow_label} Scripts] current-run PSC manifest: "
+            f"classes={len(manifest)} compiled={len(resolutions) - len(all_failures)} "
+            f"failed={len(all_failures)} report={report_path}",
+        )
+        if strict and failures:
+            details = "; ".join(
+                f"{resolution.script_name}: {resolution.status}"
+                for resolution in failures[:10]
+            )
+            raise RuntimeError(
+                f"required {failure_subject} PSC compilation failed: {details}"
+            )
+        evidence: list[dict[str, Any]] = []
+        for class_name in entries_by_class:
+            resolution = resolutions[class_name]
+            pex_path = resolution.pex_path
+            if pex_path is not None:
+                try:
+                    relative_pex_path = (
+                        Path(pex_path)
+                        .resolve()
+                        .relative_to(Path(ctx.mod_path).resolve())
+                        .as_posix()
+                    )
+                except ValueError:
+                    relative_pex_path = f"Scripts/{class_name}.pex"
+            else:
+                relative_pex_path = f"Scripts/{class_name}.pex"
+            evidence.append(
+                {
+                    "class_name": class_name,
+                    "relative_pex_path": relative_pex_path,
+                    "compiled_success": resolution.status == "compiled",
+                }
+            )
+        return evidence
+
+    def _compile_fnv_generated_psc_manifest(
+        self,
+        *,
+        manifest: list[dict[str, Any]],
+        psc_files_written: int,
+        ctx: ConversionContext,
+        runner: "ConversionRunner",
+    ) -> list[dict[str, Any]]:
+        return self._compile_generated_psc_manifest(
+            manifest=manifest,
+            psc_files_written=psc_files_written,
+            ctx=ctx,
+            runner=runner,
+            workflow_label="FNV",
+            report_filename="fnv_script_compile_manifest.json",
+            report_source="fnv_legacy_scripting",
+            strict=self._is_fnv_quest_slice(),
+            failure_subject="FNV quest-slice",
+        )
 
     def _apply_fnv_legacy_result_dict(
         self,
         result_dict: dict,
         ctx: ConversionContext,
         runner: "ConversionRunner",
+        rust_run=None,
     ) -> None:
         translated_scripts = int(result_dict.get("translated_scripts", 0))
         translated_quests = int(result_dict.get("translated_quests", 0))
@@ -5714,15 +8899,46 @@ class _UnifiedRecordRuntime:
 
         vmad_intents = result_dict.get("vmad_intents") or []
         if vmad_intents and not bool(result_dict.get("vmad_attached_in_rust", False)):
-            runner.emit_log(
-                "WARN",
+            message = (
                 "FNV legacy scripting returned VMAD intents without native attachment; "
-                "Python record mutation fallback has been removed",
+                "Python record mutation fallback has been removed"
             )
+            runner.emit_log("ERROR" if self._is_fnv_quest_slice() else "WARN", message)
+            if self._is_fnv_quest_slice():
+                raise RuntimeError(message)
 
         ctx.summary.records_translated += records_written
         ctx.summary.records_warnings += records_failed + len(skipped_records)
         _append_unique_strings(ctx.summary.lip_regeneration_needed, list(lip_paths))
+
+        if skipped_records:
+            grouped: Counter[tuple[str, str]] = Counter()
+            examples: dict[tuple[str, str], list[str]] = {}
+            for skipped in skipped_records:
+                try:
+                    signature, editor_id, reason = skipped
+                except (TypeError, ValueError):
+                    signature, editor_id, reason = (
+                        "<unknown>",
+                        "<unknown>",
+                        str(skipped),
+                    )
+                key = (str(signature).upper(), str(reason))
+                grouped[key] += 1
+                examples.setdefault(key, []).append(str(editor_id))
+            ctx.fnv_legacy_skip_reasons = {
+                f"{signature}:{reason}": count
+                for (signature, reason), count in sorted(grouped.items())
+            }
+            for (signature, reason), count in sorted(grouped.items()):
+                if signature != "SCPT":
+                    continue
+                sample = ", ".join(examples[(signature, reason)][:3])
+                runner.emit_log(
+                    "WARN",
+                    f"FNV legacy SCPT skipped: reason={reason!r} count={count} "
+                    f"examples={sample}",
+                )
 
         runner.emit_log(
             "INFO",
@@ -5736,6 +8952,113 @@ class _UnifiedRecordRuntime:
             f"skipped {len(skipped_records)}",
         )
 
+        if self._is_fnv_quest_slice() and (
+            records_failed != 0 or skipped_records or psc_files_skipped != 0
+        ):
+            raise RuntimeError(
+                "strict FNV quest slice produced incomplete accounting: "
+                f"records_failed={records_failed} "
+                f"skipped_records={len(skipped_records)} "
+                f"psc_files_skipped={psc_files_skipped}"
+            )
+
+        manifest = self._fnv_generated_psc_manifest(result_dict)
+        compile_evidence = self._compile_fnv_generated_psc_manifest(
+            manifest=manifest,
+            psc_files_written=psc_files_written,
+            ctx=ctx,
+            runner=runner,
+        )
+        if rust_run is not None:
+            from bacup_lib.native_runtime import load_native_module as _conv_native
+
+            reconciliation = (
+                _conv_native().conversion_run_fnv_reconcile_compiled_scripts(
+                    rust_run.id,
+                    compile_evidence,
+                )
+            )
+            required_fragments = int(
+                reconciliation.get("fragment_bindings_expected", -1)
+            )
+            attached_fragments = int(
+                reconciliation.get("fragment_bindings_attached", 0)
+            )
+            if self._is_fnv_quest_slice() and attached_fragments != required_fragments:
+                raise RuntimeError(
+                    "required FNV fragment VMAD reconciliation failed: "
+                    f"expected={required_fragments} attached={attached_fragments}"
+                )
+            runner.emit_log(
+                "INFO",
+                "[FNV Scripts] reconciled compiled scripts before plugin save: "
+                f"standalone={int(reconciliation.get('intents_built', 0))} "
+                f"fragments={attached_fragments}",
+            )
+
+        voice_manifest = result_dict.get("voice_manifest") or {
+            "version": 1,
+            "entries": [],
+        }
+        voice_entries = voice_manifest.get("entries", [])
+        if voice_entries:
+            from bacup_lib.fnv_voice import (
+                process_voice_manifest,
+                write_voice_processing_report,
+            )
+            from creation_lib.paths import get_resource_dir
+
+            report_root = Path(getattr(ctx, "diagnostics_root", None) or ctx.mod_path)
+            manifest_path = report_root / "fnv_voice_manifest.json"
+            manifest_path.write_text(
+                json.dumps(voice_manifest, indent=2) + "\n", encoding="utf-8"
+            )
+            source_data_value = (
+                getattr(ctx, "source_data_dir", None) or self._req.source_data_dir
+            )
+            if not source_data_value:
+                raise RuntimeError(
+                    "FNV voice manifest has entries but no source data directory"
+                )
+            source_data_roots = [Path(source_data_value)]
+            source_data_roots.extend(
+                Path(root)
+                for root in (
+                    getattr(ctx, "additional_source_asset_roots", ())
+                    or getattr(self._req, "additional_source_asset_roots", ())
+                    or ()
+                )
+            )
+            source_data_roots = list(dict.fromkeys(source_data_roots))
+            voice_results = process_voice_manifest(
+                manifest_path,
+                source_roots={
+                    "fnv-base": tuple(source_data_roots),
+                    "fo3-base": tuple(source_data_roots),
+                },
+                output_mod_dir=Path(ctx.mod_path),
+                target_plugin=str(getattr(ctx, "output_plugin_name", "") or ""),
+                resource_dir=get_resource_dir(),
+                strict=self._is_fnv_quest_slice(),
+                workers=int(
+                    getattr(ctx, "conversion_workers", None)
+                    or getattr(self._req.options, "conversion_workers", 1)
+                    or 1
+                ),
+            )
+            voice_report = report_root / "fnv_voice_processing_report.json"
+            write_voice_processing_report(voice_results, voice_report)
+            voice_failures = [
+                result
+                for result in voice_results
+                if result.status not in {"written", "already_exists"}
+            ]
+            if self._is_fnv_quest_slice() and voice_failures:
+                details = "; ".join(
+                    f"{result.info_form_id}:{result.response_index}={result.status}"
+                    for result in voice_failures[:10]
+                )
+                raise RuntimeError(f"required FNV voice processing failed: {details}")
 
     def _run_fnv_legacy_phase_from_rust_run(
         self,
@@ -5756,13 +9079,11 @@ class _UnifiedRecordRuntime:
             source_plugin.name,
             mod_path_str,
         )
-        self._apply_fnv_legacy_result_dict(result_dict, ctx, runner)
+        self._apply_fnv_legacy_result_dict(result_dict, ctx, runner, rust_run)
 
     @staticmethod
-
     def _params_for_convert_creatures(ctx: ConversionContext) -> dict | None:
         return {"target_creature_archetype": ""}
-
 
     def _run_convert_creatures_phase(
         self,
@@ -5805,7 +9126,6 @@ class _UnifiedRecordRuntime:
         )
 
     @staticmethod
-
     def _params_for_convert_equipment(ctx: ConversionContext) -> dict | None:
         mod_prefix = ctx.mod_path.name if getattr(ctx, "mod_path", None) else ""
         if not mod_prefix:
@@ -5814,7 +9134,6 @@ class _UnifiedRecordRuntime:
             "addon_index_start": 20000,
             "mod_prefix": mod_prefix,
         }
-
 
     def _run_convert_equipment_phase(
         self,
@@ -5856,7 +9175,6 @@ class _UnifiedRecordRuntime:
             f"warnings={report.get('warnings', 0)}, elapsed_ms={report.get('elapsed_ms', 0)}",
         )
 
-
     def _run_convert_face_phase(
         self,
         ctx: "ConversionContext",
@@ -5873,6 +9191,8 @@ class _UnifiedRecordRuntime:
         source_extracted = str(
             getattr(ctx, "source_extracted_dir", None)
             or getattr(ctx, "extracted_dir", None)
+            or getattr(ctx, "source_data_dir", None)
+            or self._req.source_data_dir
             or ""
         )
         target_extracted = str(self._req.target_extracted_dir or "")
@@ -5888,6 +9208,18 @@ class _UnifiedRecordRuntime:
                     "Meshes/Actors/Character/CharacterAssets/BaseFemaleHead.nif",
                     "Meshes/Actors/Character/CharacterAssets/FaceParts/FemaleHead.nif",
                 ),
+                "ghoul_male": (
+                    "Meshes/Actors/Character/CharacterAssets/MaleGhoulHead.nif",
+                ),
+                "ghoul_female": (
+                    "Meshes/Actors/Character/CharacterAssets/FemaleGhoulHead.nif",
+                ),
+                "child_male": (
+                    "Meshes/Actors/Character/CharacterAssets/ChildMaleHead.nif",
+                ),
+                "child_female": (
+                    "Meshes/Actors/Character/CharacterAssets/ChildFemaleHead.nif",
+                ),
             }
             bones_candidates = {
                 "male": (
@@ -5896,14 +9228,19 @@ class _UnifiedRecordRuntime:
                 "female": (
                     "Meshes/Actors/Character/CharacterAssets/BaseFemaleHead_faceBones.nif",
                 ),
+                "ghoul_male": (
+                    "Meshes/Actors/Character/CharacterAssets/MaleGhoulHead_faceBones.nif",
+                ),
+                "ghoul_female": (
+                    "Meshes/Actors/Character/CharacterAssets/FemaleGhoulHead_faceBones.nif",
+                ),
             }
             for sex, candidates in head_candidates.items():
                 for candidate in candidates:
                     if not target_asset_store.has_asset(candidate):
                         continue
                     head = target_asset_store.materialize(candidate)
-                    tri = target_asset_store.materialize(str(Path(candidate).with_suffix(".tri")))
-                    if head is not None and tri is not None:
+                    if head is not None:
                         target_face_params[f"target_base_head_{sex}"] = str(head)
                         break
             for sex, candidates in bones_candidates.items():
@@ -5935,11 +9272,35 @@ class _UnifiedRecordRuntime:
                 "uv_lut_path_female": str(
                     _face_res / "fnv_to_fo4_facetint_uv_lut_female.npz"
                 ),
+                "correspondence_path_ghoul_male": str(
+                    _face_res / "fnv_to_fo4_correspondence_ghoul_male.npz"
+                ),
+                "correspondence_path_ghoul_female": str(
+                    _face_res / "fnv_to_fo4_correspondence_ghoul_female.npz"
+                ),
+                "uv_lut_path_ghoul_male": str(
+                    _face_res / "fnv_to_fo4_facetint_uv_lut_ghoul_male.npz"
+                ),
+                "uv_lut_path_ghoul_female": str(
+                    _face_res / "fnv_to_fo4_facetint_uv_lut_ghoul_female.npz"
+                ),
+                "correspondence_path_child_male": str(
+                    _face_res / "fnv_to_fo4_correspondence_child_male.npz"
+                ),
+                "correspondence_path_child_female": str(
+                    _face_res / "fnv_to_fo4_correspondence_child_female.npz"
+                ),
+                "uv_lut_path_child_male": str(
+                    _face_res / "fnv_to_fo4_facetint_uv_lut_child_male.npz"
+                ),
+                "uv_lut_path_child_female": str(
+                    _face_res / "fnv_to_fo4_facetint_uv_lut_child_female.npz"
+                ),
                 "output_plugin_name": output_plugin_name,
+                "translation_maps_dir": str(native_translation_maps_dir()),
                 **target_face_params,
             },
         )
-
 
     def _run_phase(
         self,
@@ -5994,7 +9355,6 @@ class _UnifiedRecordRuntime:
             if phase_error is not None and raise_on_error:
                 raise phase_error
 
-
     def _update_registry(self, ctx: ConversionContext) -> None:
         if (
             not ctx.summary.esp_built
@@ -6004,7 +9364,6 @@ class _UnifiedRecordRuntime:
         mappings = getattr(ctx.formkey_mapper, "mappings", {}) or {}
         for source_fk, mapping in mappings.items():
             self._registry.resolutions[source_fk] = mapping.get("new_formkey")
-
 
     def _apply_registry_mappings(self, ctx: ConversionContext) -> None:
         rust_run = getattr(ctx, "_rust_conversion_run", None)
@@ -6024,7 +9383,6 @@ class _UnifiedRecordRuntime:
             mod_path=str(ctx.mod_path),
             params=mappings,
         )
-
 
     def _emit_projected_navmeshes(
         self,
@@ -6060,7 +9418,6 @@ class _UnifiedRecordRuntime:
         )
         progress.total_items = max(records_added + records_dropped + warnings, 1)
         progress.completed_items = progress.total_items
-
 
     def _graft_terrain_navmesh(
         self,
@@ -6099,7 +9456,6 @@ class _UnifiedRecordRuntime:
         progress.total_items = max(records_added + records_dropped + warnings, 1)
         progress.completed_items = progress.total_items
 
-
     def _convert_interior_cells(
         self,
         ctx: ConversionContext,
@@ -6135,7 +9491,6 @@ class _UnifiedRecordRuntime:
         )
         progress.total_items = max(records_added + records_dropped + warnings, 1)
         progress.completed_items = progress.total_items
-
 
     def _rebuild_projected_navi(
         self,
@@ -6216,7 +9571,6 @@ class _UnifiedRecordRuntime:
         progress.total_items = max(records_added + records_dropped + warnings, 1)
         progress.completed_items = progress.total_items
 
-
     def _merge_summary(self, plugin_summary: ConversionSummary) -> None:
         aggregate = self._aggregate_summary
         for field_name, value in vars(plugin_summary).items():
@@ -6226,7 +9580,6 @@ class _UnifiedRecordRuntime:
                 setattr(aggregate, field_name, getattr(aggregate, field_name) + value)
             elif isinstance(value, list):
                 getattr(aggregate, field_name).extend(value)
-
 
     def _merge_run_result(self, ctx: ConversionContext) -> None:
         decisions = list(getattr(ctx, "conversion_decisions", []) or [])
@@ -6265,7 +9618,6 @@ class _UnifiedRecordRuntime:
         )
 
     @staticmethod
-
     def _count_v2_skips(
         ctx: ConversionContext,
         decisions: list[object],
@@ -6289,7 +9641,6 @@ class _UnifiedRecordRuntime:
         return dict(counts)
 
     @staticmethod
-
     def _translated_counts(
         ctx: ConversionContext,
     ) -> dict[str, int]:
@@ -6306,24 +9657,48 @@ class _UnifiedRecordRuntime:
         }
 
     @staticmethod
-
     def _failed_paths(log_lines: list[str], label: str) -> list[str]:
         failed: list[str] = []
-        not_found_prefixes = (f"[WARN] {label} not found: ", f"[ERROR] {label} not found: ")
+        not_found_prefixes = (
+            f"[WARN] {label} not found: ",
+            f"[ERROR] {label} not found: ",
+        )
         failed_prefix = f"[ERROR] {label} failed: "
         for line in log_lines:
             matched = next((p for p in not_found_prefixes if line.startswith(p)), None)
             if matched is not None:
-                failed.append(line.removeprefix(matched))
+                failed.append(
+                    _path_through_extension(
+                        line.removeprefix(matched),
+                        ".nif" if label == "NIF" else ".dds",
+                    )
+                )
             elif line.startswith(failed_prefix):
                 failed.append(_path_before_error(line.removeprefix(failed_prefix)))
+            elif label == "NIF" and line.startswith("[ERROR] convert_nifs failed "):
+                failed.append(
+                    _path_through_extension(
+                        line.removeprefix("[ERROR] convert_nifs failed "), ".nif"
+                    )
+                )
+            elif label == "Texture":
+                for prefix in (
+                    "[ERROR] texture task failed ",
+                    "[ERROR] texture job failed ",
+                    "[ERROR] texture group failed ",
+                ):
+                    if line.startswith(prefix):
+                        failed.append(line.removeprefix(prefix))
+                        break
         return failed
 
     @staticmethod
-
     def _failed_material_paths(log_lines: list[str]) -> list[str]:
         failed: list[str] = []
-        not_found_prefixes = ("[WARN] Material not found: ", "[ERROR] Material not found: ")
+        not_found_prefixes = (
+            "[WARN] Material not found: ",
+            "[ERROR] Material not found: ",
+        )
         for line in log_lines:
             matched = next((p for p in not_found_prefixes if line.startswith(p)), None)
             if matched is not None:
@@ -6339,13 +9714,11 @@ class _UnifiedRecordRuntime:
         return failed
 
     @staticmethod
-
     def _merge_counts(target: dict[str, int], counts: dict[str, int]) -> None:
         for key, count in counts.items():
             target[key] = target.get(key, 0) + count
 
     @staticmethod
-
     def _extend_unique(target: list[str], paths: list[str]) -> None:
         seen = set(target)
         for path in paths:
@@ -6355,11 +9728,8 @@ class _UnifiedRecordRuntime:
             seen.add(path)
 
     @staticmethod
-
     def _plugin_name(source_plugin: Path) -> str:
         return source_plugin.name
-
-
 
 
 @dataclass
@@ -6398,8 +9768,10 @@ def _preflight_legacy_packs(
     config = {
         "output_plugin_name": source_plugin.name,
         "is_whole_plugin": True,
-        "legacy_pack_origins": [
-            row.to_dict() for row in request.legacy_pack_origins
+        "legacy_pack_origins": [row.to_dict() for row in request.legacy_pack_origins],
+        "legacy_runtime_origins": [
+            dict(row)
+            for row in getattr(request, "legacy_runtime_origins", ()) or ()
         ],
         "legacy_pack_raw_source_counts": (
             request.legacy_pack_raw_source_counts.to_dict()
@@ -6412,6 +9784,7 @@ def _preflight_legacy_packs(
             else None
         ),
         "legacy_pack_provenance_required": request.legacy_pack_provenance_required,
+        "fnv_quest_slice": bool(request.options.fnv_quest_slice),
         "skip_record_signatures": _skip_record_signatures_payload(
             convert_placed_records=request.options.convert_placed_records,
             exclude_signatures=request.options.exclude_signatures,
@@ -6446,6 +9819,7 @@ class UnifiedDriver:
     Record conversion runs through _UnifiedRecordRuntime; asset phases run in
     concurrent pipeline waves.
     """
+
     def __init__(
         self,
         request: PluginPortRequest,
@@ -6485,7 +9859,9 @@ class UnifiedDriver:
         return self._record_runtime
 
     def emit_complete(self, runner: "ConversionRunner") -> None:
-        runner.emit_complete(str(self._req.output_root), self._record_runtime._aggregate_summary)
+        runner.emit_complete(
+            str(self._req.output_root), self._record_runtime._aggregate_summary
+        )
 
     def _record_phase(self, phase_no, label, body, runner, **kwargs) -> None:
         """Delegates to _UnifiedRecordRuntime._run_phase, tracking the live
@@ -6591,7 +9967,126 @@ class UnifiedDriver:
                     f"({started_plugins}/{plugin_count} plugin(s) started)",
                 )
 
-    def _convert_record_track(self, source_plugin: Path, runner: "ConversionRunner") -> None:
+    def _run_fo4_starfield_record_tail(
+        self,
+        ctx: ConversionContext,
+        orch: "_UnifiedRecordRuntime",
+        runner: "ConversionRunner",
+        opts,
+        phase_offset: int,
+    ) -> int:
+        """The fo4:starfield record track between translate and build_esp.
+
+        Order is load-bearing:
+
+        * ``terrain_btd_write`` resolves the BTD's LTEX palette through the
+          run's ``mapper_state``.
+        * ``starfield_cells`` translates the ``CELL``/``REFR`` records
+          ``fo4_to_starfield.yaml`` skip-lists (parentage is group topology,
+          not a subrecord) and nests them under the ``WRLD`` / interior block
+          trees. It resolves placed-ref bases and both XTEL endpoints through
+          ``mapper_state`` and must precede ``audio_rewire``, which patches the
+          CELL records it creates. It follows ``terrain_btd_write`` only so the
+          asset track's A3 terrain gate is released before this long walk; the
+          two have no data dependency.
+        * ``wwise_audio`` allocates FormKeys for the ``WWED`` records it
+          synthesizes through ``mapper_state`` (its ``__synth_wwise_audio__``
+          symbol) and hard-errors when it is None.
+        * ``audio_rewire`` joins on ``wwise_audio``'s
+          ``debug/wwise/events_manifest.json`` and resolves each row's FO4
+          FormKey through the mapper. Its REGN->``CELL.XCMO`` compensation and
+          placeholder ``XCMO``/``XCAS`` rewire walk the CELL records
+          ``starfield_cells`` creates.
+
+        All four run after ``translate`` (which seeds ``mapper_state``) and
+        before the master handles are released. Returns the number of phase
+        slots consumed, for the caller's phase numbering.
+        """
+        rust_run = getattr(ctx, "_rust_conversion_run", None)
+        if rust_run is None:
+            runner.emit_log("WARN", "fo4:starfield record tail: no rust run; skipping")
+            self._mark_terrain_done()
+            return 0
+
+        mod_path = str(ctx.mod_path)
+        source_extracted = str(
+            getattr(ctx, "source_data_dir", None) or self._req.source_data_dir or ""
+        )
+        used = 0
+
+        if opts.convert_terrain:
+            worldspace = (
+                getattr(opts.terrain, "worldspace_editor_id", "")
+                or FO4_STARFIELD_MVP_WORLDSPACE
+            )
+            btd_params: dict = {"worldspace_editor_id": worldspace}
+            extent_cells = getattr(opts.terrain, "extent_cells", None)
+            if extent_cells:
+                btd_params["terrain_extent_cells"] = int(extent_cells)
+            self._record_phase(
+                3 + phase_offset + used,
+                "Write Starfield BTD Terrain",
+                lambda p, _p=btd_params: rust_run.run_phase(
+                    "terrain_btd_write", mod_path=mod_path, params=_p
+                ),
+                runner,
+                timing_ctx=ctx,
+            )
+            used += 1
+        # The asset track's A3 gate waits on this; release it whether or not a
+        # BTD was written so the asset waves never deadlock.
+        self._mark_terrain_done()
+
+        self._record_phase(
+            3 + phase_offset + used,
+            "Emit Starfield Cells + Placed Refs",
+            lambda p: rust_run.run_phase(
+                "starfield_cells", mod_path=mod_path, params={}
+            ),
+            runner,
+            timing_ctx=ctx,
+        )
+        used += 1
+
+        placeholder_audio = bool(getattr(opts, "placeholder_audio", False))
+        wwise_params: dict = {"placeholder_audio": placeholder_audio}
+        if not placeholder_audio:
+            tools = _fo4_starfield_wwise_tools(ctx)
+            if tools is None:
+                raise RuntimeError(
+                    "fo4:starfield real-audio mode needs the Wwise 2021.1.x toolchain: "
+                    "set WWISEROOT (and FFMPEG_EXE / XWMAENCODE_EXE if they are not "
+                    "beside it), or re-run with --placeholder-audio"
+                )
+            wwise_params["tools"] = tools
+        self._record_phase(
+            3 + phase_offset + used,
+            "Wwise Audio"
+            + (" (placeholder)" if placeholder_audio else " (bank build)"),
+            lambda p, _p=wwise_params, _se=source_extracted: rust_run.run_phase(
+                "wwise_audio",
+                mod_path=mod_path,
+                source_extracted_dir=_se,
+                params=_p,
+            ),
+            runner,
+            timing_ctx=ctx,
+        )
+        used += 1
+
+        self._record_phase(
+            3 + phase_offset + used,
+            "Audio Rewire",
+            lambda p: rust_run.run_phase("audio_rewire", mod_path=mod_path, params={}),
+            runner,
+            timing_ctx=ctx,
+        )
+        used += 1
+        return used
+
+    def _convert_record_track(
+        self, source_plugin: Path, runner: "ConversionRunner"
+    ) -> None:
         """Convert records for the unified FO76 whole-plugin run."""
         orch = self._record_runtime
         opts = self._req.options
@@ -6615,6 +10110,10 @@ class UnifiedDriver:
 
             ctx = orch._build_context(source_plugin, plugin_name, mod_path, runner)
             self.ctx = ctx
+            ctx.mvp_creature_corpus_policy = orch._active_mvp_creature_corpus_policy()
+            ctx.mvp_creature_profile = orch._active_mvp_creature_profile()
+            ctx.mvp_melee_policy = orch._active_mvp_melee_policy()
+            ctx.mvp_record_exceptions = orch._active_mvp_record_exceptions()
             _memory_mark(ctx, "after:masters_open")
             for missing_master in getattr(
                 ctx, "target_record_preflight_missing_masters", []
@@ -6648,9 +10147,7 @@ class UnifiedDriver:
                 ctx, "setup", setup_started, plugin=plugin_name, mod_path=mod_path
             )
             if opts.cell_bounds is not None:
-                raise ValueError(
-                    "cell-bounds runs are not supported in unified driver"
-                )
+                raise ValueError("cell-bounds runs are not supported in unified driver")
 
             phase_offset = 0
             # No persistent Python source handle: the native ConversionRun owns
@@ -6678,12 +10175,21 @@ class UnifiedDriver:
                 count=len(assets),
             )
             _memory_mark(ctx, "after:collect_assets")
+            asset_transition_started = time.perf_counter()
             ctx.assets = assets
             ctx.shared_asset_conversion_enabled = bool(
                 opts.convert_nifs or opts.convert_textures or opts.convert_materials
             )
             self.assets = assets
             self.signals.assets_ready.set()
+            _record_timing(
+                ctx,
+                "unified_asset_handoff",
+                asset_transition_started,
+                scope="detail",
+                parent="record_track",
+                assets=len(assets),
+            )
 
             if opts.convert_terrain and opts.reuse_terrain_navmesh:
                 ctx._terrain_graft_source = _terrain_graft_source(opts, mod_path)
@@ -6699,7 +10205,15 @@ class UnifiedDriver:
                     raise_on_error=True,
                 )
                 _memory_mark(ctx, "after:translate")
+                registry_apply_started = time.perf_counter()
                 orch._apply_registry_mappings(ctx)
+                _record_timing(
+                    ctx,
+                    "unified_registry_mappings_apply",
+                    registry_apply_started,
+                    scope="detail",
+                    parent="record_track",
+                )
                 if orch._run_optional_fnv_legacy_phase(ctx, source_plugin, runner):
                     phase_offset = 1
                 orch._run_convert_creatures_phase(ctx, runner)
@@ -6712,6 +10226,17 @@ class UnifiedDriver:
                 self.record_run_id = rust_run.id
                 if self.sink_id is not None:
                     load_native_module().sinks_attach_run(rust_run.id, self.sink_id)
+                mvp_creature_profile = _exact_mvp_creature_profile(ctx)
+                if mvp_creature_profile is not None:
+                    rust_run.run_phase(
+                        "emit_mvp_creature",
+                        mod_path=str(ctx.mod_path),
+                        params={
+                            "profile": mvp_creature_profile,
+                            "register_only": True,
+                        },
+                    )
+                orch._run_mvp_creature_corpus_execution(rust_run, ctx, runner)
 
             # addon_index_map harvest happened inside _translate_records_rust
             # emit record-run warnings inline.
@@ -6719,7 +10244,11 @@ class UnifiedDriver:
             self.signals.fixups_done.set()
 
             post_terrain_phase_offset = 0
-            if opts.convert_terrain:
+            if _is_fo4_starfield(ctx):
+                post_terrain_phase_offset = self._run_fo4_starfield_record_tail(
+                    ctx, orch, runner, opts, phase_offset
+                )
+            elif opts.convert_terrain:
                 if opts.reuse_terrain_navmesh:
                     # Graft LAND/NAVM + terrain-texture records from a prior FO4
                     # output instead of regenerating them; replaces both Convert
@@ -6744,6 +10273,7 @@ class UnifiedDriver:
                         lambda p: pipeline.convert_terrain(ctx, runner, p),
                         runner,
                         timing_ctx=ctx,
+                        raise_on_error=True,
                     )
                 # Cross-run transfer for wave A3 + the sidecar registry.
                 self._harvest_terrain_products(mod_path, runner)
@@ -6910,7 +10440,9 @@ class UnifiedDriver:
                             mod_path=str(ctx.mod_path),
                             source_extracted_dir=_se,
                             params={
-                                "conversion_workers": getattr(ctx, "conversion_workers", None),
+                                "conversion_workers": getattr(
+                                    ctx, "conversion_workers", None
+                                ),
                             },
                         ),
                         runner,
@@ -6968,6 +10500,16 @@ class UnifiedDriver:
                     _memory_mark(ctx, "after:convert_scripts")
                     next_phase_no += 1
 
+                if self._req.source_game == "fo76" and self._req.target_game == "fo4":
+                    self._record_phase(
+                        next_phase_no,
+                        "Inventory Quest Runtime Routes",
+                        lambda p: orch._run_quest_runtime_inventory_phase(ctx, runner),
+                        runner,
+                        timing_ctx=ctx,
+                    )
+                    next_phase_no += 1
+
                 def _build_esp_phase(_progress) -> None:
                     if rust_run is None:
                         raise RuntimeError("build_esp: no rust run; cannot save ESP")
@@ -6997,18 +10539,61 @@ class UnifiedDriver:
                 _memory_mark(ctx, "after:build_esp")
                 next_phase_no += 1
                 if rust_run is not None:
+                    handle_cleanup_started = time.perf_counter()
                     rust_run.release_source_handle()
+                    _record_timing(
+                        ctx,
+                        "unified_source_handle_release",
+                        handle_cleanup_started,
+                        scope="detail",
+                        parent="record_track_cleanup",
+                    )
+                drain_started = time.perf_counter()
                 orch._drain_and_drop_rust_run(ctx)
+                _record_timing(
+                    ctx,
+                    "unified_record_run_drain_drop",
+                    drain_started,
+                    scope="detail",
+                    parent="record_track_cleanup",
+                )
                 # worldspace patch + source-close guard
                 if plugin_error is None:
+                    worldspace_patch_started = time.perf_counter()
                     orch._patch_projected_worldspace_subrecords(
                         ctx, runner, source_plugin
                     )
                     ctx._worldspace_patched = True
+                    _record_timing(
+                        ctx,
+                        "unified_worldspace_final_patch",
+                        worldspace_patch_started,
+                        scope="detail",
+                        parent="record_track_cleanup",
+                    )
                 if not getattr(ctx, "_source_closed", False):
+                    source_close_started = time.perf_counter()
                     orch._close_source_handle(ctx)
                     ctx._source_closed = True
                     _memory_mark(ctx, "after:early_source_close")
+                    _record_timing(
+                        ctx,
+                        "unified_source_handle_close",
+                        source_close_started,
+                        scope="detail",
+                        parent="record_track_cleanup",
+                    )
+
+                if self._req.target_game == "fo4":
+                    self._record_phase(
+                        next_phase_no,
+                        "Check Runtime Hazards",
+                        lambda p: orch._check_output_runtime_hazards(ctx, runner),
+                        runner,
+                        timing_ctx=ctx,
+                        raise_on_error=True,
+                    )
+                    next_phase_no += 1
 
             # validate_output reads the on-disk
             # ESM only; independent of the asset waves).
@@ -7029,9 +10614,33 @@ class UnifiedDriver:
                         "validate_output requested but build_esp is disabled; skipping validation",
                     )
 
+            registry_update_started = time.perf_counter()
             orch._update_registry(ctx)
+            _record_timing(
+                ctx,
+                "unified_registry_update",
+                registry_update_started,
+                scope="detail",
+                parent="record_track_finalize",
+            )
+            summary_merge_started = time.perf_counter()
             orch._merge_summary(ctx.summary)
+            _record_timing(
+                ctx,
+                "unified_summary_merge",
+                summary_merge_started,
+                scope="detail",
+                parent="record_track_finalize",
+            )
+            result_merge_started = time.perf_counter()
             orch._merge_run_result(ctx)
+            _record_timing(
+                ctx,
+                "unified_result_merge",
+                result_merge_started,
+                scope="detail",
+                parent="record_track_finalize",
+            )
         except Exception as exc:
             plugin_error = exc
             raise
@@ -7040,7 +10649,15 @@ class UnifiedDriver:
             # the asset waves' runs — drop it here.
             try:
                 if ctx is not None:
+                    final_drain_started = time.perf_counter()
                     orch._drain_and_drop_rust_run(ctx)
+                    _record_timing(
+                        ctx,
+                        "unified_final_drain_drop",
+                        final_drain_started,
+                        scope="detail",
+                        parent="record_track_finally",
+                    )
             finally:
                 try:
                     if (
@@ -7048,20 +10665,44 @@ class UnifiedDriver:
                         and plugin_error is None
                         and not getattr(ctx, "_worldspace_patched", False)
                     ):
+                        final_worldspace_started = time.perf_counter()
                         orch._patch_projected_worldspace_subrecords(
                             ctx, runner, source_plugin
+                        )
+                        _record_timing(
+                            ctx,
+                            "unified_final_worldspace_patch",
+                            final_worldspace_started,
+                            scope="detail",
+                            parent="record_track_finally",
                         )
                 finally:
                     try:
                         if ctx is not None and not getattr(
                             ctx, "_source_closed", False
                         ):
+                            final_source_close_started = time.perf_counter()
                             orch._close_source_handle(ctx)
                             _memory_mark(ctx, "after:source_close")
+                            _record_timing(
+                                ctx,
+                                "unified_final_source_close",
+                                final_source_close_started,
+                                scope="detail",
+                                parent="record_track_finally",
+                            )
                     finally:
                         if ctx is not None:
+                            final_masters_close_started = time.perf_counter()
                             orch._close_target_master_handles(ctx)
                             _memory_mark(ctx, "after:masters_close")
+                            _record_timing(
+                                ctx,
+                                "unified_final_master_handles_close",
+                                final_masters_close_started,
+                                scope="detail",
+                                parent="record_track_finally",
+                            )
             elapsed = _format_elapsed_seconds(_elapsed_seconds(plugin_started))
             if plugin_error is not None:
                 runner.emit_log("ERROR", f"{plugin_name} failed after {elapsed}")
@@ -7146,11 +10787,29 @@ class _AssetWavePlan:
     # FO76 runs enumerate the whole extracted tree; legacy sources have no
     # extracted tree to walk and convert the referenced set instead.
     textures_from_graph: bool = False
+    # fo4:starfield replaces the whole FO4-target asset track with the three
+    # Starfield writers; the `*_phase` names above are then unused.
+    starfield_target: bool = False
 
 
-def _wave_plan_for(source_game: str) -> _AssetWavePlan:
+def _wave_plan_for(source_game: str, target_game: str = "fo4") -> _AssetWavePlan:
     from creation_lib.core.game_profiles import get_profile
 
+    if target_game.lower() == "starfield":
+        # FO4 -> Starfield: `starfield_meshes` (A2) then `starfield_materials`
+        # + `starfield_textures` (A3). None of the FO4-target phases apply —
+        # different mesh container, different material format, different
+        # texture channel layout.
+        return _AssetWavePlan(
+            nif_phase="starfield_meshes",
+            bto_phase=None,
+            texture_phase="starfield_textures",
+            material_phase="starfield_materials",
+            grass_topup=False,
+            wave_a4=False,
+            textures_from_graph=True,
+            starfield_target=True,
+        )
     if source_game.lower() == "skyrimse":
         return _AssetWavePlan(
             nif_phase="convert_nifs_v2",
@@ -7171,7 +10830,223 @@ def _wave_plan_for(source_game: str) -> _AssetWavePlan:
             wave_a4=False,
             textures_from_graph=True,
         )
+    if get_profile(source_game).engine == "creation2":
+        # No FO76-shaped .bto LOD format; hybrid collision + material
+        # conversion are handled inside the NIF converter and
+        # convert_materials_v2 (cdb_to_bgsm), so wave A4's Havok
+        # behavior/animation/skeleton/facegen stages have nothing to do.
+        return _AssetWavePlan(bto_phase=None, wave_a4=False)
     return _AssetWavePlan()
+
+
+def _has_havok_postprocess(ctx, opts) -> bool:
+    return (
+        bool(opts.convert_havok)
+        and _wave_plan_for(str(ctx.source_game), str(ctx.target_game)).wave_a4
+        and getattr(ctx, "mvp_creature_corpus_policy", None) is None
+        and _exact_mvp_creature_profile(ctx) is None
+    )
+
+
+#: The one FO4 worldspace the fo4:starfield MVP ports. Used when
+#: `TerrainOptions.worldspace_editor_id` is left unset.
+FO4_STARFIELD_MVP_WORLDSPACE = "Commonwealth"
+
+
+def _is_fo4_starfield(ctx) -> bool:
+    """True for the FO4 -> Starfield pair.
+
+    This pair inverts the repo's usual "everything targets FO4" assumption: its
+    record tail, asset waves, and packaging are Starfield-shaped and share no
+    branches with the FO4-target phases; this predicate is the whole gate.
+    """
+    return (
+        str(getattr(ctx, "source_game", "")).lower() == "fo4"
+        and str(getattr(ctx, "target_game", "")).lower() == "starfield"
+    )
+
+
+def _fo4_starfield_wwise_tools(ctx) -> dict | None:
+    """Build `wwise_audio`'s `tools` params from the local Wwise install.
+
+    Returns None when `WWISEROOT` is unset — the caller turns that into an
+    actionable error pointing at `--placeholder-audio` (the 2021.1.x authoring
+    install is licence-gated and can never exist in CI).
+    """
+    wwise_root = os.environ.get("WWISEROOT", "").strip()
+    if not wwise_root:
+        return None
+    bin_dir = Path(wwise_root) / "Authoring" / "x64" / "Release" / "bin"
+    ffmpeg = os.environ.get("FFMPEG_EXE", "").strip() or "ffmpeg"
+    xwmaencode = os.environ.get("XWMAENCODE_EXE", "").strip() or "xwmaencode.exe"
+    # The Wwise project Bethesda ships with Starfield's tools drop.
+    target_data = getattr(ctx, "target_data_dir", None)
+    project_src = (
+        str(Path(target_data).parent / "Tools" / "wwise" / "Starfield")
+        if target_data
+        else ""
+    )
+    return {
+        "xwm_decode_cmd": [xwmaencode, "{in}", "{out}"],
+        "ffmpeg_cmd": [
+            ffmpeg,
+            "-y",
+            "-i",
+            "{in}",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "{out}",
+        ],
+        "wwise_console": str(bin_dir / "WwiseConsole.exe"),
+        "copy_streamed_files": str(bin_dir / "CopyStreamedFiles.exe"),
+        "wwise_project_src": project_src,
+    }
+
+
+def _strip_leading_dir(rel: str, folder: str) -> str:
+    """`meshes/a/b.nif` -> `a/b.nif` (case-insensitive, `\\` tolerated)."""
+    normalized = str(rel).replace("\\", "/").lstrip("/")
+    prefix = f"{folder}/"
+    if normalized[: len(prefix)].casefold() == prefix:
+        return normalized[len(prefix) :]
+    return normalized
+
+
+def starfield_mesh_entries(nif_assets) -> list[dict]:
+    """`starfield_meshes` `nifs` rows.
+
+    `nif_rel` is relative to the mod's `data/meshes/` (the phase joins it under
+    `meshes/` itself), so the graph's `meshes/` prefix comes off here.
+    """
+    return [
+        {
+            "nif_rel": _strip_leading_dir(asset.source_path, "meshes"),
+            "resolved_path": asset.resolved_path or "",
+        }
+        for asset in nif_assets
+    ]
+
+
+def starfield_material_entries(material_assets) -> list[dict]:
+    """`starfield_materials` `materials` rows.
+
+    `bgsm_rel` KEEPS its `materials/` prefix: `mat_out_rel` maps it straight to
+    `<mod>/data/materials/...mat`, and the same string (lowercased,
+    backslashed) is the MaterialID CRC input the mesh writer stamps into each
+    NIF, so stripping the prefix here would desync the two.
+    """
+    return [
+        {
+            "bgsm_rel": str(asset.source_path).replace("\\", "/").lstrip("/"),
+            "resolved_path": asset.resolved_path or "",
+        }
+        for asset in material_assets
+    ]
+
+
+#: FO4 BGSM texture field -> (`starfield_textures` key, FO4 filename suffix).
+#: Mirrors `materials_native::starfield_mat::map_bgsm_to_mat_inputs`, which
+#: derives the `.mat`'s texture paths from exactly these four fields.
+_FO4_STARFIELD_TEXTURE_ROLES: tuple[tuple[str, str, str], ...] = (
+    ("DiffuseTexture", "color", "_d"),
+    ("NormalTexture", "normal", "_n"),
+    ("SmoothSpecTexture", "spec_gloss", "_s"),
+    ("GlowTexture", "emissive", "_g"),
+)
+
+
+def _texture_rel_under_textures(raw: str) -> str:
+    """BGSM texture ref -> path relative to the game's `Textures/` root."""
+    return _strip_leading_dir(str(raw).replace("\x00", "").strip(), "textures")
+
+
+def starfield_texture_sets(
+    material_assets, resolved_textures: dict[str, str]
+) -> tuple[list[dict], list[str]]:
+    """`starfield_textures` `texture_sets` rows, one per FO4 BGSM.
+
+    The set's `output_subdir`/`base_name` come from the BGSM's **diffuse**
+    reference, because that is what `map_bgsm_to_mat_inputs` uses to spell the
+    `.mat`'s `_color`/`_normal`/`_rough`/`_metal` paths. A BGSM whose normal or
+    spec map lives under a different directory or stem is reported: its `.mat`
+    would name a file this phase writes elsewhere.
+
+    `resolved_textures` maps a normalized source path to the asset graph's
+    resolved on-disk path; a miss falls back to the relative path, which the
+    phase resolves against its `source_extracted_dir`.
+    """
+    from creation_lib.material_tools.bgsm_bin import read_bgsm
+
+    sets: list[dict] = []
+    warnings: list[str] = []
+    seen: set[str] = set()
+
+    for asset in material_assets:
+        try:
+            with open(asset.resolved_path, "rb") as handle:
+                material = read_bgsm(handle)
+        except Exception as exc:  # unreadable BGSM: the .mat phase reports it too
+            warnings.append(f"{asset.source_path}: cannot read BGSM ({exc})")
+            continue
+
+        refs: dict[str, str] = {}
+        for field_name, key, suffix in _FO4_STARFIELD_TEXTURE_ROLES:
+            value = getattr(material, field_name, None)
+            if isinstance(value, str) and value.replace("\x00", "").strip():
+                refs[key] = _texture_rel_under_textures(value)
+
+        diffuse = refs.get("color")
+        if not diffuse:
+            warnings.append(
+                f"{asset.source_path}: no DiffuseTexture; no Starfield texture set"
+            )
+            continue
+
+        diffuse_path = PurePosixPath(diffuse)
+        stem = diffuse_path.stem
+        base_name = stem[:-2] if stem[-2:].casefold() == "_d" else stem
+        output_subdir = str(diffuse_path.parent) if diffuse_path.parent.name else ""
+        if output_subdir == ".":
+            output_subdir = ""
+
+        key = f"{output_subdir}/{base_name}".casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        for role, rel in refs.items():
+            if role == "color":
+                continue
+            role_path = PurePosixPath(rel)
+            role_stem = role_path.stem
+            role_base = role_stem[:-2] if role_stem[-2:].startswith("_") else role_stem
+            role_dir = str(role_path.parent) if role_path.parent.name else ""
+            if role_dir == ".":
+                role_dir = ""
+            if role_dir.casefold() != output_subdir.casefold() or (
+                role_base.casefold() != base_name.casefold()
+            ):
+                warnings.append(
+                    f"{asset.source_path}: {role} map {rel} does not share the "
+                    f"diffuse set's directory/stem ({output_subdir}/{base_name}); "
+                    "the .mat will name it under the diffuse set"
+                )
+
+        entry: dict = {
+            "base_name": base_name,
+            "output_subdir": output_subdir,
+            "environment_mapping": bool(getattr(material.header, "env_mapping", False)),
+        }
+        for role, rel in refs.items():
+            source_rel = f"Textures/{rel}"
+            entry[role] = resolved_textures.get(
+                normalize_asset_source_path(source_rel).casefold(), source_rel
+            )
+        sets.append(entry)
+
+    return sets, warnings
 
 
 def _mvp_exclude_signatures(driver: "UnifiedDriver") -> frozenset[str]:
@@ -7181,18 +11056,22 @@ def _mvp_exclude_signatures(driver: "UnifiedDriver") -> frozenset[str]:
         signature.upper()
         for signature in getattr(driver._req.options, "exclude_signatures", ())
     )
+    source_game = str(driver.ctx.source_game).lower()
+    target_game = str(driver.ctx.target_game).lower()
     pair_id = {
-        "fnv": "fnvfo3:fo4",
-        "skyrimse": "skyrimse:fo4",
-    }.get(str(driver.ctx.source_game).lower())
+        ("fnv", "fo4"): "fnvfo3:fo4",
+        ("skyrimse", "fo4"): "skyrimse:fo4",
+        ("starfield", "fo4"): "starfield:fo4",
+    }.get((source_game, target_game))
     expected = MVP_EXCLUDE_SIGNATURES_BY_PAIR.get(pair_id or "", frozenset())
+    if pair_id == "starfield:fo4":
+        return expected
     return expected if expected and expected <= excluded else frozenset()
 
 
 def _is_skyrim_mvp(driver: "UnifiedDriver") -> bool:
-    return (
-        str(driver.ctx.source_game).lower() == "skyrimse"
-        and bool(_mvp_exclude_signatures(driver))
+    return str(driver.ctx.source_game).lower() == "skyrimse" and bool(
+        _mvp_exclude_signatures(driver)
     )
 
 
@@ -7218,9 +11097,7 @@ def _is_skyrim_mvp_audio_path(path: str) -> bool:
     return _is_world_only_mvp_audio_path(path)
 
 
-def _is_skyrim_mvp_loadscreen_asset_path(
-    path: str, asset_type: str = ""
-) -> bool:
+def _is_skyrim_mvp_loadscreen_asset_path(path: str, asset_type: str = "") -> bool:
     normalized_type = str(asset_type).lower()
     parts = [part for part in path.replace("\\", "/").lower().split("/") if part]
     if parts and parts[0] == "data":
@@ -7238,17 +11115,14 @@ def _is_skyrim_mvp_loadscreen_asset_path(
         return False
 
     filename = parts[-1]
-    if (
-        parts[0] in {"materials", "meshes"}
-        and parts[1:3] == ["_byoh", "loadsscreens"]
-    ):
+    if parts[0] in {"materials", "meshes"} and parts[1:3] == ["_byoh", "loadsscreens"]:
         return filename.endswith((".bgsm", ".nif"))
     if parts[:2] == ["textures", "clutter"]:
         return filename.startswith("loadscreen") and filename.endswith(".dds")
     if parts[:3] == ["sound", "fx", "ui"]:
-        return filename.startswith(("loadscreen", "ui_loadscreen")) and filename.endswith(
-            ".wav"
-        )
+        return filename.startswith(
+            ("loadscreen", "ui_loadscreen")
+        ) and filename.endswith(".wav")
     return (
         parts[0] in {"materials", "meshes"}
         and "loadscreenart" in parts[1:]
@@ -7256,9 +11130,7 @@ def _is_skyrim_mvp_loadscreen_asset_path(
     )
 
 
-def _is_skyrim_mvp_loadscreen_mesh_path(
-    path: str, asset_type: str = ""
-) -> bool:
+def _is_skyrim_mvp_loadscreen_mesh_path(path: str, asset_type: str = "") -> bool:
     normalized_type = str(asset_type).lower()
     if normalized_type and normalized_type != "nif":
         return False
@@ -7288,7 +11160,11 @@ def _remove_skyrim_mvp_loadscreen_material_outputs(mod_path: str) -> int:
 def _remove_skyrim_mvp_loadscreen_asset_outputs(mod_path: str) -> int:
     data_root = Path(mod_path) / "data"
     removed = _remove_skyrim_mvp_loadscreen_material_outputs(mod_path)
-    for relative_root in ("Meshes/_BYOH/LoadsScreens", "Sound/FX/UI", "Textures/Clutter"):
+    for relative_root in (
+        "Meshes/_BYOH/LoadsScreens",
+        "Sound/FX/UI",
+        "Textures/Clutter",
+    ):
         root = data_root / relative_root
         if not root.is_dir():
             continue
@@ -7301,7 +11177,11 @@ def _remove_skyrim_mvp_loadscreen_asset_outputs(mod_path: str) -> int:
     return removed
 
 
-def _is_world_only_mvp_asset_path(path: str, asset_type: str = "") -> bool:
+def _is_world_only_mvp_asset_path(
+    path: str,
+    asset_type: str = "",
+    exclude_signatures: frozenset[str] | None = None,
+) -> bool:
     if _is_skyrim_mvp_loadscreen_asset_path(path, asset_type):
         return False
     parts = [part for part in path.replace("\\", "/").lower().split("/") if part]
@@ -7323,28 +11203,79 @@ def _is_world_only_mvp_asset_path(path: str, asset_type: str = "") -> bool:
         if namespace not in {"dlc01", "dlc02", "_byoh", "_shared"}:
             break
         semantic_parts = semantic_parts[1:]
-    return not semantic_parts or semantic_parts[0] not in {
-        "actors",
-        "armor",
-        "characters",
-        "clothes",
-        "creatures",
-        "weapons",
-    }
+    excluded_namespaces = {"actors", "characters", "creatures"}
+    if exclude_signatures is None or {"ARMA", "ARMO"} & exclude_signatures:
+        excluded_namespaces.update({"armor", "clothes"})
+    if exclude_signatures is None or "WEAP" in exclude_signatures:
+        excluded_namespaces.add("weapons")
+    return not semantic_parts or semantic_parts[0] not in excluded_namespaces
 
 
 def _is_world_only_mvp_asset(
-    asset: AssetRef, exclude_signatures: frozenset[str]
+    asset: AssetRef,
+    exclude_signatures: frozenset[str],
+    asset_closure=None,
 ) -> bool:
     from bacup_lib.base_asset_dedupe import asset_owner_signature
 
-    if asset_owner_signature(asset) in exclude_signatures:
+    if asset_closure is not None and asset_closure.allows(asset):
+        return True
+    if not _is_world_only_mvp_asset_path(
+        asset.source_path, asset.asset_type, exclude_signatures
+    ):
         return False
-    return _is_world_only_mvp_asset_path(asset.source_path, asset.asset_type)
+    owner_signature = asset_owner_signature(asset)
+    if owner_signature:
+        return owner_signature not in exclude_signatures
+    return True
+
+
+@dataclass(frozen=True)
+class _MvpAssetClosureSet:
+    closures: tuple[object, ...]
+
+    def allows(self, asset: AssetRef) -> bool:
+        return any(closure.allows(asset) for closure in self.closures)
+
+
+def _mvp_asset_closure_set(driver: "UnifiedDriver", assets: list[AssetRef]):
+    from bacup_lib.creature_mvp_assets import creature_mvp_asset_closure
+
+    weapon_plan = getattr(driver.ctx, "_weapon_mvp_asset_plan", None)
+    if getattr(driver._req.options, "mvp_melee_only", False):
+        if weapon_plan is None:
+            raise RuntimeError(
+                "melee-only asset conversion requires an authoritative weapon receipt plan"
+            )
+        return _MvpAssetClosureSet((weapon_plan,))
+    closures = tuple(
+        closure
+        for closure in (
+            weapon_plan,
+            creature_mvp_asset_closure(_exact_mvp_creature_profile(driver.ctx), assets),
+        )
+        if closure is not None
+    )
+    return _MvpAssetClosureSet(closures) if closures else None
+
+
+def _is_selected_mvp_asset(
+    driver: "UnifiedDriver",
+    asset: AssetRef,
+    exclude_signatures: frozenset[str],
+    asset_closure,
+) -> bool:
+    if getattr(driver._req.options, "mvp_melee_only", False):
+        return asset_closure is not None and asset_closure.allows(asset)
+    return _is_world_only_mvp_asset(asset, exclude_signatures, asset_closure)
 
 
 def _is_skyrim_mvp_world_asset_path(path: str, asset_type: str = "") -> bool:
-    return _is_world_only_mvp_asset_path(path, asset_type)
+    from bacup_lib.source_pairs import SKYRIM_MVP_EXCLUDE_SIGNATURES
+
+    return _is_world_only_mvp_asset_path(
+        path, asset_type, SKYRIM_MVP_EXCLUDE_SIGNATURES
+    )
 
 
 def _is_skyrim_mvp_world_asset(asset: AssetRef) -> bool:
@@ -7380,6 +11311,18 @@ class WaveStage:
         return stage
 
 
+def _sequential_wave_plan(stages: list[WaveStage]) -> list[dict]:
+    plan_stages: list[dict] = []
+    previous_phase: str | None = None
+    for stage in stages:
+        plan_stage = stage.to_plan_stage()
+        if previous_phase is not None and previous_phase not in plan_stage["after"]:
+            plan_stage["after"].append(previous_phase)
+        plan_stages.append(plan_stage)
+        previous_phase = stage.phase
+    return plan_stages
+
+
 class AssetRuns:
     """Per-wave-group native runs: run_T textures+materials, run_N nifs+btos
     sharing the collision memo, run_H havok+drivers, run_S sounds. Stub plugin
@@ -7394,7 +11337,11 @@ class AssetRuns:
     ) -> None:
         from bacup_lib.run import ConversionRun
 
-        def make(needs_relocation: bool):
+        self._ctx = ctx
+        self._source_asset_inventory = getattr(ctx, "source_asset_inventory", None)
+        created_runs = []
+
+        def make(needs_relocation: bool, needs_inventory: bool):
             workers = (
                 int(conversion_workers)
                 if conversion_workers is not None
@@ -7433,21 +11380,59 @@ class AssetRuns:
                 source = getattr(ctx, "source_data_dir", None)
                 config["source_extracted_dir"] = str(source) if source else None
             config["mod_path"] = str(getattr(ctx, "mod_path", "") or "") or None
-            return ConversionRun.create_new(
+            if _exact_mvp_creature_profile(ctx) is not None:
+                config["skip_record_signatures"] = ["WEAP"]
+                config["mvp_record_exceptions"] = list(
+                    getattr(ctx, "mvp_record_exceptions", ()) or ()
+                )
+            run = ConversionRun.create_new(
                 str(ctx.source_game),
                 str(ctx.target_game),
                 None,
                 str(config["output_plugin_name"]),
                 config=config,
             )
+            if needs_inventory and self._source_asset_inventory is not None:
+                try:
+                    self._source_asset_inventory.attach_run(run.id)
+                except BaseException:
+                    run.close()
+                    raise
+            created_runs.append(run)
+            return run
 
-        self.textures = make(True) if (toggles.textures or toggles.materials) else None
-        self.nifs = make(True) if (toggles.nifs or toggles.btos) else None
-        self.havok = make(False) if (toggles.havok or toggles.drivers) else None
-        self.sounds = make(False) if toggles.sounds else None
+        try:
+            self.textures = (
+                make(True, True) if (toggles.textures or toggles.materials) else None
+            )
+            self.nifs = make(True, False) if (toggles.nifs or toggles.btos) else None
+            self.havok = (
+                make(False, toggles.havok)
+                if (toggles.havok or toggles.drivers)
+                else None
+            )
+            self.sounds = make(False, False) if toggles.sounds else None
+        except BaseException:
+            for run in created_runs:
+                try:
+                    run.close()
+                except Exception:
+                    pass
+            setattr(ctx, "source_asset_inventory", None)
+            self._source_asset_inventory = None
+            raise
 
     def all_runs(self) -> list:
-        return [r for r in (self.textures, self.nifs, self.havok, self.sounds) if r]
+        return [
+            r
+            for r in (
+                self.textures,
+                self.nifs,
+                self.havok,
+                self.sounds,
+            )
+            if r
+        ]
 
     def attach_sink(self, sink_id: int) -> None:
         native = load_native_module()
@@ -7467,6 +11452,8 @@ class AssetRuns:
                 run.close()
             except Exception:
                 pass
+        setattr(self._ctx, "source_asset_inventory", None)
+        self._source_asset_inventory = None
 
 
 def _asset_key_pair(asset) -> tuple[str, str]:
@@ -7488,27 +11475,57 @@ class AssetWaveBuilder:
         runner: "ConversionRunner",
         *,
         conversion_workers: int | None = None,
+        planning_summary: ConversionSummary | None = None,
     ) -> None:
         self.driver = driver
         self.toggles = toggles
         self.runs = runs
         self.runner = runner
         self.conversion_workers = conversion_workers
-        self._wave_plan = _wave_plan_for(str(driver.ctx.source_game))
+        self.planning_summary = planning_summary
+        self._wave_plan = _wave_plan_for(
+            str(driver.ctx.source_game), str(driver.ctx.target_game)
+        )
         # NIF entries seen by wave A2 — the A3 grass top-up converts only the
         # delta appended by the terrain phase.
         self._a2_nif_keys: set[tuple[str, str]] = set()
 
     def _shim(self):
         from bacup_lib.pipeline._shim import build_orchestrator_shim
+        from bacup_lib.workflows.asset_phases import _weapon_model_key
 
         shim = build_orchestrator_shim([], self.driver.ctx)
+        if self.planning_summary is not None:
+            shim._summary = self.planning_summary
         shim.pbr_carry = bool(getattr(self.driver.ctx, "pbr_carry", False))
         shim.texture_landscape_mip_flooding = bool(
             getattr(self.driver.ctx, "texture_landscape_mip_flooding", False)
         )
         if self.conversion_workers is not None:
             shim.conversion_workers = int(self.conversion_workers)
+        weapon_plan = getattr(self.driver.ctx, "_weapon_mvp_asset_plan", None)
+        if weapon_plan is not None:
+            role_claims: dict[str, set[str]] = {}
+            for claim in weapon_plan.admitted_claims:
+                if claim.asset[0] != "nif" or claim.model_kind not in {
+                    "world",
+                    "first_person",
+                }:
+                    continue
+                key = _weapon_model_key(claim.asset[1])
+                if key:
+                    role_claims.setdefault(key, set()).add(claim.weapon_role)
+            role_cache = {
+                key: next(iter(roles))
+                for key, roles in role_claims.items()
+                if len(roles) == 1
+            }
+            shim._weapon_mvp_asset_plan = weapon_plan
+            shim._weapon_metadata_rows = tuple(
+                getattr(self.driver.ctx, "_weapon_metadata_rows", ()) or ()
+            )
+            shim._weapon_role_cache = role_cache
+            shim._admitted_weapon_role_cache = role_cache
         return shim
 
     # -- A1: immediately after collect_assets ------------------------------
@@ -7516,6 +11533,16 @@ class AssetWaveBuilder:
     def build_wave_a1(self) -> list["WaveStage"]:
         shim = self._shim()
         stages: list[WaveStage] = []
+        if self._wave_plan.starfield_target:
+            # No copy_sounds leg: Starfield plays Wwise banks, not loose
+            # xwm/wav, so the record track's `wwise_audio` phase owns every
+            # audio byte this pair emits (R6).
+            self.runner.emit_log(
+                "INFO",
+                "[Sound] fo4:starfield audio is owned by the wwise_audio phase; "
+                "no loose-sound copy",
+            )
+            return stages
         mvp_exclusions = _mvp_exclude_signatures(self.driver)
         if _is_skyrim_mvp(self.driver):
             removed = _remove_skyrim_mvp_loadscreen_asset_outputs(shim.mod_path)
@@ -7531,6 +11558,48 @@ class AssetWaveBuilder:
                 for a in list(self.driver.ctx.assets)
                 if a.asset_type in {"sound", "audio"}
             ]
+            if (
+                str(self.driver.ctx.source_game).lower() == "skyrimse"
+                and str(self.driver.ctx.target_game).lower() == "fo4"
+                and self.driver._req.options.translate_records
+            ):
+                receipt = getattr(self.driver.ctx, "skyrim_runtime_asset_receipt", None)
+                allowed = {
+                    normalize_asset_source_path(path).casefold()
+                    for path in getattr(receipt, "output_paths", ())
+                }
+                removed = 0
+                for asset in sound_assets:
+                    if (
+                        normalize_asset_source_path(asset.source_path).casefold()
+                        in allowed
+                    ):
+                        continue
+                    if shim._remove_stale_asset_output(asset):
+                        removed += 1
+                self.runner.emit_log(
+                    "INFO",
+                    "[Sound] Skyrim runtime assets are receipt-driven; skipped broad "
+                    f"copy_sounds and removed {removed} stale output(s)",
+                )
+                return stages
+            legacy_mp3_count = sum(
+                1
+                for asset in sound_assets
+                if asset.resolved_path
+                and Path(asset.resolved_path).suffix.casefold() == ".mp3"
+            )
+            if legacy_mp3_count:
+                from bacup_lib.legacy_music import prepare_legacy_music_assets
+
+                self.runner.emit_log(
+                    "INFO",
+                    f"[Sound] Encoding {legacy_mp3_count} legacy music track(s) to XWM",
+                )
+                sound_assets = prepare_legacy_music_assets(
+                    sound_assets,
+                    Path(shim.mod_path) / ".regen_music_cache",
+                )
             if mvp_exclusions:
                 all_sound_count = len(sound_assets)
                 sound_assets = [
@@ -7569,8 +11638,15 @@ class AssetWaveBuilder:
     def build_wave_a2(self) -> list["WaveStage"]:
         shim = self._shim()
         stages: list[WaveStage] = []
+        if self._wave_plan.starfield_target:
+            if self.toggles.nifs and self.runs.nifs:
+                stages.append(self._build_starfield_meshes_stage(shim))
+            return stages
         if self.toggles.nifs and self.runs.nifs:
             stages.append(self._build_nif_stage(shim, after=()))
+            creature_stage = self._build_mvp_creature_nif_stage(shim)
+            if creature_stage is not None:
+                stages.append(creature_stage)
         if (
             self._wave_plan.bto_phase is not None
             and self.toggles.btos
@@ -7598,11 +11674,154 @@ class AssetWaveBuilder:
                         params=_params_for_convert_btos(shim, bto_assets),
                         # Same run as NIFs (shared collision memo) — chained
                         # behind them like the legacy serial order.
-                        after=(self._wave_plan.nif_phase,)
-                        if self.toggles.nifs
-                        else (),
+                        after=(self._wave_plan.nif_phase,) if self.toggles.nifs else (),
                     )
                 )
+        return stages
+
+    def _build_mvp_creature_nif_stage(self, shim) -> "WaveStage | None":
+        from bacup_lib.creature_mvp_assets import creature_mvp_asset_closure
+        from bacup_lib.workflows.asset_phases import _params_for_convert_nifs
+
+        closure = creature_mvp_asset_closure(
+            _exact_mvp_creature_profile(self.driver.ctx),
+            shim.graph.all_assets,
+        )
+        if closure is None:
+            return None
+        assets = [
+            asset
+            for asset in shim.graph.all_assets
+            if asset.asset_type == "nif" and closure.allows(asset)
+        ]
+        unresolved = [asset.source_path for asset in assets if not asset.resolved_path]
+        if len(assets) != 2 or unresolved:
+            raise RuntimeError(
+                f"{closure.label} MVP NIF closure is incomplete: "
+                f"found={len(assets)} unresolved={unresolved}"
+            )
+        params = _params_for_convert_nifs(shim, assets)
+        params["skin_policy"] = "preserve_source_rig"
+        source_extracted_dir = str(shim.target_extracted_dir or "")
+        if closure.profile == "skyrim_wolf":
+            phase = "convert_mvp_creature_nifs_v2"
+            params["bgsm_output_dir"] = str(
+                Path(str(shim.mod_path)) / "data" / "Materials"
+            )
+        else:
+            phase = "convert_mvp_creature_gamebryo_nifs"
+            params = {
+                "nif_paths": params["nif_paths"],
+                "material_out_rel": (
+                    f"materials/{Path(str(shim.mod_path)).name}/gamebryo"
+                ),
+                "skin_policy": "preserve_source_rig",
+            }
+            source_extracted_dir = ""
+        return WaveStage(
+            phase=phase,
+            run_id=self.runs.nifs.id,
+            mod_path=str(shim.mod_path),
+            source_extracted_dir=source_extracted_dir,
+            params=params,
+            after=(self._wave_plan.nif_phase,),
+        )
+
+    # -- fo4:starfield asset track -----------------------------------------
+
+    def _build_starfield_meshes_stage(self, shim) -> "WaveStage":
+        nif_assets = [
+            asset
+            for asset in shim.graph.all_assets
+            if asset.asset_type == "nif"
+            and asset.source_path.lower().endswith(".nif")
+            and asset.resolved_path
+        ]
+        shim._summary.nifs_total = len(nif_assets)
+        entries = starfield_mesh_entries(nif_assets)
+        self.runner.emit_log(
+            "INFO",
+            f"[NIF] fo4:starfield queued {len(entries)} NIF(s) for .mesh conversion "
+            "(wave A2)",
+        )
+        return WaveStage(
+            phase="starfield_meshes",
+            run_id=self.runs.nifs.id,
+            mod_path=str(shim.mod_path),
+            source_extracted_dir=str(getattr(shim, "source_data_dir", "") or ""),
+            params={"nifs": entries},
+        )
+
+    def _build_starfield_material_and_texture_stages(self, shim) -> list["WaveStage"]:
+        """`starfield_materials` then `starfield_textures`.
+
+        Both are driven from the FO4 BGSM set: the `.mat` writer derives its
+        texture *paths* from each BGSM's Diffuse/Normal/SmoothSpec/Glow fields,
+        so the texture writer must be handed the same set or the `.mat` files
+        point at files nothing wrote. Textures run second only for log
+        ordering — they share the run but touch disjoint outputs.
+        """
+        stages: list[WaveStage] = []
+        source_extracted = str(getattr(shim, "source_data_dir", "") or "")
+        material_assets = [
+            asset
+            for asset in shim.graph.all_assets
+            if asset.asset_type == "material"
+            and asset.source_path.lower().endswith(".bgsm")
+            and asset.resolved_path
+        ]
+        bgem_skipped = sum(
+            1
+            for asset in shim.graph.all_assets
+            if asset.asset_type == "material"
+            and asset.source_path.lower().endswith(".bgem")
+        )
+        if bgem_skipped:
+            self.runner.emit_log(
+                "INFO",
+                f"[Materials] fo4:starfield skipped {bgem_skipped} .bgem effect "
+                "material(s): the Starfield .mat writer maps BGSM only (R5)",
+            )
+        if not (self.toggles.materials and self.runs.textures):
+            return stages
+
+        stages.append(
+            WaveStage(
+                phase="starfield_materials",
+                run_id=self.runs.textures.id,
+                mod_path=str(shim.mod_path),
+                source_extracted_dir=source_extracted,
+                params={"materials": starfield_material_entries(material_assets)},
+            )
+        )
+
+        if self.toggles.textures:
+            resolved_textures = {
+                normalize_asset_source_path(
+                    asset.source_path
+                ).casefold(): asset.resolved_path
+                for asset in shim.graph.all_assets
+                if asset.asset_type == "texture" and asset.resolved_path
+            }
+            texture_sets, warnings = starfield_texture_sets(
+                material_assets, resolved_textures
+            )
+            for warning in warnings:
+                self.runner.emit_log("WARN", f"[Textures] {warning}")
+            self.runner.emit_log(
+                "INFO",
+                f"[Textures] fo4:starfield built {len(texture_sets)} PBR texture "
+                f"set(s) from {len(material_assets)} BGSM(s) (wave A3)",
+            )
+            stages.append(
+                WaveStage(
+                    phase="starfield_textures",
+                    run_id=self.runs.textures.id,
+                    mod_path=str(shim.mod_path),
+                    source_extracted_dir=source_extracted,
+                    params={"texture_sets": texture_sets},
+                )
+            )
         return stages
 
     def _build_nif_stage(self, shim, after: tuple[str, ...]) -> "WaveStage":
@@ -7622,6 +11841,13 @@ class AssetWaveBuilder:
                 if asset.source_path.lower().endswith(".nif")
             ]
         mvp_exclusions = _mvp_exclude_signatures(self.driver)
+        mvp_asset_closure = _mvp_asset_closure_set(self.driver, shim.graph.all_assets)
+        from bacup_lib.creature_mvp_assets import creature_mvp_asset_closure
+
+        creature_asset_closure = creature_mvp_asset_closure(
+            _exact_mvp_creature_profile(self.driver.ctx),
+            shim.graph.all_assets,
+        )
         skyrim_mvp = _is_skyrim_mvp(self.driver)
         if skyrim_mvp:
             stale_loadscreen_materials_removed = (
@@ -7655,7 +11881,15 @@ class AssetWaveBuilder:
             nif_assets = [
                 asset
                 for asset in nif_assets
-                if _is_world_only_mvp_asset(asset, mvp_exclusions)
+                if _is_selected_mvp_asset(
+                    self.driver, asset, mvp_exclusions, mvp_asset_closure
+                )
+            ]
+        if creature_asset_closure is not None:
+            nif_assets = [
+                asset
+                for asset in nif_assets
+                if not creature_asset_closure.allows(asset)
             ]
         self._a2_nif_keys = {_asset_key_pair(a) for a in nif_assets}
         if not getattr(shim, "convert_precombined_nifs", True):
@@ -7671,7 +11905,9 @@ class AssetWaveBuilder:
         base_game_skipped = 0
         stale_outputs_removed = 0
         for asset in nif_assets:
-            if shim._target_has_asset(asset):
+            if not (
+                mvp_asset_closure is not None and mvp_asset_closure.allows(asset)
+            ) and shim._target_has_asset(asset):
                 base_game_skipped += 1
                 if shim._remove_stale_asset_output(asset):
                     stale_outputs_removed += 1
@@ -7707,11 +11943,19 @@ class AssetWaveBuilder:
                 Path(str(shim.mod_path)) / "data" / "Materials"
             )
         if self._wave_plan.nif_phase == "convert_gamebryo_nifs":
+            skin_option_keys = (
+                "translation_maps_dir",
+                "auto_skin_reference_body",
+                "emit_first_person",
+                "first_person_reference",
+                "morph_weight_cap",
+            )
             params = {
                 "nif_paths": params["nif_paths"],
                 "material_out_rel": (
                     f"materials/{Path(str(shim.mod_path)).name}/gamebryo"
                 ),
+                **{key: params[key] for key in skin_option_keys if key in params},
             }
             source_extracted_dir = ""
         return WaveStage(
@@ -7728,7 +11972,10 @@ class AssetWaveBuilder:
     def build_wave_a3(self) -> list["WaveStage"]:
         shim = self._shim()
         stages: list[WaveStage] = []
+        if self._wave_plan.starfield_target:
+            return self._build_starfield_material_and_texture_stages(shim)
         mvp_exclusions = _mvp_exclude_signatures(self.driver)
+        mvp_asset_closure = _mvp_asset_closure_set(self.driver, shim.graph.all_assets)
         if self.toggles.textures and self.runs.textures:
             if self._wave_plan.textures_from_graph:
                 from bacup_lib.workflows.asset_phases import (
@@ -7743,13 +11990,21 @@ class AssetWaveBuilder:
                     and asset.source_path.lower().endswith(".dds")
                     and (
                         not mvp_exclusions
-                        or _is_world_only_mvp_asset(asset, mvp_exclusions)
+                        or _is_selected_mvp_asset(
+                            self.driver,
+                            asset,
+                            mvp_exclusions,
+                            mvp_asset_closure,
+                        )
                     )
                 ]
                 texture_assets = []
                 base_game_skipped = 0
                 for asset in referenced_textures:
-                    if shim._target_has_asset(asset):
+                    if not (
+                        mvp_asset_closure is not None
+                        and mvp_asset_closure.allows(asset)
+                    ) and shim._target_has_asset(asset):
                         base_game_skipped += 1
                         shim._remove_stale_asset_output(asset)
                         shim._track_asset(
@@ -7766,14 +12021,25 @@ class AssetWaveBuilder:
                     if asset.asset_type == "nif"
                     and asset.source_path.lower().endswith(".nif")
                     and asset.resolved_path
-                    and not shim._target_has_asset(asset)
+                    and (
+                        (
+                            mvp_asset_closure is not None
+                            and mvp_asset_closure.allows(asset)
+                        )
+                        or not shim._target_has_asset(asset)
+                    )
                     and (
                         getattr(shim, "convert_precombined_nifs", True)
                         or not _is_precombined_nif_asset(asset)
                     )
                     and (
                         not mvp_exclusions
-                        or _is_world_only_mvp_asset(asset, mvp_exclusions)
+                        or _is_selected_mvp_asset(
+                            self.driver,
+                            asset,
+                            mvp_exclusions,
+                            mvp_asset_closure,
+                        )
                     )
                 ]
                 # Grouping textures by role needs every member on disk, so an
@@ -7878,10 +12144,13 @@ class AssetWaveBuilder:
             delta = [
                 a
                 for a in list(self.driver.ctx.assets)
-                if a.asset_type == "nif" and _asset_key_pair(a) not in self._a2_nif_keys
+                if a.asset_type == "nif"
+                and _asset_key_pair(a) not in self._a2_nif_keys
                 and (
                     not mvp_exclusions
-                    or _is_world_only_mvp_asset(a, mvp_exclusions)
+                    or _is_selected_mvp_asset(
+                        self.driver, a, mvp_exclusions, mvp_asset_closure
+                    )
                 )
             ]
             if delta:
@@ -7943,6 +12212,17 @@ class AssetWaveBuilder:
         return stages
 
     def build_wave_a4(self) -> list["WaveStage"]:
+        corpus_policy = getattr(self.driver.ctx, "mvp_creature_corpus_policy", None)
+        if corpus_policy is not None:
+            if not getattr(self.driver.ctx, "_creature_corpus_executed", False):
+                raise RuntimeError(
+                    "all_creatures_v1 corpus execution did not complete on the retained "
+                    "record run"
+                )
+            return []
+        profile = _exact_mvp_creature_profile(self.driver.ctx)
+        if profile is not None:
+            return self._build_mvp_creature_a4(profile)
         if not self._wave_plan.wave_a4:
             return []
         shim = self._shim()
@@ -7973,17 +12253,6 @@ class AssetWaveBuilder:
                     params=params,
                 )
             )
-        if self.toggles.drivers and self.toggles.havok and self.runs.havok:
-            stages.append(
-                WaveStage(
-                    phase="synthesize_drivers",
-                    run_id=self.runs.havok.id,
-                    mod_path=str(shim.mod_path),
-                    source_extracted_dir=str(shim.target_extracted_dir or ""),
-                    params={},
-                    after=("convert_havok",),
-                )
-            )
         src_engine = getattr(shim._source_profile, "engine", None)
         tgt_engine = getattr(shim._target_profile, "engine", None)
         if (
@@ -7996,9 +12265,7 @@ class AssetWaveBuilder:
             )
 
             after = ()
-            if self.toggles.drivers and self.toggles.havok:
-                after = ("synthesize_drivers",)
-            elif self.toggles.havok:
+            if self.toggles.havok:
                 after = ("convert_havok",)
             stages.append(
                 WaveStage(
@@ -8011,14 +12278,14 @@ class AssetWaveBuilder:
                 )
             )
         if self.toggles.havok and self.runs.havok:
+            from bacup_lib.workflows.asset_phases import _target_havok_contract_root
+
             if (
                 self.toggles.animations
                 and src_engine == "gamebryo"
                 and tgt_engine == "creation1"
             ):
                 after = ("convert_animations",)
-            elif self.toggles.drivers and self.toggles.havok:
-                after = ("synthesize_drivers",)
             else:
                 after = ("convert_havok",)
             stages.append(
@@ -8027,8 +12294,20 @@ class AssetWaveBuilder:
                     run_id=self.runs.havok.id,
                     mod_path=str(shim.mod_path),
                     source_extracted_dir=source_extracted,
+                    target_extracted_dir=str(_target_havok_contract_root(shim, self.runner) or "") or None,
                     params={},
                     after=after,
+                )
+            )
+        if self.toggles.drivers and self.toggles.havok and self.runs.havok:
+            stages.append(
+                WaveStage(
+                    phase="synthesize_drivers",
+                    run_id=self.runs.havok.id,
+                    mod_path=str(shim.mod_path),
+                    source_extracted_dir=str(shim.target_extracted_dir or ""),
+                    params={},
+                    after=("postprocess_havok_assets",),
                 )
             )
         facegen_run = self.runs.nifs or self.runs.textures or self.runs.havok
@@ -8047,43 +12326,162 @@ class AssetWaveBuilder:
             )
         return stages
 
+    def _build_mvp_creature_a4(self, profile: str) -> list["WaveStage"]:
+        shim = self._shim()
+        run = self.runs.havok or self.runs.nifs
+        if run is None or not self.toggles.havok:
+            raise RuntimeError(
+                f"{profile} MVP requires the Havok phase and an asset run"
+            )
+        if profile == "skyrim_wolf":
+            from bacup_lib.creature_mvp_assets import creature_mvp_asset_closure
+
+            closure = creature_mvp_asset_closure(profile, shim.graph.all_assets)
+            if closure is None:
+                raise RuntimeError("Skyrim Wolf MVP asset closure did not activate")
+            assets = [
+                asset
+                for asset in shim.graph.all_assets
+                if asset.asset_type == "behavior" and closure.allows(asset)
+            ]
+            unresolved = [
+                asset.source_path for asset in assets if not asset.resolved_path
+            ]
+            if len(assets) != 6 or unresolved:
+                raise RuntimeError(
+                    "Skyrim Wolf MVP Havok closure is incomplete: "
+                    f"found={len(assets)} unresolved={unresolved}"
+                )
+            return [
+                WaveStage(
+                    phase="convert_mvp_skyrim_wolf_havok",
+                    run_id=run.id,
+                    mod_path=str(shim.mod_path),
+                    source_extracted_dir="",
+                    params={
+                        "assets": [
+                            {
+                                "source_path": asset.source_path,
+                                "resolved_path": asset.resolved_path,
+                            }
+                            for asset in assets
+                        ]
+                    },
+                )
+            ]
+        if profile != "fnv_gecko":
+            raise RuntimeError(f"unknown MVP creature profile: {profile}")
+        if not self.toggles.animations:
+            raise RuntimeError("FNV Gecko MVP requires animation conversion")
+        from bacup_lib.workflows.asset_phases import (
+            _params_for_convert_animations,
+            _params_for_convert_skeleton,
+        )
+
+        skeleton_params = _params_for_convert_skeleton(shim)
+        animation_params = _params_for_convert_animations(shim)
+        if skeleton_params is None or not skeleton_params.get("resolved_path"):
+            raise RuntimeError("FNV Gecko MVP skeleton closure is incomplete")
+        animations = animation_params.get("animations", [])
+        if len(animations) != 5 or any(
+            not animation.get("resolved_path") for animation in animations
+        ):
+            raise RuntimeError(
+                f"FNV Gecko MVP animation closure is incomplete: found={len(animations)}"
+            )
+        return [
+            WaveStage(
+                phase="convert_skeleton",
+                run_id=run.id,
+                mod_path=str(shim.mod_path),
+                source_extracted_dir="",
+                params=skeleton_params,
+            ),
+            WaveStage(
+                phase="convert_animations",
+                run_id=run.id,
+                mod_path=str(shim.mod_path),
+                source_extracted_dir="",
+                params=animation_params,
+                after=("convert_skeleton",),
+            ),
+        ]
+
 
 # Phase -> ConversionSummary merge (the wrappers' report mappings).
+_ASSET_PLANNING_SUMMARY_FIELDS = (
+    "nifs_total",
+    "nifs_base_game_skipped",
+    "nifs_failed",
+    "btos_total",
+    "btos_base_game_skipped",
+    "btos_failed",
+    "textures_total",
+    "textures_base_game_skipped",
+    "textures_failed",
+    "materials_total",
+    "materials_base_game_skipped",
+    "materials_failed",
+    "havok_total",
+    "havok_base_game_skipped",
+    "havok_failed",
+    "animations_total",
+    "animations_base_game_skipped",
+    "animations_failed",
+    "audio_total",
+    "audio_base_game_skipped",
+    "audio_failed",
+)
+
+
+def _merge_asset_planning_summary(
+    aggregate: ConversionSummary, planning: ConversionSummary
+) -> None:
+    for field in _ASSET_PLANNING_SUMMARY_FIELDS:
+        value = int(getattr(planning, field, 0) or 0)
+        if value:
+            setattr(aggregate, field, int(getattr(aggregate, field, 0)) + value)
+
+
 def _merge_wave_report_into_summary(
     summary: ConversionSummary, phase: str, report: dict
 ) -> None:
     written = int(report.get("assets_written", 0) or 0)
     dropped = int(report.get("records_dropped", 0) or 0)
-    warnings = int(report.get("warnings", 0) or 0)
+    failed = int(report.get("items_failed", 0) or 0)
     if phase == "copy_sounds":
         summary.audio_copied += written
         summary.audio_base_game_skipped += dropped
-        summary.audio_failed += warnings
-    elif phase == "convert_havok":
-        summary.havok_total += written + warnings + dropped
+        summary.audio_failed += failed
+    elif phase in {"convert_havok", "convert_mvp_skyrim_wolf_havok"}:
+        summary.havok_total += written + failed + dropped
         summary.havok_converted += written
         summary.havok_base_game_skipped += dropped
-        summary.havok_failed += warnings
-    elif phase in {"convert_nifs_v2", "convert_gamebryo_nifs"}:
+        summary.havok_failed += failed
+    elif phase in {
+        "convert_nifs_v2",
+        "convert_gamebryo_nifs",
+        "convert_mvp_creature_nifs_v2",
+        "convert_mvp_creature_gamebryo_nifs",
+    }:
         summary.nifs_converted += written
-        summary.nifs_failed += warnings
+        summary.nifs_failed += failed
     elif phase == "convert_btos_v2":
         summary.btos_converted += written
-        summary.btos_failed += warnings
+        summary.btos_failed += failed
     elif phase in {"convert_textures_v2", "copy_textures"}:
-        summary.textures_total += written + warnings + dropped
+        summary.textures_total += written + failed + dropped
         summary.textures_converted += written
-        summary.textures_failed += warnings
+        summary.textures_failed += failed
         summary.textures_base_game_skipped += dropped
     elif phase == "convert_materials_v2":
         summary.materials_converted += written
-        summary.materials_failed += warnings
+        summary.materials_failed += failed
     elif phase == "convert_animations":
         summary.animations_converted += written
-        summary.animations_failed += warnings
+        summary.animations_failed += failed
     elif phase == "postprocess_havok_assets":
-        summary.havok_converted += written
-        summary.havok_failed += warnings
+        summary.havok_failed += failed
 
 
 class MultiRunDrainer:
@@ -8093,22 +12491,31 @@ class MultiRunDrainer:
     stage set for the run_state mirror."""
 
     def __init__(
-        self, run_ids: list[int], runner: "ConversionRunner", hz: float = 4.0
+        self,
+        run_ids: list[int],
+        runner: "ConversionRunner",
+        hz: float = 4.0,
+        *,
+        timing_report: TimingReport | None = None,
     ) -> None:
         self._run_ids = list(run_ids)
         self._runner = runner
+        self._timing_report = timing_report
         self._period = 1.0 / hz
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._drain_lock = threading.Lock()
         self._lock = threading.Lock()
         self.completed_reports: list[tuple[str, dict]] = []
+        self._reported_phases: set[str] = set()
+        self.failure_log_lines: list[str] = []
         self.active_stages: set[str] = set()
         self.stage_counters: dict[str, int] = {}
         self.stage_totals: dict[str, int] = {}
         self.stage_items: dict[str, str] = {}
         self.stage_errors: dict[str, str] = {}
         self.completed_stages: set[str] = set()
+        self._stage_started_at: dict[str, float] = {}
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -8128,7 +12535,21 @@ class MultiRunDrainer:
             self.completed_reports.clear()
         return out
 
+    def begin_wave(self, phases: Iterable[str]) -> None:
+        phases = set(phases)
+        with self._lock:
+            self._reported_phases.difference_update(phases)
+            self.completed_stages.difference_update(phases)
+
+    def drain_failure_logs(self) -> list[str]:
+        with self._lock:
+            out = list(self.failure_log_lines)
+            self.failure_log_lines.clear()
+        return out
+
     def reconcile_pipeline_report(self, report: dict) -> None:
+        for phase, phase_report in report.get("phase_reports", {}).items():
+            self._capture_phase_report(str(phase), dict(phase_report))
         for row in report.get("stages", []):
             if not isinstance(row, (list, tuple)) or len(row) < 5:
                 continue
@@ -8139,6 +12560,13 @@ class MultiRunDrainer:
                 items_failed=self._event_int(items_failed),
                 elapsed_ms=elapsed_ms,
             )
+
+    def _capture_phase_report(self, phase: str, report: dict) -> None:
+        with self._lock:
+            if phase in self._reported_phases:
+                return
+            self._reported_phases.add(phase)
+            self.completed_reports.append((phase, report))
 
     def describe_active(self) -> str:
         with self._lock:
@@ -8228,6 +12656,19 @@ class MultiRunDrainer:
             self.stage_totals[stage] = total
             self.stage_items.pop(stage, None)
             self.stage_errors.pop(stage, None)
+            started = self._stage_started_at.pop(stage, None)
+        elapsed_seconds = self._elapsed_seconds_from_ms(elapsed_ms)
+        if elapsed_seconds is None:
+            elapsed_seconds = _elapsed_seconds(started) if started is not None else 0.0
+        if self._timing_report is not None:
+            self._timing_report.record(
+                stage,
+                elapsed_seconds,
+                track="assets",
+                status="completed",
+                items_done=items_done,
+                items_failed=items_failed,
+            )
         self._emit_stage_progress(
             stage,
             status="completed",
@@ -8242,22 +12683,30 @@ class MultiRunDrainer:
             self._drain_once(native)
             time.sleep(self._period)
 
-    def _drain_once(self, native=None) -> None:
+    def _drain_once(self, native=None, *, exhaust: bool = False) -> None:
         if native is None:
             native = load_native_module()
         with self._drain_lock:
             for run_id in self._run_ids:
-                try:
-                    events = native.conversion_run_drain_events(run_id, 256)
-                except Exception:
-                    continue
-                for ev in events:
-                    self._dispatch(ev)
+                while True:
+                    try:
+                        events = native.conversion_run_drain_events(run_id, 256)
+                    except Exception:
+                        break
+                    for ev in events:
+                        self._dispatch(ev)
+                    if not exhaust or len(events) < 256:
+                        break
 
     def _dispatch(self, ev: dict) -> None:
         kind = ev.get("kind")
         if kind == "log":
-            self._runner.emit_log(ev.get("level", "INFO"), ev.get("message", ""))
+            level = str(ev.get("level", "INFO") or "INFO").upper()
+            message = str(ev.get("message", "") or "")
+            if level in {"WARN", "ERROR"}:
+                with self._lock:
+                    self.failure_log_lines.append(f"[{level}] {message}")
+            self._runner.emit_log(level, message)
         elif kind == "progress":
             phase = ev.get("phase", "")
             current = self._event_int(ev.get("current", 0))
@@ -8290,18 +12739,7 @@ class MultiRunDrainer:
         elif kind == "completed":
             phase = str(ev.get("phase", ""))
             report = dict(ev.get("report", {}) or {})
-            with self._lock:
-                self.completed_reports.append((phase, report))
-            completed = self._event_int(report.get("assets_written", 0))
-            failed = self._event_int(report.get("warnings", 0)) + self._event_int(
-                report.get("items_failed", 0)
-            )
-            self._complete_stage(
-                phase,
-                items_done=completed,
-                items_failed=failed,
-                elapsed_ms=report.get("elapsed_ms"),
-            )
+            self._capture_phase_report(phase, report)
             self._runner.emit_log(
                 "INFO",
                 f"phase completed: {phase} "
@@ -8316,6 +12754,7 @@ class MultiRunDrainer:
                 self.completed_stages.discard(stage)
                 self.active_stages.add(stage)
                 self.stage_errors.pop(stage, None)
+                self._stage_started_at[stage] = time.perf_counter()
             self._emit_stage_progress(stage, status="running")
             self._runner.emit_log("INFO", f"stage started: {stage}")
         elif kind == "stage_completed":
@@ -8339,12 +12778,39 @@ class MultiRunDrainer:
             with self._lock:
                 self.active_stages.discard(stage)
                 self.stage_errors[stage] = message
+                started = self._stage_started_at.pop(stage, None)
+            if self._timing_report is not None and started is not None:
+                self._timing_report.record(
+                    stage,
+                    _elapsed_seconds(started),
+                    track="assets",
+                    status="error",
+                    error=message,
+                )
             self._emit_stage_progress(
                 stage,
                 status="error",
                 error=message,
             )
             self._runner.emit_log("ERROR", f"stage failed: {stage}: {message}")
+
+
+def _merge_asset_failure_logs(
+    runtime: _UnifiedRecordRuntime, drainer: MultiRunDrainer
+) -> None:
+    lines = drainer.drain_failure_logs()
+    if not lines:
+        return
+    runtime._extend_unique(
+        runtime._run_result.failed_nifs, runtime._failed_paths(lines, "NIF")
+    )
+    runtime._extend_unique(
+        runtime._run_result.failed_textures,
+        runtime._failed_paths(lines, "Texture"),
+    )
+    runtime._extend_unique(
+        runtime._run_result.failed_bgsms, runtime._failed_material_paths(lines)
+    )
 
 
 class RunStateMirror:
@@ -8406,9 +12872,7 @@ class RunStateMirror:
             "status": self.status,
             "stage": f"record:{record_label}+assets:{asset_stages}",
             "started_at": self._started_at.isoformat(timespec="milliseconds"),
-            "updated_at": datetime.now(timezone.utc).isoformat(
-                timespec="milliseconds"
-            ),
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             "counters": counters,
             "rss_bytes": self._rss_bytes(),
         }
@@ -8453,6 +12917,7 @@ def run_asset_track(
             toggles.havok,
             toggles.drivers,
             toggles.sounds,
+            getattr(driver.ctx, "mvp_creature_corpus_policy", None) is not None,
         )
     ):
         signals.asset_a2_done.set()
@@ -8464,6 +12929,7 @@ def run_asset_track(
     diagnostics_root = Path(diagnostics_root or mod_root)
     diagnostics_root.mkdir(parents=True, exist_ok=True)
     run_state_path = diagnostics_root / "run_state.assets.json"
+    planning_summary = ConversionSummary(mod_path=str(mod_root))
 
     def ensure_runs() -> tuple["AssetRuns", "AssetWaveBuilder", "MultiRunDrainer"]:
         nonlocal runs, builder, drainer
@@ -8486,8 +12952,13 @@ def run_asset_track(
                 runs,
                 runner,
                 conversion_workers=asset_conversion_workers,
+                planning_summary=planning_summary,
             )
-            drainer = MultiRunDrainer([r.id for r in runs.all_runs()], runner)
+            drainer = MultiRunDrainer(
+                [r.id for r in runs.all_runs()],
+                runner,
+                timing_report=_timing_report(driver.ctx),
+            )
             if mirror is not None:
                 mirror.drainer = drainer
             drainer.start()
@@ -8499,10 +12970,11 @@ def run_asset_track(
         if not stages:
             return
         _, _, active_drainer = ensure_runs()
+        active_drainer.begin_wave([stage.phase for stage in stages])
         plan = {
             "events_run_id": stages[0].run_id,
             "run_state_path": str(run_state_path),
-            "stages": [s.to_plan_stage() for s in stages],
+            "stages": _sequential_wave_plan(stages),
         }
         if max_asset_failures is not None:
             plan["max_asset_failures"] = int(max_asset_failures)
@@ -8515,21 +12987,24 @@ def run_asset_track(
         try:
             pipeline_report = native.conversion_pipeline_run(json.dumps(plan))
         except Exception as exc:
-            active_drainer._drain_once(native)
+            active_drainer._drain_once(native, exhaust=True)
             context = active_drainer.describe_active()
             if context:
                 raise RuntimeError(
                     f"asset wave {name} failed while {context}: {exc}"
                 ) from exc
             raise
-        active_drainer._drain_once(native)
+        active_drainer._drain_once(native, exhaust=True)
         active_drainer.reconcile_pipeline_report(pipeline_report)
         runner.emit_log(
             "INFO",
             f"asset wave {name} completed in {time.perf_counter() - started:.1f}s",
         )
         for phase, report in active_drainer.drain_completed():
-            _merge_wave_report_into_summary(driver.ctx.summary, phase, report)
+            _merge_wave_report_into_summary(
+                driver.record_runtime._aggregate_summary, phase, report
+            )
+        _merge_asset_failure_logs(driver.record_runtime, active_drainer)
 
     try:
         if driver.defer_asset_a2_until_record_done:
@@ -8574,7 +13049,12 @@ def run_asset_track(
         if drainer is not None:
             drainer.stop()
             for phase, report in drainer.drain_completed():
-                _merge_wave_report_into_summary(driver.ctx.summary, phase, report)
+                _merge_wave_report_into_summary(
+                    driver.record_runtime._aggregate_summary, phase, report
+                )
+            _merge_asset_failure_logs(driver.record_runtime, drainer)
+        aggregate = driver.record_runtime._aggregate_summary
+        _merge_asset_planning_summary(aggregate, planning_summary)
 
 
 @dataclass
@@ -8601,15 +13081,25 @@ def _run_collision_validation(
             "INFO",
             "collision validation: %d NIFs / %d blobs / %d errors / %d warnings (%d workers, report: %s)"
             % (
-                summary["nifs"], summary["blobs"], summary["errors"],
-                summary["warnings"], summary["workers"], report_dir,
+                summary["nifs"],
+                summary["blobs"],
+                summary["errors"],
+                summary["warnings"],
+                summary["workers"],
+                report_dir,
             ),
         )
     except Exception as exc:  # never fail the regen on the gate
         runner.emit_log("WARN", "collision validation skipped: %s" % exc)
 
 
-def _run_post_phase(label: str, body, runner: "ConversionRunner") -> None:
+def _run_post_phase(
+    label: str,
+    body,
+    runner: "ConversionRunner",
+    *,
+    timing_report: TimingReport | None = None,
+) -> None:
     progress = PhaseProgress(
         phase=0,
         phase_name=label,
@@ -8626,9 +13116,19 @@ def _run_post_phase(label: str, body, runner: "ConversionRunner") -> None:
         runner.emit_log("ERROR", f"{label} failed: {exc}")
         runner.emit_phase_complete(progress)
         raise
-    progress.status = "completed"
-    progress.elapsed_seconds = _elapsed_seconds(started)
-    runner.emit_phase_complete(progress)
+    else:
+        progress.status = "completed"
+        progress.elapsed_seconds = _elapsed_seconds(started)
+        runner.emit_phase_complete(progress)
+    finally:
+        if timing_report is not None:
+            timing_report.record(
+                label,
+                _elapsed_seconds(started),
+                track="post",
+                status=progress.status,
+                error=progress.error,
+            )
 
 
 def _remove_existing_anim_text_data(mod_dir: Path) -> int:
@@ -8645,6 +13145,288 @@ def _remove_existing_anim_text_data(mod_dir: Path) -> int:
                 shutil.rmtree(candidate)
                 removed += 1
     return removed
+
+
+def _read_creature_anim_text_ledger(path: Path, label: str) -> Mapping[str, object]:
+    if not path.is_file():
+        raise RuntimeError(f"all_creatures_v1 is missing its {label}: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"all_creatures_v1 could not read its {label}: {path}: {exc}"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise RuntimeError(f"all_creatures_v1 {label} must be a JSON object")
+    return payload
+
+
+def _creature_anim_text_contract_inputs(
+    ctx: ConversionContext,
+) -> tuple[Path, Path, Path, tuple[str, ...]]:
+    policy = getattr(ctx, "mvp_creature_corpus_policy", None)
+    if not isinstance(policy, Mapping) or policy.get("policy_id") != "all_creatures_v1":
+        raise RuntimeError("creature AnimText closure requires all_creatures_v1")
+    if str(policy.get("execution_mode") or "") != "strict":
+        raise RuntimeError(
+            "all_creatures_v1 AnimText closure requires strict execution"
+        )
+
+    debug_dir_value = str(policy.get("debug_dir") or "")
+    debug_dir = PurePosixPath(debug_dir_value)
+    if (
+        not debug_dir_value
+        or debug_dir.is_absolute()
+        or "\\" in debug_dir_value
+        or any(part in {"", ".", ".."} for part in debug_dir.parts)
+    ):
+        raise RuntimeError("all_creatures_v1 has an invalid debug_dir")
+    debug_root = Path(ctx.mod_path).joinpath(*debug_dir.parts)
+    plan_path = debug_root / "plan.json"
+    execution_path = debug_root / "execution_ledger.json"
+    record_commit_path = debug_root / "record_commit_ledger.json"
+
+    plan = _read_creature_anim_text_ledger(plan_path, "corpus plan")
+    execution = _read_creature_anim_text_ledger(
+        execution_path, "corpus execution ledger"
+    )
+    record_commit = _read_creature_anim_text_ledger(
+        record_commit_path, "record-commit ledger"
+    )
+    if "receipt" in record_commit:
+        if record_commit.get("version") != 2:
+            raise RuntimeError(
+                "all_creatures_v1 record-commit ledger has an unsupported version"
+            )
+        receipt = record_commit.get("receipt")
+        if not isinstance(receipt, Mapping):
+            raise RuntimeError(
+                "all_creatures_v1 record-commit ledger receipt must be an object"
+            )
+        record_commit = receipt
+    for label, payload in (
+        ("corpus plan", plan),
+        ("corpus execution ledger", execution),
+    ):
+        if payload.get("version") != 1:
+            raise RuntimeError(f"all_creatures_v1 {label} has an unsupported version")
+
+    if (
+        execution.get("mode") != "strict"
+        or execution.get("strict_aborted") is not False
+    ):
+        raise RuntimeError("all_creatures_v1 corpus execution did not commit strictly")
+    raw_execution_families = execution.get("families")
+    if not isinstance(raw_execution_families, list) or not raw_execution_families:
+        raise RuntimeError("all_creatures_v1 execution ledger has no families")
+    family_ids: list[str] = []
+    for family in raw_execution_families:
+        if not isinstance(family, Mapping):
+            raise RuntimeError("all_creatures_v1 execution family must be an object")
+        family_id = str(family.get("family_id") or "").strip()
+        if not family_id or family.get("disposition") != "published":
+            raise RuntimeError(
+                "all_creatures_v1 AnimText requires every family to be published"
+            )
+        records_deferred = family.get("records_deferred")
+        if (
+            isinstance(records_deferred, bool)
+            or not isinstance(records_deferred, int)
+            or records_deferred != 0
+        ):
+            raise RuntimeError(
+                f"all_creatures_v1 family {family_id} did not commit its record closure"
+            )
+        family_ids.append(family_id)
+    expected = tuple(family_ids)
+    expected_folded = {family.casefold() for family in expected}
+    if len(expected_folded) != len(expected):
+        raise RuntimeError("all_creatures_v1 execution ledger has duplicate families")
+
+    raw_jobs = plan.get("jobs")
+    if not isinstance(raw_jobs, list) or not raw_jobs:
+        raise RuntimeError("all_creatures_v1 corpus plan has no jobs")
+    planned_family_graphs: dict[str, int] = {family: 0 for family in expected_folded}
+    for job in raw_jobs:
+        if not isinstance(job, Mapping):
+            raise RuntimeError("all_creatures_v1 corpus job must be an object")
+        family_id = str(job.get("family_id") or "").strip().casefold()
+        if family_id not in planned_family_graphs:
+            raise RuntimeError(
+                "all_creatures_v1 corpus plan and execution families do not match"
+            )
+        graph_paths = job.get("graph_paths")
+        if graph_paths is None:
+            artifacts = job.get("artifacts")
+            if not isinstance(artifacts, list):
+                raise RuntimeError(
+                    "all_creatures_v1 corpus job artifacts must be a list"
+                )
+            graph_paths = [
+                artifact.get("target_path")
+                for artifact in artifacts
+                if isinstance(artifact, Mapping)
+                and artifact.get("kind")
+                in {"character_hkx", "root_behavior_hkx", "core_behavior_hkx"}
+            ]
+        if not isinstance(graph_paths, list):
+            raise RuntimeError("all_creatures_v1 corpus graph_paths must be a list")
+        for graph_path in graph_paths:
+            target_path = str(graph_path or "").strip()
+            if not target_path.lower().endswith(".hkx"):
+                raise RuntimeError(
+                    f"all_creatures_v1 family {family_id} has an invalid graph artifact"
+                )
+            planned_family_graphs[family_id] += 1
+    if any(count < 1 for count in planned_family_graphs.values()):
+        raise RuntimeError(
+            "all_creatures_v1 plan does not provide a graph for every published family"
+        )
+
+    raw_record_families = record_commit.get("families")
+    if not isinstance(raw_record_families, list) or not raw_record_families:
+        raise RuntimeError("all_creatures_v1 record-commit ledger has no families")
+    committed: set[str] = set()
+    committed_race_keys: set[str] = set()
+    record_total = 0
+    mapping_total = 0
+    for family in raw_record_families:
+        if not isinstance(family, Mapping):
+            raise RuntimeError("all_creatures_v1 record family must be an object")
+        family_id = str(family.get("family_id") or "").strip()
+        family_key = family_id.casefold()
+        if (
+            not family_id
+            or family_key not in expected_folded
+            or family_key in committed
+        ):
+            raise RuntimeError(
+                "all_creatures_v1 record and execution families do not match"
+            )
+        committed.add(family_key)
+        record_count = family.get("record_count")
+        mapping_count = family.get("mapping_count")
+        if (
+            isinstance(record_count, bool)
+            or not isinstance(record_count, int)
+            or record_count < 1
+            or isinstance(mapping_count, bool)
+            or not isinstance(mapping_count, int)
+            or mapping_count < 1
+        ):
+            raise RuntimeError(
+                f"all_creatures_v1 family {family_id} has no committed record mapping"
+            )
+        record_total += record_count
+        mapping_total += mapping_count
+        primary_mappings = family.get("primary_mappings")
+        if (
+            not isinstance(primary_mappings, list)
+            or len(primary_mappings) != mapping_count
+        ):
+            raise RuntimeError(
+                f"all_creatures_v1 family {family_id} mapping receipt is incomplete"
+            )
+        races = family.get("races")
+        if not isinstance(races, list) or not races:
+            raise RuntimeError(
+                f"all_creatures_v1 family {family_id} has no committed RACE"
+            )
+        for race in races:
+            race_form_key = (
+                str(race.get("form_key") or "").strip()
+                if isinstance(race, Mapping)
+                else ""
+            )
+            if not race_form_key or race_form_key.casefold() in committed_race_keys:
+                raise RuntimeError(
+                    f"all_creatures_v1 family {family_id} has an invalid RACE receipt"
+                )
+            committed_race_keys.add(race_form_key.casefold())
+            attack_events = race.get("attack_events")
+            attack_data_entries = race.get("attack_data_entries")
+            if (
+                not isinstance(attack_events, list)
+                or any(not str(event).strip() for event in attack_events)
+                or isinstance(attack_data_entries, bool)
+                or not isinstance(attack_data_entries, int)
+                or attack_data_entries != len(attack_events)
+            ):
+                raise RuntimeError(
+                    f"all_creatures_v1 family {family_id} RACE ATKD/ATKE closure is incomplete"
+                )
+    if committed != expected_folded:
+        raise RuntimeError(
+            "all_creatures_v1 record receipt does not account for every published family"
+        )
+    raw_family_ids = record_commit.get("family_ids")
+    if (
+        not isinstance(raw_family_ids, list)
+        or {str(family).strip().casefold() for family in raw_family_ids}
+        != expected_folded
+    ):
+        raise RuntimeError("all_creatures_v1 record family IDs do not reconcile")
+    if record_commit.get("record_count") != record_total:
+        raise RuntimeError("all_creatures_v1 record receipt count does not reconcile")
+    if record_commit.get("mapping_count") != mapping_total:
+        raise RuntimeError("all_creatures_v1 mapping receipt count does not reconcile")
+    reserved_form_keys = record_commit.get("reserved_form_keys")
+    normalized_reserved = (
+        {str(key).strip().casefold() for key in reserved_form_keys}
+        if isinstance(reserved_form_keys, list)
+        else set()
+    )
+    if (
+        not isinstance(reserved_form_keys, list)
+        or len(reserved_form_keys) != record_total
+        or len(normalized_reserved) != record_total
+        or not committed_race_keys.issubset(normalized_reserved)
+    ):
+        raise RuntimeError("all_creatures_v1 reserved FormKey receipt is incomplete")
+
+    return plan_path, execution_path, record_commit_path, expected
+
+
+def _run_creature_corpus_anim_text_closure(
+    ctx: ConversionContext,
+    runner: "ConversionRunner",
+    *,
+    progress: PhaseProgress | None = None,
+) -> object:
+    if ctx.target_game != "fo4":
+        raise RuntimeError("all_creatures_v1 AnimText closure requires an FO4 target")
+    plan_path, execution_path, record_commit_path, family_ids = (
+        _creature_anim_text_contract_inputs(ctx)
+    )
+    plugin_path = Path(ctx.mod_path) / str(ctx.output_plugin_name or "")
+    if not ctx.output_plugin_name or not plugin_path.is_file():
+        raise RuntimeError(
+            "all_creatures_v1 AnimText closure requires the committed target plugin"
+        )
+    removed = _remove_existing_anim_text_data(Path(ctx.mod_path))
+    if removed:
+        runner.emit_log(
+            "INFO", f"animtext: removed {removed} stale AnimTextData tree(s)"
+        )
+    receipt = _run_anim_text_data_native(
+        ctx,
+        runner,
+        plugin_path,
+        progress=progress,
+        creature_family_ids=family_ids,
+        creature_corpus_plan=plan_path,
+        creature_execution_ledger=execution_path,
+        creature_record_commit_ledger=record_commit_path,
+    )
+    if receipt is None:
+        raise RuntimeError("all_creatures_v1 AnimText closure returned no receipt")
+    ctx.creature_anim_text_receipt = receipt
+    receipt_path = execution_path.parent / "anim_text_receipt.json"
+    receipt_path.write_text(
+        json.dumps(receipt.to_dict(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return receipt
 
 
 def _run_anim_text_data_generation(
@@ -8737,17 +13519,64 @@ def _run_anim_text_data_via_ck(
         runner.emit_log("WARN", "animtext: CK did not generate AnimTextData")
 
 
+def _marshal_creature_anim_text_receipt(raw: str) -> object:
+    from creation_lib.ck.anim_text_data import (
+        CreatureAnimTextClosureReceipt,
+        CreatureAnimTextFamilyReceipt,
+        CreatureAnimTextTarget,
+        CreatureAttackEventReceipt,
+    )
+
+    payload = json.loads(raw)
+    families = tuple(
+        CreatureAnimTextFamilyReceipt(
+            family_id=str(family["family_id"]),
+            status=str(family["status"]),
+            race_form_keys=tuple(str(value) for value in family["race_form_keys"]),
+            graph_paths=tuple(str(value) for value in family["graph_paths"]),
+            emitted_files=tuple(str(value) for value in family["emitted_files"]),
+            attack_events=tuple(
+                CreatureAttackEventReceipt(
+                    event=str(event["event"]),
+                    race_form_key=str(event["race_form_key"]),
+                    atkd_index=int(event["atkd_index"]),
+                    source=str(event["source"]),
+                    targets=tuple(
+                        CreatureAnimTextTarget(
+                            graph_path=str(target["graph_path"]),
+                            clip_name=str(target["clip_name"]),
+                            annotation=str(target["annotation"]),
+                        )
+                        for target in event["targets"]
+                    ),
+                )
+                for event in family["attack_events"]
+            ),
+        )
+        for family in payload["families"]
+    )
+    return CreatureAnimTextClosureReceipt(
+        version=int(payload["version"]),
+        policy_id=str(payload["policy_id"]),
+        written=int(payload["written"]),
+        families=families,
+    )
+
+
 def _run_anim_text_data_native(
     ctx: ConversionContext,
     runner: "ConversionRunner",
     plugin_path: Path,
     *,
     progress: PhaseProgress | None = None,
-) -> None:
+    creature_family_ids: tuple[str, ...] = (),
+    creature_corpus_plan: Path | None = None,
+    creature_execution_ledger: Path | None = None,
+    creature_record_commit_ledger: Path | None = None,
+) -> object | None:
     """CK-free AnimTextData generation: read the built plugin's RACE subgraphs and
     write the bucket files natively. Currently emits AnimationFileData; the other
     buckets fall back to CK when available."""
-    from creation_lib.ck.anim_text_data import generate_anim_text_data
     from bacup_lib.native_runtime import load_native_module
 
     mod_dir = plugin_path.parent
@@ -8757,6 +13586,10 @@ def _run_anim_text_data_native(
         if alt.is_dir():
             meshes_root = alt
     if not meshes_root.is_dir():
+        if creature_family_ids:
+            raise RuntimeError(
+                f"all_creatures_v1 has no emitted loose Meshes at {meshes_root}"
+            )
         runner.emit_log(
             "WARN",
             f"animtext: no loose Meshes at {meshes_root}; skipping CK-free generation",
@@ -8801,43 +13634,129 @@ def _run_anim_text_data_native(
         )
 
     base_race_paths = [Path(base_race_path)] if base_race_path is not None else []
-    if target_asset_store is not None:
-        native = load_native_module()
-        base_meshes_root = Path(
-            native.conversion_prepare_anim_text_data_assets(
-                str(plugin_path),
-                ctx.target_game,
-                [str(path) for path in base_race_paths],
-                str(meshes_root),
-                str(ctx.target_data_dir),
-                str(ctx.target_asset_catalog_path),
-                str(ctx.target_asset_cache_dir),
-                str(ctx.target_extracted_dir) if ctx.target_extracted_dir else None,
-            )
-        )
-
     runner.emit_log(
         "INFO",
         f"animtext: CK-free generation from {plugin_path.name} RACE subgraphs",
     )
 
-    def on_progress(message: str) -> None:
+    def emit_progress(message: str) -> None:
         runner.emit_log("INFO", f"animtext: {message}")
         if progress is not None:
             progress.current_item = message
             runner.emit_item_progress(progress)
 
-    count = generate_anim_text_data(
-        plugin_path,
-        game=ctx.target_game,
-        source_meshes_root=meshes_root,
-        output_meshes_root=meshes_root,
-        base_meshes_root=base_meshes_root,
-        base_plugin_paths=base_race_paths,
-        mod_prefix=getattr(ctx, "mod_prefix", None),
-        progress_callback=on_progress,
-    )
+    progress_messages: Queue[str] = Queue()
+    native_started = time.monotonic()
+    last_update = native_started
+    if creature_family_ids:
+        if (
+            creature_corpus_plan is None
+            or creature_execution_ledger is None
+            or creature_record_commit_ledger is None
+        ):
+            raise RuntimeError(
+                "creature AnimText closure requires corpus plan, execution, and "
+                "record-commit ledgers"
+            )
+        creature_contract_json = json.dumps(
+            {
+                "version": 1,
+                "policy_id": "all_creatures_v1",
+                "game": ctx.target_game,
+                "plugin_path": str(plugin_path),
+                "source_meshes_root": str(meshes_root),
+                "output_meshes_root": str(meshes_root),
+                "base_meshes_root": (
+                    str(base_meshes_root) if base_meshes_root is not None else None
+                ),
+                "base_plugin_paths": [str(path) for path in base_race_paths],
+                "corpus_plan_path": str(creature_corpus_plan),
+                "execution_ledger_path": str(creature_execution_ledger),
+                "record_commit_ledger_path": str(creature_record_commit_ledger),
+                "expected_family_ids": list(creature_family_ids),
+                "event_source": "emitted_race_atkd_atke",
+                "resolution_source": "emitted_family_graphs",
+                "mod_prefix": getattr(ctx, "mod_prefix", None),
+            },
+            sort_keys=True,
+        )
+    else:
+        creature_contract_json = None
+
+    native = load_native_module()
+
+    def generate() -> tuple[int, str | None]:
+        asset_paths = (
+            {
+                "target_data_dir": str(ctx.target_data_dir),
+                "target_catalog_path": str(ctx.target_asset_catalog_path),
+                "target_cache_dir": str(ctx.target_asset_cache_dir),
+                "target_overlay_dir": (
+                    str(ctx.target_extracted_dir) if ctx.target_extracted_dir else None
+                ),
+            }
+            if target_asset_store is not None
+            else {
+                "target_data_dir": None,
+                "target_catalog_path": None,
+                "target_cache_dir": None,
+                "target_overlay_dir": None,
+            }
+        )
+        return native.conversion_generate_anim_text_data(
+            str(plugin_path),
+            ctx.target_game,
+            [str(path) for path in base_race_paths],
+            str(meshes_root),
+            str(meshes_root),
+            base_meshes_root=(
+                str(base_meshes_root) if base_meshes_root is not None else None
+            ),
+            mod_prefix=getattr(ctx, "mod_prefix", None),
+            creature_contract_json=creature_contract_json,
+            progress_callback=progress_messages.put,
+            workers=getattr(ctx, "conversion_workers", None),
+            **asset_paths,
+        )
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="animtext") as executor:
+        future = executor.submit(generate)
+        while not future.done():
+            now = time.monotonic()
+            heartbeat_due_in = max(
+                0.0,
+                _ANIM_TEXT_PROGRESS_HEARTBEAT_SECONDS - (now - last_update),
+            )
+            try:
+                message = progress_messages.get(timeout=min(0.1, heartbeat_due_in))
+            except Empty:
+                now = time.monotonic()
+                if (
+                    not future.done()
+                    and now - last_update >= _ANIM_TEXT_PROGRESS_HEARTBEAT_SECONDS
+                ):
+                    emit_progress(
+                        "still working: native AnimTextData generation is active "
+                        f"({now - native_started:.0f}s elapsed)"
+                    )
+                    last_update = now
+            else:
+                emit_progress(message)
+                last_update = time.monotonic()
+
+        while True:
+            try:
+                message = progress_messages.get_nowait()
+            except Empty:
+                break
+            emit_progress(message)
+        count, creature_receipt_json = future.result()
     runner.emit_log("INFO", f"animtext: wrote {count} AnimTextData bucket file(s)")
+    if not creature_family_ids:
+        return None
+    if creature_receipt_json is None:
+        raise RuntimeError("all_creatures_v1 AnimText closure returned no receipt")
+    return _marshal_creature_anim_text_receipt(creature_receipt_json)
 
 
 def _regenerate_modt_after_asset_waves(
@@ -8846,6 +13765,7 @@ def _regenerate_modt_after_asset_waves(
     mod_root: Path,
     *,
     progress: PhaseProgress | None = None,
+    nif_run=None,
 ) -> None:
     ctx = driver.ctx
     if (
@@ -8876,6 +13796,7 @@ def _regenerate_modt_after_asset_waves(
 
     update_progress(0, "Building mesh manifest")
     try:
+        open_started = time.perf_counter()
         with ConversionRun.open_existing(
             driver._req.source_game,
             driver._req.target_game,
@@ -8883,12 +13804,18 @@ def _regenerate_modt_after_asset_waves(
             str(output_path),
             config=driver.record_runtime._native_run_config(ctx),
         ) as run:
+            _record_timing(ctx, "modt_open_native", open_started)
+            if nif_run is not None:
+                run.share_output_nif_dependencies(nif_run)
+            manifest_started = time.perf_counter()
             manifest_report = run.run_phase(
                 "emit_modt_manifest",
                 mod_path=str(mod_root),
                 params={"manifest_path": str(manifest_path)},
             )
+            _record_timing(ctx, "modt_manifest", manifest_started)
             update_progress(1, "Regenerating MODT records")
+            apply_started = time.perf_counter()
             modt_report = run.run_phase(
                 "regenerate_modt",
                 mod_path=str(mod_root),
@@ -8897,7 +13824,9 @@ def _regenerate_modt_after_asset_waves(
                     "is_upgrade": False,
                 },
             )
+            _record_timing(ctx, "modt_apply", apply_started)
             update_progress(2, "Saving updated plugin")
+            save_started = time.perf_counter()
             temp_fd, temp_name = tempfile.mkstemp(
                 dir=output_path.parent,
                 prefix=f".{output_path.name}.",
@@ -8908,6 +13837,7 @@ def _regenerate_modt_after_asset_waves(
             run.save_target(str(temp_output_path), run_nvnm_validator=False)
         os.replace(temp_output_path, output_path)
         _cleanup_temp_save_strings(temp_output_path)
+        _record_timing(ctx, "modt_save_plugin", save_started)
         temp_output_path = None
         update_progress(3, "")
     finally:
@@ -9119,12 +14049,153 @@ def _rebuild_cell_offsets_after_build(
     )
 
 
+def _finalize_plugin_records_after_asset_waves(
+    driver: "UnifiedDriver",
+    runner: "ConversionRunner",
+    mod_root: Path,
+    source_plugin: Path,
+    *,
+    progress: PhaseProgress | None = None,
+    nif_run=None,
+) -> None:
+    """Publish MODT, TERM and final cell offsets as one atomic plugin update."""
+    ctx = driver.ctx
+    if (
+        ctx is None
+        or driver._req.target_game.lower() != "fo4"
+        or not driver._req.options.build_esp
+    ):
+        return
+
+    output_path = mod_root / ctx.output_plugin_name
+    if not output_path.is_file():
+        raise FileNotFoundError(
+            f"final plugin record update requires the built output plugin: {output_path}"
+        )
+
+    from bacup_lib.run import ConversionRun
+
+    repair_term_markers = driver._req.source_game.lower() == "fo76"
+    rebuild_cell_offsets = bool(
+        getattr(driver._req.options, "rebuild_cell_offsets", True)
+    )
+    manifest_path = mod_root / "debug" / "modt" / "mesh_manifest.json"
+    temp_output_path: Path | None = None
+
+    def update_progress(completed_items: int, current_item: str) -> None:
+        if progress is None:
+            return
+        progress.total_items = 3
+        progress.completed_items = completed_items
+        progress.current_item = current_item
+        runner.emit_item_progress(progress)
+
+    update_progress(0, "Building mesh manifest")
+    try:
+        open_started = time.perf_counter()
+        with ConversionRun.open_existing(
+            driver._req.source_game,
+            driver._req.target_game,
+            None,
+            str(output_path),
+            config=driver.record_runtime._native_run_config(ctx),
+        ) as run:
+            _record_timing(ctx, "final_plugin_open_native", open_started)
+            if runner.is_cancelled():
+                raise RuntimeError("conversion cancelled before final plugin update")
+            if nif_run is not None:
+                run.share_output_nif_dependencies(nif_run)
+            cancel_watch_stop = threading.Event()
+
+            def forward_cancellation() -> None:
+                while not cancel_watch_stop.wait(0.1):
+                    if runner.is_cancelled():
+                        run.cancel()
+                        return
+
+            cancel_watcher = threading.Thread(
+                target=forward_cancellation,
+                daemon=True,
+                name="final-plugin-cancel",
+            )
+            cancel_watcher.start()
+            try:
+                manifest_started = time.perf_counter()
+                manifest_report = run.run_phase(
+                    "emit_modt_manifest",
+                    mod_path=str(mod_root),
+                    params={"manifest_path": str(manifest_path)},
+                )
+                _record_timing(ctx, "modt_manifest", manifest_started)
+                update_progress(1, "Regenerating MODT and finalizing plugin records")
+                mutations_started = time.perf_counter()
+                final_report = run.run_phase(
+                    "finalize_plugin_records",
+                    mod_path=str(mod_root),
+                    params={
+                        "manifest_path": str(manifest_path),
+                        "manifest_entries": manifest_report.get("records_changed", 0),
+                        "is_upgrade": False,
+                        "regenerate_modt": True,
+                        "repair_term_markers": repair_term_markers,
+                        "rebuild_cell_offsets": rebuild_cell_offsets,
+                        "source_plugin_path": (
+                            str(source_plugin) if repair_term_markers else None
+                        ),
+                    },
+                )
+                _record_timing(ctx, "final_plugin_mutations_native", mutations_started)
+            finally:
+                cancel_watch_stop.set()
+                cancel_watcher.join(timeout=1.0)
+            if runner.is_cancelled():
+                raise RuntimeError("conversion cancelled before final plugin save")
+            for event in run.drain_events(256):
+                if event.get("kind") == "log":
+                    runner.emit_log(
+                        str(event.get("level", "INFO")).upper(),
+                        str(event.get("message", "")),
+                    )
+            update_progress(2, "Saving updated plugin")
+            save_started = time.perf_counter()
+            temp_fd, temp_name = tempfile.mkstemp(
+                dir=output_path.parent,
+                prefix=f".{output_path.name}.",
+                suffix=".tmp",
+            )
+            temp_output_path = Path(temp_name)
+            os.close(temp_fd)
+            run.save_target(str(temp_output_path), run_nvnm_validator=False)
+        if runner.is_cancelled():
+            raise RuntimeError("conversion cancelled before final plugin publication")
+        os.replace(temp_output_path, output_path)
+        _cleanup_temp_save_strings(temp_output_path)
+        _record_timing(ctx, "final_plugin_save", save_started)
+        temp_output_path = None
+        update_progress(3, "")
+    finally:
+        if temp_output_path is not None:
+            _cleanup_temp_save_strings(temp_output_path)
+            try:
+                temp_output_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    runner.emit_log(
+        "INFO",
+        "final plugin records published atomically: "
+        f"records_changed={final_report.get('records_changed', 0)} "
+        f"warnings={final_report.get('warnings', 0)}",
+    )
+
+
 def run_unified(
     request: PluginPortRequest,
     runner: "ConversionRunner",
     *,
     enable_ba2: bool = True,
     archive_max_bytes: int = DEFAULT_ARCHIVE_MAX_BYTES,
+    ba2_compression_level: int | None = None,
     max_asset_failures: int | None = None,
     serialize_tracks: bool = True,
     asset_conversion_workers: int | None = None,
@@ -9136,16 +14207,28 @@ def run_unified(
     land_cache_hook: "Callable[[ConversionContext], bool] | None" = None,
     record_preflight_complete: bool = False,
 ) -> "UnifiedRunResult":
-    """The unified driver: record track + asset waves + sink join
-    + cache manifest. `request.options` = the legacy full-run options (asset
-    toggles ON; see UnifiedDriver.__init__)."""
+    """The unified driver: record track + asset waves + sink join.
+
+    `request.options` = the legacy full-run options (asset toggles ON; see
+    UnifiedDriver.__init__).
+    """
+    preflight_started = time.perf_counter()
     if not record_preflight_complete:
         _preflight_legacy_packs(request, runner)
+    _record_timing(
+        request,
+        "unified_initial_preflight",
+        preflight_started,
+        scope="detail",
+        parent="run_unified",
+        status="skipped" if record_preflight_complete else "ok",
+    )
     toggles = AssetWaveToggles.from_options(request.options)
     mod_root = _resolved_mod_root(request)
     mod_root.mkdir(parents=True, exist_ok=True)
     diagnostics_root = Path(getattr(request, "diagnostics_root", None) or mod_root)
     diagnostics_root.mkdir(parents=True, exist_ok=True)
+    sink_setup_started = time.perf_counter()
     native = load_native_module()
 
     direct_pack_loose_archives = bool(enable_ba2)
@@ -9159,6 +14242,14 @@ def run_unified(
             }
         )
     )
+    _record_timing(
+        request,
+        "unified_sink_creation",
+        sink_setup_started,
+        scope="detail",
+        parent="run_unified",
+        status="ok",
+    )
     driver = UnifiedDriver(
         request,
         sink_id=sink_id,
@@ -9171,7 +14262,6 @@ def run_unified(
     asset_runs: "AssetRuns | None" = None
     asset_thread: threading.Thread | None = None
     asset_error: list[BaseException] = []
-    cache_entries: list[CacheAssetEntry] | None = None
 
     def asset_thread_body() -> None:
         nonlocal asset_runs
@@ -9199,9 +14289,8 @@ def run_unified(
         asset_thread.start()
 
     def release_asset_state_before_lod() -> None:
-        nonlocal asset_runs, cache_entries
-        if cache_entries is None:
-            cache_entries = collect_cache_entries(driver, toggles)
+        nonlocal asset_runs
+        release_started = time.perf_counter()
         if driver.ctx is not None:
             driver.ctx.assets = []
         driver.assets = []
@@ -9210,6 +14299,13 @@ def run_unified(
             asset_runs.drop_all()
             asset_runs = None
         gc.collect()
+        _record_timing(
+            request,
+            "unified_release_asset_state_before_lod",
+            release_started,
+            scope="detail",
+            parent="run_unified",
+        )
 
     try:
         if serialize_tracks:
@@ -9227,27 +14323,52 @@ def run_unified(
             finally:
                 driver.signals.record_done.set()
                 if asset_thread is not None:
+                    asset_join_started = time.perf_counter()
                     asset_thread.join()
+                    _record_timing(
+                        request,
+                        "unified_asset_thread_join_wait",
+                        asset_join_started,
+                        scope="detail",
+                        parent="run_unified",
+                        overlaps="asset_track",
+                    )
         if asset_error:
             raise asset_error[0]
 
-        _run_post_phase(
-            "Regenerate MODT",
-            lambda progress: _regenerate_modt_after_asset_waves(
-                driver,
-                runner,
-                mod_root,
-                progress=progress,
-            ),
-            runner,
-        )
-
-        # EXPERIMENTAL, gated off: only schedule (and surface) the precombine phase
-        # when explicitly enabled, so the default full build is byte-unchanged.
-        if (
+        generate_precombines = bool(
             request.target_game.lower() == "fo4"
             and getattr(request.options, "generate_precombines", False)
-        ):
+        )
+        if not generate_precombines:
+            _run_post_phase(
+                "Finalize Plugin Records",
+                lambda progress: _finalize_plugin_records_after_asset_waves(
+                    driver,
+                    runner,
+                    mod_root,
+                    request.source_plugins[0],
+                    progress=progress,
+                    nif_run=getattr(asset_runs, "nifs", None),
+                ),
+                runner,
+                timing_report=getattr(request, "timing_report", None),
+            )
+        else:
+            # Precombines intentionally keep their independent checkpoint between
+            # MODT and TERM repair, including their non-fatal failure behavior.
+            _run_post_phase(
+                "Regenerate MODT",
+                lambda progress: _regenerate_modt_after_asset_waves(
+                    driver,
+                    runner,
+                    mod_root,
+                    progress=progress,
+                    nif_run=getattr(asset_runs, "nifs", None),
+                ),
+                runner,
+                timing_report=getattr(request, "timing_report", None),
+            )
             _run_post_phase(
                 "Generate precombines",
                 lambda progress: _generate_precombines_after_asset_waves(
@@ -9257,30 +14378,44 @@ def run_unified(
                     progress=progress,
                 ),
                 runner,
+                timing_report=getattr(request, "timing_report", None),
+            )
+            if driver.ctx is not None:
+                term_repair_started = time.perf_counter()
+                driver.record_runtime._repair_term_marker_parameters_final(
+                    driver.ctx,
+                    runner,
+                    request.source_plugins[0],
+                )
+                _record_timing(
+                    request,
+                    "unified_term_marker_final_repair",
+                    term_repair_started,
+                    scope="detail",
+                    parent="run_unified",
+                )
+            _run_post_phase(
+                "Rebuild Cell Offsets",
+                lambda progress: _rebuild_cell_offsets_after_build(
+                    driver,
+                    runner,
+                    mod_root,
+                    progress=progress,
+                ),
+                runner,
+                timing_report=getattr(request, "timing_report", None),
             )
 
         if driver.ctx is not None:
-            driver.record_runtime._repair_term_marker_parameters_final(
-                driver.ctx,
-                runner,
-                request.source_plugins[0],
-            )
-
-        # Last ESM-record mutation: OFST/CLSZ encode the serialized layout, so
-        # every earlier step that rewrites the plugin must already have run.
-        _run_post_phase(
-            "Rebuild Cell Offsets",
-            lambda progress: _rebuild_cell_offsets_after_build(
-                driver,
-                runner,
-                mod_root,
-                progress=progress,
-            ),
-            runner,
-        )
-
-        if driver.ctx is not None:
+            pipboy_map_started = time.perf_counter()
             _finalize_fo76_pipboy_map_texture(request, driver.ctx, runner)
+            _record_timing(
+                request,
+                "unified_pipboy_map_finalization",
+                pipboy_map_started,
+                scope="detail",
+                parent="run_unified",
+            )
             _run_post_phase(
                 "Copy VaultBoy SWFs",
                 lambda _progress: _copy_fo76_vaultboy_swfs(
@@ -9289,9 +14424,30 @@ def run_unified(
                     runner,
                 ),
                 runner,
+                timing_report=getattr(request, "timing_report", None),
             )
 
-        if getattr(request.options, "generate_anim_text_data", False):
+        creature_policy = (
+            getattr(driver.ctx, "mvp_creature_corpus_policy", None)
+            if driver.ctx is not None
+            else None
+        )
+        if (
+            isinstance(creature_policy, Mapping)
+            and creature_policy.get("policy_id") == "all_creatures_v1"
+        ):
+            if getattr(driver.ctx, "_creature_corpus_has_jobs", False):
+                _run_post_phase(
+                    "Generate Creature AnimTextData",
+                    lambda progress: _run_creature_corpus_anim_text_closure(
+                        driver.ctx,
+                        runner,
+                        progress=progress,
+                    ),
+                    runner,
+                    timing_report=getattr(request, "timing_report", None),
+                )
+        elif getattr(request.options, "generate_anim_text_data", False):
             if driver.ctx is None:
                 raise RuntimeError(
                     "AnimTextData generation requires a built conversion context"
@@ -9309,6 +14465,7 @@ def run_unified(
                     progress=progress,
                 ),
                 runner,
+                timing_report=getattr(request, "timing_report", None),
             )
 
         if lod_hook is not None:
@@ -9318,6 +14475,7 @@ def run_unified(
                 "Generate LOD",
                 lambda _progress: lod_hook(mod_root),
                 runner,
+                timing_report=getattr(request, "timing_report", None),
             )
 
         if getattr(request.options, "validate_collision", False):
@@ -9333,18 +14491,6 @@ def run_unified(
                 workers=asset_conversion_workers,
             )
 
-        cache_manifest_started = time.perf_counter()
-        emit_runner_status(runner, "Building conversion cache manifest")
-        runner.emit_log("INFO", "postflight: hashing conversion cache manifest")
-        write_cache_manifest(
-            mod_root,
-            cache_entries or collect_cache_entries(driver, toggles),
-        )
-        runner.emit_log(
-            "INFO",
-            "postflight: conversion cache manifest complete "
-            f"elapsed={time.perf_counter() - cache_manifest_started:.1f}s",
-        )
         target_asset_store = getattr(driver.ctx, "target_asset_store", None)
         if target_asset_store is not None:
             stats = target_asset_store.stats()
@@ -9395,33 +14541,68 @@ def run_unified(
                     runner.emit_item_progress(progress)
                     return True
 
-                plans.extend(
-                    finalize_sinks_for_mod(
-                        sink_id,
-                        mod_root,
-                        mod_name=mod_root.name,
-                        archive_max_bytes=archive_max_bytes,
-                        reconcile_workers=getattr(
-                            request.options, "conversion_workers", None
-                        ),
-                        direct_pack_all=direct_pack_loose_archives,
-                        texture_pack_workers=getattr(
-                            request.options, "conversion_workers", None
-                        ),
-                        expanded_archives=expanded_archives,
-                        archive_output_dir=archive_output_dir,
-                        fo4_ba2_target=fo4_ba2_target,
-                        archive_labels=archive_labels,
-                        pack_progress=emit_pack_progress,
-                    )
+                # The game mounts BA2s by plugin name, so archives are named
+                # after the output plugin stem, which differs from the mod
+                # folder on fnvfo3:fo4 (mods/FNV_FO3 -> FalloutNV.esm).
+                archive_base_name = (
+                    getattr(request, "archive_base_name", None) or mod_root.name
                 )
+                if request.target_game.lower() == "starfield":
+                    # R1 SD-8: the fo4:starfield tail never goes through the
+                    # generic multi-family planner in the `else` branch below
+                    # — see pack_fo4_starfield_archives's docstring for why.
+                    plans.extend(
+                        pack_fo4_starfield_archives(
+                            mod_root,
+                            mod_name=archive_base_name,
+                            archive_max_bytes=archive_max_bytes,
+                            archive_output_dir=archive_output_dir,
+                            expanded_archives=expanded_archives,
+                            ba2_compression_level=ba2_compression_level,
+                            pack_progress=emit_pack_progress,
+                        )
+                    )
+                else:
+                    plans.extend(
+                        finalize_sinks_for_mod(
+                            sink_id,
+                            mod_root,
+                            mod_name=archive_base_name,
+                            archive_max_bytes=archive_max_bytes,
+                            ba2_compression_level=ba2_compression_level,
+                            reconcile_workers=getattr(
+                                request.options, "conversion_workers", None
+                            ),
+                            direct_pack_all=direct_pack_loose_archives,
+                            texture_pack_workers=getattr(
+                                request.options, "conversion_workers", None
+                            ),
+                            expanded_archives=expanded_archives,
+                            archive_output_dir=archive_output_dir,
+                            fo4_ba2_target=fo4_ba2_target,
+                            archive_labels=archive_labels,
+                            pack_progress=emit_pack_progress,
+                        )
+                    )
 
-            _run_post_phase("Pack BA2", pack_body, runner)
+            _run_post_phase(
+                "Pack BA2", pack_body, runner,
+                timing_report=getattr(request, "timing_report", None),
+            )
             runner.emit_log(
                 "INFO", "join: wrote " + ", ".join(p.output_name for p in plans)
             )
+        completion_started = time.perf_counter()
         driver.emit_complete(runner)
         mirror.finish("done")
+        _record_timing(
+            request,
+            "unified_completion_emit_and_mirror_finish",
+            completion_started,
+            scope="detail",
+            parent="run_unified",
+            status="done",
+        )
         return UnifiedRunResult(
             summary=driver.record_runtime._aggregate_summary,
             run_result=driver.record_runtime.run_result,
@@ -9432,43 +14613,41 @@ def run_unified(
             native.sinks_abort(sink_id)
         except Exception:
             pass
+        failed_finish_started = time.perf_counter()
         mirror.finish("failed")
+        _record_timing(
+            request,
+            "unified_mirror_finish_failed",
+            failed_finish_started,
+            scope="detail",
+            parent="run_unified",
+            status="failed",
+        )
         raise
     finally:
         if asset_runs is not None:
+            final_asset_drop_started = time.perf_counter()
             asset_runs.drop_all()
+            _record_timing(
+                request,
+                "unified_final_asset_runs_drop",
+                final_asset_drop_started,
+                scope="detail",
+                parent="run_unified",
+            )
+        if driver.ctx is not None:
+            setattr(driver.ctx, "source_asset_inventory", None)
+        sink_drop_started = time.perf_counter()
+        sink_drop_status = "ok"
         try:
             native.sinks_drop(sink_id)
         except Exception:
-            pass
-
-
-def collect_cache_entries(
-    driver: "UnifiedDriver", toggles: "AssetWaveToggles"
-) -> list[CacheAssetEntry]:
-    """Manifest rows for the entry-list phases. v1 fidelity (declared):
-    BTO + sound entries record their planned outputs (cheap, exact path
-    mapping); NIF/havok rows are recorded with empty outputs (consult_cache
-    never skips them — conservative); convert-all phases (textures,
-    materials) enumerate in Rust and have no per-entry rows."""
-    if driver.ctx is None:
-        return []
-    entries: list[CacheAssetEntry] = []
-    digest = params_digest({"overwrite": True})
-    for asset in list(driver.ctx.assets):
-        a_type = str(getattr(asset, "asset_type", "")).lower()
-        resolved = getattr(asset, "resolved_path", None)
-        if not resolved:
-            continue
-        source = str(getattr(asset, "source_path", "")).replace("\\", "/")
-        if a_type == "bto" and toggles.btos:
-            rel = source if source.lower().startswith("meshes/") else f"Meshes/{source}"
-            entries.append(CacheAssetEntry(str(resolved), "btos", digest, (rel,)))
-        elif a_type in {"sound", "audio"} and toggles.sounds:
-            rel = source if source.lower().startswith("sound/") else f"Sound/{source}"
-            entries.append(CacheAssetEntry(str(resolved), "sounds", digest, (rel,)))
-        elif a_type == "nif" and toggles.nifs:
-            entries.append(CacheAssetEntry(str(resolved), "nifs", digest, ()))
-        elif a_type == "behavior" and toggles.havok:
-            entries.append(CacheAssetEntry(str(resolved), "havok", digest, ()))
-    return entries
+            sink_drop_status = "failed"
+        _record_timing(
+            request,
+            "unified_final_sink_drop",
+            sink_drop_started,
+            scope="detail",
+            parent="run_unified",
+            status=sink_drop_status,
+        )

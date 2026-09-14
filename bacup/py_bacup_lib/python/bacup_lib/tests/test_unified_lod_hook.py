@@ -88,8 +88,8 @@ def test_lod_hook_fires_after_assets_before_pack(monkeypatch, tmp_path):
     monkeypatch.setattr(U, "run_asset_track", _fake_run_asset_track)
     monkeypatch.setattr(
         U,
-        "_regenerate_modt_after_asset_waves",
-        lambda *_a, **_k: order.append("modt"),
+        "_finalize_plugin_records_after_asset_waves",
+        lambda *_a, **_k: order.append("final_plugin"),
     )
 
     def _fake_finalize(*_a, **_k):
@@ -123,13 +123,6 @@ def test_lod_hook_fires_after_assets_before_pack(monkeypatch, tmp_path):
         collision_report_dirs.append(Path(report_dir))
 
     monkeypatch.setattr(U, "_run_collision_validation", _fake_collision_validation)
-    monkeypatch.setattr(
-        U,
-        "write_cache_manifest",
-        lambda *a, **k: order.append("manifest"),
-    )
-    monkeypatch.setattr(U, "collect_cache_entries", lambda *a, **k: [])
-
     class _FakeRecordRuntime:
         _aggregate_summary = object()
         run_result = object()
@@ -165,6 +158,7 @@ def test_lod_hook_fires_after_assets_before_pack(monkeypatch, tmp_path):
     )
 
     request = _make_request(tmp_path)
+    request.timing_report = U.TimingReport()
     request.diagnostics_root = tmp_path / "diagnostics"
     request.options.validate_collision = True
     runner = _make_runner()
@@ -173,7 +167,7 @@ def test_lod_hook_fires_after_assets_before_pack(monkeypatch, tmp_path):
         assert order == [
             "records",
             "assets",
-            "modt",
+            "final_plugin",
             "drop_assets",
         ], f"Expected assets released, got {order}"
         order.append("lod")
@@ -182,20 +176,23 @@ def test_lod_hook_fires_after_assets_before_pack(monkeypatch, tmp_path):
     assert order == [
         "records",
         "assets",
-        "modt",
+        "final_plugin",
         "drop_assets",
         "lod",
         "collision",
-        "manifest",
         "pack",
     ], f"Unexpected order: {order}"
     assert mirror_paths == [request.diagnostics_root / "run_state.json"]
     assert collision_report_dirs == [request.diagnostics_root / "collision_validation"]
+    top_level_timings = [
+        event["name"]
+        for event in request.timing_report.events
+        if event["name"] in {"Finalize Plugin Records", "Generate LOD", "Pack BA2"}
+    ]
+    assert top_level_timings == ["Finalize Plugin Records", "Generate LOD", "Pack BA2"]
     assert runner.phase_events == [
-        ("start", "Regenerate MODT", "running"),
-        ("complete", "Regenerate MODT", "completed"),
-        ("start", "Rebuild Cell Offsets", "running"),
-        ("complete", "Rebuild Cell Offsets", "completed"),
+        ("start", "Finalize Plugin Records", "running"),
+        ("complete", "Finalize Plugin Records", "completed"),
         ("start", "Generate LOD", "running"),
         ("complete", "Generate LOD", "completed"),
         ("start", "Pack BA2", "running"),
@@ -209,7 +206,7 @@ def test_lod_hook_fires_after_assets_before_pack(monkeypatch, tmp_path):
 
 
 def test_lod_hook_none_no_change(monkeypatch, tmp_path):
-    """When lod_hook is None, run_unified behaves identically to today."""
+    """When lod_hook is None, run_unified skips LOD and continues to packing."""
     order: list[str] = []
 
     class _Native:
@@ -229,8 +226,8 @@ def test_lod_hook_none_no_change(monkeypatch, tmp_path):
     monkeypatch.setattr(U, "run_asset_track", _fake_run_asset_track)
     monkeypatch.setattr(
         U,
-        "_regenerate_modt_after_asset_waves",
-        lambda *_a, **_k: order.append("modt"),
+        "_finalize_plugin_records_after_asset_waves",
+        lambda *_a, **_k: order.append("final_plugin"),
     )
 
     def _fake_finalize(*_a, **_k):
@@ -245,13 +242,6 @@ def test_lod_hook_none_no_change(monkeypatch, tmp_path):
             AssertionError("collision validation should be opt-in")
         ),
     )
-    monkeypatch.setattr(
-        U,
-        "write_cache_manifest",
-        lambda *a, **k: order.append("manifest"),
-    )
-    monkeypatch.setattr(U, "collect_cache_entries", lambda *a, **k: [])
-
     class _FakeRecordRuntime:
         _aggregate_summary = object()
         run_result = object()
@@ -287,7 +277,8 @@ def test_lod_hook_none_no_change(monkeypatch, tmp_path):
     request = _make_request(tmp_path)
     runner = _make_runner()
     U.run_unified(request, runner, serialize_tracks=True, lod_hook=None)
-    assert order == ["records", "assets", "modt", "manifest", "pack"]
+    assert order == ["records", "assets", "final_plugin", "pack"]
+    assert not (U._resolved_mod_root(request) / "manifest.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -302,18 +293,19 @@ def test_run_generate_lod_removes_atlas_txt(monkeypatch, tmp_path):
     mod_root = tmp_path / "SeventySix"
     mod_root.mkdir()
 
-    # Pre-create the on-disk artefact that native lodgen would produce.
     obj_dir = mod_root / "data" / "Textures" / "Terrain" / world / "Objects"
-    obj_dir.mkdir(parents=True)
     atlas_txt = obj_dir / f"{world}.Objects.txt"
-    atlas_txt.write_text("fake atlas map")
-
-    # A .dds sitting next to the .txt must survive.
     atlas_dds = obj_dir / f"{world}.Objects.dds"
-    atlas_dds.write_bytes(b"DDS ")
 
     fake_result = SimpleNamespace(btr=1, bto=2, dds=3, lod_written=True, warnings=[])
-    monkeypatch.setattr(_lod_rt, "generate_lod", lambda *a, **k: fake_result)
+
+    def fake_generate_lod(*_args, **_kwargs):
+        obj_dir.mkdir(parents=True)
+        atlas_txt.write_text("fake atlas map")
+        atlas_dds.write_bytes(b"DDS ")
+        return fake_result
+
+    monkeypatch.setattr(_lod_rt, "generate_lod", fake_generate_lod)
 
     logs: list[tuple[str, str]] = []
     _run_generate_lod(

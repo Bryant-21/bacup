@@ -5,3 +5,6 @@ Bool Function Trace(ScriptObject CallingObject, String asTextToPrint, Int aiSeve
 	Debug.OpenUserLog("Camp")
 	Return Debug.TraceUser("Camp", CallingObject as String + ": " + asTextToPrint, aiSeverity)
 EndFunction
+
+Function ClientDisplayCompanionNameMenu(Actor CompanionActor)
+EndFunction

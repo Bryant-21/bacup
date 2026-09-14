@@ -527,8 +527,9 @@ def main():
         toolbar_opts,
     )
 
-    runner_params.imgui_window_params.show_status_bar = True
-    runner_params.imgui_window_params.show_status_fps = True
+    runner_params.imgui_window_params.show_status_bar = False
+    runner_params.imgui_window_params.show_status_fps = False
+    runner_params.imgui_window_params.remember_status_bar_settings = False
     runner_params.imgui_window_params.tweaked_theme = (
         hello_imgui.ImGuiTweakedTheme(hello_imgui.ImGuiTheme_.darcula)
     )

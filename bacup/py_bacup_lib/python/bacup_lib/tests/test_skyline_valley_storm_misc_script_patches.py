@@ -18,12 +18,9 @@ from creation_lib.pex.native_runtime import compile_psc
 REPO_ROOT = Path(__file__).resolve().parents[5]
 SOURCE_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 
-# Every script patched by shard w2-skyline-valley-storm-misc. The seventh row in
-# this shard's runbook, Storm_PuzzleLaserGridScript, resolved to non-defect (zero
-# source records, zero live VMAD bindings even under the decompress-aware probe
-# sweep, no consuming script, and no trace of its own puzzle-room content anywhere
-# in FO76 source data -- see contracts/w2-skyline-valley-storm-misc.md) and is
-# intentionally not patched or covered here.
+# Storm_PuzzleLaserGridScript is deliberately not patched: it has no source
+# records, no live VMAD bindings, no consuming script, and no puzzle-room content
+# anywhere in FO76 source data.
 PATCH_CASES = (
     "Storm_DefenseUpgradeRepairScript",
     "Storm_DKWD_Interior_SecretDoor_Script",

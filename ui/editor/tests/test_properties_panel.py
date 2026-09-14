@@ -4,6 +4,8 @@ from unittest.mock import MagicMock
 
 from creation_lib.nif.actions import SetFieldAction
 from creation_lib.nif.nif_file import NifFile
+from creation_lib.nif.schema import build_field_def_map, get_schema
+from ui.editor.panels import properties as properties_module
 from ui.editor.panels.properties import PropertiesPanel
 
 
@@ -93,3 +95,38 @@ def test_reusable_block_field_renderer_passes_schema_defs_to_widgets():
 
     assert seen["Order"] == "NiPSysModifierOrder"
     assert seen["Colors"] == "Color4"
+
+
+def test_nested_fo76_shader_crc_arrays_keep_enum_schema(monkeypatch):
+    app = _FakeApp()
+    panel = PropertiesPanel(app)
+    schema = get_schema()
+    shader_data_fdef = build_field_def_map(schema, "BSLightingShaderProperty")[
+        "Shader Property Data"
+    ]
+    block = MagicMock(type_name="BSLightingShaderProperty")
+    enum_fields = []
+
+    monkeypatch.setattr(properties_module.imgui, "tree_node", lambda _label: True)
+    monkeypatch.setattr(properties_module.imgui, "tree_pop", lambda: None)
+    panel._draw_enum = lambda _block, name, value, enum_def: enum_fields.append(
+        (name, value, enum_def.name)
+    )
+
+    panel._draw_struct(
+        block,
+        "Shader Property Data",
+        {
+            "SF1": [1740048692, 3166356979],
+            "SF2": [759557230, 731263983],
+        },
+        shader_data_fdef,
+        schema,
+    )
+
+    assert enum_fields == [
+        ("Shader Property Data.SF1[0]", 1740048692, "BSShaderCRC32"),
+        ("Shader Property Data.SF1[1]", 3166356979, "BSShaderCRC32"),
+        ("Shader Property Data.SF2[0]", 759557230, "BSShaderCRC32"),
+        ("Shader Property Data.SF2[1]", 731263983, "BSShaderCRC32"),
+    ]

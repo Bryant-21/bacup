@@ -7,13 +7,17 @@ import os
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path as _Path
 
 from app.paths import get_app_root as _get_app_root
 from typing import Any
 
 import numpy as np
+
 from imgui_bundle import imgui, implot
+
+from creation_lib.ui.widgets.modern import expandable_section
 
 _log = logging.getLogger("toolkit.voice_changer.filter_builder")
 _NS = "##voice_changer"
@@ -46,6 +50,10 @@ _EFFECT_CATEGORIES = {
         ("Distortion", {"drive_db": 5.0}),
         ("Clipping", {"threshold_db": -6.0}),
         ("Bitcrush", {"bit_depth": 8.0}),
+    ],
+    "Creature": [
+        ("FormantShift", {"formant_ratio": 0.85}),
+        ("Subharmonic", {"mix": 0.4, "cutoff_hz": 300.0}),
     ],
     "Custom": [
         ("CombFilter", {"delay_seconds": 0.015, "decay": 0.6}),
@@ -83,6 +91,7 @@ _PARAM_RANGES: dict[str, tuple[float, float, str]] = {
     "frequency_hz": (1.0, 100.0, "%.1f Hz"),
     "amplitude": (0.0, 0.05, "%.4f"),
     "semitones": (-24.0, 24.0, "%.1f st"),
+    "formant_ratio": (0.50, 1.50, "%.2f x"),
     "bit_depth": (1.0, 32.0, "%.1f bit"),
     "vbr_quality": (0.0, 10.0, "%.1f"),
     "width": (0.0, 1.0, "%.2f"),
@@ -118,14 +127,19 @@ class FilterBuilderPanel:
         self._expanded = dict(expanded)
         self._seen_keys.clear()
 
-    def _tree_node_tracked(self, key: str, label: str, flags: int) -> bool:
-        """Tree node that defaults to closed and persists open/close state."""
+    @contextmanager
+    def _section_tracked(self, key: str, label: str, *, header_actions=None, actions_width=0):
         if key not in self._seen_keys:
             self._seen_keys.add(key)
             imgui.set_next_item_open(self._expanded.get(key, False), imgui.Cond_.always.value)
-        is_open = imgui.tree_node_ex(label, flags)
-        self._expanded[key] = is_open
-        return is_open
+
+        def draw_header(is_open):
+            self._expanded[key] = is_open
+            if header_actions is not None:
+                header_actions(is_open)
+
+        with expandable_section(label, header_actions=draw_header, actions_width=actions_width) as expanded:
+            yield expanded
 
     def draw(self):
         if self._app.focus_filter_builder:
@@ -177,27 +191,22 @@ class FilterBuilderPanel:
 
             # Render each preset group
             for gname, start, count in groups:
-                header_flags = (
-                    imgui.TreeNodeFlags_.framed.value
-                    | imgui.TreeNodeFlags_.allow_overlap.value
-                )
-                header_open = self._tree_node_tracked(f"grp_{gname}", f"{gname} ({count})##grp_{gname}", header_flags)
-                if header_open:
-                    for i in range(start, start + count):
-                        if i >= len(chain):
-                            break
-                        imgui.push_id(i)
-                        card_swap, card_delete = self._draw_effect_card(i, chain[i])
-                        if card_swap is not None:
-                            # Only allow swaps within this group
-                            s, d = card_swap
-                            if start <= s < start + count and start <= d < start + count:
-                                swap_pair = card_swap
-                        if card_delete:
-                            delete_idx = i
-                        imgui.pop_id()
-                        imgui.spacing()
-                    imgui.tree_pop()
+                with self._section_tracked(f"grp_{gname}", f"{gname} ({count})##grp_{gname}") as expanded:
+                    if expanded:
+                        for i in range(start, start + count):
+                            if i >= len(chain):
+                                break
+                            imgui.push_id(i)
+                            card_swap, card_delete = self._draw_effect_card(i, chain[i])
+                            if card_swap is not None:
+                                # Only allow swaps within this group
+                                s, d = card_swap
+                                if start <= s < start + count and start <= d < start + count:
+                                    swap_pair = card_swap
+                            if card_delete:
+                                delete_idx = i
+                            imgui.pop_id()
+                            imgui.spacing()
 
             # Render any effects not in a group (manually added)
             ungrouped = [i for i in range(len(chain)) if i not in grouped_indices]
@@ -264,13 +273,12 @@ class FilterBuilderPanel:
             enabled = node.get("enabled", True)
             params = node.get("params", {})
 
-            flags = imgui.TreeNodeFlags_.framed.value
-            if imgui.tree_node_ex(f"{display}##preview_{i}", flags):
-                # Show params as text (read-only since we're in begin_disabled)
-                for key, value in params.items():
-                    label = key.replace("_", " ").title()
-                    imgui.text(f"  {label}: {value:.3g}" if isinstance(value, float) else f"  {label}: {value}")
-                imgui.tree_pop()
+            with expandable_section(f"{display}##preview_{i}") as expanded:
+                if expanded:
+                    # Show params as text (read-only since we're in begin_disabled)
+                    for key, value in params.items():
+                        label = key.replace("_", " ").title()
+                        imgui.text(f"  {label}: {value:.3g}" if isinstance(value, float) else f"  {label}: {value}")
         imgui.end_disabled()
 
     def _draw_effect_card(self, idx: int, node: dict):
@@ -285,13 +293,6 @@ class FilterBuilderPanel:
         swap_pair = None
         should_delete = False
 
-        # Card header — allow_overlap lets the X button capture its own click even
-        # though the framed tree node header covers the same row width.
-        flags = (
-            imgui.TreeNodeFlags_.framed.value
-            | imgui.TreeNodeFlags_.allow_overlap.value
-        )
-
         # Resolve display name (VST3 nodes all have type "VST3"; show plugin name instead)
         display_name = effect_type
         if effect_type == "VST3":
@@ -303,46 +304,42 @@ class FilterBuilderPanel:
             else:
                 display_name = os.path.basename(plugin_path) or "VST3"
 
-        # Checkbox for enable/disable
-        changed_en, new_enabled = imgui.checkbox(f"##en_{idx}", enabled)
-        if changed_en:
-            node["enabled"] = new_enabled
-        imgui.same_line()
+        def header_actions(_expanded):
+            nonlocal swap_pair, should_delete
+            if imgui.begin_drag_drop_source():
+                imgui.set_drag_drop_payload_py_id("effect_idx", idx)
+                imgui.text(effect_type)
+                imgui.end_drag_drop_source()
+            if imgui.begin_drag_drop_target():
+                payload = imgui.accept_drag_drop_payload_py_id("effect_idx")
+                if payload is not None:
+                    src_idx = payload.data_id
+                    if src_idx != idx:
+                        swap_pair = (src_idx, idx)
+                imgui.end_drag_drop_target()
+            changed_en, new_enabled = imgui.checkbox(f"##en_{idx}", enabled)
+            if changed_en:
+                node["enabled"] = new_enabled
+            imgui.same_line()
+            if imgui.button(f"X##del_{idx}"):
+                should_delete = True
 
-        expanded = self._tree_node_tracked(f"card_{idx}", f"{display_name}##card_{idx}", flags)
+        action_width = imgui.get_frame_height() * 2 + imgui.get_style().item_spacing.x
+        with self._section_tracked(f"card_{idx}", f"{display_name}##card_{idx}",
+                                   header_actions=header_actions, actions_width=action_width) as expanded:
+            if expanded:
+                if not enabled:
+                    imgui.begin_disabled()
 
-        # Drag reordering (must be right after tree_node_ex, on its item)
-        if imgui.begin_drag_drop_source():
-            imgui.set_drag_drop_payload("effect_idx", idx.to_bytes(4, "little"))
-            imgui.text(effect_type)
-            imgui.end_drag_drop_source()
-        if imgui.begin_drag_drop_target():
-            payload = imgui.accept_drag_drop_payload("effect_idx")
-            if payload is not None:
-                src_idx = int.from_bytes(payload.data[:4], "little")
-                if src_idx != idx:
-                    swap_pair = (src_idx, idx)
-            imgui.end_drag_drop_target()
+                if effect_type == "ParametricEQ":
+                    self._draw_parametric_eq(node)
+                elif node.get("type") == "VST3":
+                    self._draw_vst3_params(node)
+                else:
+                    self._draw_standard_params(idx, params)
 
-        # Delete button (right-aligned, account for scrollbar)
-        imgui.same_line(imgui.get_content_region_avail().x + imgui.get_cursor_pos_x() - 24)
-        if imgui.small_button(f"X##del_{idx}"):
-            should_delete = True
-
-        if expanded:
-            if not enabled:
-                imgui.begin_disabled()
-
-            if effect_type == "ParametricEQ":
-                self._draw_parametric_eq(node)
-            elif node.get("type") == "VST3":
-                self._draw_vst3_params(node)
-            else:
-                self._draw_standard_params(idx, params)
-
-            if not enabled:
-                imgui.end_disabled()
-            imgui.tree_pop()
+                if not enabled:
+                    imgui.end_disabled()
 
         return swap_pair, should_delete
 
@@ -403,56 +400,51 @@ class FilterBuilderPanel:
         # Parameter sliders (collapsed by default for plugins with many params)
         num_params = len(info.parameters)
         header_label = f"Parameters ({num_params})##vst_param_header"
-        flags = 0 if num_params <= 20 else imgui.TreeNodeFlags_.none.value
-        if num_params > 20:
-            show_params = imgui.collapsing_header(header_label)
-        else:
-            show_params = True
-            imgui.text(f"Parameters ({num_params})")
+        flags = imgui.TreeNodeFlags_.default_open if num_params <= 20 else 0
+        with expandable_section(header_label, flags) as expanded:
+            if expanded:
+                tbl_flags = imgui.TableFlags_.sizing_fixed_fit | imgui.TableFlags_.no_borders_in_body
+                if imgui.begin_table("##vst_params", 2, tbl_flags):
+                    imgui.table_setup_column("##lbl", imgui.TableColumnFlags_.width_fixed, 90)
+                    imgui.table_setup_column("##val", imgui.TableColumnFlags_.width_stretch)
+                    for param_name, meta in info.parameters.items():
+                        label = param_name.replace("_", " ").title()
+                        imgui.table_next_row()
+                        imgui.table_set_column_index(0)
+                        imgui.align_text_to_frame_padding()
+                        imgui.text(label)
+                        imgui.table_set_column_index(1)
+                        imgui.set_next_item_width(-1)
 
-        if show_params:
-            tbl_flags = imgui.TableFlags_.sizing_fixed_fit | imgui.TableFlags_.no_borders_in_body
-            if imgui.begin_table("##vst_params", 2, tbl_flags):
-                imgui.table_setup_column("##lbl", imgui.TableColumnFlags_.width_fixed, 90)
-                imgui.table_setup_column("##val", imgui.TableColumnFlags_.width_stretch)
-                for param_name, meta in info.parameters.items():
-                    label = param_name.replace("_", " ").title()
-                    imgui.table_next_row()
-                    imgui.table_set_column_index(0)
-                    imgui.align_text_to_frame_padding()
-                    imgui.text(label)
-                    imgui.table_set_column_index(1)
-                    imgui.set_next_item_width(-1)
-
-                    valid_values = meta.get("valid_values")
-                    if valid_values:
-                        # String enum — combo dropdown
-                        current_str = str(params.get(param_name, meta.get("default", valid_values[0])))
-                        current_idx = 0
-                        for vi, vv in enumerate(valid_values):
-                            if vv == current_str:
-                                current_idx = vi
-                                break
-                        changed, new_idx = imgui.combo(
-                            f"##vst_{param_name}", current_idx, valid_values,
-                        )
-                        if changed:
-                            params[param_name] = valid_values[new_idx]
-                    else:
-                        # Float slider (covers stepped floats and continuous)
-                        lo = meta.get("min", 0.0)
-                        hi = meta.get("max", 1.0)
-                        current = params.get(param_name, meta.get("default", 0.0))
-                        try:
-                            current_f = float(current)
-                        except (TypeError, ValueError):
-                            current_f = 0.0
-                        changed, new_val = imgui.slider_float(
-                            f"##vst_{param_name}", current_f, float(lo), float(hi)
-                        )
-                        if changed:
-                            params[param_name] = new_val
-                imgui.end_table()
+                        valid_values = meta.get("valid_values")
+                        if valid_values:
+                            # String enum — combo dropdown
+                            current_str = str(params.get(param_name, meta.get("default", valid_values[0])))
+                            current_idx = 0
+                            for vi, vv in enumerate(valid_values):
+                                if vv == current_str:
+                                    current_idx = vi
+                                    break
+                            changed, new_idx = imgui.combo(
+                                f"##vst_{param_name}", current_idx, valid_values,
+                            )
+                            if changed:
+                                params[param_name] = valid_values[new_idx]
+                        else:
+                            # Float slider (covers stepped floats and continuous)
+                            lo = meta.get("min", 0.0)
+                            hi = meta.get("max", 1.0)
+                            current = params.get(param_name, meta.get("default", 0.0))
+                            try:
+                                current_f = float(current)
+                            except (TypeError, ValueError):
+                                current_f = 0.0
+                            changed, new_val = imgui.slider_float(
+                                f"##vst_{param_name}", current_f, float(lo), float(hi)
+                            )
+                            if changed:
+                                params[param_name] = new_val
+                    imgui.end_table()
 
     def _open_plugin_editor(
         self, plugin_path: str, backend: str, params: dict, editor_key: str,

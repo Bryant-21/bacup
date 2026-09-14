@@ -3,6 +3,7 @@ use std::path::Path;
 use nif_core_native::model::{NifFile, NifValue};
 
 const INLINE_TEXTURE_FIELDS: &[&str] = &[
+    "File Name",
     "Source Texture",
     "Greyscale Texture",
     "Env Map Texture",
@@ -15,6 +16,10 @@ const INLINE_TEXTURE_FIELDS: &[&str] = &[
 
 fn is_shader_block(type_name: &str) -> bool {
     type_name == "BSLightingShaderProperty" || type_name == "BSEffectShaderProperty"
+}
+
+fn is_inline_shader_block(type_name: &str) -> bool {
+    is_shader_block(type_name) || type_name == "TallGrassShaderProperty"
 }
 
 fn normalize(s: &str) -> String {
@@ -71,11 +76,15 @@ pub fn inline_texture_refs(nif_path: &Path) -> Vec<String> {
         Err(_) => return Vec::new(),
     };
 
+    inline_texture_refs_from_nif(&nif)
+}
+
+fn inline_texture_refs_from_nif(nif: &NifFile) -> Vec<String> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<String> = Vec::new();
 
     for block in nif.blocks.iter() {
-        if !is_shader_block(&block.type_name) {
+        if !is_inline_shader_block(&block.type_name) {
             continue;
         }
 
@@ -135,5 +144,21 @@ mod tests {
         let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         assert!(material_refs(&p).is_empty());
         assert!(inline_texture_refs(&p).is_empty());
+    }
+
+    #[test]
+    fn reads_fnv_tall_grass_texture() {
+        let mut nif = NifFile::new("fnv");
+        let mut shader = nif_core_native::model::NifBlock::new(1, "TallGrassShaderProperty");
+        shader.set_field(
+            "File Name",
+            NifValue::String("textures\\landscape\\grass\\GrassWastelandComp01.dds".to_owned()),
+        );
+        nif.blocks.push(shader);
+
+        assert_eq!(
+            inline_texture_refs_from_nif(&nif),
+            vec!["textures/landscape/grass/GrassWastelandComp01.dds"]
+        );
     }
 }

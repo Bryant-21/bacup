@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def mock_window_styles(monkeypatch):
+    from imgui_bundle import imgui
+
+    monkeypatch.setattr(imgui, "get_font_size", lambda: 16.0)
+    monkeypatch.setattr(imgui, "push_style_var", lambda *args: None)
+    monkeypatch.setattr(imgui, "pop_style_var", lambda *args: None)
+
 
 def test_provider_without_guide_is_not_guide_capable():
     from creation_lib.ui.widgets.user_guide import has_user_guide

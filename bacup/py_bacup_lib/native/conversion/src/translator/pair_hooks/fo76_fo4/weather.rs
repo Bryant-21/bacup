@@ -1,8 +1,10 @@
 use crate::ids::{FormKey, SigCode, SubrecordSig};
-use crate::record::Record;
+use crate::record::{FieldEntry, FieldValue, Record};
 use crate::sym::{StringInterner, Sym};
 
 const FO4_GDRY_NONE: u32 = 0x001B_40E8;
+const FO4_RFCT_CAMERA_MIST: u32 = 0x0002_AE7A;
+const FO4_RFCT_CAMERA_DUST: u32 = 0x001E_B2D6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GodRayProfile {
@@ -25,6 +27,48 @@ enum TimeOfDay {
 }
 
 impl super::Fo76Fo4Hook {
+    pub(super) fn translate_weather_visual_effect(interner: &StringInterner, record: &mut Record) {
+        if record.sig.0 != *b"WTHR" {
+            return;
+        }
+
+        let Some(donor) = record
+            .eid
+            .and_then(|eid| interner.resolve(eid))
+            .and_then(weather_visual_effect_donor)
+        else {
+            return;
+        };
+        let visual_effect = FieldValue::FormKey(FormKey {
+            local: donor,
+            plugin: interner.intern("Fallout4.esm"),
+        });
+
+        if let Some(entry) = record
+            .fields
+            .iter_mut()
+            .find(|entry| entry.sig.0 == *b"NNAM")
+        {
+            if matches!(entry.value, FieldValue::None) {
+                entry.value = visual_effect;
+            }
+            return;
+        }
+
+        let insert_at = record
+            .fields
+            .iter()
+            .position(|entry| entry.sig.0 == *b"MNAM")
+            .map_or(record.fields.len(), |index| index + 1);
+        record.fields.insert(
+            insert_at,
+            FieldEntry {
+                sig: SubrecordSig(*b"NNAM"),
+                value: visual_effect,
+            },
+        );
+    }
+
     pub(super) fn translate_weather_volumetric_lighting(record: &mut Record) {
         if record.sig.0 != *b"WTHR" {
             return;
@@ -106,6 +150,16 @@ fn god_ray_donor(editor_id: &str) -> u32 {
     }
 }
 
+fn weather_visual_effect_donor(editor_id: &str) -> Option<u32> {
+    match god_ray_profile(&editor_id.to_ascii_lowercase()) {
+        GodRayProfile::Clear | GodRayProfile::Fog | GodRayProfile::Misty | GodRayProfile::Rain => {
+            Some(FO4_RFCT_CAMERA_MIST)
+        }
+        GodRayProfile::Dusty => Some(FO4_RFCT_CAMERA_DUST),
+        GodRayProfile::None | GodRayProfile::Overcast | GodRayProfile::Radstorm => None,
+    }
+}
+
 fn god_ray_profile(editor_id: &str) -> GodRayProfile {
     if editor_id.contains("off") {
         GodRayProfile::None
@@ -150,8 +204,82 @@ fn contains_any(value: &str, needles: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::{FieldEntry, FieldValue};
     use smallvec::SmallVec;
+
+    fn weather_with_visual_effect(
+        interner: &mut StringInterner,
+        editor_id: &str,
+        visual_effect: FieldValue,
+    ) -> Record {
+        let mut weather = Record::new(
+            SigCode(*b"WTHR"),
+            FormKey::parse("2DB892@SeventySix.esm", interner).unwrap(),
+        );
+        weather.eid = Some(interner.intern(editor_id));
+        weather.fields.push(FieldEntry {
+            sig: SubrecordSig(*b"NNAM"),
+            value: visual_effect,
+        });
+        weather
+    }
+
+    #[test]
+    fn rain_weather_gets_fo4_camera_mist_visual_effect() {
+        let mut interner = StringInterner::new();
+        let mut weather =
+            weather_with_visual_effect(&mut interner, "NewWeatherRain", FieldValue::None);
+
+        super::super::Fo76Fo4Hook::translate_weather_visual_effect(&mut interner, &mut weather);
+
+        let FieldValue::FormKey(effect) = weather.fields[0].value else {
+            panic!("rain NNAM must be a FormKey");
+        };
+        assert_eq!(effect.local, FO4_RFCT_CAMERA_MIST);
+        assert_eq!(interner.resolve(effect.plugin), Some("Fallout4.esm"));
+    }
+
+    #[test]
+    fn dusty_weather_gets_fo4_camera_dust_visual_effect() {
+        let mut interner = StringInterner::new();
+        let mut weather =
+            weather_with_visual_effect(&mut interner, "Burn_Weather_DesertSand", FieldValue::None);
+
+        super::super::Fo76Fo4Hook::translate_weather_visual_effect(&mut interner, &mut weather);
+
+        assert!(matches!(
+            weather.fields[0].value,
+            FieldValue::FormKey(FormKey {
+                local: FO4_RFCT_CAMERA_DUST,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn overcast_weather_keeps_null_visual_effect() {
+        let mut interner = StringInterner::new();
+        let mut weather =
+            weather_with_visual_effect(&mut interner, "NewWeatherStorm_Overcast", FieldValue::None);
+
+        super::super::Fo76Fo4Hook::translate_weather_visual_effect(&mut interner, &mut weather);
+
+        assert_eq!(weather.fields[0].value, FieldValue::None);
+    }
+
+    #[test]
+    fn existing_weather_visual_effect_is_preserved() {
+        let mut interner = StringInterner::new();
+        let source_effect = FormKey::parse("123456@SeventySix.esm", &mut interner).unwrap();
+        let mut weather = weather_with_visual_effect(
+            &mut interner,
+            "NewWeatherRain",
+            FieldValue::FormKey(source_effect),
+        );
+
+        super::super::Fo76Fo4Hook::translate_weather_visual_effect(&mut interner, &mut weather);
+
+        assert_eq!(weather.fields[0].value, FieldValue::FormKey(source_effect));
+    }
 
     #[test]
     fn weather_hnam_becomes_fo4_wgdr() {

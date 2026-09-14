@@ -27,7 +27,10 @@ PATCH_CASES = {
     },
     "DefaultQuestEnterInstancedLocScript": {
         "onquestinit",
+        "onquestshutdown",
         "actor.onlocationchange",
+        "actor.onplayerloadgame",
+        "onstageset",
         "checkplayerlocation",
     },
     "Fragments:Quests:QF_Storm_MQ01_Breadcrumb_OnC_0072A2A7": {
@@ -49,7 +52,9 @@ PATCH_CASES = {
         "fragment_stage_0100_item_00"
     },
     "Fragments:Quests:QF_BS02_MQ01_Penance_OnConne_00606C1C": {
-        "fragment_stage_0100_item_00"
+        "fragment_stage_0100_item_00",
+        "attemptpenancehandoff",
+        "ontimer",
     },
     "Fragments:Quests:QF_W05_MQ_101P_OnConnect_003FBBB4": {
         "fragment_stage_0010_item_00"
@@ -141,11 +146,6 @@ def test_root_player_connect_quests_send_bound_story_event_then_stop(
             "BS01_MQ00_Breadcrumb",
             "BS01_MQ00_Breadcrumb_QuestStartKeyword",
         ),
-        (
-            "Fragments:Quests:QF_BS02_MQ01_Penance_OnConne_00606C1C",
-            "BS02_MQ01_Penance",
-            "BS02_MQ01_Penance_StartKeyword",
-        ),
     ),
 )
 def test_guarded_stage_connectors_start_inactive_target_then_stop(
@@ -161,6 +161,41 @@ def test_guarded_stage_connectors_start_inactive_target_then_stop(
     assert stage.index(f"!{target_name}.IsRunning()") < stage.index(send)
     assert stage.index(send) < stage.index("Stop()")
     assert ".Start()" not in stage
+
+
+def test_penance_connector_retries_the_bound_story_event_until_accepted():
+    patch = _script_patch_source(
+        "Fragments:Quests:QF_BS02_MQ01_Penance_OnConne_00606C1C"
+    )
+    assert patch is not None
+    stage = _member_body(patch, "fragment_stage_0100_item_00")
+    handoff = _member_body(patch, "attemptpenancehandoff")
+    timer = _member_body(patch, "ontimer")
+
+    assert "AttemptPenanceHandoff()" in stage
+    send = (
+        "BS02_MQ01_Penance_StartKeyword."
+        "SendStoryEventAndWait(None, playerRef, playerRef)"
+    )
+    assert "BS02_MQ01_Penance.IsRunning()" in handoff
+    assert "BS02_MQ01_Penance.IsCompleted()" in handoff
+    assert handoff.index(send) < handoff.index("Stop()")
+    assert "StartTimer(5.0, 100)" in handoff
+    assert "AttemptPenanceHandoff()" in timer
+    assert ".Start()" not in handoff
+
+
+def test_bs01_breadcrumb_player_connect_restores_level_gate():
+    patch = _script_patch_source(
+        "Fragments:Quests:QF_BS01_MQ00_Breadcrumb_OnCo_005EAD3B"
+    )
+    assert patch is not None
+    stage = _member_body(patch, "fragment_stage_0100_item_00")
+
+    assert "Actor playerRef = Alias_Player.GetReference() as Actor" in stage
+    assert stage.index("playerRef.GetLevel() >= 20") < stage.index(
+        "BS01_MQ00_Breadcrumb_QuestStartKeyword.SendStoryEventAndWait"
+    )
 
 
 def test_w05_new_arrivals_connector_sends_bound_event_then_stops():

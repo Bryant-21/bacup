@@ -241,9 +241,11 @@ def test_toolkit_gui_draws_workspace_user_guide_window(monkeypatch):
 
     ws = GuiWorkspace()
     app = ToolkitApp.__new__(ToolkitApp)
+    app._app_variant = SimpleNamespace(exe_name="ModBox21")
     app._active_ws = ws
     app._first_frame = False
     app._current_theme = SimpleNamespace(id="theme")
+    app._theme_editor = SimpleNamespace(draw=lambda: None)
     app._settings_window = SimpleNamespace(
         _active_workspace=None,
         draw=lambda: None,

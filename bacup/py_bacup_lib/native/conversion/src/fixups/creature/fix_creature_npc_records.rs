@@ -1,47 +1,39 @@
 //! Fixup: fix FO76-specific issues in creature NPC and Race records.
 //!
-
+//! `struct:`/`array_struct:` subrecords arrive as `FieldValue::Bytes`, so these
+//! branches patch bytes. Raw FormIDs use master byte `0x00` (Fallout4.esm).
 //!
-//! # Branches implemented at the raw-record level
-//! Python's data model is the post-translation YAML canonical dict; the Rust
-//! pipeline operates on schema-decoded `Record` / `FieldValue` produced by
-//! `source_read::read_record`.  For subrecords whose codec is `struct:...` /
-//! `array_struct:...`, `read_record` keeps the payload as `FieldValue::Bytes`
-//! (the typed struct decode lands in a later phase).  The branches below were
-//! ported by operating directly on those bytes; the FormID master-byte is
-//! always `0x00` because every FO4-target plugin lists `Fallout4.esm` as
-//! master index 0 (same convention as `augment_creature_factions`).
-//!
-//! 1. **TPTA.ModelAnimation LVLN cleanup** — clear only the ModelAnimation
+//! 1. **TPTA.ModelAnimation LVLN cleanup**: clear only the ModelAnimation
 //!    template slot when it points at a leveled NPC list. FO4 allows LVLN in
-//!    other template slots such as BaseData; those remain untouched.
-//! 2. **ACBS.template_flags** — recompute FO4 template flags from active TPTA
-//!    slots.
-//! 3. **AIDT defaults** — when `assistance` byte (offset 5) is zero, write
-//!    `HelpsAllies` (1).  When `aggro_aggro_radius_behavior` (offset 6) is
-//!    zero, fill the aggro defaults (warn=3000, warn_attack=2500, attack=2000,
-//!    no_slow_approach=true).  Synthesises the 24-byte AIDT if missing.
-//! 4. **Template NPCs (no TPTA) get the `ActorTypeCreature` keyword** —
-//!    appended to KWDA (raw bytes) with the matching KSIZ count synced.
-//! 5. **Creature combat perks** — `crCreatureMeleeDamage` (`0A2775`),
-//!    `crCreatureRangedDamage` (`0A2776`), `crRegeneration` (`1504FC`) are
-//!    appended as `PRKR` entries with rank=1 when not already present.
-//!    PRKZ is synced to the new PRKR count.
-//! 6. **PRKR rank defensive backfill** — entries whose 5th byte (rank) is
-//!    zero are bumped to 1 to mirror the Python `Rank=1` invariant.
+//!    other slots such as BaseData.
+//! 2. **ACBS.template_flags**: recompute from the active TPTA slots.
+//! 3. **AIDT defaults**: a zero `assistance` byte (offset 5) becomes
+//!    `HelpsAllies` (1); a missing 24-byte AIDT is synthesised. The aggro block
+//!    (offset 6 radius behavior, distances at 8/12/16, `no_slow_approach` at 20)
+//!    is left alone: zero at offset 6 means radius behavior is off, which FO4
+//!    accepts (30 of 120 vanilla creature AIDTs set it, and `EncDeathclaw01` has
+//!    no aggro fields), and authored triples such as RadHog's 1024/512/256 are
+//!    FO4-legal.
+//! 4. **Template NPCs (no TPTA)**: append `ActorTypeCreature` to KWDA, sync KSIZ.
+//! 5. **Creature combat perks**: append `crCreatureMeleeDamage` (`0A2775`),
+//!    `crCreatureRangedDamage` (`0A2776`), `crRegeneration` (`1504FC`) as rank-1
+//!    `PRKR` entries when absent; sync PRKZ.
+//! 6. **PRKR rank backfill**: a zero rank (5th byte) becomes 1.
+//! 7. **FO76-only melee attack overrides**: remove ATKD/ATKE/ATKT triplets absent
+//!    from FO4's `MeleeBehavior`, only for NPCs whose combat race selects that
+//!    graph.
+//! 8. **Default combat override package list**: remap FO76 `04223F` to FO4's
+//!    `DefaultCombatMasterPackageList`. The FO76 list adds a flying
+//!    hold-position package that stops grounded creatures closing on their
+//!    target.
 //!
-//! `ACBS.AutoCalcStats` is deliberately preserved.  Vanilla FO4 uses it together
-//! with `PCLevelMult` on leveled actors such as Deathclaws, and FO76 source
-//! creature records such as `EncOgua` carry the same combination.
+//! `ACBS.AutoCalcStats` is preserved: vanilla FO4 pairs it with `PCLevelMult` on
+//! leveled actors such as Deathclaws, as FO76 `EncOgua` does.
 //!
-//! # Not implemented at the raw-record level
-//! - **TPTA remap** (FO76→FO4 slot drop + presence backfill): needs typed-struct
-//!   decode to map slot index → field name.
-//! - **PRPS curve-table flatten**: handled by the whole-plugin-safe
-//!   `flatten_npc_property_curves` fixup because non-creature NPCs use the same
-//!   FO76 curve column.
-//! - **RACE `NoKnockdowns` / `ActorTypeAnimal`**: needs RACE `DATA` flag-bit
-//!   identification.
+//! Not handled here: TPTA slot remap (needs a typed struct decode), PRPS curve
+//! flattening (`flatten_npc_property_curves`, which also covers non-creature
+//! NPCs), and RACE `NoKnockdowns` / `ActorTypeAnimal` (needs RACE `DATA` flag
+//! bits).
 
 use crate::fixups::creature::{
     creature_internal_fixup_applies, npc_internal_fixup_applies_to_record,
@@ -112,10 +104,6 @@ const AIDT_SIZE: usize = 24;
 /// `HelpsAllies` value in `assistance_enum`.
 const AIDT_ASSISTANCE_HELPS_ALLIES: u8 = 1;
 
-const AIDT_AGGRO_WARN_DEFAULT: u32 = 3000;
-const AIDT_AGGRO_WARN_ATTACK_DEFAULT: u32 = 2500;
-const AIDT_AGGRO_ATTACK_DEFAULT: u32 = 2000;
-
 /// PRKR entry size (`struct:I,B` = 5 bytes).
 const PRKR_SIZE: usize = 5;
 
@@ -128,6 +116,17 @@ const ACTOR_TYPE_CREATURE_FORM_ID: u32 = 0x00_013795;
 /// 2. `crCreatureRangedDamage` (`0A2776`)
 /// 3. `crRegeneration`         (`1504FC`)
 const CREATURE_PERKS: &[u32] = &[0x00_0A2775, 0x00_0A2776, 0x00_1504FC];
+
+const DEFAULT_COMBAT_MASTER_PACKAGE_LIST_LOCAL: u32 = 0x04223F;
+
+const UNSUPPORTED_FO76_MELEE_ATTACK_EVENTS: &[&str] = &[
+    "meleeAttackGunFullBody",
+    "meleeStop",
+    "meleeAttackPowerUpperBody",
+    "meleeAttackGun",
+    "meleeAttackStartUpperBody",
+    "meleeAttackStartUpperBodyBackward",
+];
 
 // ---------------------------------------------------------------------------
 // Subrecord-sig helpers
@@ -183,13 +182,14 @@ impl Fixup for FixCreatureNpcRecordsFixup {
             .as_deref()
             .ok_or_else(|| FixupError::Other("missing target schema in fixup config".into()))?;
         let interner = mapper.interner;
+        let source_behaviors = crate::fo76_behaviors::enabled(session, config);
         let lvln_sig =
             SigCode::from_str("LVLN").map_err(|e| FixupError::SchemaError(e.to_string()))?;
         let target_masters = session.target_masters().to_vec();
         let lvln_templates = build_lvln_template_resolution(
             session,
             target_schema,
-            interner,
+            mapper,
             target_masters.as_slice(),
             lvln_sig,
             npc_sig,
@@ -200,12 +200,9 @@ impl Fixup for FixCreatureNpcRecordsFixup {
             mapper,
             |view, _snapshot, fk| match view.record_decoded(fk, target_schema, interner) {
                 Ok(mut record) => {
-                    // Per-record gate (whole-plugin only): append
-                    // ActorTypeCreature keyword + creature combat perks only on
-                    // confirmed creatures. The predicate walks the template
-                    // chain (UseTraits) and is conservative (Unknown/Human →
-                    // skip), so HUMAN NPCs keep their data. No-op gate on a
-                    // creature-graph walk (every NPC in scope is a creature).
+                    // Whole-plugin gate: only confirmed creatures get the keyword
+                    // and perks (template-aware; Unknown skips). No-op on a
+                    // creature-graph walk.
                     if !npc_internal_fixup_applies_to_record(
                         &record,
                         view,
@@ -215,7 +212,18 @@ impl Fixup for FixCreatureNpcRecordsFixup {
                     ) {
                         return None;
                     }
-                    apply_to_record_with_lvln_templates(&mut record, &lvln_templates)
+                    let uses_canonical_melee =
+                        npc_combat_race_from_record(&record, &lvln_templates).is_some_and(|race| {
+                            lvln_templates.canonical_melee_races.contains(&race)
+                        });
+                    let attack_overrides_dropped = !source_behaviors
+                        && uses_canonical_melee
+                        && drop_unsupported_fo76_melee_attack_overrides(&mut record, interner);
+                    let combat_override_remapped =
+                        remap_default_combat_override_package_list(&mut record, interner);
+                    let record_fixed =
+                        apply_to_record_with_lvln_templates(&mut record, &lvln_templates);
+                    (attack_overrides_dropped || combat_override_remapped || record_fixed)
                         .then_some(NpcRecordEdit::Replace(record))
                 }
                 Err(err) => Some(NpcRecordEdit::Warn(format!("fix_creature_npc_read:{err}"))),
@@ -279,12 +287,14 @@ fn apply_to_record_with_lvln_templates(
 #[derive(Default)]
 struct LvlnTemplateResolution {
     all_lvln_raw: FxHashSet<u32>,
+    canonical_melee_races: FxHashSet<FormKey>,
     dummy_races: FxHashSet<FormKey>,
     dummy_model_animation_npc_raw: FxHashSet<u32>,
     raw_to_lvln_fk: FxHashMap<u32, FormKey>,
     raw_by_fk: FxHashMap<FormKey, u32>,
     lvln_entries: FxHashMap<FormKey, Vec<LvlnTemplateEntry>>,
     npc_infos: FxHashMap<FormKey, NpcTemplateInfo>,
+    location_conditioned_lvlns: FxHashSet<FormKey>,
 }
 
 #[derive(Clone, Copy)]
@@ -303,13 +313,31 @@ struct NpcTemplateInfo {
 fn build_lvln_template_resolution(
     session: &mut PluginSession,
     target_schema: &crate::schema::AuthoringSchema,
-    interner: &StringInterner,
+    mapper: &FormKeyMapper,
     target_masters: &[String],
     lvln_sig: SigCode,
     npc_sig: SigCode,
 ) -> Result<LvlnTemplateResolution, FixupError> {
+    let interner = mapper.interner;
     let target_plugin_name = session.target_slot().parsed.plugin_name.clone();
     let mut resolution = LvlnTemplateResolution::default();
+
+    if let Ok(source_schema) = session.source_schema()
+        && let Ok(source_lvlns) = session.source_form_keys_of_sig(lvln_sig, interner)
+    {
+        for source_lvln in source_lvlns {
+            let Ok(source_record) =
+                session.source_record_decoded(&source_lvln, source_schema.as_ref(), interner)
+            else {
+                continue;
+            };
+            if record_has_ess_location_condition(&source_record, interner)
+                && let Some(target_lvln) = mapper.lookup(source_lvln)
+            {
+                resolution.location_conditioned_lvlns.insert(target_lvln);
+            }
+        }
+    }
 
     let lvln_fks = session
         .form_keys_of_sig(lvln_sig, interner)
@@ -356,6 +384,9 @@ fn build_lvln_template_resolution(
                 let Ok(record) = session.record_decoded(&fk, target_schema, interner) else {
                     continue;
                 };
+                if race_uses_canonical_melee_behavior(&record, interner) {
+                    resolution.canonical_melee_races.insert(fk);
+                }
                 if record_editor_id_contains(&record, interner, "dummyactorrace") {
                     resolution.dummy_races.insert(fk);
                 }
@@ -560,6 +591,9 @@ fn replace_lvln_template_refs_in_value(
                 let Some(lvln_fk) = resolution.raw_to_lvln_fk.get(&raw).copied() else {
                     continue;
                 };
+                if resolution.location_conditioned_lvlns.contains(&lvln_fk) {
+                    continue;
+                }
                 let Some(replacement_fk) =
                     select_lvln_template_replacement(lvln_fk, desired_race, resolution)
                 else {
@@ -575,7 +609,9 @@ fn replace_lvln_template_refs_in_value(
             changed
         }
         FieldValue::FormKey(fk) => {
-            if !resolution.lvln_entries.contains_key(fk) {
+            if resolution.location_conditioned_lvlns.contains(fk)
+                || !resolution.lvln_entries.contains_key(fk)
+            {
                 return false;
             }
             let Some(replacement_fk) =
@@ -591,6 +627,9 @@ fn replace_lvln_template_refs_in_value(
             let Some(lvln_fk) = resolution.raw_to_lvln_fk.get(&raw32).copied() else {
                 return false;
             };
+            if resolution.location_conditioned_lvlns.contains(&lvln_fk) {
+                return false;
+            }
             let Some(replacement_fk) =
                 select_lvln_template_replacement(lvln_fk, desired_race, resolution)
             else {
@@ -607,6 +646,9 @@ fn replace_lvln_template_refs_in_value(
             let Some(lvln_fk) = resolution.raw_to_lvln_fk.get(&raw32).copied() else {
                 return false;
             };
+            if resolution.location_conditioned_lvlns.contains(&lvln_fk) {
+                return false;
+            }
             let Some(replacement_fk) =
                 select_lvln_template_replacement(lvln_fk, desired_race, resolution)
             else {
@@ -747,6 +789,182 @@ fn npc_race_from_record(record: &Record, resolution: &LvlnTemplateResolution) ->
             }
             _ => None,
         })
+}
+
+fn record_has_ess_location_condition(record: &Record, interner: &StringInterner) -> bool {
+    const ESS_LOCATION_CONDITION_FUNCTION_ID: u16 = 579;
+
+    let Some(ctda_sig) = sig("CTDA") else {
+        return false;
+    };
+    record.fields.iter().any(|entry| {
+        entry.sig == ctda_sig
+            && condition_function_id(&entry.value, interner)
+                == Some(ESS_LOCATION_CONDITION_FUNCTION_ID)
+    })
+}
+
+fn condition_function_id(value: &FieldValue, interner: &StringInterner) -> Option<u16> {
+    match value {
+        FieldValue::Bytes(bytes) if bytes.len() >= 10 => {
+            Some(u16::from_le_bytes(bytes[8..10].try_into().ok()?))
+        }
+        FieldValue::Struct(fields) => named_struct_value(fields, "function", interner)
+            .or_else(|| named_struct_value(fields, "Function", interner))
+            .and_then(field_value_to_u16),
+        _ => None,
+    }
+}
+
+fn npc_combat_race_from_record(
+    record: &Record,
+    resolution: &LvlnTemplateResolution,
+) -> Option<FormKey> {
+    for sig_name in ["ATKR", "RNAM"] {
+        let Some(wanted_sig) = sig(sig_name) else {
+            continue;
+        };
+        let Some(race) = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig == wanted_sig)
+            .and_then(|entry| match &entry.value {
+                FieldValue::FormKey(fk) if fk.local != 0 => Some(*fk),
+                FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
+                    let raw = u32::from_le_bytes(bytes[0..4].try_into().ok()?);
+                    resolution.raw_to_form_key(raw)
+                }
+                FieldValue::Uint(raw) if *raw <= u32::MAX as u64 => {
+                    resolution.raw_to_form_key(*raw as u32)
+                }
+                FieldValue::Int(raw) if *raw > 0 && *raw <= u32::MAX as i64 => {
+                    resolution.raw_to_form_key(*raw as u32)
+                }
+                _ => None,
+            })
+        else {
+            continue;
+        };
+        return Some(race);
+    }
+    None
+}
+
+fn race_uses_canonical_melee_behavior(record: &Record, interner: &StringInterner) -> bool {
+    let Some(sgnm_sig) = sig("SGNM") else {
+        return false;
+    };
+    record.fields.iter().any(|entry| {
+        entry.sig == sgnm_sig
+            && match &entry.value {
+                FieldValue::String(sym) => interner.resolve(*sym).is_some_and(|path| {
+                    path.replace('/', "\\")
+                        .eq_ignore_ascii_case("Actors\\Character\\Behaviors\\MeleeBehavior.hkx")
+                }),
+                _ => false,
+            }
+    })
+}
+
+fn drop_unsupported_fo76_melee_attack_overrides(
+    record: &mut Record,
+    interner: &StringInterner,
+) -> bool {
+    let Some(atkd_sig) = sig("ATKD") else {
+        return false;
+    };
+    let Some(atke_sig) = sig("ATKE") else {
+        return false;
+    };
+    let Some(atkt_sig) = sig("ATKT") else {
+        return false;
+    };
+
+    let mut drop_fields = vec![false; record.fields.len()];
+    let mut pending_attack_data = None;
+    let mut drop_next_attack_text = false;
+
+    for (index, entry) in record.fields.iter().enumerate() {
+        if drop_next_attack_text {
+            drop_next_attack_text = false;
+            if entry.sig == atkt_sig {
+                drop_fields[index] = true;
+                continue;
+            }
+        }
+        if entry.sig == atkd_sig {
+            pending_attack_data = Some(index);
+            continue;
+        }
+        if entry.sig != atke_sig {
+            continue;
+        }
+
+        let unsupported = match &entry.value {
+            FieldValue::String(sym) => interner.resolve(*sym).is_some_and(|event| {
+                UNSUPPORTED_FO76_MELEE_ATTACK_EVENTS
+                    .iter()
+                    .any(|unsupported| event.eq_ignore_ascii_case(unsupported))
+            }),
+            _ => false,
+        };
+        if unsupported {
+            drop_fields[index] = true;
+            if let Some(atkd_index) = pending_attack_data {
+                drop_fields[atkd_index] = true;
+            }
+            drop_next_attack_text = true;
+        }
+        pending_attack_data = None;
+    }
+
+    if !drop_fields.iter().any(|drop| *drop) {
+        return false;
+    }
+
+    record.fields = record
+        .fields
+        .drain(..)
+        .enumerate()
+        .filter_map(|(index, entry)| (!drop_fields[index]).then_some(entry))
+        .collect();
+    true
+}
+
+fn remap_default_combat_override_package_list(
+    record: &mut Record,
+    interner: &StringInterner,
+) -> bool {
+    let Some(ecor_sig) = sig("ECOR") else {
+        return false;
+    };
+    let fallout4_plugin = interner.intern("Fallout4.esm");
+    let record_plugin = record.form_key.plugin;
+    let mut changed = false;
+
+    for entry in &mut record.fields {
+        if entry.sig != ecor_sig {
+            continue;
+        }
+        let FieldValue::FormKey(package_list) = &mut entry.value else {
+            continue;
+        };
+        if package_list.local != DEFAULT_COMBAT_MASTER_PACKAGE_LIST_LOCAL
+            || package_list.plugin == fallout4_plugin
+        {
+            continue;
+        }
+        let is_fo76_local_reference = package_list.plugin == record_plugin
+            || interner
+                .resolve(package_list.plugin)
+                .is_some_and(|plugin| plugin.eq_ignore_ascii_case("SeventySix.esm"));
+        if is_fo76_local_reference {
+            package_list.plugin = fallout4_plugin;
+            changed = true;
+        }
+    }
+
+    changed
 }
 
 impl LvlnTemplateResolution {
@@ -947,26 +1165,12 @@ fn apply_aidt_defaults(record: &mut Record) -> bool {
                 data[5] = AIDT_ASSISTANCE_HELPS_ALLIES;
                 local_changed = true;
             }
-            // Aggro defaults gated on aggro_aggro_radius_behavior @ offset 6.
-            if data[6] == 0 {
-                data[6] = 1; // bool true
-                write_u32_le(data, 8, AIDT_AGGRO_WARN_DEFAULT);
-                write_u32_le(data, 12, AIDT_AGGRO_WARN_ATTACK_DEFAULT);
-                write_u32_le(data, 16, AIDT_AGGRO_ATTACK_DEFAULT);
-                data[20] = 1; // no_slow_approach = true
-                local_changed = true;
-            }
             local_changed
         }
         None => {
             let mut data: smallvec::SmallVec<[u8; 32]> = smallvec::SmallVec::new();
             data.resize(AIDT_SIZE, 0);
             data[5] = AIDT_ASSISTANCE_HELPS_ALLIES;
-            data[6] = 1;
-            write_u32_le(&mut data, 8, AIDT_AGGRO_WARN_DEFAULT);
-            write_u32_le(&mut data, 12, AIDT_AGGRO_WARN_ATTACK_DEFAULT);
-            write_u32_le(&mut data, 16, AIDT_AGGRO_ATTACK_DEFAULT);
-            data[20] = 1;
             record.fields.push(FieldEntry {
                 sig: aidt_sig,
                 value: FieldValue::Bytes(data),
@@ -1034,15 +1238,10 @@ fn append_actor_type_creature_keyword(record: &mut Record) -> bool {
     true
 }
 
-/// Recompute the uint32 count subrecord (`count_sig`) so it matches the row
-/// count of the array subrecord (`array_sig`).
-///
-/// Repeated subrecords (`repeatable: true` in the schema, e.g. `PRKR`) come
-/// back as one `FieldEntry` per row from `read_record`, each holding exactly
-/// `row_size` payload bytes.  Bulk-packed array subrecords (`KWDA`'s
-/// `formid_array`) come back as a single `FieldEntry` whose payload holds N
-/// `row_size`-byte rows.  Sum across both shapes so the count is right in
-/// every case.  Creates the count subrecord if it is missing.
+/// Set the uint32 count subrecord `count_sig` to the row count of `array_sig`,
+/// creating it if missing. Rows are summed across both shapes: one `FieldEntry`
+/// per row for repeatable subrecords (`PRKR`) and one packed entry for
+/// `formid_array` subrecords (`KWDA`).
 fn update_count_subrecord(
     record: &mut Record,
     count_sig: SubrecordSig,
@@ -1199,14 +1398,6 @@ fn sync_prkz_count(record: &mut Record) -> bool {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn write_u32_le(buf: &mut [u8], offset: usize, value: u32) {
-    let bytes = value.to_le_bytes();
-    buf[offset] = bytes[0];
-    buf[offset + 1] = bytes[1];
-    buf[offset + 2] = bytes[2];
-    buf[offset + 3] = bytes[3];
-}
-
 // Constants referenced via assertions in tests to surface drift quickly.
 #[allow(dead_code)]
 const _: () = assert!(ACBS_SIZE == 20);
@@ -1273,6 +1464,13 @@ mod tests {
         record.fields.push(FieldEntry {
             sig: SubrecordSig::from_str(sig_str).unwrap(),
             value: FieldValue::FormKey(fk),
+        });
+    }
+
+    fn push_string(record: &mut Record, sig_str: &str, value: &str, interner: &StringInterner) {
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str(sig_str).unwrap(),
+            value: FieldValue::String(interner.intern(value)),
         });
     }
 
@@ -1707,6 +1905,69 @@ mod tests {
     }
 
     #[test]
+    fn lvl_main_boss_preserves_location_conditioned_main_all_template() {
+        let mut interner = StringInterner::new();
+        let output = "SeventySix.esm";
+        let fallout4 = "Fallout4.esm";
+        let wrapper = fk(0x0992D8, output, &mut interner);
+        let main_all = fk(0x51C55B, output, &mut interner);
+        let dog = fk(0xB046F4, output, &mut interner);
+        let dog_race = fk(0x187AF9, fallout4, &mut interner);
+        let main_all_raw = 0x01_51C55B;
+        let dog_raw = 0x01_B046F4;
+
+        let mut resolution = LvlnTemplateResolution::default();
+        resolution.all_lvln_raw.insert(main_all_raw);
+        resolution.raw_to_lvln_fk.insert(main_all_raw, main_all);
+        resolution.raw_by_fk.insert(main_all, main_all_raw);
+        resolution.raw_by_fk.insert(dog, dog_raw);
+        resolution.location_conditioned_lvlns.insert(main_all);
+        resolution.lvln_entries.insert(
+            main_all,
+            vec![LvlnTemplateEntry {
+                level: 1,
+                target: dog,
+            }],
+        );
+        resolution.npc_infos.insert(
+            dog,
+            NpcTemplateInfo {
+                race: Some(dog_race),
+                has_tpta: false,
+                editor_id_template_hint: false,
+            },
+        );
+        let mut record = npc(wrapper.local, output, &mut interner);
+        push_bytes(
+            &mut record,
+            "ACBS",
+            make_acbs_with_template_flags(0, TEMPLATE_TRAITS),
+        );
+        push_formkey(&mut record, "RNAM", dog_race);
+        push_bytes(&mut record, "TPLT", main_all_raw.to_le_bytes().to_vec());
+        let mut slots = [0u32; 13];
+        slots[0] = main_all_raw;
+        push_bytes(&mut record, "TPTA", make_tpta(slots));
+
+        let _ = apply_to_record_with_lvln_templates(&mut record, &resolution);
+
+        assert_eq!(first_raw(&record, "TPLT"), main_all_raw);
+        assert_eq!(first_tpta_slot(&record, 0), main_all_raw);
+    }
+
+    #[test]
+    fn detects_ess_location_condition_from_raw_ctda() {
+        let mut interner = StringInterner::new();
+        let mut record = npc(0x51C55B, "SeventySix.esm", &mut interner);
+        record.sig = SigCode::from_str("LVLN").expect("LVLN sig");
+        let mut ctda = vec![0u8; 32];
+        ctda[8..10].copy_from_slice(&579u16.to_le_bytes());
+        push_bytes(&mut record, "CTDA", ctda);
+
+        assert!(record_has_ess_location_condition(&record, &interner));
+    }
+
+    #[test]
     fn aidt_defaults_filled_on_zero_assistance() {
         let mut interner = StringInterner::new();
         let mut r = npc(0x000102, "Out.esp", &mut interner);
@@ -1715,20 +1976,190 @@ mod tests {
         assert!(changed);
         let data = first_bytes(&r, "AIDT").unwrap();
         assert_eq!(data[5], AIDT_ASSISTANCE_HELPS_ALLIES);
-        assert_eq!(data[6], 1, "aggro_aggro_radius_behavior must be true");
+        assert_eq!(
+            data[6], 0,
+            "aggro_aggro_radius_behavior must not be forced on"
+        );
+        assert_eq!(
+            &data[8..20],
+            &[0u8; 12],
+            "aggro distances must stay untouched"
+        );
+        assert_eq!(data[20], 0, "no_slow_approach must not be set");
+    }
+
+    /// Authored aggro data is FO4-legal and must survive: RadHog's 1024/512/256
+    /// is the same triple `EncMutantHound02Legendary` ships.
+    #[test]
+    fn aidt_preserves_authored_aggro_block() {
+        let mut interner = StringInterner::new();
+        let mut r = npc(0x000102, "Out.esp", &mut interner);
+        let mut aidt = make_aidt_zeroed();
+        aidt[5] = AIDT_ASSISTANCE_HELPS_ALLIES;
+        aidt[8..12].copy_from_slice(&1024u32.to_le_bytes());
+        aidt[12..16].copy_from_slice(&512u32.to_le_bytes());
+        aidt[16..20].copy_from_slice(&256u32.to_le_bytes());
+        push_bytes(&mut r, "AIDT", aidt);
+
+        assert!(!apply_aidt_defaults(&mut r), "nothing left to default");
+
+        let data = first_bytes(&r, "AIDT").unwrap();
+        assert_eq!(data[6], 0);
         assert_eq!(
             u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
-            AIDT_AGGRO_WARN_DEFAULT
+            1024
         );
         assert_eq!(
             u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
-            AIDT_AGGRO_WARN_ATTACK_DEFAULT
+            512
         );
         assert_eq!(
             u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
-            AIDT_AGGRO_ATTACK_DEFAULT
+            256
         );
-        assert_eq!(data[20], 1, "no_slow_approach must be true");
+        assert_eq!(data[20], 0);
+    }
+
+    /// A synthesised AIDT gets Assistance only — no fabricated aggro block.
+    #[test]
+    fn aidt_synthesised_when_missing_leaves_aggro_zeroed() {
+        let mut interner = StringInterner::new();
+        let mut r = npc(0x000102, "Out.esp", &mut interner);
+        assert!(apply_aidt_defaults(&mut r));
+        let data = first_bytes(&r, "AIDT").unwrap();
+        assert_eq!(data.len(), AIDT_SIZE);
+        assert_eq!(data[5], AIDT_ASSISTANCE_HELPS_ALLIES);
+        assert_eq!(&data[6..21], &[0u8; 15]);
+    }
+
+    #[test]
+    fn drops_only_fo76_attack_pairs_unsupported_by_canonical_melee() {
+        let interner = StringInterner::new();
+        let mut record = npc(0x000102, "Out.esp", &interner);
+        push_bytes(&mut record, "ATKD", vec![1; 32]);
+        push_string(&mut record, "ATKE", "meleeAttackGunFullBody", &interner);
+        push_string(&mut record, "ATKT", "unsupported attack", &interner);
+        push_bytes(&mut record, "ATKD", vec![2; 32]);
+        push_string(&mut record, "ATKE", "meleeattackForwardStart", &interner);
+        push_string(&mut record, "ATKT", "supported attack", &interner);
+        push_bytes(&mut record, "ATKD", vec![3; 32]);
+        push_string(&mut record, "ATKE", "MELEEATTACKSTARTUPPERBODY", &interner);
+        push_string(&mut record, "ATKT", "unsupported attack", &interner);
+
+        assert!(drop_unsupported_fo76_melee_attack_overrides(
+            &mut record,
+            &interner
+        ));
+        assert_eq!(record.fields.len(), 3);
+        assert_eq!(record.fields[0].sig.as_str(), "ATKD");
+        assert_eq!(record.fields[1].sig.as_str(), "ATKE");
+        assert_eq!(record.fields[2].sig.as_str(), "ATKT");
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("expected preserved ATKD bytes");
+        };
+        assert_eq!(bytes.as_slice(), &[2; 32]);
+        let FieldValue::String(event) = record.fields[1].value else {
+            panic!("expected preserved ATKE string");
+        };
+        assert_eq!(interner.resolve(event), Some("meleeattackForwardStart"));
+        let FieldValue::String(text) = record.fields[2].value else {
+            panic!("expected preserved ATKT string");
+        };
+        assert_eq!(interner.resolve(text), Some("supported attack"));
+    }
+
+    #[test]
+    fn remaps_only_fo76_default_combat_override_package_list() {
+        let interner = StringInterner::new();
+        let mut local_record = npc(0x000102, "Out.esp", &interner);
+        push_formkey(
+            &mut local_record,
+            "ECOR",
+            fk(
+                DEFAULT_COMBAT_MASTER_PACKAGE_LIST_LOCAL,
+                "Out.esp",
+                &interner,
+            ),
+        );
+        assert!(remap_default_combat_override_package_list(
+            &mut local_record,
+            &interner
+        ));
+        assert!(matches!(
+            local_record.fields[0].value,
+            FieldValue::FormKey(value)
+                if value.local == DEFAULT_COMBAT_MASTER_PACKAGE_LIST_LOCAL
+                    && interner.resolve(value.plugin) == Some("Fallout4.esm")
+        ));
+
+        let mut source_record = npc(0x000103, "Out.esp", &interner);
+        push_formkey(
+            &mut source_record,
+            "ECOR",
+            fk(
+                DEFAULT_COMBAT_MASTER_PACKAGE_LIST_LOCAL,
+                "SeventySix.esm",
+                &interner,
+            ),
+        );
+        assert!(remap_default_combat_override_package_list(
+            &mut source_record,
+            &interner
+        ));
+
+        let mut custom_record = npc(0x000104, "Out.esp", &interner);
+        push_formkey(
+            &mut custom_record,
+            "ECOR",
+            fk(0x012345, "Out.esp", &interner),
+        );
+        assert!(!remap_default_combat_override_package_list(
+            &mut custom_record,
+            &interner
+        ));
+        assert!(matches!(
+            custom_record.fields[0].value,
+            FieldValue::FormKey(value)
+                if value.local == 0x012345
+                    && interner.resolve(value.plugin) == Some("Out.esp")
+        ));
+
+        let mut external_record = npc(0x000105, "Out.esp", &interner);
+        push_formkey(
+            &mut external_record,
+            "ECOR",
+            fk(
+                DEFAULT_COMBAT_MASTER_PACKAGE_LIST_LOCAL,
+                "Other.esm",
+                &interner,
+            ),
+        );
+        assert!(!remap_default_combat_override_package_list(
+            &mut external_record,
+            &interner
+        ));
+    }
+
+    #[test]
+    fn canonical_melee_race_detection_is_path_normalized() {
+        let interner = StringInterner::new();
+        let mut record = npc(0x000103, "Out.esp", &interner);
+        push_string(
+            &mut record,
+            "SGNM",
+            "Actors/Character/Behaviors/MeleeBehavior.hkx",
+            &interner,
+        );
+        assert!(race_uses_canonical_melee_behavior(&record, &interner));
+
+        record.fields.clear();
+        push_string(
+            &mut record,
+            "SGNM",
+            "Actors\\MoleMiner\\Behaviors\\MeleeBehavior.hkx",
+            &interner,
+        );
+        assert!(!race_uses_canonical_melee_behavior(&record, &interner));
     }
 
     #[test]

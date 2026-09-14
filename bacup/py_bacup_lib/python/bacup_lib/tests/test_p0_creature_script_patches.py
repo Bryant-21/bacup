@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from bacup_lib.workflows.unified import (
+    _SCRIPT_ADDITION_DIR,
     _iter_top_level_papyrus_members,
     _merge_script_method_patches,
     _script_patch_source,
@@ -202,7 +203,7 @@ def test_p0_production_merge_native_compiles_for_fo4(
     source = _merged_production_source(script_name)
     result = compile_psc(
         source,
-        imports=[str(dependency_root), str(base_source)],
+        imports=[str(dependency_root), str(base_source), str(_SCRIPT_ADDITION_DIR / "fo76_fo4")],
         game="fo4",
         flags=str(base_source / "Institute_Papyrus_Flags.flg"),
         source_path=f"{script_name.replace(':', '/')}.psc",

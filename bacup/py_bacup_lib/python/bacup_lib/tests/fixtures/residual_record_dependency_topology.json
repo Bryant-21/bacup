@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "terminal_state": "record-dependency",
+  "scripts": [
+    {
+      "script_name": "DefaultAliasSetStageOnKeypadSuccess",
+      "carrier_ids": [
+        "41C976",
+        "43048F",
+        "42486A",
+        "0563B0",
+        "5698E4",
+        "597A63",
+        "6FCF87",
+        "726DD1",
+        "726DE9",
+        "6E8B3D"
+      ],
+      "missing_contract": "unambiguous keypad-success dispatch",
+      "prohibited_substitute": "OnMenuClose"
+    },
+    {
+      "script_name": "MoMParlorLaserGridManagerScript",
+      "carrier_ids": [
+        "345D51",
+        "357EAD",
+        "30937F",
+        "309380",
+        "2C68CB",
+        "008D0D",
+        "002A26",
+        "18B2E0"
+      ],
+      "missing_contract": "request ABI and per-grid player occupancy",
+      "prohibited_substitute": "RequestReevaluateConditions"
+    },
+    {
+      "script_name": "NewRiverGorgeBridgeDestructionScript",
+      "carrier_ids": [
+        "1981B9",
+        "007FF2",
+        "007FF0",
+        "05D5E6",
+        "007FFB",
+        "0531CF"
+      ],
+      "missing_contract": "destruction-repair callback direction and ordering",
+      "prohibited_substitute": "guessed OnDestructionStageChanged toggle"
+    }
+  ]
+}

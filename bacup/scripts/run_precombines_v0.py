@@ -1,7 +1,5 @@
 """v0 CK-free precombine generation runner (path-based, no CK dependency).
 
-See docs/superpowers/plans/2026-07-12-precombine-generation-v0.md, Task 6.
-
 Backs up the target ESM once, opens it through `bacup_lib.run.ConversionRun`,
 dispatches the source-free `generate_precombines` phase for exactly one
 interior CELL, and atomically replaces the ESM only when the phase actually

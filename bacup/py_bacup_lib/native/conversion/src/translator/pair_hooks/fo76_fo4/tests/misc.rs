@@ -1,6 +1,112 @@
+#[test]
+fn post_translate_adds_anio_unload_event_once() {
+    let interner = StringInterner::new();
+    let mut record = make_record("ANIO", &interner);
+    push_field(
+        &mut record,
+        "MODL",
+        FieldValue::String(interner.intern("AnimObjects\\Duster.nif")),
+    );
+
+    let hook = Fo76Fo4Hook;
+    let mut ctx = make_ctx(&interner);
+    hook.post_translate(&mut ctx, &mut record).unwrap();
+    hook.post_translate(&mut ctx, &mut record).unwrap();
+
+    let unload_events: Vec<_> = record
+        .fields
+        .iter()
+        .filter(|field| field.sig.0 == *b"BNAM")
+        .collect();
+    assert_eq!(unload_events.len(), 1);
+    let FieldValue::String(unload_event) = unload_events[0].value else {
+        panic!("expected BNAM string");
+    };
+    assert_eq!(interner.resolve(unload_event), Some("AnimObjUnequip"));
+    assert_eq!(record.fields.last().unwrap().sig.as_str(), "BNAM");
+}
 
 #[test]
-fn post_translate_namespaces_raw_radio_receiver_frequency_once() {
+fn pre_translate_routes_skip_havok_misc_to_static_model_variant() {
+    let interner = StringInterner::new();
+    let mut record = make_record("MISC", &interner);
+    record.eid = Some(interner.intern("zzz_BURN_SQ04_FilmPiece"));
+    push_field(
+        &mut record,
+        "MODL",
+        FieldValue::String(
+            interner.intern("ATX\\backpack_flair\\Flair_FilmReel\\ATX_FilmReel_Flair.nif"),
+        ),
+    );
+    push_field(
+        &mut record,
+        "XALG",
+        FieldValue::Uint(FO76_XALG_SKIP_HAVOK_ON_LOAD | 0x10),
+    );
+
+    Fo76Fo4Hook
+        .pre_translate(&mut make_ctx(&interner), &mut record)
+        .unwrap();
+
+    let variant = fo76_misc_static_model_variant(&record, &interner).expect("static model variant");
+    assert_eq!(
+        variant.source_path,
+        "Meshes/ATX/backpack_flair/Flair_FilmReel/ATX_FilmReel_Flair.nif"
+    );
+    assert_eq!(
+        variant.output_subpath,
+        "Meshes/BACUP_Static/ATX/backpack_flair/Flair_FilmReel/ATX_FilmReel_Flair.nif"
+    );
+    let decision: serde_json::Value =
+        serde_json::from_str(&variant.decision_message()).expect("variant decision JSON");
+    assert_eq!(
+        decision["source_path"],
+        "Meshes/ATX/backpack_flair/Flair_FilmReel/ATX_FilmReel_Flair.nif"
+    );
+    assert_eq!(
+        decision["output_subpath"],
+        "Meshes/BACUP_Static/ATX/backpack_flair/Flair_FilmReel/ATX_FilmReel_Flair.nif"
+    );
+    let FieldValue::String(model) = &record
+        .fields
+        .iter()
+        .find(|field| field.sig.0 == *b"MODL")
+        .expect("MODL")
+        .value
+    else {
+        panic!("expected MODL string");
+    };
+    assert_eq!(
+        interner.resolve(*model),
+        Some("BACUP_Static\\ATX\\backpack_flair\\Flair_FilmReel\\ATX_FilmReel_Flair.nif")
+    );
+}
+
+#[test]
+fn pre_translate_leaves_non_skip_havok_misc_model_unchanged() {
+    let interner = StringInterner::new();
+    let source_model = "ATX\\backpack_flair\\Flair_FilmReel\\ATX_FilmReel_Flair.nif";
+    let mut record = make_record("MISC", &interner);
+    push_field(
+        &mut record,
+        "MODL",
+        FieldValue::String(interner.intern(source_model)),
+    );
+    push_field(&mut record, "XALG", FieldValue::Uint(0x10));
+
+    Fo76Fo4Hook
+        .pre_translate(&mut make_ctx(&interner), &mut record)
+        .unwrap();
+
+    assert!(fo76_misc_static_model_variant(&record, &interner).is_none());
+    let FieldValue::String(model) = record.fields[0].value else {
+        panic!("expected MODL string");
+    };
+    assert_eq!(interner.resolve(model), Some(source_model));
+}
+
+#[test]
+fn post_translate_preserves_raw_radio_receiver_frequency() {
     let interner = StringInterner::new();
     let mut record = make_record("ACTI", &interner);
     let mut receiver = vec![0_u8; 14];
@@ -16,10 +122,47 @@ fn post_translate_namespaces_raw_radio_receiver_frequency_once() {
     let FieldValue::Bytes(receiver) = &record.fields[0].value else {
         panic!("expected raw RADR");
     };
-    assert_eq!(
-        f32::from_le_bytes(receiver[4..8].try_into().unwrap()),
-        98.2 + FO76_RADIO_FREQUENCY_NAMESPACE_OFFSET
+    assert_eq!(f32::from_le_bytes(receiver[4..8].try_into().unwrap()), 98.2);
+    assert_eq!(record.fields, once);
+}
+
+#[test]
+fn post_translate_preserves_bs01_radio_scene_frequency_gate() {
+    let interner = StringInterner::new();
+    let mut record = make_record("SCEN", &interner);
+    push_field(
+        &mut record,
+        "CTDA",
+        raw_bytes(
+            &hex::decode("000000000000803F650200000000000000000000050000000000000003000000")
+                .unwrap(),
+        ),
     );
+    push_field(
+        &mut record,
+        "CTDA",
+        raw_bytes(
+            &hex::decode("000000009A99A642660200000000000000000000050000000000000003000000")
+                .unwrap(),
+        ),
+    );
+
+    let hook = Fo76Fo4Hook;
+    let mut ctx = make_ctx(&interner);
+    hook.post_translate(&mut ctx, &mut record).unwrap();
+    let once = record.fields.clone();
+    hook.post_translate(&mut ctx, &mut record).unwrap();
+
+    let comparisons = record
+        .fields
+        .iter()
+        .map(|field| match &field.value {
+            FieldValue::Bytes(bytes) => f32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            other => panic!("expected raw CTDA, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(comparisons[0], 1.0);
+    assert_eq!(comparisons[1], 83.300_003);
     assert_eq!(record.fields, once);
 }
 
@@ -51,7 +194,7 @@ fn post_translate_rewrites_fo76_font_aliases_in_localized_text() {
 }
 
 #[test]
-fn post_translate_namespaces_structured_radio_receiver_frequency() {
+fn post_translate_preserves_structured_radio_receiver_frequency() {
     let interner = StringInterner::new();
     let mut record = make_record("ACTI", &interner);
     push_field(
@@ -70,10 +213,7 @@ fn post_translate_namespaces_structured_radio_receiver_frequency() {
     let FieldValue::Struct(fields) = &record.fields[0].value else {
         panic!("expected structured RADR");
     };
-    assert_eq!(
-        fields[1].1,
-        FieldValue::Float(80.5 + FO76_RADIO_FREQUENCY_NAMESPACE_OFFSET)
-    );
+    assert_eq!(fields[1].1, FieldValue::Float(80.5));
 }
 
 #[test]
@@ -405,13 +545,15 @@ fn post_translate_sets_missing_raw_light_radius_from_value() {
         ),
         FO4_LIGH_DEFAULT_EXPONENT
     );
+    // FO76's lumens survive translate: the post-copy `normalize_light_radii` pass
+    // derives the FO4 radius from them and clears the slot afterwards.
     assert_eq!(
         u32::from_le_bytes(
             bytes[FO4_LIGH_DATA_VALUE_OFFSET..FO4_LIGH_DATA_VALUE_OFFSET + 4]
                 .try_into()
                 .unwrap()
         ),
-        FO4_LIGH_DEFAULT_VALUE
+        400
     );
     assert_eq!(
         f32::from_le_bytes(
@@ -535,4 +677,105 @@ fn synthesize_records_returns_empty() {
     let hook = Fo76Fo4Hook;
     let mut ctx = make_ctx(&mut interner);
     assert!(hook.synthesize_records(&mut ctx).is_empty());
+}
+
+/// Build an FO76 INNR carrying `filter` plus one minimal ruleset.
+fn fo76_innr(filter: FieldValue, interner: &StringInterner) -> Record {
+    let mut record = make_record("INNR", interner);
+    push_field(&mut record, "INRF", filter);
+    push_field(
+        &mut record,
+        "ZNAM",
+        FieldValue::String(interner.intern("Legendary")),
+    );
+    push_field(&mut record, "VNAM", FieldValue::Uint(1));
+    record
+}
+
+fn innr_target(record: &Record) -> Option<u64> {
+    record
+        .fields
+        .iter()
+        .find(|field| field.sig.0 == *b"UNAM")
+        .and_then(|field| match field.value {
+            FieldValue::Uint(value) => Some(value),
+            _ => None,
+        })
+}
+
+#[test]
+fn pre_translate_converts_innr_filter_to_fo4_target() {
+    let interner = StringInterner::new();
+    for (filter, expected) in [
+        ("ARMO", FO4_INNR_TARGET_ARMOR),
+        ("WEAP", FO4_INNR_TARGET_WEAPON),
+        ("FURN", FO4_INNR_TARGET_FURNITURE),
+        ("NPC_", FO4_INNR_TARGET_ACTOR),
+    ] {
+        let mut record = fo76_innr(FieldValue::String(interner.intern(filter)), &interner);
+
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        assert_eq!(
+            innr_target(&record),
+            Some(u64::from(expected)),
+            "{filter} should map to FO4 target {expected}"
+        );
+        // INRF has no FO4 counterpart: it becomes UNAM rather than lingering.
+        assert!(
+            !record.fields.iter().any(|field| field.sig.0 == *b"INRF"),
+            "{filter} should not retain INRF"
+        );
+        // UNAM must precede the first ruleset VNAM to match FO4 subrecord order.
+        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
+        let unam = sigs.iter().position(|s| *s == "UNAM").expect("UNAM");
+        let vnam = sigs.iter().position(|s| *s == "VNAM").expect("VNAM");
+        assert!(unam < vnam, "{filter}: UNAM must come before VNAM");
+    }
+}
+
+#[test]
+fn pre_translate_converts_innr_filter_supplied_as_raw_bytes() {
+    let interner = StringInterner::new();
+    let mut record = fo76_innr(FieldValue::Bytes(SmallVec::from_slice(b"WEAP")), &interner);
+
+    Fo76Fo4Hook
+        .pre_translate(&mut make_ctx(&interner), &mut record)
+        .unwrap();
+
+    assert_eq!(
+        innr_target(&record),
+        Some(u64::from(FO4_INNR_TARGET_WEAPON))
+    );
+}
+
+#[test]
+fn pre_translate_leaves_innr_without_known_filter_alone() {
+    let interner = StringInterner::new();
+    let mut record = fo76_innr(FieldValue::String(interner.intern("SPEL")), &interner);
+
+    Fo76Fo4Hook
+        .pre_translate(&mut make_ctx(&interner), &mut record)
+        .unwrap();
+
+    assert_eq!(innr_target(&record), None);
+}
+
+#[test]
+fn pre_translate_does_not_add_target_to_non_innr_records() {
+    let interner = StringInterner::new();
+    let mut record = make_record("WEAP", &interner);
+    push_field(
+        &mut record,
+        "INRF",
+        FieldValue::String(interner.intern("WEAP")),
+    );
+
+    Fo76Fo4Hook
+        .pre_translate(&mut make_ctx(&interner), &mut record)
+        .unwrap();
+
+    assert_eq!(innr_target(&record), None);
 }

@@ -17,15 +17,12 @@ from creation_lib.pex.native_runtime import compile_psc
 REPO_ROOT = Path(__file__).resolve().parents[5]
 SOURCE_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 
-# Fragment reward/consequence patches for the w3b-re-dtr contract family (TIF_
-# TopicInfo fragments that grant/consume items or hand off scene control on a
-# single Fragment_Begin/Fragment_End call). Merged from the former
-# w3b_re_dtr_a/b/c shards, which each covered a disjoint sub-family (family
-# tags below trace each row back to its origin batch -- kept only because the
-# none-guard strictness rules in _FAMILY_ACTION_INDICATORS /
-# _FAMILY_STRICT_GUARD were adjudicated slightly differently per batch).
+# Fragment reward/consequence patches: TIF_ TopicInfo fragments that grant or
+# consume items or hand off scene control in a single Fragment_Begin/Fragment_End
+# call. Rows are split into families a/b/c because the none-guard strictness rules
+# in _FAMILY_ACTION_INDICATORS / _FAMILY_STRICT_GUARD differ per family.
 
-# -- family a (5 rows) -- former w3b_re_dtr_a: Assault family.
+# -- family a (5 rows) -- Assault family.
 _FAMILY_A_CASES: dict[str, tuple[str, ...]] = {
     "Fragments:TopicInfos:TIF_W05_RE_AssaultAF01_0055DEAA": ("Game.GetPlayer().AddItem(Caps001, 1)",),
     "Fragments:TopicInfos:TIF_W05_RE_AssaultAF01_0055DEAB": ("Game.GetPlayer().AddItem(Caps001, 1)",),
@@ -41,7 +38,7 @@ _FAMILY_A_MEMBERS: dict[str, set[str]] = {
     "Fragments:TopicInfos:TIF_W05_RE_AssaultBB02_00573F0E": {"fragment_begin"},
 }
 
-# -- family b (23 rows) -- former w3b_re_dtr_b: Camp/Object/Scene_JP01-02 family.
+# -- family b (23 rows) -- Camp/Object/Scene_JP01-02 family.
 _FAMILY_B_CASES: dict[str, tuple[str, ...]] = {
     "Fragments:TopicInfos:TIF_W05_RE_CampAF02_00567A9F": (
         "Game.GetPlayer().RemoveItem(Stimpak, 1, true, akSpeakerRef)",
@@ -148,7 +145,7 @@ _FAMILY_B_MEMBERS: dict[str, set[str]] = {
     "Fragments:TopicInfos:TIF_W05_RE_Scene_JP02_00573F0C": {"fragment_end"},
 }
 
-# -- family c (25 rows) -- former w3b_re_dtr_c: Scene_JP04/SceneAF/Template/Travel family.
+# -- family c (25 rows) -- Scene_JP04/SceneAF/Template/Travel family.
 _FAMILY_C_CASES: dict[str, tuple[str, ...]] = {
     "Fragments:TopicInfos:TIF_W05_RE_Scene_JP04_A_00563818": (
         "Game.GetPlayer().AddItem(RewardRef, 1)",

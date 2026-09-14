@@ -7,6 +7,10 @@
 
 use smallvec::SmallVec;
 
+use super::fnv_conditions::{
+    ConditionNormalizeError, ConditionReferenceOutcome, LegacyConditionFamily,
+    normalize_legacy_condition_value,
+};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SubrecordSig};
 use crate::record::{FieldEntry, FieldValue, Record};
@@ -96,9 +100,21 @@ pub struct PerkEnumDecision {
     pub target: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerkAdaptReason {
+    NativePowerArmorUse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerkAdaptDecision {
+    pub entry_index: usize,
+    pub reason: PerkAdaptReason,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PerkNormalizeReport {
     pub converted_entries: usize,
+    pub adapted_entries: usize,
     pub dropped_entries: usize,
     pub converted_conditions: usize,
     pub preserved_target_conditions: usize,
@@ -107,6 +123,7 @@ pub struct PerkNormalizeReport {
     pub references: Vec<PerkReferenceDecision>,
     pub enums: Vec<PerkEnumDecision>,
     pub drops: Vec<PerkDropDecision>,
+    pub adaptations: Vec<PerkAdaptDecision>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -136,10 +153,22 @@ pub fn normalize_legacy_perk(
     family: LegacyPerkFamily,
     mapper: &mut FormKeyMapper<'_>,
 ) -> PerkNormalizeReport {
+    normalize_legacy_perk_for_source(record, family, record.form_key, mapper)
+}
+
+pub fn normalize_legacy_perk_for_source(
+    record: &mut Record,
+    family: LegacyPerkFamily,
+    source_form_key: FormKey,
+    mapper: &mut FormKeyMapper<'_>,
+) -> PerkNormalizeReport {
     let mut report = PerkNormalizeReport::default();
     if record.sig.0 != *b"PERK" {
         return report;
     }
+
+    let power_armor_training =
+        is_power_armor_training_record(record, family, source_form_key, mapper);
 
     let input: Vec<FieldEntry> = record.fields.drain(..).collect();
     let mut output = Vec::with_capacity(input.len());
@@ -161,6 +190,14 @@ pub fn normalize_legacy_perk(
                 let end = end_marker.map_or(next_entry, |marker| marker + 1);
                 if end_marker.is_none() {
                     drop_entry(entry_index, PerkDropReason::MissingEndMarker, &mut report);
+                } else if power_armor_training
+                    && is_power_armor_training_quest_entry(&input[index..end])
+                {
+                    report.adapted_entries += 1;
+                    report.adaptations.push(PerkAdaptDecision {
+                        entry_index,
+                        reason: PerkAdaptReason::NativePowerArmorUse,
+                    });
                 } else if let Some(converted) =
                     normalize_entry(&input[index..end], entry_index, family, mapper, &mut report)
                 {
@@ -210,6 +247,57 @@ pub fn normalize_legacy_perk(
 
     record.fields = output.into_iter().collect();
     report
+}
+
+fn is_power_armor_training_record(
+    record: &Record,
+    family: LegacyPerkFamily,
+    source_form_key: FormKey,
+    mapper: &FormKeyMapper<'_>,
+) -> bool {
+    if family != LegacyPerkFamily::Fnv || source_form_key.local != 0x058FDF {
+        return false;
+    }
+    let Some(plugin) = mapper.interner.resolve(source_form_key.plugin) else {
+        return false;
+    };
+    if !plugin.eq_ignore_ascii_case("FalloutNV.esm") {
+        return false;
+    }
+    if record
+        .eid
+        .and_then(|eid| mapper.interner.resolve(eid))
+        .is_none_or(|eid| !eid.eq_ignore_ascii_case("PowerArmorTraining"))
+    {
+        return false;
+    }
+    let Some(first_entry) = record
+        .fields
+        .iter()
+        .position(|field| field.sig.0 == *b"PRKE")
+    else {
+        return false;
+    };
+    record.fields[..first_entry]
+        .iter()
+        .any(|field| field.sig.0 == *b"DATA" && exact_bytes(&field.value, &[1, 0, 0, 0, 0]))
+}
+
+fn is_power_armor_training_quest_entry(group: &[FieldEntry]) -> bool {
+    group.len() == 3
+        && group[0].sig.0 == *b"PRKE"
+        && exact_bytes(&group[0].value, &[0, 0, 0])
+        && group[1].sig.0 == *b"DATA"
+        && exact_bytes(
+            &group[1].value,
+            &[0xB2, 0x38, 0x00, 0x00, 0x50, 0x00, 0x00, 0x00],
+        )
+        && group[2].sig.0 == *b"PRKF"
+        && matches!(group[2].value, FieldValue::None)
+}
+
+fn exact_bytes(value: &FieldValue, expected: &[u8]) -> bool {
+    matches!(value, FieldValue::Bytes(bytes) if bytes.as_slice() == expected)
 }
 
 fn normalize_entry(
@@ -630,108 +718,77 @@ fn convert_condition(
         }
         RowShape::Legacy => match value {
             FieldValue::Bytes(bytes) => {
-                let source_function = read_u16(bytes, 8);
-                let Some(function) = translate_condition_function(family, source_function) else {
-                    drop_condition(
-                        entry_index,
-                        condition_index,
-                        PerkDropReason::UnsupportedConditionFunction,
-                        report,
-                    );
-                    return None;
+                let family = match family {
+                    LegacyPerkFamily::Fnv => LegacyConditionFamily::Fnv,
+                    LegacyPerkFamily::Fo3 => LegacyConditionFamily::Fo3,
                 };
-                let mut target = bytes.to_vec();
-                target[8..10].copy_from_slice(&function.to_le_bytes());
-                target.extend_from_slice(&(-1_i32).to_le_bytes());
-                if target[0] & 0x04 != 0
-                    && !remap_raw_reference_at(
-                        &mut target,
-                        4,
-                        entry_index,
-                        Some(condition_index),
-                        "condition_comparison_global",
-                        mapper,
-                        report,
-                    )
-                {
-                    drop_condition(
-                        entry_index,
-                        condition_index,
-                        PerkDropReason::UnmappedConditionReference,
-                        report,
-                    );
-                    return None;
+                let (target, condition_report) = match normalize_legacy_condition_value(
+                    &FieldValue::Bytes(bytes.clone()),
+                    family,
+                    mapper,
+                ) {
+                    Ok(value) => value,
+                    Err(ConditionNormalizeError::UnsupportedFunction { .. }) => {
+                        drop_condition(
+                            entry_index,
+                            condition_index,
+                            PerkDropReason::UnsupportedConditionFunction,
+                            report,
+                        );
+                        return None;
+                    }
+                    Err(ConditionNormalizeError::UnmappedRequiredReference { .. }) => {
+                        drop_condition(
+                            entry_index,
+                            condition_index,
+                            PerkDropReason::UnmappedConditionReference,
+                            report,
+                        );
+                        return None;
+                    }
+                    Err(_) => {
+                        drop_condition(
+                            entry_index,
+                            condition_index,
+                            PerkDropReason::MalformedCondition,
+                            report,
+                        );
+                        return None;
+                    }
+                };
+                if condition_report.converted {
+                    report.converted_conditions += 1;
                 }
-                let (param1, param2) = condition_formid_functions(family);
-                if param1.binary_search(&source_function).is_ok()
-                    && !remap_raw_reference_at(
-                        &mut target,
-                        12,
+                for decision in condition_report.references {
+                    let outcome = match decision.outcome {
+                        ConditionReferenceOutcome::SourceNull => PerkReferenceOutcome::SourceNull,
+                        ConditionReferenceOutcome::MappedRaw {
+                            source_raw,
+                            target_raw,
+                        } => PerkReferenceOutcome::MappedRaw {
+                            source_raw,
+                            target_raw,
+                        },
+                    };
+                    report.references.push(PerkReferenceDecision {
                         entry_index,
-                        Some(condition_index),
-                        "condition_parameter_1",
-                        mapper,
-                        report,
-                    )
-                {
-                    drop_condition(
-                        entry_index,
-                        condition_index,
-                        PerkDropReason::UnmappedConditionReference,
-                        report,
-                    );
-                    return None;
+                        condition_index: Some(condition_index),
+                        field: decision.field,
+                        outcome,
+                    });
                 }
-                if param2.binary_search(&source_function).is_ok()
-                    && !remap_raw_reference_at(
-                        &mut target,
-                        16,
+                if let (Some(source), Some(target_function)) = (
+                    condition_report.source_function,
+                    condition_report.target_function,
+                ) {
+                    report.enums.push(PerkEnumDecision {
                         entry_index,
-                        Some(condition_index),
-                        "condition_parameter_2",
-                        mapper,
-                        report,
-                    )
-                {
-                    drop_condition(
-                        entry_index,
-                        condition_index,
-                        PerkDropReason::UnmappedConditionReference,
-                        report,
-                    );
-                    return None;
+                        field: "condition_function",
+                        source: u32::from(source),
+                        target: u32::from(target_function),
+                    });
                 }
-                let run_on = read_u32(&target, 20);
-                if run_on == 20 {
-                    target[20..24].copy_from_slice(&0_u32.to_le_bytes());
-                }
-                if run_on == 2
-                    && !remap_raw_reference_at(
-                        &mut target,
-                        24,
-                        entry_index,
-                        Some(condition_index),
-                        "condition_run_on_reference",
-                        mapper,
-                        report,
-                    )
-                {
-                    drop_condition(
-                        entry_index,
-                        condition_index,
-                        PerkDropReason::UnmappedConditionReference,
-                        report,
-                    );
-                    return None;
-                }
-                report.enums.push(PerkEnumDecision {
-                    entry_index,
-                    field: "condition_function",
-                    source: u32::from(source_function),
-                    target: u32::from(function),
-                });
-                report.converted_conditions += 1;
-                Some(FieldValue::Bytes(SmallVec::from_vec(target)))
+                Some(target)
             }
             FieldValue::Struct(fields) => {
                 let source_function = named_u16(fields, mapper, "function")?;
@@ -1416,6 +1473,85 @@ mod tests {
         assert_eq!(report.converted_entries, 1);
         assert_eq!(report.converted_conditions, 1);
         assert_eq!(report.dropped_entries, 0);
+    }
+
+    #[test]
+    fn power_armor_training_058fdf_externalizes_exact_native_quest_stage_entry() {
+        let interner = StringInterner::new();
+        let mut mapper = mapper(&interner, LegacyPerkFamily::Fnv, &[]);
+        let mut perk = record(&interner);
+        perk.eid = Some(interner.intern("PowerArmorTraining"));
+        perk.fields.extend([
+            field(b"DATA", vec![1, 0, 0, 0, 0]),
+            field(b"PRKE", vec![0, 0, 0]),
+            field(b"DATA", vec![0xB2, 0x38, 0, 0, 80, 0, 0, 0]),
+            empty(b"PRKF"),
+        ]);
+
+        let report = normalize_legacy_perk_for_source(
+            &mut perk,
+            LegacyPerkFamily::Fnv,
+            form_key(&interner, "FalloutNV.esm", 0x058FDF),
+            &mut mapper,
+        );
+
+        assert_eq!(sigs(&perk), vec!["DATA"]);
+        assert_eq!(raw(&perk, b"DATA")[0], &[1, 0, 0, 0, 0]);
+        assert_eq!(report.converted_entries, 0);
+        assert_eq!(report.adapted_entries, 1);
+        assert_eq!(report.dropped_entries, 0);
+        assert_eq!(report.converted_conditions, 0);
+        assert_eq!(
+            report.adaptations,
+            [PerkAdaptDecision {
+                entry_index: 0,
+                reason: PerkAdaptReason::NativePowerArmorUse,
+            }]
+        );
+    }
+
+    #[test]
+    fn power_armor_training_adaptation_near_misses_fail_closed() {
+        let cases: [(&str, &str, u32, u32, bool); 5] = [
+            ("Other.esm", "PowerArmorTraining", 0x0038B2, 80, false),
+            ("FalloutNV.esm", "OtherPerk", 0x0038B2, 80, false),
+            ("FalloutNV.esm", "PowerArmorTraining", 0x0038B3, 80, false),
+            ("FalloutNV.esm", "PowerArmorTraining", 0x0038B2, 81, false),
+            ("FalloutNV.esm", "PowerArmorTraining", 0x0038B2, 80, true),
+        ];
+        for (plugin, eid, quest, stage, with_condition) in cases {
+            let interner = StringInterner::new();
+            let mut mapper = mapper(&interner, LegacyPerkFamily::Fnv, &[]);
+            let mut perk = record(&interner);
+            perk.eid = Some(interner.intern(eid));
+            let mut quest_data = quest.to_le_bytes().to_vec();
+            quest_data.extend_from_slice(&(stage as u32).to_le_bytes());
+            perk.fields.extend([
+                field(b"DATA", vec![1, 0, 0, 0, 0]),
+                field(b"PRKE", vec![0, 0, 0]),
+                field(b"DATA", quest_data),
+            ]);
+            if with_condition {
+                perk.fields.push(field(b"CTDA", legacy_ctda(1)));
+            }
+            perk.fields.push(empty(b"PRKF"));
+
+            let report = normalize_legacy_perk_for_source(
+                &mut perk,
+                LegacyPerkFamily::Fnv,
+                form_key(&interner, plugin, 0x058FDF),
+                &mut mapper,
+            );
+            assert_eq!(
+                report.adapted_entries, 0,
+                "case {plugin}/{eid}/{quest:06X}/{stage}"
+            );
+            assert_eq!(
+                report.dropped_entries, 1,
+                "case {plugin}/{eid}/{quest:06X}/{stage}"
+            );
+            assert_eq!(sigs(&perk), vec!["DATA"]);
+        }
     }
 
     #[test]

@@ -24,19 +24,13 @@ _INLINE_SHADER_TEXTURE_FIELDS = (
 def extract_inline_textures(nif_path: str) -> list[str]:
     """Open a NIF and return every inline shader texture ref it holds.
 
-    Complements ``NifIndexLookup.get_textures`` for cases where the NIF
-    preprocessor hasn't yet been rerun with the inline-shader-texture
-    extraction fix. Reading the NIF is slow relative to an index lookup,
-    so this should only be called on the small set of NIFs that end up in
-    a walk graph (typically ~30-100 per weapon conversion).
+    Fallback for when the ``NifIndexLookup.get_textures`` index lacks inline shader
+    textures. Slower than an index lookup, so call it only on NIFs in a walk graph
+    (typically ~30-100 per weapon conversion).
 
-    Only returns texture refs found on shader blocks that do NOT have a
-    linked ``.bgsm``/``.bgem`` material file — when a material file is
-    present, the inline fields are ignored by the engine and the real
-    texture chain comes from the BGSM walker instead.
-
-    Returns an empty list on any read error so callers can treat this as
-    a best-effort enrichment pass that never blocks the main walk.
+    Skips shader blocks with a linked ``.bgsm``/``.bgem``: the engine ignores their
+    inline fields and the textures come from the BGSM walker. Returns ``[]`` on any
+    read error.
     """
     try:
         from creation_lib.nif.nif_file import NifFile

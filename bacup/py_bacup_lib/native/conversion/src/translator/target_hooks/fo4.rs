@@ -1,62 +1,22 @@
-//! Fo4TargetHook — FO4-target record hook.
+//! Fo4TargetHook: FO4-target record hook.
 //!
-//! Ports the retired Python `Fo4TargetHooks` implementation.
+//! `run()` applies these after the pair-level translation pass, each through a
+//! private helper keyed on the record's `sig`:
 //!
-//! # Behaviors ported (record-level, expressible on `Record + FieldValue`)
-//!
-//! All behaviors below are applied in `run()` after the pair-level translation
-//! pass. Each maps to a private helper keyed on the record's `sig`.
-//!
-//! ## IDLE
-//! 1. Drop `RelatedIdles` subrecord — Python's `normalize_idle_legacy_fields`
-//!    removes the FO76-era `RelatedIdles` key. The `Animations` subrecord is
-//!    synthesized by the field-translation pass; the hook's job here is to
-//!    remove any residual `RELI` subrecord that was copied through unchanged.
-//!
-//! ## NPC_
-//! 2. `DATA = true` → `DATA = {Marker: true}` — FO76 NPC_ records sometimes
-//!    carry a bare boolean DATA field; FO4 expects the struct form.
-//! 3. Configuration flags: strip `HasBaseSoundData`; restrict TemplateFlags to
-//!    the FO4-compatible subset (Traits, Stats, Factions, AIData, AIPackages,
-//!    ModelAnimation, BaseData, Inventory, Script).
-//!
-//! ## BOOK
-//! 4. DNAM flags: remove `IsRecipe` flag — FO76-only flag not present in FO4.
-//!
-//! ## ENCH
-//! 5. EffectData TargetType `Contact` → `Touch` — FO76 uses "Contact"; FO4
-//!    schema uses "Touch" for the same semantic.
-//!
-//! ## ARMO / ARMA
-//! 6. BipedBodyTemplate: normalize FO76-only attachment/body slots to FO4 CK
-//!    valid slots.
-//! 7. ARMA BipedModels: strip FO76-only sub-keys (XFLG, ENLT, ENLS, AUUV, MODD,
-//!    ENLM) from each biped model entry.
-//!
-//! ## LVLI / LVLN
-//! 8. Preserve LVLO entries. FO4's binary schema expects `LVLO`; the
-//!    authoring label `LeveledEntry` is a YAML-level alias, not a subrecord sig.
-//!
-//! ## LVLI
-//! 9. COED entries: drop `CurveTablesMin` and `CurveTablesMax` fields from each
-//!    COED struct entry.
-//!
-//! # Behaviors deferred
-//!
-//! The following Python behaviors require either binary blob decoding or deep
-//! schema knowledge not yet available at this phase:
-//!
-//! - BPTD `NodeData` raw_hex → structured fields (`_normalize_bptd_raw_node_data`)
-//! - IDLE DATA list → struct normalization (post-translation, field-dispatch)
-//! - FSTS footstep rearrangement (`_normalize_fsts_legacy_fields`, full dict)
-//! - RACE graph/project-path normalization (needs EID context)
-//! - CTDA parameter normalization (nested any-value traversal)
-//! - ObjectTemplate step unwrapping + FormID ref expansion (needs source_master)
-//! - BipedObjectConditions key rename (YAML-level, nested structs)
-//! - LeveledEntry ref expansion from raw int/variant (needs source_master)
-//! - NPC_ inventory expansion (YAML-level field synthesis)
-//! - RACE SkeletalDatas / BehaviorGraphDatas expansion (field synthesis)
-//! - Legacy condition normalization (complex dict rewrite)
+//! - IDLE: drop any residual `RELI` (RelatedIdles); the field-translation pass
+//!   synthesizes `Animations`.
+//! - NPC_: a bare boolean `DATA = true` becomes the FO4 struct form
+//!   `DATA = {Marker: true}`. Strip `HasBaseSoundData`; restrict TemplateFlags
+//!   to the FO4 subset (Traits, Stats, Factions, AIData, AIPackages,
+//!   ModelAnimation, BaseData, Inventory, Script).
+//! - BOOK: clear the FO76-only `IsRecipe` DNAM flag.
+//! - ENCH: EffectData TargetType `Contact` (FO76) → `Touch` (FO4).
+//! - ARMO / ARMA: normalize FO76-only BipedBodyTemplate slots to FO4 CK-valid
+//!   slots; strip FO76-only sub-keys (XFLG, ENLT, ENLS, AUUV, MODD, ENLM) from
+//!   each ARMA biped model entry.
+//! - LVLI / LVLN: keep `LVLO` entries (`LeveledEntry` is a YAML-level alias,
+//!   not a subrecord sig).
+//! - LVLI: drop `CurveTablesMin`/`CurveTablesMax` from each COED entry.
 
 use crate::ids::FormKey;
 use crate::ids::SubrecordSig;
@@ -463,12 +423,8 @@ fn ensure_arma_female_model_from_male(record: &mut Record, interner: &StringInte
 // Per-sig behaviors
 // ---------------------------------------------------------------------------
 
-/// IDLE: drop any residual `RELI` (RelatedIdles) subrecord.
-///
-/// Python `normalize_idle_legacy_fields` converts RelatedIdles → Animations
-/// in the source dict. In the Rust pipeline the Animations subrecord is
-/// synthesized by the field-translation pass; the hook drops any leftover
-/// RELI that wasn't consumed.
+/// IDLE: drop any residual `RELI` (RelatedIdles) subrecord. The field-translation
+/// pass synthesizes `Animations`; this drops any RELI it didn't consume.
 fn apply_idle(record: &mut Record) {
     let reli = SubrecordSig(*b"RELI");
     record.fields.retain(|e| e.sig != reli);

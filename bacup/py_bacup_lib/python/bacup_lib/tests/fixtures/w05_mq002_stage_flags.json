@@ -1,0 +1,22 @@
+{
+  "source": {
+    "command": "modkit.exe --game fo76 --format json data record 40F5BE:SeventySix.esm --content",
+    "record": "40F5BE:SeventySix.esm",
+    "editor_id": "W05_MQ_002P_Radical",
+    "stages": {
+      "8950": [],
+      "9000": ["CompleteQuest"],
+      "10000": []
+    }
+  },
+  "live": {
+    "command": "modkit.exe esp get-record mods/SeventySix/SeventySix.esm 0040F5BE --authoring",
+    "record": "0040F5BE",
+    "editor_id": "W05_MQ_002P_Radical",
+    "stages": {
+      "8950": [],
+      "9000": ["CompleteQuest"],
+      "10000": []
+    }
+  }
+}

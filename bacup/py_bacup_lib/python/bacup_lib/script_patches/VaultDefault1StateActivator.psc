@@ -40,9 +40,9 @@ Event OnLoad()
     UpdateNetworkState()
 EndEvent
 
-Event OnSimpleNetworkStateSet()
-    UpdateNetworkState()
-EndEvent
+; OnSimpleNetworkStateSet was the FO76 server->client replicated-state callback.
+; OnLoad already calls UpdateNetworkState() locally.
+; @drop-member OnSimpleNetworkStateSet
 
 Event OnActivate(ObjectReference akActionRef)
     If GetState() == "Waiting"

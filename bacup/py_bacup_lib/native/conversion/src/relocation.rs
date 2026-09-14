@@ -1,7 +1,87 @@
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::SystemTime;
 
 use nif_core_native::model::{NifFile, ReferencedAssetPaths};
+
+#[derive(Clone, Debug)]
+struct NifDependencyEntry {
+    len: u64,
+    modified: Option<SystemTime>,
+    refs: Arc<OnceLock<Option<ReferencedAssetPaths>>>,
+}
+
+#[derive(Debug, Default)]
+pub struct NifDependencyCache {
+    entries: RwLock<HashMap<PathBuf, NifDependencyEntry>>,
+    requests: AtomicU64,
+    loads: AtomicU64,
+}
+
+impl NifDependencyCache {
+    fn fork(&self) -> Self {
+        let entries = self
+            .entries
+            .read()
+            .map(|entries| entries.clone())
+            .unwrap_or_default();
+        Self {
+            entries: RwLock::new(entries),
+            requests: AtomicU64::new(0),
+            loads: AtomicU64::new(0),
+        }
+    }
+
+    pub fn get(&self, path: &Path) -> Option<ReferencedAssetPaths> {
+        let metadata = std::fs::metadata(path).ok()?;
+        let modified = metadata.modified().ok();
+        self.requests.fetch_add(1, Ordering::Relaxed);
+        let key = if cfg!(windows) {
+            PathBuf::from(path.to_string_lossy().replace('\\', "/").to_lowercase())
+        } else {
+            path.to_path_buf()
+        };
+        let matches =
+            |entry: &&NifDependencyEntry| entry.len == metadata.len() && entry.modified == modified;
+        let cached = self
+            .entries
+            .read()
+            .unwrap()
+            .get(&key)
+            .filter(matches)
+            .map(|entry| Arc::clone(&entry.refs));
+        let refs = cached.unwrap_or_else(|| {
+            let mut entries = self.entries.write().unwrap();
+            if let Some(entry) = entries.get(&key).filter(matches) {
+                return Arc::clone(&entry.refs);
+            }
+            let refs = Arc::new(OnceLock::new());
+            entries.insert(
+                key,
+                NifDependencyEntry {
+                    len: metadata.len(),
+                    modified,
+                    refs: Arc::clone(&refs),
+                },
+            );
+            refs
+        });
+        refs.get_or_init(|| {
+            self.loads.fetch_add(1, Ordering::Relaxed);
+            NifFile::load_referenced_asset_paths(path).ok()
+        })
+        .clone()
+    }
+
+    pub fn counts(&self) -> (u64, u64) {
+        (
+            self.requests.load(Ordering::Relaxed),
+            self.loads.load(Ordering::Relaxed),
+        )
+    }
+}
 
 /// Normalize any asset path to a lowercase, forward-slash, data-relative key.
 pub fn normalize_rel(path: &str) -> String {
@@ -349,7 +429,56 @@ fn material_texture_source_member(material_member: &str) -> String {
 #[derive(Debug, Default)]
 pub struct RelocationBuildResult {
     pub members: HashSet<String>,
+    /// Subset of `members` relocated for geometry + collision only; their
+    /// material/texture slots must stay on the shared (un-namespaced) paths.
+    pub mesh_only_members: HashSet<String>,
     pub warnings: Vec<String>,
+    pub nif_dependencies: Arc<NifDependencyCache>,
+    pub(crate) preparation: Option<Arc<RelocationPreparation>>,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(crate) struct RelocationPreparationKey {
+    source_dir: PathBuf,
+    mesh_roots: Vec<String>,
+}
+
+impl RelocationPreparationKey {
+    fn new(source_dir: &Path, mesh_roots: &[String]) -> Self {
+        Self {
+            source_dir: source_dir.to_path_buf(),
+            mesh_roots: mesh_roots.to_vec(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct RelocationPreparation {
+    members: HashSet<String>,
+    mesh_only_members: HashSet<String>,
+    warnings: Vec<String>,
+    nif_dependencies: Arc<NifDependencyCache>,
+}
+
+impl RelocationPreparation {
+    fn from_run_result(result: RelocationBuildResult) -> Self {
+        Self {
+            members: result.members,
+            mesh_only_members: result.mesh_only_members,
+            warnings: result.warnings,
+            nif_dependencies: result.nif_dependencies,
+        }
+    }
+
+    fn into_run_result(preparation: Arc<Self>) -> RelocationBuildResult {
+        RelocationBuildResult {
+            members: preparation.members.clone(),
+            mesh_only_members: preparation.mesh_only_members.clone(),
+            warnings: preparation.warnings.clone(),
+            nif_dependencies: Arc::new(preparation.nif_dependencies.fork()),
+            preparation: Some(preparation),
+        }
+    }
 }
 
 /// Public entry: collision compare + cascade closure over real files.
@@ -359,6 +488,7 @@ pub fn build_relocation_member_set(
     fo4_dir: &Path,
 ) -> RelocationBuildResult {
     let mut warnings = Vec::new();
+    let nif_dependencies = Arc::new(NifDependencyCache::default());
     let any_root_present = mesh_roots.iter().any(|r| {
         fo4_dir
             .join(normalize_rel(r).replace('/', std::path::MAIN_SEPARATOR_STR))
@@ -379,14 +509,16 @@ pub fn build_relocation_member_set(
         fo76_dir,
     );
     let source = fo76_dir.to_path_buf();
+    let source_refs = Arc::clone(&nif_dependencies);
     let load_source_nif = move |rel: &str| -> Option<ReferencedAssetPaths> {
         let abs = source.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-        NifFile::load(abs).ok().map(|n| n.referenced_asset_paths())
+        source_refs.get(&abs)
     };
     let target = fo4_dir.to_path_buf();
+    let target_refs = Arc::clone(&nif_dependencies);
     let load_target_nif = move |rel: &str| -> Option<ReferencedAssetPaths> {
         let abs = target.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-        NifFile::load(abs).ok().map(|n| n.referenced_asset_paths())
+        target_refs.get(&abs)
     };
     let source2 = fo76_dir.to_path_buf();
     let load_mat = move |rel: &str| -> Vec<String> {
@@ -396,13 +528,30 @@ pub fn build_relocation_member_set(
     let nif_loaders: [&dyn Fn(&str) -> Option<ReferencedAssetPaths>; 2] =
         [&load_source_nif, &load_target_nif];
     let related_meshes = collect_source_meshes(mesh_roots, fo76_dir);
-    let members = build_relocation_member_set_from_loaders_with_related_nifs(
+    let mut members = build_relocation_member_set_from_loaders_with_related_nifs(
         &meshes,
         &related_meshes,
         &nif_loaders,
         &load_mat,
     );
-    RelocationBuildResult { members, warnings }
+    append_existing_forced_materials(
+        &mut members,
+        FO76_FO4_DEFAULT_RELOCATION_MATERIAL_PATHS,
+        fo76_dir,
+        &load_mat,
+    );
+    let mesh_only_members = add_mesh_only_members(
+        &mut members,
+        FO76_FO4_COLLISION_ONLY_RELOCATION_MESH_PATHS,
+        fo76_dir,
+    );
+    RelocationBuildResult {
+        members,
+        mesh_only_members,
+        warnings,
+        nif_dependencies,
+        preparation: None,
+    }
 }
 
 pub fn build_relocation_member_set_with_target_store(
@@ -410,6 +559,25 @@ pub fn build_relocation_member_set_with_target_store(
     fo76_dir: &Path,
     target_store: &crate::target_assets::TargetAssetStore,
 ) -> RelocationBuildResult {
+    let key = RelocationPreparationKey::new(fo76_dir, mesh_roots);
+    let preparation = target_store.relocation_preparation(key, || {
+        RelocationPreparation::from_run_result(
+            build_relocation_member_set_with_target_store_uncached(
+                mesh_roots,
+                fo76_dir,
+                target_store,
+            ),
+        )
+    });
+    RelocationPreparation::into_run_result(preparation)
+}
+
+pub(crate) fn build_relocation_member_set_with_target_store_uncached(
+    mesh_roots: &[String],
+    fo76_dir: &Path,
+    target_store: &crate::target_assets::TargetAssetStore,
+) -> RelocationBuildResult {
+    let nif_dependencies = Arc::new(NifDependencyCache::default());
     let source_meshes = collect_source_meshes(mesh_roots, fo76_dir);
     let mut meshes: Vec<String> = source_meshes
         .iter()
@@ -423,11 +591,10 @@ pub fn build_relocation_member_set_with_target_store(
     );
 
     let source = fo76_dir.to_path_buf();
+    let source_refs = Arc::clone(&nif_dependencies);
     let load_source_nif = move |rel: &str| -> Option<ReferencedAssetPaths> {
         let abs = source.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-        NifFile::load(abs)
-            .ok()
-            .map(|nif| nif.referenced_asset_paths())
+        source_refs.get(&abs)
     };
     let load_target_nif = |rel: &str| -> Option<ReferencedAssetPaths> {
         if !target_store.has_asset(rel) {
@@ -457,32 +624,295 @@ pub fn build_relocation_member_set_with_target_store(
     };
     let nif_loaders: [&dyn Fn(&str) -> Option<ReferencedAssetPaths>; 2] =
         [&load_source_nif, &load_target_nif];
-    let members = build_relocation_member_set_from_loaders_with_related_nifs(
+    let mut members = build_relocation_member_set_from_loaders_with_related_nifs(
         &meshes,
         &source_meshes,
         &nif_loaders,
         &load_material,
     );
+    append_existing_forced_materials(
+        &mut members,
+        FO76_FO4_DEFAULT_RELOCATION_MATERIAL_PATHS,
+        fo76_dir,
+        &load_material,
+    );
+    let mesh_only_members = add_mesh_only_members(
+        &mut members,
+        FO76_FO4_COLLISION_ONLY_RELOCATION_MESH_PATHS,
+        fo76_dir,
+    );
     RelocationBuildResult {
         members,
+        mesh_only_members,
         warnings: target_store.warnings().to_vec(),
+        nif_dependencies,
+        preparation: None,
     }
 }
 
-/// Default mesh roots for FO76→FO4 when config leaves them empty.
+pub fn extend_with_changed_decal_assets(
+    members: &mut HashSet<String>,
+    decal_materials: &[String],
+    source_dir: &Path,
+    target_dir: &Path,
+) -> Vec<String> {
+    extend_with_changed_decal_assets_inner(members, decal_materials, source_dir, |member| {
+        let path = target_dir.join(member.replace('/', std::path::MAIN_SEPARATOR_STR));
+        Ok(path.is_file().then_some(path))
+    })
+}
+
+pub fn extend_with_changed_decal_assets_from_target_store(
+    members: &mut HashSet<String>,
+    decal_materials: &[String],
+    source_dir: &Path,
+    target_store: &crate::target_assets::TargetAssetStore,
+) -> Vec<String> {
+    extend_with_changed_decal_assets_inner(members, decal_materials, source_dir, |member| {
+        target_store.materialize(member)
+    })
+}
+
+fn extend_with_changed_decal_assets_inner(
+    members: &mut HashSet<String>,
+    decal_materials: &[String],
+    source_dir: &Path,
+    mut target_path: impl FnMut(&str) -> Result<Option<std::path::PathBuf>, String>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for material in decal_materials {
+        let material = normalize_material_member(material);
+        if material.is_empty() {
+            continue;
+        }
+        let source_material = source_dir.join(material.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if !source_material.is_file() {
+            continue;
+        }
+
+        let target_material = match target_path(&material) {
+            Ok(path) => path,
+            Err(error) => {
+                warnings.push(format!("relocation: compare {material}: {error}"));
+                continue;
+            }
+        };
+        let material_differs = target_material
+            .as_deref()
+            .is_some_and(|target| !files_are_identical(&source_material, target));
+
+        let mut changed_textures = Vec::new();
+        for texture in read_material_texture_paths(&source_material) {
+            let source_texture =
+                source_dir.join(texture.replace('/', std::path::MAIN_SEPARATOR_STR));
+            if !source_texture.is_file() {
+                continue;
+            }
+            match target_path(&texture) {
+                Ok(Some(target_texture))
+                    if !files_are_identical(&source_texture, &target_texture) =>
+                {
+                    changed_textures.push(texture);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    warnings.push(format!("relocation: compare {texture}: {error}"));
+                }
+            }
+        }
+
+        if target_material.is_some() && (material_differs || !changed_textures.is_empty()) {
+            members.insert(material);
+        }
+        members.extend(changed_textures);
+    }
+    warnings
+}
+
+fn files_are_identical(left: &Path, right: &Path) -> bool {
+    let Ok(left_metadata) = std::fs::metadata(left) else {
+        return false;
+    };
+    let Ok(right_metadata) = std::fs::metadata(right) else {
+        return false;
+    };
+    if left_metadata.len() != right_metadata.len() {
+        return false;
+    }
+    match (std::fs::read(left), std::fs::read(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Default landscape collision roots when pair config leaves them empty.
 pub const FO76_FO4_DEFAULT_RELOCATION_MESH_ROOTS: &[&str] = &["meshes/landscape"];
+pub const SKYRIMSE_FO4_DEFAULT_RELOCATION_MESH_ROOTS: &[&str] = &["meshes/landscape"];
 
 /// Specific FO76→FO4 same-path assets that must relocate even outside the broad
 /// landscape collision root.
 pub const FO76_FO4_DEFAULT_RELOCATION_MESH_PATHS: &[&str] = &[
     "meshes/architecture/buildings/hightech/lobby/hitextintwalltoptrimblong01.nif",
+    "meshes/dlc06/setdressing/vaultworkshop/dlc06vaultsafetyposter07.nif",
+    "meshes/dlc06/setdressing/vaultworkshop/dlc06vaultsafetyposter11.nif",
     "meshes/effects/fxbitsleavesfromtreetops.nif",
     "meshes/effects/fxbitsleaveswind01.nif",
+    "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree01.nif",
+    "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree02.nif",
     "meshes/setdressing/acducts/acductmed2way02.nif",
+    // FO76 and FO4 share this mesh/material path but use different poster atlases.
+    "meshes/setdressing/signage/advertsposter03.nif",
+    // Shares `materials/setdressing/minutemen/flagminutemen01.bgsm` with
+    // flagwallminutemen01 below. Relocating only the wall namespaced the shared
+    // material (and every converted MSWP keyed on it) while this mesh kept
+    // colliding with FO4 base, so the base flagpole loaded and its swap could
+    // never match — see `flagpole_shares_relocated_material_with_flagwall`.
+    "meshes/setdressing/minutemen/flagpoleminutemen02.nif",
     "meshes/setdressing/minutemen/flagwallminutemen01.nif",
     "meshes/setdressing/metalbarrel/metalbarrel01staticfiregrating.nif",
     "meshes/vehicles/automotive/busschool01empty.nif",
 ];
+
+/// FO76→FO4 same-path meshes whose FO4 copy has no collision object while
+/// FO76's does, so falling through to the FO4 mesh leaves them walk-through.
+/// They relocate for geometry + collision only: their material/texture paths
+/// stay shared, so the look is unchanged. Kept in sync with the extracted data
+/// by `collision_only_relocation_list_matches_real_data`.
+pub const FO76_FO4_COLLISION_ONLY_RELOCATION_MESH_PATHS: &[&str] = &[
+    "meshes/animobjects/holotape01.nif",
+    "meshes/architecture/buildings/decokit/decomaina1x1windroofend01.nif",
+    "meshes/architecture/buildings/hightech/extensions/hitextextacorneb01.nif",
+    "meshes/architecture/buildings/hightech/extensions/hitextextacornebshort01.nif",
+    "meshes/architecture/buildings/hightech/extensions/hitextextacornebwindowa01.nif",
+    "meshes/architecture/buildings/hightech/lobby/hitextintlobbyatop02.nif",
+    "meshes/architecture/buildings/hightech/lobby/hitextintlobbyatopcornera01.nif",
+    "meshes/architecture/buildings/hightech/lobby/hitextintlobbyatopcornerb01.nif",
+    "meshes/architecture/buildings/hightech/lobby/hitextintlobbyatoplong02.nif",
+    "meshes/architecture/buildings/hightech/lobby/hitextlobbyalongbottomplate01.nif",
+    "meshes/architecture/buildings/hightech/lobby/hitextlobbyrailingundecornerin02.nif",
+    "meshes/architecture/buildings/hightech/lobby/hitextlobbyrailingunderlong01.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextacaplongtop01.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextacornercwindowe01.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextawallcornerd01.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextawallinshort01.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextawallinshortcorner01.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextawallinshorthalf01.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextawallinshortlong01.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextawalltrimend01.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextawindowa01intwin.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextawindowatalllong01.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextawindowbtalllong02.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextawindowc01intwin.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextbcornerdtall01.nif",
+    "meshes/architecture/buildings/hightech/skin/hitextcwindowa01.nif",
+    "meshes/architecture/buildings/residential/res01moderndormer01.nif",
+    "meshes/architecture/buildings/residential/res01moderndormer01rr.nif",
+    "meshes/architecture/ecdowns/ecdstandsunder01.nif",
+    "meshes/architecture/parkinggarage/pgarageouttrim1x1cor01.nif",
+    "meshes/architecture/parkinggarage/pgarageouttrim1x1str01.nif",
+    "meshes/architecture/parkinggarage/pgarageouttrim1x2str01.nif",
+    "meshes/architecture/parkinggarage/pgarageouttrim2x2cor01.nif",
+    "meshes/interiors/building/brick/big_wallkit/bldbrickbgwallscktimid01.nif",
+    "meshes/interiors/building/brick/med_wallkit/bldbrickmdwallbothole09.nif",
+    "meshes/interiors/building/concrete/big_wallkit/bldconcbgwallscktimid01.nif",
+    "meshes/interiors/building/concrete/med_wallkit/bldconcmdwallbothole09.nif",
+    "meshes/interiors/building/concrete/small_floorceilkit/bldconcsmflrplatholepipe01.nif",
+    "meshes/interiors/building/deco/big_wallkit/blddecobgwallscktimid01.nif",
+    "meshes/interiors/building/deco/med_wallkit/blddecomdwallbothole09.nif",
+    "meshes/interiors/building/wlp/med_wallkit/bldwlpmdwallcorner04.nif",
+    "meshes/interiors/building/woodb/big_wallkit/bldwoodbbgwallscktimid01.nif",
+    "meshes/interiors/building/woodp/med_wallkit/bldwoodpmdwallmusmuralpillar02.nif",
+    "meshes/interiors/concrete/brick/stadium/concbrckbgwall01.nif",
+    "meshes/interiors/hightech/lgrooms/hitlgrmbotwallcurve01.nif",
+    "meshes/interiors/hightech/lgrooms/hitlgrmmid02corout02.nif",
+    "meshes/interiors/hightech/lgrooms/hitlgrmmid02corout03.nif",
+    "meshes/interiors/hightech/lgrooms/hitlgrmmid04corout04.nif",
+    "meshes/interiors/hightech/lgrooms/hitlgrmtopcorout02.nif",
+    "meshes/interiors/hightech/lgrooms/hitlgrmtopcorout03.nif",
+    "meshes/interiors/hightech/lgrooms/hitlgrmtopcorout04.nif",
+    "meshes/interiors/industrial/bldshellout/indbldshelloutcutbase01.nif",
+    "meshes/interiors/industrial/catwalks/indcatcap01.nif",
+    "meshes/interiors/industrial/framecat/indframecat256x256emptyshapethick02.nif",
+    "meshes/interiors/redrocket/redrextrooftrim2way02.nif",
+    "meshes/interiors/vault/catwalk/vltcatwalkrailsidehalfendr01.nif",
+    "meshes/interiors/vault/ceilings/vltceilingarchendmid01.nif",
+    "meshes/interiors/vault/ceilings/vltceilingarchhalfr01.nif",
+    "meshes/interiors/vault/ceilings/vltceilingtrim01.nif",
+    "meshes/interiors/vault/freewall/vltcorinfree01.nif",
+    "meshes/interiors/vault/hallres/vlthallresdoortalltop01.nif",
+    "meshes/interiors/vault/setdressing/vltac01.nif",
+    "meshes/interiors/vault/setdressing/vltcoolantpipes01.nif",
+    "meshes/loadscreenart/creatureradstag.nif",
+    "meshes/props/hightech/hightechlight01.nif",
+    "meshes/props/hightech/hightechlight01broken.nif",
+    "meshes/props/hightech/hightechlight02.nif",
+    "meshes/props/hightech/hightechlight02broken.nif",
+    "meshes/props/hightech/hightechpendum01.nif",
+    "meshes/props/hightech/hightechpendum01broken.nif",
+    "meshes/props/hightech/hightechpendumrod01.nif",
+    "meshes/props/hightech/hightechpendumrodcap01.nif",
+    "meshes/props/lab/animmicroscope.nif",
+    "meshes/setdressing/acducts/acductlgsplit01.nif",
+    "meshes/setdressing/acducts/acductmedend03.nif",
+    "meshes/setdressing/corpses/corpsemolerat01.nif",
+    "meshes/setdressing/corpses/corpseyaoguai01.nif",
+    "meshes/setdressing/flag/flagpolenoflag.nif",
+    "meshes/setdressing/greebs/diamondroofgreebpower01.nif",
+    "meshes/setdressing/greebs/diamondroofgreebpower02.nif",
+    "meshes/setdressing/greebs/diamondroofgreebpower03.nif",
+    "meshes/setdressing/greebs/diamondroofgreebpower04.nif",
+    "meshes/setdressing/greebs/diamondroofgreebpower05.nif",
+    "meshes/setdressing/lightfixtures/flourescentlightbulboff.nif",
+    "meshes/setdressing/lightfixtures/lightfixture02on.nif",
+    "meshes/setdressing/loadscreens/radiotower01ls.nif",
+    "meshes/setdressing/metalfurniture/metalshelf01_broken04.nif",
+    "meshes/setdressing/playerhouse_ruin/playerhouse_ruin_curtainrod01.nif",
+    "meshes/setdressing/playerhouse_ruin/playerhouse_ruin_curtainrod02.nif",
+    "meshes/setdressing/playerhouse_ruin/playerhouse_ruin_curtainrod03.nif",
+    "meshes/setdressing/playerhouse_ruin/playerhouse_ruin_curtainrod04.nif",
+    "meshes/setdressing/rubble/extrubble_bricks_clump01.nif",
+    "meshes/setdressing/streetlamps/coloniallampwall01.nif",
+    "meshes/setdressing/utilitypoles/utilitywallmount01.nif",
+    "meshes/setdressing/utilitypoles/utilitywallmount02.nif",
+];
+
+/// Data-relative subtrees where FO76's remastered assets deliberately overwrite
+/// FO4's at the shared path, rather than being skipped as base-owned. Unlike
+/// relocation (which namespaces under `FO76\` and only affects converted FO76
+/// records), an entry here changes how the kit looks everywhere in the game —
+/// so only list kits FO76 genuinely re-authored and that map cleanly onto the
+/// FO4 paths.
+///
+/// `weapons/handmade` is FO4's pipe-weapon kit (Pipe Pistol/Rifle/Bolt-Action/
+/// Revolver plus the Handmade Rifle). All 29 FO76 materials there collide 1:1
+/// with FO4 paths, and every texture they reference either ships already as an
+/// FO76-unique path or collides inside this same subtree.
+pub const FO76_FO4_DEFAULT_BASE_OVERWRITE_PREFIXES: &[&str] =
+    &["materials/weapons/handmade/", "textures/weapons/handmade/"];
+
+pub const FO76_FO4_DEFAULT_RELOCATION_MATERIAL_PATHS: &[&str] = &[
+    "materials/interiors/vault/vltconduitsvents01.bgsm",
+    "materials/interiors/vault/vltutilpipes01.bgsm",
+    "materials/landscape/roads/roadrailings01.bgsm",
+];
+
+/// Returns the meshes newly added; a mesh the closure already relocated in full
+/// stays a full member.
+fn add_mesh_only_members(
+    members: &mut HashSet<String>,
+    mesh_only_meshes: &[&str],
+    fo76_dir: &Path,
+) -> HashSet<String> {
+    let mut added = HashSet::new();
+    for mesh in mesh_only_meshes {
+        let key = normalize_rel(mesh);
+        let source = fo76_dir.join(key.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if source.is_file() && members.insert(key.clone()) {
+            added.insert(key);
+        }
+    }
+    added
+}
 
 fn append_existing_forced_meshes(
     meshes: &mut Vec<String>,
@@ -502,9 +932,70 @@ fn append_existing_forced_meshes(
     }
 }
 
+fn append_existing_forced_materials(
+    members: &mut HashSet<String>,
+    forced_materials: &[&str],
+    fo76_dir: &Path,
+    load_material_textures: &dyn Fn(&str) -> Vec<String>,
+) {
+    let mut material_queue = Vec::new();
+    for material in forced_materials {
+        let key = normalize_material_member(material);
+        if key.is_empty() || !members.insert(key.clone()) {
+            continue;
+        }
+        let source = fo76_dir.join(key.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if source.is_file() {
+            material_queue.push(key);
+        } else {
+            members.remove(&key);
+        }
+    }
+    close_material_texture_members(members, &mut material_queue, load_material_textures);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dependency_metadata_is_shared_and_refreshes_after_source_overwrite() {
+        use indexmap::IndexMap;
+        use nif_core_native::model::NifValue;
+        use rayon::prelude::*;
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let source_path = source.path().join("mesh.nif");
+        let target_path = target.path().join("mesh.nif");
+        let write = |path: &Path, material: &str| {
+            let mut nif = NifFile::new("fo76");
+            let mut fields = IndexMap::new();
+            fields.insert("Name".into(), NifValue::String(material.into()));
+            nif.add_block("BSLightingShaderProperty", Some(fields));
+            nif.save(Some(path.to_path_buf())).unwrap();
+        };
+        write(&source_path, "Materials/Source.bgsm");
+        write(&target_path, "Materials/Target.bgsm");
+        let cache = NifDependencyCache::default();
+        (0..32).into_par_iter().for_each(|_| {
+            assert_eq!(
+                cache.get(&source_path).unwrap().materials,
+                ["materials/source.bgsm"]
+            );
+        });
+        assert_eq!(cache.counts(), (32, 1));
+        assert_eq!(
+            cache.get(&target_path).unwrap().materials,
+            ["materials/target.bgsm"]
+        );
+        assert_eq!(cache.counts(), (33, 2));
+        write(&source_path, "Materials/UpdatedSourceLongerName.bgsm");
+        assert_eq!(
+            cache.get(&source_path).unwrap().materials,
+            ["materials/updatedsourcelongername.bgsm"]
+        );
+        assert_eq!(cache.counts(), (34, 3));
+    }
 
     fn touch(path: &Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -547,9 +1038,15 @@ mod tests {
                 "meshes/architecture/buildings/hightech/lobby/hitextintwalltoptrimblong01.nif",
             ),
         );
+        touch(&fo76.join("meshes/dlc06/setdressing/vaultworkshop/dlc06vaultsafetyposter07.nif"));
+        touch(&fo76.join("meshes/dlc06/setdressing/vaultworkshop/dlc06vaultsafetyposter11.nif"));
         touch(&fo76.join("meshes/effects/fxbitsleavesfromtreetops.nif"));
         touch(&fo76.join("meshes/effects/fxbitsleaveswind01.nif"));
+        touch(&fo76.join("meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree01.nif"));
+        touch(&fo76.join("meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree02.nif"));
         touch(&fo76.join("meshes/setdressing/acducts/acductmed2way02.nif"));
+        touch(&fo76.join("meshes/setdressing/signage/advertsposter03.nif"));
+        touch(&fo76.join("meshes/setdressing/minutemen/flagpoleminutemen02.nif"));
         touch(&fo76.join("meshes/setdressing/minutemen/flagwallminutemen01.nif"));
         touch(&fo76.join("meshes/setdressing/metalbarrel/metalbarrel01staticfiregrating.nif"));
         touch(&fo76.join("meshes/vehicles/automotive/busschool01empty.nif"));
@@ -559,6 +1056,16 @@ mod tests {
         assert!(result.members.contains(
             "meshes/architecture/buildings/hightech/lobby/hitextintwalltoptrimblong01.nif"
         ));
+        assert!(
+            result
+                .members
+                .contains("meshes/dlc06/setdressing/vaultworkshop/dlc06vaultsafetyposter07.nif")
+        );
+        assert!(
+            result
+                .members
+                .contains("meshes/dlc06/setdressing/vaultworkshop/dlc06vaultsafetyposter11.nif")
+        );
         assert!(
             result
                 .members
@@ -572,7 +1079,27 @@ mod tests {
         assert!(
             result
                 .members
+                .contains("meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree01.nif")
+        );
+        assert!(
+            result
+                .members
+                .contains("meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree02.nif")
+        );
+        assert!(
+            result
+                .members
                 .contains("meshes/setdressing/acducts/acductmed2way02.nif")
+        );
+        assert!(
+            result
+                .members
+                .contains("meshes/setdressing/signage/advertsposter03.nif")
+        );
+        assert!(
+            result
+                .members
+                .contains("meshes/setdressing/minutemen/flagpoleminutemen02.nif")
         );
         assert!(
             result
@@ -622,6 +1149,54 @@ mod tests {
     }
 
     #[test]
+    fn forced_default_materials_close_over_source_textures() {
+        use materials_native::bgsm;
+
+        let tmp = std::env::temp_dir().join("reloc_forced_materials");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let fo76 = tmp.join("fo76");
+        let fo4 = tmp.join("fo4");
+        std::fs::create_dir_all(&fo4).unwrap();
+
+        for material in FO76_FO4_DEFAULT_RELOCATION_MATERIAL_PATHS {
+            let mut data = bgsm::BgsmData::default();
+            data.header.signature = bgsm::BGSM_SIGNATURE;
+            data.header.version = 22;
+            let stem = Path::new(material)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap();
+            data.DiffuseTexture = format!("Textures\\Forced\\{stem}_d.dds");
+            data.NormalTexture = format!("Textures\\Forced\\{stem}_n.dds");
+            data.SpecularTexture = Some(format!("Textures\\Forced\\{stem}_r.dds"));
+            data.LightingTexture = Some(format!("Textures\\Forced\\{stem}_l.dds"));
+            let path = fo76.join(material.replace('/', std::path::MAIN_SEPARATOR_STR));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bgsm::write(&data)).unwrap();
+        }
+
+        let result = build_relocation_member_set(&["meshes/landscape".to_string()], &fo76, &fo4);
+
+        for material in FO76_FO4_DEFAULT_RELOCATION_MATERIAL_PATHS {
+            assert!(result.members.contains(*material));
+            let stem = Path::new(material)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap()
+                .to_ascii_lowercase();
+            for suffix in ["d", "n", "r", "l"] {
+                assert!(
+                    result
+                        .members
+                        .contains(&format!("textures/forced/{stem}_{suffix}.dds")),
+                    "missing source dependency for {material}: {suffix}"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn read_material_texture_paths_reads_bgsm_diffuse_and_normal() {
         use materials_native::bgsm;
         let mut data = bgsm::BgsmData::default();
@@ -647,6 +1222,90 @@ mod tests {
                 "textures/landscape/rock01_n.dds".to_string(),
             ]
         );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn changed_decal_texture_relocates_texture_and_owning_material() {
+        use materials_native::bgsm;
+
+        let tmp = std::env::temp_dir().join("reloc_changed_decal_assets");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let source = tmp.join("source");
+        let target = tmp.join("target");
+        let material = "materials/dlc04/decals/parking.bgsm";
+        let diffuse = "textures/dlc04/decals/parking_d.dds";
+        let normal = "textures/dlc04/decals/parking_n.dds";
+
+        let mut data = bgsm::BgsmData::default();
+        data.header.signature = bgsm::BGSM_SIGNATURE;
+        data.header.version = 20;
+        data.DiffuseTexture = diffuse.to_string();
+        data.NormalTexture = normal.to_string();
+        let material_bytes = bgsm::write(&data);
+        for root in [&source, &target] {
+            let path = root.join(material.replace('/', std::path::MAIN_SEPARATOR_STR));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, &material_bytes).unwrap();
+            touch(&root.join(normal.replace('/', std::path::MAIN_SEPARATOR_STR)));
+        }
+        let source_diffuse = source.join(diffuse.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let target_diffuse = target.join(diffuse.replace('/', std::path::MAIN_SEPARATOR_STR));
+        std::fs::create_dir_all(source_diffuse.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(target_diffuse.parent().unwrap()).unwrap();
+        std::fs::write(source_diffuse, b"fo76").unwrap();
+        std::fs::write(target_diffuse, b"fo4").unwrap();
+
+        let mut members = HashSet::new();
+        let warnings = extend_with_changed_decal_assets(
+            &mut members,
+            &[material.to_string()],
+            &source,
+            &target,
+        );
+
+        assert!(warnings.is_empty());
+        assert!(members.contains(material));
+        assert!(members.contains(diffuse));
+        assert!(!members.contains(normal));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn byte_identical_decal_assets_remain_deduplicated() {
+        use materials_native::bgsm;
+
+        let tmp = std::env::temp_dir().join("reloc_identical_decal_assets");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let source = tmp.join("source");
+        let target = tmp.join("target");
+        let material = "materials/decals/exact.bgsm";
+        let diffuse = "textures/decals/exact_d.dds";
+
+        let mut data = bgsm::BgsmData::default();
+        data.header.signature = bgsm::BGSM_SIGNATURE;
+        data.header.version = 20;
+        data.DiffuseTexture = diffuse.to_string();
+        let material_bytes = bgsm::write(&data);
+        for root in [&source, &target] {
+            let material_path = root.join(material.replace('/', std::path::MAIN_SEPARATOR_STR));
+            std::fs::create_dir_all(material_path.parent().unwrap()).unwrap();
+            std::fs::write(material_path, &material_bytes).unwrap();
+            let texture_path = root.join(diffuse.replace('/', std::path::MAIN_SEPARATOR_STR));
+            std::fs::create_dir_all(texture_path.parent().unwrap()).unwrap();
+            std::fs::write(texture_path, b"same").unwrap();
+        }
+
+        let mut members = HashSet::new();
+        let warnings = extend_with_changed_decal_assets(
+            &mut members,
+            &[material.to_string()],
+            &source,
+            &target,
+        );
+
+        assert!(warnings.is_empty());
+        assert!(members.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -704,6 +1363,44 @@ mod tests {
                 "textures/landscape/rock01_n.dds".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn red_rocket_pump_collisions_close_over_shadow_material() {
+        use nif_core_native::model::ReferencedAssetPaths;
+
+        let meshes = vec![
+            "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree01.nif".to_string(),
+            "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree02.nif".to_string(),
+        ];
+        let load_nif = |rel: &str| -> Option<ReferencedAssetPaths> {
+            assert!(meshes.iter().any(|mesh| mesh == rel));
+            Some(ReferencedAssetPaths {
+                textures: Vec::new(),
+                materials: vec!["Materials\\Interiors\\RedRocket\\RedRPumps01.BGSM".to_string()],
+            })
+        };
+        let load_mat = |rel: &str| -> Vec<String> {
+            assert_eq!(rel, "materials/interiors/redrocket/redrpumps01.bgsm");
+            vec![
+                "Interiors/RedRocket/RedR_09_Pumps_01_d.dds".to_string(),
+                "Interiors/RedRocket/RedR_09_Pumps_01_n.dds".to_string(),
+                "Interiors/RedRocket/RedR_09_Pumps_01_r.dds".to_string(),
+                "Interiors/RedRocket/RedR_09_Pumps_01_l.dds".to_string(),
+            ]
+        };
+
+        let members = build_relocation_member_set_inner(&meshes, &load_nif, &load_mat);
+
+        for mesh in &meshes {
+            assert!(members.contains(mesh));
+        }
+        assert!(members.contains("materials/interiors/redrocket/redrpumps01.bgsm"));
+        for texture in ["d", "n", "r", "l"] {
+            assert!(members.contains(&format!(
+                "textures/interiors/redrocket/redr_09_pumps_01_{texture}.dds"
+            )));
+        }
     }
 
     #[test]
@@ -987,6 +1684,106 @@ mod tests {
         assert!(
             set.iter().all(|m| m.starts_with("meshes/landscape/")),
             "collision compare must only yield configured-root meshes"
+        );
+    }
+
+    #[test]
+    fn collision_only_mesh_relocates_without_pulling_its_materials() {
+        use indexmap::IndexMap;
+        use nif_core_native::model::NifValue;
+        let tmp = tempfile::tempdir().unwrap();
+        let fo76 = tmp.path().join("fo76");
+        let fo4 = tmp.path().join("fo4");
+        std::fs::create_dir_all(&fo4).unwrap();
+        let mesh = "meshes/interiors/hightech/lgrooms/hitlgrmbotwallcurve01.nif";
+        let mesh_path = fo76.join(mesh);
+        std::fs::create_dir_all(mesh_path.parent().unwrap()).unwrap();
+        let mut nif = NifFile::new("fo76");
+        let mut fields = IndexMap::new();
+        fields.insert(
+            "Name".into(),
+            NifValue::String("Materials/Interiors/HighTech/FlatMetalSupports01a.bgsm".into()),
+        );
+        nif.add_block("BSLightingShaderProperty", Some(fields));
+        nif.save(Some(mesh_path)).unwrap();
+
+        let result = build_relocation_member_set(&["meshes/landscape".to_string()], &fo76, &fo4);
+
+        assert!(result.members.contains(mesh));
+        assert!(result.mesh_only_members.contains(mesh));
+        assert!(
+            !result
+                .members
+                .contains("materials/interiors/hightech/flatmetalsupports01a.bgsm"),
+            "a collision-only mesh must not drag its material into the FO76 namespace"
+        );
+    }
+
+    /// Real-data drift check for `FO76_FO4_COLLISION_ONLY_RELOCATION_MESH_PATHS`:
+    /// recomputes every same-path mesh whose FO76 copy has a
+    /// `bhkNPCollisionObject` and whose FO4 copy has none. Skips when the
+    /// extracted dirs are absent so CI without game data stays green.
+    #[test]
+    fn collision_only_relocation_list_matches_real_data() {
+        // Landscape already relocates in full through the default root. Weapon
+        // and actor parts are attached or skinned: their collision is not a
+        // walkable surface and swapping their geometry risks attach points.
+        const EXCLUDED_PREFIXES: &[&str] =
+            &["meshes/landscape/", "meshes/weapons/", "meshes/actors/"];
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(4)
+            .expect("conversion crate is repo/bacup/py_bacup_lib/native/conversion")
+            .to_path_buf();
+        let fo76 = repo_root.join("extracted").join("fo76");
+        let fo4 = repo_root.join("extracted").join("fo4");
+        if !fo76.join("meshes").is_dir() || !fo4.join("meshes").is_dir() {
+            eprintln!(
+                "skip: extracted FO76/FO4 dirs absent ({})",
+                repo_root.display()
+            );
+            return;
+        }
+        let has_collision = |path: &Path| {
+            let Ok(file) = std::fs::File::open(path) else {
+                return false;
+            };
+            let mut reader =
+                nif_core_native::io::basic_io::BasicReader::new(std::io::BufReader::new(file));
+            nif_core_native::io::reader::read_header(&mut reader).is_ok_and(|header| {
+                header
+                    .block_type_names
+                    .iter()
+                    .any(|name| name == "bhkNPCollisionObject")
+            })
+        };
+
+        let expected: std::collections::BTreeSet<String> =
+            collect_source_meshes(&["meshes".to_string()], &fo76)
+                .into_iter()
+                .filter(|mesh| {
+                    !EXCLUDED_PREFIXES
+                        .iter()
+                        .any(|prefix| mesh.starts_with(prefix))
+                })
+                .filter(|mesh| {
+                    let rel = mesh.replace('/', std::path::MAIN_SEPARATOR_STR);
+                    let twin = fo4.join(&rel);
+                    twin.is_file() && has_collision(&fo76.join(&rel)) && !has_collision(&twin)
+                })
+                .collect();
+        let listed: std::collections::BTreeSet<String> =
+            FO76_FO4_COLLISION_ONLY_RELOCATION_MESH_PATHS
+                .iter()
+                .map(|path| path.to_string())
+                .collect();
+
+        let missing: Vec<_> = expected.difference(&listed).collect();
+        let stale: Vec<_> = listed.difference(&expected).collect();
+        assert!(
+            missing.is_empty() && stale.is_empty(),
+            "collision-only relocation list drifted from extracted data; \
+             missing={missing:?} stale={stale:?}"
         );
     }
 }

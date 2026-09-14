@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from imgui_bundle import imgui
+
+from creation_lib.ui.widgets.modern import expandable_section
 from PIL import Image
 
 if TYPE_CHECKING:
@@ -160,9 +162,6 @@ class LibraryPanel:
 
     def _draw_gallery(self) -> None:
         size = _THUMB_SIZES[self._thumb_size_idx]
-        panel_w = imgui.get_content_region_avail().x
-        n_cols = max(1, int(panel_w // (size + 8)))
-
         dl = imgui.get_window_draw_list()
 
         # Group results by source SWF file
@@ -184,75 +183,79 @@ class LibraryPanel:
         for source_name, group_rows in groups:
             # Collapsible header per source SWF
             label = source_name.replace(".swf", "") if source_name else "Unknown"
-            if not imgui.collapsing_header(
+            with expandable_section(
                 f"{label} ({len(group_rows)})##swf_src_{source_name}",
                 imgui.TreeNodeFlags_.default_open,
-            ):
-                continue
+            ) as expanded:
+                if not expanded:
+                    continue
 
-            col = 0
-            for row in group_rows:
-                shape_id = row["id"]
-                tex_id = self._textures.get(shape_id)
+                panel_w = imgui.get_content_region_avail().x
+                n_cols = max(1, int(panel_w // (size + 8)))
+                col = 0
+                for row in group_rows:
+                    shape_id = row["id"]
+                    tex_id = self._textures.get(shape_id)
 
-                cursor = imgui.get_cursor_screen_pos()
+                    cursor = imgui.get_cursor_screen_pos()
 
-                if tex_id is not None:
-                    imgui.image(
-                        imgui.ImTextureRef(tex_id),
-                        imgui.ImVec2(size, size),
-                        uv0=imgui.ImVec2(0, 1),
-                        uv1=imgui.ImVec2(1, 0),
-                    )
-                else:
-                    imgui.dummy(imgui.ImVec2(size, size))
-                    dl.add_rect_filled(
-                        cursor,
-                        imgui.ImVec2(cursor.x + size, cursor.y + size),
-                        imgui.get_color_u32(imgui.ImVec4(0.2, 0.2, 0.2, 1.0)),
-                    )
-                    t = imgui.get_time()
-                    dots = "." * (1 + int(t * 2) % 3)
-                    mid_x = cursor.x + size / 2 - 8
-                    mid_y = cursor.y + size / 2 - 7
-                    dl.add_text(imgui.ImVec2(mid_x, mid_y), 0xFFAAAAAA, dots)
+                    if tex_id is not None:
+                        imgui.image(
+                            imgui.ImTextureRef(tex_id),
+                            imgui.ImVec2(size, size),
+                            uv0=imgui.ImVec2(0, 1),
+                            uv1=imgui.ImVec2(1, 0),
+                        )
+                    else:
+                        imgui.dummy(imgui.ImVec2(size, size))
+                        dl.add_rect_filled(
+                            cursor,
+                            imgui.ImVec2(cursor.x + size, cursor.y + size),
+                            imgui.get_color_u32(imgui.ImVec4(0.2, 0.2, 0.2, 1.0)),
+                        )
+                        t = imgui.get_time()
+                        dots = "." * (1 + int(t * 2) % 3)
+                        mid_x = cursor.x + size / 2 - 8
+                        mid_y = cursor.y + size / 2 - 7
+                        dl.add_text(imgui.ImVec2(mid_x, mid_y), 0xFFAAAAAA, dots)
 
-                # Selection border
-                if self._selected_id == shape_id:
-                    dl.add_rect(
-                        cursor,
-                        imgui.ImVec2(cursor.x + size, cursor.y + size),
-                        imgui.get_color_u32(imgui.ImVec4(0.2, 0.7, 1.0, 1.0)),
-                        0.0, 0, 2.0,
-                    )
+                    # Selection border
+                    if self._selected_id == shape_id:
+                        dl.add_rect(
+                            cursor,
+                            imgui.ImVec2(cursor.x + size, cursor.y + size),
+                            imgui.get_color_u32(imgui.ImVec4(0.2, 0.7, 1.0, 1.0)),
+                            0.0, 0, 2.0,
+                        )
 
-                if imgui.is_item_clicked(imgui.MouseButton_.left):
-                    self._selected_id = shape_id
+                    if imgui.is_item_clicked(imgui.MouseButton_.left):
+                        self._selected_id = shape_id
 
-                if imgui.is_item_hovered():
-                    name = row.get("name", "")
-                    tags = row.get("tags", "")
-                    imgui.set_tooltip(f"{name}\n{source_name}\nTags: {tags}")
+                    if imgui.is_item_hovered():
+                        name = row.get("name", "")
+                        tags = row.get("tags", "")
+                        imgui.set_tooltip(f"{name}\n{source_name}\nTags: {tags}")
 
-                    if imgui.is_mouse_double_clicked(imgui.MouseButton_.left):
-                        self.app.place_shape(row)
+                        if imgui.is_mouse_double_clicked(imgui.MouseButton_.left):
+                            self.app.place_shape(row)
 
-                # Name label below tile
-                name_short = (row.get("name") or "")[:12]
-                lx = cursor.x
-                ly = cursor.y + size + 1
-                dl.add_text(imgui.ImVec2(lx, ly), 0xFFCCCCCC, name_short)
+                    # Name label below tile
+                    name_short = (row.get("name") or "")[:12]
+                    lx = cursor.x
+                    ly = cursor.y + size + 1
+                    dl.add_text(imgui.ImVec2(lx, ly), 0xFFCCCCCC, name_short)
 
-                col += 1
-                if col < n_cols:
-                    imgui.same_line(spacing=4)
-                else:
-                    col = 0
-                    imgui.dummy(imgui.ImVec2(0, 14))
+                    col += 1
+                    if col < n_cols:
+                        imgui.same_line(spacing=4)
+                    else:
+                        col = 0
+                        imgui.dummy(imgui.ImVec2(0, imgui.get_text_line_height()))
 
-            # End row if mid-row
-            if col > 0:
-                imgui.dummy(imgui.ImVec2(0, 14))
+                # End row if mid-row
+                if col > 0:
+                    imgui.new_line()
+                    imgui.dummy(imgui.ImVec2(0, imgui.get_text_line_height()))
 
     # ---------------------------------------------------------- search/load --
 

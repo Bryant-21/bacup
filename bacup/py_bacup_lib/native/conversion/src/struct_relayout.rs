@@ -1,35 +1,25 @@
 //! Source→FO4 `struct:` codec subrecord byte-relayout.
 //!
-//! # Root cause
-//! `source_read::decode_subrecord` emits every `struct:`/`array_struct:` codec
-//! subrecord as a raw `FieldValue::Bytes` blob (see that fn's "emit raw bytes"
-//! branch). The FO76 source bytes are then written verbatim into the FO4 output
-//! (only the version-gated TAIL is trimmed by the target normalizer). But the
-//! FO76 and FO4 struct layouts for the SAME subrecord diverge MID-struct — FO76
-//! carries extra/reordered fields before the shared tail — so FO4/CK reads every
-//! field after the first divergence from the wrong byte offset.
+//! `source_read::decode_subrecord` emits `struct:`/`array_struct:` subrecords
+//! as raw `FieldValue::Bytes`, and the target normalizer trims only the
+//! version-gated tail. FO76 and FO4 layouts for the same subrecord diverge
+//! mid-struct, so verbatim bytes put every later field at the wrong offset.
+//! E.g. RACE.DATA `severable_explosion` sits at 146 in FO4 and 158 in FO76 (4
+//! extra FO76 fields), so the gore FormIDs land on float bytes and CK reports
+//! "could not find dismember explosion / impact data set / OnCripple". 33 struct
+//! subrecords diverge (RACE.DATA, MGEF.DATA, `*.DSTD`, `*.COED`, WEAP.DNAM,
+//! BPTD.BPND, ...).
 //!
-//! Ground-truthed on RACE.DATA: FO4 places `severable_explosion` at offset 146,
-//! FO76 at 158 (a 12-byte shift from 4 extra FO76 mid-struct fields). The gore
-//! FormIDs land on FO76 float bytes → CK "could not find dismember explosion /
-//! impact data set / OnCripple ...". 33 struct subrecords diverge this way
-//! (RACE.DATA, MGEF.DATA, `*.DSTD`, `*.COED`, WEAP.DNAM, BPTD.BPND, ...).
+//! For a divergent subrecord this builds `field_id → (offset, width)` maps for
+//! the source layout (at the record's real form_version) and the FO4 layout,
+//! then copies each shared field (by `field_id` or a known alias) into a
+//! target-sized buffer. Target-only fields stay zero; source-only fields are
+//! dropped.
 //!
-//! # The fix (surgical BYTE relayout — keeps the `Bytes` data model)
-//! For a divergent `struct:` subrecord, build a `field_id → (offset, width)` map
-//! for the SOURCE layout (computed at the record's REAL source form_version) and
-//! the TARGET layout (FO4 form_version). Copy each field that exists in BOTH
-//! layouts (matched by `field_id` or a known cross-schema alias) from its source
-//! offset to its target offset into a fresh, target-sized buffer. Target-only
-//! fields stay zero; source-only fields are dropped. The result is FO4-laid-out
-//! bytes that the FO4 game/CK and the downstream FK remap
-//! (`remap_struct_fk_fields`) read at the correct offset.
-//!
-//! Runs at decode time (we have the raw source form_version + source schema in
-//! hand) BEFORE the FK remap fixup. Once the bytes are FO4-laid-out, the #31
-//! divergence guard in `ref_index::source_struct_layout_diverges` sees
-//! source==target layout and stops skipping, so the gore FKs get their master
-//! byte remapped (00→07) via their existing `formlink_targets`.
+//! Runs at decode time, before the FK remap (`remap_struct_fk_fields`). With
+//! FO4-laid-out bytes, `ref_index::source_struct_layout_diverges` sees matching
+//! layouts and stops skipping, so the gore FKs get their 00→07 master-byte remap
+//! via `formlink_targets`.
 
 use esp_authoring_core::plugin_runtime::StructFieldInfo;
 
@@ -48,8 +38,8 @@ pub struct StructRelayoutCtx<'a> {
 }
 
 /// FK-offset signature of a layout: the ordered (offset, width) of width-4
-/// formlink fields. Used to decide divergence cheaply and identically to the
-/// #31 guard (`ref_index::source_struct_layout_diverges`).
+/// formlink fields. Decides divergence cheaply, the same way
+/// `ref_index::source_struct_layout_diverges` does.
 fn fk_offset_signature(layout: &[StructFieldInfo<'_>]) -> Vec<(usize, usize)> {
     layout
         .iter()
@@ -70,6 +60,10 @@ fn source_field_id_for_target<'a>(
 ) -> &'a str {
     match (record_sig, sub_sig, target_field_id) {
         ("EXPL", "DATA", "flags") => "flags1",
+        ("QUST", "QSTA", "flags") => "target_flags",
+        ("RACE", "DATA", "unknown_float1") => "unknown_float4",
+        ("RACE", "DATA", "unknown_float2") => "unknown_float5",
+        ("RACE", "DATA", "unknown_float3") => "unknown_float6",
         _ => target_field_id,
     }
 }
@@ -97,15 +91,12 @@ fn legacy_bptd_flags(value: u8) -> u8 {
     value & 0x09
 }
 
-/// Relayout `src_bytes` (laid out per the SOURCE/FO76 struct layout for
-/// `record_sig.sub_sig` at `source_form_version`) into the TARGET/FO4 layout.
+/// Relayout `src_bytes` from the source struct layout for `record_sig.sub_sig`
+/// at `source_form_version` into the FO4 layout.
 ///
-/// Returns:
-/// - `Some(new_bytes)` when the subrecord is a divergent `struct:` whose bytes
-///   were successfully remapped field-by-field into the target layout.
-/// - `None` when no relayout is needed or possible (layouts identical, either
-///   layout unavailable, or the source bytes don't match the source layout's
-///   expected span) — the caller keeps the original bytes.
+/// `None` when no relayout is needed or possible (identical layouts, a missing
+/// layout, or bytes that don't match the source span); the caller then keeps
+/// the original bytes.
 pub fn relayout_struct_bytes(
     record_sig: &str,
     sub_sig: &str,
@@ -274,6 +265,47 @@ mod tests {
     }
 
     #[test]
+    fn relayouts_fo76_race_unknown_float_aliases_to_fo4_slots() {
+        let fo4 = fo4();
+        let fo76 = fo76();
+        let src_layout = fo76.struct_field_layout_versioned("RACE", "DATA", Some(208));
+        let tgt_layout = fo4.struct_field_layout_versioned("RACE", "DATA", Some(131));
+        let mut src = vec![0u8; super::layout_span(&src_layout)];
+        for (source_id, value) in [
+            ("unknown_float4", 100.0f32),
+            ("unknown_float5", 200.0f32),
+            ("unknown_float6", -300.0f32),
+        ] {
+            let field = src_layout
+                .iter()
+                .find(|field| field.field_id == source_id)
+                .unwrap_or_else(|| panic!("missing FO76 RACE.DATA {source_id}"));
+            src[field.offset..field.offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+
+        let ctx = StructRelayoutCtx {
+            target_schema: &fo4,
+            target_form_version: 131,
+            legacy_bptd_only: false,
+        };
+        let out = relayout_struct_bytes("RACE", "DATA", &src, &fo76, Some(208), &ctx)
+            .expect("RACE.DATA must relayout");
+        for (target_id, expected) in [
+            ("unknown_float1", 100.0f32),
+            ("unknown_float2", 200.0f32),
+            ("unknown_float3", -300.0f32),
+        ] {
+            let field = tgt_layout
+                .iter()
+                .find(|field| field.field_id == target_id)
+                .unwrap_or_else(|| panic!("missing FO4 RACE.DATA {target_id}"));
+            let actual =
+                f32::from_le_bytes(out[field.offset..field.offset + 4].try_into().unwrap());
+            assert_eq!(actual, expected, "{target_id}");
+        }
+    }
+
+    #[test]
     fn relayouts_expl_flags1_to_fo4_flags() {
         let fo4 = fo4();
         let fo76 = fo76();
@@ -309,6 +341,46 @@ mod tests {
             &out[tgt_flags.offset..tgt_flags.offset + tgt_flags.width],
             &expected,
             "FO76 flags1 must populate the FO4 flags field"
+        );
+    }
+
+    #[test]
+    fn relayouts_qust_qsta_target_flags_to_fo4_flags() {
+        let fo4 = fo4();
+        let fo76 = fo76();
+
+        let src_layout = fo76.struct_field_layout_versioned("QUST", "QSTA", Some(208));
+        let tgt_layout = fo4.struct_field_layout_versioned("QUST", "QSTA", Some(131));
+        let src_span = super::layout_span(&src_layout);
+        let tgt_span = super::layout_span(&tgt_layout);
+        let src_flags = src_layout
+            .iter()
+            .find(|field| field.field_id == "target_flags")
+            .expect("FO76 target_flags");
+        let tgt_flags = tgt_layout
+            .iter()
+            .find(|field| field.field_id == "flags")
+            .expect("FO4 flags");
+        let mut src = vec![0u8; src_span];
+        src[src_flags.offset..src_flags.offset + src_flags.width]
+            .copy_from_slice(&512_u16.to_le_bytes());
+
+        let ctx = StructRelayoutCtx {
+            target_schema: &fo4,
+            target_form_version: 131,
+            legacy_bptd_only: false,
+        };
+        let out = relayout_struct_bytes("QUST", "QSTA", &src, &fo76, Some(208), &ctx)
+            .expect("QUST.QSTA must relayout");
+
+        assert_eq!(out.len(), tgt_span);
+        assert_eq!(
+            u32::from_le_bytes(
+                out[tgt_flags.offset..tgt_flags.offset + tgt_flags.width]
+                    .try_into()
+                    .unwrap()
+            ),
+            512
         );
     }
 

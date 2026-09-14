@@ -8,7 +8,10 @@ State waitingforactivation
             Return
         EndIf
         GoToState("processingactivation")
-        ResolveStorage().HandlePanelActivation(Self, akActionRef)
+        MSiloQuestScript_Storage storage = ResolveStorage()
+        If storage != None
+            storage.HandlePanelActivation(Self, akActionRef)
+        EndIf
         GoToState("waitingforactivation")
     EndEvent
 EndState
@@ -16,8 +19,8 @@ EndState
 MSiloQuestScript_Storage Function ResolveStorage()
     If MSiloStorage == None
         Quest managerQuest = Game.GetFormFromFile(0x003D72E6, "SeventySix.esm") as Quest
-        If managerQuest != None && !managerQuest.IsRunning()
-            managerQuest.Start()
+        If managerQuest == None || !managerQuest.IsRunning()
+            Return None
         EndIf
         MSiloStorage = managerQuest as MSiloQuestScript_Storage
         MSiloStorage.Initialize()

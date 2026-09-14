@@ -270,6 +270,13 @@ def _params_for_convert_nifs(orchestrator, nif_assets=None) -> dict:
     asset_prefix = getattr(source_profile, "asset_prefix", "") or ""
 
     is_fnv = is_fnv_source(source_profile)
+    source_game = str(getattr(orchestrator, "source_game", "") or "").casefold()
+    target_game = str(getattr(orchestrator, "target_game", "") or "").casefold()
+    has_weapon_role_metadata = is_fnv or (
+        target_game == "fo4"
+        and source_game in {"fo3", "fnv", "skyrim", "skyrimse"}
+    )
+    static_cloth_variants = _fo76_misc_static_model_variants(orchestrator)
 
     nif_entries = []
     for asset in nif_assets:
@@ -288,11 +295,40 @@ def _params_for_convert_nifs(orchestrator, nif_assets=None) -> dict:
                 material_namespace = getattr(orchestrator, "base_asset_namespace", "")
         if material_namespace:
             entry["material_namespace"] = material_namespace
-        if is_fnv:
-            role = _weapon_role_for_asset(orchestrator, asset.source_path)
-            if role is not None:
-                entry["weapon_role"] = role
+        if asset.workshop_wire_point is not None:
+            entry["workshop_wire_point"] = list(asset.workshop_wire_point)
+        if asset.workshop_snap_points:
+            entry["workshop_snap_points"] = [
+                {
+                    "name": point.name,
+                    "translation": list(point.translation),
+                    "rotation": list(point.rotation),
+                    "scale": point.scale,
+                }
+                for point in asset.workshop_snap_points
+            ]
+        role = (
+            _weapon_role_for_asset(
+                orchestrator,
+                asset.source_path,
+                include_legacy_metadata=is_fnv,
+            )
+            if has_weapon_role_metadata
+            else None
+        )
+        if role is not None:
+            entry["weapon_role"] = role
         nif_entries.append(entry)
+        static_output = static_cloth_variants.get(
+            _nif_normalize_asset_key(
+                normalize_asset_source_path(str(asset.source_path or ""))
+            )
+        )
+        if static_output:
+            static_entry = dict(entry)
+            static_entry["output_subpath"] = static_output
+            static_entry["strip_cloth"] = True
+            nif_entries.append(static_entry)
 
     params: dict = {
         "source_game": orchestrator.source_game,
@@ -311,6 +347,35 @@ def _params_for_convert_nifs(orchestrator, nif_assets=None) -> dict:
         params["disable_collision_memo"] = True
     params.update(resolve_nif_conversion_options(orchestrator))
     return params
+
+
+def _fo76_misc_static_model_variants(orchestrator) -> dict[str, str]:
+    if (
+        str(getattr(orchestrator, "source_game", "")).lower(),
+        str(getattr(orchestrator, "target_game", "")).lower(),
+    ) != ("fo76", "fo4"):
+        return {}
+
+    variants: dict[str, str] = {}
+    for decision in getattr(orchestrator, "_conversion_decisions", []) or []:
+        if isinstance(decision, dict):
+            kind = decision.get("kind")
+            message = decision.get("message", "")
+        else:
+            kind = getattr(decision, "kind", None)
+            kind = getattr(kind, "value", kind)
+            message = getattr(decision, "message", "")
+        if kind != "fo76_misc_static_model_variant":
+            continue
+        try:
+            payload = json.loads(str(message))
+            source_path = normalize_asset_source_path(str(payload["source_path"]))
+            output_subpath = normalize_asset_source_path(str(payload["output_subpath"]))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if source_path and output_subpath:
+            variants[_nif_normalize_asset_key(source_path)] = output_subpath
+    return variants
 
 
 def _nif_material_namespace(orchestrator, asset) -> str:
@@ -1793,8 +1858,18 @@ def phase_convert_havok_native(
 ) -> None:
     """Phase 6: Convert Havok HKX assets via the native convert_havok phase.
 
-    Uses the Rust ConversionRun dispatcher.
+    Uses the Rust ConversionRun dispatcher. Same-engine (creation1) HKX
+    conversion only; creation2 sources (Starfield) use a structurally
+    different Havok generation and get their collision handled inside the
+    NIF converter instead, so this phase is inert for them.
     """
+    src_engine = (
+        getattr(orchestrator._source_profile, "engine", None)
+        if orchestrator._source_profile
+        else None
+    )
+    if src_engine == "creation2":
+        return
     behavior_assets = [
         a for a in orchestrator.graph.all_assets if a.asset_type == "behavior"
     ]
@@ -1831,6 +1906,39 @@ def phase_convert_havok_native(
     )
 
 
+def _target_havok_contract_root(orchestrator, runner: ConversionRunner) -> Path | None:
+    extracted = getattr(orchestrator, "target_extracted_dir", None)
+    target_root = Path(extracted) if extracted else None
+    store = getattr(orchestrator, "target_asset_store", None)
+    if (
+        str(getattr(orchestrator, "source_game", "")).lower() != "fo76"
+        or str(getattr(orchestrator, "target_game", "")).lower() != "fo4"
+        or not (Path(orchestrator.mod_path) / "debug/fo76_behaviors/plan.json").is_file()
+        or store is None
+    ):
+        return target_root
+
+    contracts = [
+        path for path in store.list_assets(prefix="meshes/", suffix=".hkx")
+        if any(
+            directory in path.lower()
+            for directory in ("/behaviors/", "/characters/", "/characterassets/")
+        )
+    ]
+    if "meshes/actors/character/behaviors/weaponbehavior.hkx" not in contracts:
+        raise RuntimeError("FO4 target asset index is missing the WeaponBehavior contract")
+    materialized = store.materialize_many(contracts)
+    if len(materialized) != len(contracts):
+        raise RuntimeError(
+            "FO4 target asset store did not materialize all behavior contracts: "
+            f"{len(materialized)}/{len(contracts)}"
+        )
+    runner.emit_log(
+        "INFO", f"[HKX] resolved {len(contracts)} FO4 behavior contract files from the target asset index"
+    )
+    return Path(store.cache_data_root)
+
+
 def phase_postprocess_havok_native(
     orchestrator, runner: ConversionRunner, progress: PhaseProgress
 ) -> None:
@@ -1850,8 +1958,11 @@ def phase_postprocess_havok_native(
         "postprocess_havok_assets",
         mod_path=str(orchestrator.mod_path),
         source_extracted_dir=str(
-            getattr(orchestrator, "target_extracted_dir", "") or ""
+            getattr(orchestrator, "source_data_dir", "")
+            or getattr(orchestrator, "source_extracted_dir", "")
+            or ""
         ),
+        target_extracted_dir=str(_target_havok_contract_root(orchestrator, runner) or "") or None,
         params={},
     )
     orchestrator._summary.havok_converted += int(report.get("assets_written", 0) or 0)
@@ -1863,32 +1974,153 @@ def phase_postprocess_havok_native(
     )
 
 
+def _is_kf_animation_asset(asset: AssetRef) -> bool:
+    source_path = str(getattr(asset, "source_path", "") or "")
+    return asset.asset_type in (
+        "animation",
+        "kf_animation",
+    ) or source_path.lower().endswith(".kf")
+
+
+def _animation_asset_type(asset: AssetRef) -> str:
+    if str(getattr(asset, "source_path", "") or "").lower().endswith(".kf"):
+        return "kf_animation"
+    return asset.asset_type
+
+
+_FNV_GECKO_KF_CONTRACTS = {
+    "creatures/nvgecko/mtidle.kf": (
+        "Actors\\B21_FNVGecko\\Animations\\Idle.hkx",
+        "reject_nonzero",
+    ),
+    "creatures/nvgecko/swimmtforward.kf": (
+        "Actors\\B21_FNVGecko\\Animations\\WalkForward.hkx",
+        "extract_planar_reference_frame",
+    ),
+    "creatures/nvgecko/mtturnleft.kf": (
+        "Actors\\B21_FNVGecko\\Animations\\TurnLeft90.hkx",
+        "reject_nonzero",
+    ),
+    "creatures/nvgecko/mtturnright.kf": (
+        "Actors\\B21_FNVGecko\\Animations\\TurnRight90.hkx",
+        "reject_nonzero",
+    ),
+    "creatures/nvgecko/h2hattackforwardpower.kf": (
+        "Actors\\B21_FNVGecko\\Animations\\Attack1.hkx",
+        "extract_planar_reference_frame",
+    ),
+}
+_FNV_GECKO_SOURCE_SKELETON = "creatures/nvgecko/skeleton.nif"
+_FNV_GECKO_RUNTIME_SKELETON = (
+    "Actors\\B21_FNVGecko\\CharacterAssets\\Skeleton.hkx"
+)
+_FNV_GECKO_ORIGINAL_SKELETON_NAME = "NVGecko"
+
+
+def _mesh_relative_animation_path(source_path: str) -> str:
+    normalized = normalize_asset_source_path(source_path).replace("\\", "/").lower()
+    if normalized.startswith("meshes/"):
+        return normalized[7:]
+    return normalized
+
+
+def _fnv_gecko_animation_contract(asset: AssetRef) -> dict[str, str] | None:
+    clip_contract = _FNV_GECKO_KF_CONTRACTS.get(
+        _mesh_relative_animation_path(asset.source_path)
+    )
+    if clip_contract is None:
+        return None
+    source_root = _source_root_from_resolved_asset(
+        asset.source_path, str(asset.resolved_path or "")
+    )
+    if source_root is None:
+        return None
+    source_path = normalize_asset_source_path(asset.source_path).replace("\\", "/")
+    skeleton_parts = ["creatures", "nvgecko", "skeleton.nif"]
+    if source_path.lower().startswith("meshes/"):
+        skeleton_parts.insert(0, "meshes")
+    source_skeleton = source_root.joinpath(*skeleton_parts)
+    if not source_skeleton.is_file():
+        return None
+    return {
+        "source_skeleton_path": str(source_skeleton),
+        "runtime_skeleton_path": _FNV_GECKO_RUNTIME_SKELETON,
+        "original_skeleton_name": _FNV_GECKO_ORIGINAL_SKELETON_NAME,
+        "output_clip_path": clip_contract[0],
+        "extracted_motion_policy": clip_contract[1],
+    }
+
+
+def _animation_conversion_params(orchestrator, asset: AssetRef) -> dict | None:
+    if not _is_kf_animation_asset(asset):
+        return None
+    if orchestrator.source_game.lower() not in {"fnv", "falloutnv"}:
+        return None
+    contract = _fnv_gecko_animation_contract(asset)
+    if contract is None:
+        return None
+    return {
+        "source_path": asset.source_path,
+        "resolved_path": asset.resolved_path or "",
+        "asset_type": _animation_asset_type(asset),
+        **contract,
+    }
+
+
+def _default_animation_event_map(source_game: str, target_game: str) -> dict[str, str]:
+    """Load the exact aliases accepted by Rust's flat event-map parameter.
+
+    Regex rules in the shared resource remain EventMapper-only; they cannot be
+    represented by the native phase's string-to-string parameter.
+    """
+    source_game = source_game.lower()
+    target_game = target_game.lower()
+    source_name = (
+        "fo3"
+        if source_game in {"fo3", "fallout3", "fnv", "falloutnv"}
+        else source_game
+    )
+    target_name = "fo4" if target_game in {"fo4", "fallout4"} else target_game
+    map_path = (
+        native_translation_maps_dir() / f"events_{source_name}_to_{target_name}.yaml"
+    )
+    if not map_path.is_file():
+        return {}
+
+    import yaml
+
+    data = yaml.safe_load(map_path.read_text(encoding="utf-8")) or {}
+    event_map = {
+        str(source): str(target)
+        for source, target in (data.get("events") or {}).items()
+    }
+    for event_name in data.get("drop") or []:
+        event_map[str(event_name)] = ""
+    return event_map
+
+
 def _params_for_convert_animations(orchestrator) -> dict:
     """Build the params dict for the native convert_animations phase."""
     source_profile = getattr(orchestrator, "_source_profile", None)
     asset_prefix = getattr(source_profile, "asset_prefix", "") or ""
 
-    kf_assets = [
-        a
-        for a in orchestrator.graph.all_assets
-        if a.asset_type in ("animation", "kf_animation")
+    animations = [
+        params
+        for asset in orchestrator.graph.all_assets
+        if (params := _animation_conversion_params(orchestrator, asset)) is not None
     ]
 
     target_behaviors = list(orchestrator._load_target_behavior_paths())
 
     return {
-        "animations": [
-            {
-                "source_path": a.source_path,
-                "resolved_path": a.resolved_path or "",
-                "asset_type": a.asset_type,
-            }
-            for a in kf_assets
-        ],
+        "animations": animations,
         "target_behaviors": target_behaviors,
         "asset_prefix": asset_prefix,
         "source_game": orchestrator.source_game,
         "target_game": orchestrator.target_game,
+        "event_map": _default_animation_event_map(
+            orchestrator.source_game, orchestrator.target_game
+        ),
         "overwrite_existing": bool(orchestrator.overwrite_existing),
     }
 
@@ -1914,12 +2146,7 @@ def phase_convert_animations_native(
     if src_engine != "gamebryo" or tgt_engine != "creation1":
         return
 
-    kf_assets = [
-        a
-        for a in orchestrator.graph.all_assets
-        if a.asset_type in ("animation", "kf_animation")
-    ]
-    progress.total_items = len(kf_assets)
+    progress.total_items = len(_params_for_convert_animations(orchestrator)["animations"])
 
     rust_run = getattr(orchestrator, "_rust_conversion_run", None)
     if rust_run is None:
@@ -1952,6 +2179,27 @@ def _params_for_convert_skeleton(orchestrator) -> dict | None:
         for a in orchestrator.graph.all_assets
         if a.asset_type == "nif" and "skeleton" in a.source_path.lower()
     ]
+    if orchestrator.source_game.lower() in {"fnv", "falloutnv"}:
+        asset = next(
+            (
+                candidate
+                for candidate in skeleton_assets
+                if _mesh_relative_animation_path(candidate.source_path)
+                == _FNV_GECKO_SOURCE_SKELETON
+            ),
+            None,
+        )
+        if asset is None:
+            return None
+        return {
+            "skeleton_nif": asset.source_path,
+            "resolved_path": asset.resolved_path or "",
+            "source_game": orchestrator.source_game,
+            "target_game": orchestrator.target_game,
+            "preserve_source_rig": True,
+            "output_skeleton_path": _FNV_GECKO_RUNTIME_SKELETON,
+            "skeleton_name": _FNV_GECKO_ORIGINAL_SKELETON_NAME,
+        }
     if not skeleton_assets:
         return None
     asset = skeleton_assets[0]
@@ -2189,13 +2437,11 @@ def _unpack_hkx_to_temp_xml(hkx_path: str) -> str:
     return xml_path
 
 
-# Record types that should be NULLED (not stub-allocated) when reached
-# only via the orphan sweep on a weapon/armor root. These are leaf-ish
-# support records (animation/dialogue keywords, impact sets, etc.) that
-# tend to come in via reverse-injected Race subgraphs and have no FO4
-# meaning. Cloning them produces hundreds of orphaned records that
-# break the output ESP. NPC roots are exempt â€” creature conversions
-# legitimately need clones of their support records.
+# Record types NULLED (not stub-allocated) when reached only via the orphan
+# sweep on a weapon/armor root. These support records usually arrive through
+# reverse-injected Race subgraphs and have no FO4 meaning; cloning them yields
+# hundreds of orphans that break the output ESP. NPC roots are exempt: creature
+# conversions need clones of their support records.
 _SWEEP_NULL_TYPES_FOR_WEAPON_ROOTS: frozenset[str] = frozenset(
     {
         "Keywords",
@@ -2388,26 +2634,17 @@ def _strip_source_game_events_from_hkx(
 ) -> tuple[int, int, list[str]]:
     """Strip source-game-only annotation events from a converted .hkx file.
 
-    Uses EventMapper to decide per-annotation whether to drop, rewrite, or
-    pass through.  Only touches `hkaSplineCompressedAnimation` /
-    `hkaInterleavedUncompressedAnimation` -> `annotationTracks[*].annotations`.
-    `hkbBehaviorGraphStringData.eventNames` is left untouched on purpose:
-    those entries are referenced by index elsewhere in the behavior graph
+    EventMapper decides per annotation whether to drop, rewrite, or pass through.
+    Only `hkaSplineCompressedAnimation` / `hkaInterleavedUncompressedAnimation`
+    `annotationTracks[*].annotations` are touched. `hkbBehaviorGraphStringData.eventNames`
+    is left alone: the behavior graph references events by index
     (hkbStateMachineTransitionInfo.eventId, hkbEventDrivenModifier.activateEventId,
-    etc.) and removing one would silently shift every downstream index.
-    CK's sync-data-gen crash is driven by annotation-track text matching,
-    so stripping animation-side annotations is sufficient.
+    ...), so removing one would shift every later index. CK's sync-data-gen crash
+    matches on annotation-track text, so stripping annotations is enough.
 
-    Args:
-        hkx_path: Path to the already-version-converted .hkx file.
-        source_game: Source game key recognized by EventMapper (e.g. "fo76").
-        target_game: Target game key (default "fo4").
-
-    Returns:
-        ``(dropped_count, renamed_count, warnings)``.  Returns ``(0, 0, [])``
-        if the file contains no matching annotation tracks, if the mapping
-        YAML doesn't exist, or if the file can't be read.  The file is only
-        rewritten when at least one annotation was dropped or renamed.
+    Returns ``(dropped_count, renamed_count, warnings)``; ``(0, 0, [])`` when no
+    annotation track matches, the mapping YAML is missing, or the file can't be
+    read. The file is rewritten only when something was dropped or renamed.
     """
     from bacup_lib.animation.event_mapper import EventMapper
     from bacup_lib.models import AnimationEvent
@@ -2573,17 +2810,13 @@ def _filter_unreferenced_behaviors(
 ) -> list[str]:
     """Remove known FO76-only generic behavior files from the output.
 
-    FO4 loads ALL .hkx files in a creature's Behaviors/ directory via
-    BSBehaviorGraphSwapGenerator (runtime graph swapping).  There is no
-    explicit reference chain we can follow â€” the swap generator's
-    pDefaultGenerator pointer is null in packfiles and resolved at runtime.
+    FO4 loads every .hkx in a creature's Behaviors/ dir via
+    BSBehaviorGraphSwapGenerator. The swap generator's pDefaultGenerator is null
+    in packfiles and resolved at runtime, so there is no reference chain to
+    follow. Instead, a fixed set of FO76-only generic behaviors (ambush, dialogue,
+    furniture, shared*) is removed; creature-named behaviors are kept.
 
-    Instead of reference-based filtering, we remove a known set of FO76-only
-    generic behaviors (ambush, dialogue, furniture, shared*) that have no
-    FO4 equivalent.  Creature-specific behaviors (named after the creature)
-    are always kept.
-
-    Returns list of removed filenames.
+    Returns the removed filenames.
     """
     if not os.path.isdir(behavior_dir):
         return []
@@ -2607,15 +2840,12 @@ def _inject_animation_names_into_character_hkx(
 ) -> int:
     """Populate animationBundleNameData[0].assetNames in a converted character.hkx.
 
-    FO76 character.hkx files have an empty assetNames array because FO76 resolves
-    animations differently.  FO4 needs the character.hkx to list every animation
-    file the behavior graph references, otherwise the creature T-poses.
+    FO76 character.hkx files leave assetNames empty; FO4 needs every animation
+    the behavior graph references listed there, or the creature T-poses.
 
-    Also cleans up conversion artifacts:
-    - Removes orphan hkbBoneIndexArray objects with empty boneIndices that are
-      unreferenced (TAG0 reader artifact)
-    - Removes the empty trailing variantVariableValues entry that points at
-      the orphan object
+    Also removes TAG0-reader artifacts: unreferenced hkbBoneIndexArray objects
+    with empty boneIndices, and the empty trailing variantVariableValues entry
+    pointing at them.
 
     Returns the number of animation names injected (0 if nothing to do).
     """
@@ -2766,9 +2996,9 @@ def _fix_character_rig_path_fo4(character_hkx_path: str) -> str | None:
     up), so FO4 character files use
     `..\\..\\GenericBehaviors\\zSingleBoneSkeleton\\SingleBoneSkeleton.hkt`.
 
-    Without this rewrite, loading a converted weapon FX character file fails
-    to locate the skeleton and the behavior graph never drives the NIF's
-    controller sequences â€” observed on Meltdown (C-2).
+    Without this rewrite, a converted weapon FX character file (e.g. Meltdown)
+    can't find its skeleton and the behavior graph never drives the NIF's
+    controller sequences.
 
     Returns the new path if rewritten, else ``None``.
     """
@@ -2833,6 +3063,7 @@ def _try_get_profile(game_id: str):
 # NIF conversion helpers
 # ---------------------------------------------------------------------------
 
+_NIF_TARGET_SKELETON = Path("meshes/actors/character/characterassets/skeleton.nif")
 _NIF_AUTO_SKIN_REFERENCE_BODY = Path(
     "meshes/actors/character/characterassets/malebody.nif"
 )
@@ -2845,10 +3076,66 @@ def _nif_normalize_asset_key(path: str) -> str:
     return path.replace("\\", "/").lower()
 
 
+def _weapon_model_key(path: str) -> str:
+    key = normalize_asset_source_path(path).casefold()
+    if key and key.split("/", 1)[0] != "meshes":
+        key = f"meshes/{key}"
+    return key
+
+
+def _weapon_metadata_model_paths(row: dict) -> tuple[str, ...]:
+    paths: list[str] = []
+    for field in (
+        "base_model",
+        "model_mod1",
+        "model_mod2",
+        "model_mod3",
+        "world_model",
+        "first_person_model",
+    ):
+        value = row.get(field)
+        if isinstance(value, str) and value.strip():
+            paths.append(value)
+    first_person_models = row.get("first_person_models")
+    if isinstance(first_person_models, (list, tuple)):
+        paths.extend(
+            value
+            for value in first_person_models
+            if isinstance(value, str) and value.strip()
+        )
+    return tuple(paths)
+
+
+def _authoritative_weapon_role_claims(
+    orchestrator, metadata_rows: tuple[dict, ...]
+) -> tuple[tuple[str, str], ...]:
+    from bacup_lib.weapon_mvp_assets import build_weapon_mvp_asset_plan
+
+    graph = getattr(orchestrator, "graph", None)
+    plan = build_weapon_mvp_asset_plan(
+        str(getattr(orchestrator, "source_game", "") or ""),
+        str(getattr(orchestrator, "target_game", "") or ""),
+        getattr(graph, "all_assets", ()),
+        metadata_rows,
+    )
+    orchestrator._weapon_mvp_asset_plan = plan
+    return tuple(
+        (_weapon_model_key(claim.asset[1]), claim.weapon_role)
+        for claim in plan.admitted_claims
+        if claim.asset[0] == "nif"
+        and claim.model_kind in {"world", "first_person"}
+    )
+
+
 def _nif_resolve_target_extract_nif(orchestrator, relative_path: Path) -> Path | None:
     target_asset_store = getattr(orchestrator, "target_asset_store", None)
     if target_asset_store is not None:
-        return target_asset_store.materialize(relative_path)
+        # A store miss is not proof of absence -- the overlay dir holds the same
+        # tree on disk. Returning None here reported vanilla skeleton.nif as
+        # missing and silently disabled the skin rebind for a whole regen.
+        materialized = target_asset_store.materialize(relative_path)
+        if materialized is not None:
+            return materialized
     target_extracted_dir = getattr(orchestrator, "target_extracted_dir", "")
     if not target_extracted_dir:
         return None
@@ -2856,33 +3143,69 @@ def _nif_resolve_target_extract_nif(orchestrator, relative_path: Path) -> Path |
     return candidate if candidate.is_file() else None
 
 
-def _weapon_role_for_asset(orchestrator, asset_source_path: str) -> str | None:
-    cache = getattr(orchestrator, "_weapon_role_cache", None)
+def _weapon_role_for_asset(
+    orchestrator,
+    asset_source_path: str,
+    *,
+    include_legacy_metadata: bool = True,
+) -> str | None:
+    cache_attr = (
+        "_weapon_role_cache"
+        if include_legacy_metadata
+        else "_admitted_weapon_role_cache"
+    )
+    cache = getattr(orchestrator, cache_attr, None)
     if cache is None:
         from bacup_lib.weapon_report import weapon_metadata_index
 
-        cache = {}
+        metadata_rows: list[dict] = []
         seen_rows: set[int] = set()
         for row in weapon_metadata_index(orchestrator).values():
             row_id = id(row)
             if row_id in seen_rows:
                 continue
             seen_rows.add(row_id)
-            role = str(row.get("weapon_role") or "")
-            if not role:
-                continue
-            for key in ("base_model", "model_mod1", "model_mod2", "model_mod3"):
-                value = row.get(key)
-                if isinstance(value, str) and value.strip():
-                    cache[_nif_normalize_asset_key(value)] = role
-        orchestrator._weapon_role_cache = cache
-    return cache.get(_nif_normalize_asset_key(asset_source_path))
+            metadata_rows.append(row)
+
+        claims: dict[str, set[str]] = {}
+        for key, role in _authoritative_weapon_role_claims(
+            orchestrator, tuple(metadata_rows)
+        ):
+            if key:
+                claims.setdefault(key, set()).add(role)
+
+        if include_legacy_metadata:
+            for row in metadata_rows:
+                role = str(row.get("weapon_role") or "").casefold()
+                if role not in {"gun", "melee"}:
+                    continue
+                for path in _weapon_metadata_model_paths(row):
+                    key = _weapon_model_key(path)
+                    if key:
+                        claims.setdefault(key, set()).add(role)
+        cache = {
+            key: next(iter(roles))
+            for key, roles in claims.items()
+            if len(roles) == 1
+        }
+        conflicts = {
+            key: tuple(sorted(roles))
+            for key, roles in claims.items()
+            if len(roles) > 1
+        }
+        if include_legacy_metadata:
+            orchestrator._weapon_role_conflicts = conflicts
+        else:
+            orchestrator._admitted_weapon_role_conflicts = conflicts
+        setattr(orchestrator, cache_attr, cache)
+    return cache.get(_weapon_model_key(asset_source_path))
 
 
 def resolve_nif_conversion_options(orchestrator) -> dict[str, object]:
     source_game = getattr(orchestrator, "source_game", None)
     target_game = getattr(orchestrator, "target_game", None)
     translation_maps_dir = getattr(orchestrator, "translation_maps_dir", None)
+    target_skeleton = getattr(orchestrator, "target_skeleton", None)
     auto_skin_reference_body = getattr(orchestrator, "auto_skin_reference_body", None)
     first_person_reference = getattr(orchestrator, "first_person_reference", None)
     emit_first_person = bool(getattr(orchestrator, "emit_first_person", False))
@@ -2894,14 +3217,24 @@ def resolve_nif_conversion_options(orchestrator) -> dict[str, object]:
         or emit_first_person
         or morph_weight_cap != 0.5
     )
-    default_legacy_skin_conversion = target_game == "fo4" and source_game in {
+    default_skin_conversion = target_game == "fo4" and source_game in {
         "fnv",
         "fo3",
+        "skyrimse",
     }
-    if not skin_options_requested and not default_legacy_skin_conversion:
+    if not skin_options_requested and not default_skin_conversion:
         return {}
 
     translation_maps_dir = translation_maps_dir or native_translation_maps_dir()
+
+    # Not gated on skin_options_requested: a default legacy regen requests no
+    # skin options at all, and that is exactly the run whose translated binds
+    # need reposing onto the FO4 rest pose.
+    if target_game == "fo4" and target_skeleton is None:
+        target_skeleton = _nif_resolve_target_extract_nif(
+            orchestrator,
+            _NIF_TARGET_SKELETON,
+        )
 
     if target_game == "fo4" and skin_options_requested:
         if auto_skin_reference_body is None:
@@ -2920,6 +3253,8 @@ def resolve_nif_conversion_options(orchestrator) -> dict[str, object]:
         "emit_first_person": emit_first_person,
         "morph_weight_cap": morph_weight_cap,
     }
+    if target_skeleton is not None:
+        options["target_skeleton"] = str(Path(target_skeleton))
     if auto_skin_reference_body is not None:
         options["auto_skin_reference_body"] = str(Path(auto_skin_reference_body))
     if first_person_reference is not None:
@@ -3025,16 +3360,13 @@ class ConversionFixups:
 
         Enumerates target ``.hkx`` membership from the catalog (or legacy
         loose override) and returns each path relative to ``Meshes/`` (lower-cased,
-        forward-slash) — the same ``meshes/``-stripped key the native havok
-        phase matches against. Shipping a converted FO76 ``.hkx`` at a path the
-        base game already owns (skeleton.hkx, the default behaviors, the shared
-        animation set) overwrites the game's defaults and breaks 3rd-person
-        behavior, so every base-game-path ``.hkx`` is skipped; FO76-unique paths
-        absent from the base game survive.
+        forward-slash), the key the native havok phase matches against. A converted
+        FO76 ``.hkx`` at a path the base game owns (skeleton.hkx, the default
+        behaviors, the shared animation set) overwrites the game's defaults and
+        breaks 3rd-person behavior, so those are skipped; FO76-unique paths survive.
 
-        The legacy havok-DB lookup is gone on purpose: it indexed only
-        behaviors/projects (no animations, no skeleton), so base animations and
-        skeleton.hkx leaked through and clobbered FO4.
+        The havok DB is not used: it indexes only behaviors/projects, so base
+        animations and skeleton.hkx would leak through and clobber FO4.
         """
         if self._target_behavior_paths is not None:
             return self._target_behavior_paths
@@ -3071,13 +3403,9 @@ class ConversionFixups:
 
         Enumerates target ``.nif`` membership from the catalog (or legacy
         loose override) and returns each path relative to ``Meshes/`` (lower-cased,
-        forward-slash) — the ``meshes/``-stripped key ``_target_has_asset``
-        matches against. Shipping a converted FO76 ``.nif`` at a path the base
-        game already owns would clobber the vanilla mesh, so base-game-path
-        NIFs are skipped; FO76-unique paths survive.
-
-        The legacy ``data/<game>_nifs.db`` lookup remains unnecessary because
-        the packaged target-asset catalog is the distributable membership index.
+        forward-slash), the key ``_target_has_asset`` matches against. A converted
+        FO76 ``.nif`` at a base-game path would clobber the vanilla mesh, so those
+        are skipped; FO76-unique paths survive.
         """
         cached = getattr(self, "_target_nif_paths", None)
         if cached is not None:
@@ -3868,15 +4196,12 @@ class ConversionFixups:
         """Inject placeholder texture AssetRefs for the heuristic cubemap
         catalog into ``graph.all_assets``.
 
-        These are FO4 base-game cubemaps that the FO76->FO4 BGSM/BGEM/NIF
-        downgrade may reference. Adding them as ``texture`` AssetRefs lets
-        ``_target_has_asset`` treat them as base-game assets so the BA2
-        packer skips them â€” the FO4 install resolves the reference at
-        runtime, no copy needed.
+        The FO76->FO4 BGSM/BGEM/NIF downgrade may reference these FO4 base-game
+        cubemaps. As ``texture`` AssetRefs, ``_target_has_asset`` treats them as
+        base-game assets and the BA2 packer skips them; the FO4 install resolves
+        them at runtime.
 
-        Idempotent: skipped when source isn't FO76 or target isn't FO4 (no
-        heuristic injection happens) and when an entry for the same path
-        already exists in the graph.
+        Only runs for FO76 -> FO4, and skips paths already in the graph.
         """
         if (
             not self._source_profile
@@ -3948,9 +4273,8 @@ class ConversionFixups:
                       (MaterialsCDB.lookup_by_path -> cdb_to_bgsm ->
                        convert.downgrade_bgsm)
 
-        On CDB translation failure (lookup miss, missing CDB file, or any
-        translation exception) the material falls back to copy-as-is via
-        the outer _phase_materials exception handler.
+        CDB translation failures (lookup miss, missing CDB file, or any
+        translation exception) propagate to the caller.
         """
         if not self._source_profile or not self._target_profile:
             self._copy_asset_as_is(asset)
@@ -4069,9 +4393,8 @@ class ConversionFixups:
                so RootMaterialPath synthesis fires).
             4. Write the result via _write_material.
 
-        On any failure (missing CDB, lookup miss, translation exception)
-        raises RuntimeError so the outer _phase_materials exception
-        handler falls back to copy-as-is with a WARN log entry.
+        Raises RuntimeError on any failure (missing CDB, lookup miss,
+        translation exception).
         """
         from creation_lib.material_tools.cdb_to_bgsm import cdb_to_bgsm
         from creation_lib.material_tools.convert import downgrade_bgsm, BGSM_VERSION_FO4
@@ -4270,13 +4593,11 @@ class ConversionFixups:
     def _strip_source_game_events(self, runner: ConversionRunner) -> None:
         """Strip FO76-only annotation events from converted animations.
 
-        Walks the mod's meshes/ output tree, finds every .hkx under an
-        animations/ directory, and passes it through
-        :func:`_strip_source_game_events_from_hkx`.  Behavior .hkx files are
-        NOT touched â€” behavior eventName index references are index-sensitive
-        and the CK crash is driven by animation-track annotations.  Log is
-        rate-limited to one DROP/RENAME line per distinct event text to
-        avoid flooding the conversion log.
+        Runs :func:`_strip_source_game_events_from_hkx` on every .hkx under an
+        animations/ dir in the mod's meshes/ output. Behavior .hkx files are left
+        alone: their eventName references are index-sensitive, and the CK crash
+        comes from animation-track annotations. Logs one DROP/RENAME line per
+        distinct event text.
         """
         data_dir = os.path.join(self.mod_path, "data", "meshes")
         if not os.path.isdir(data_dir):
@@ -4431,13 +4752,9 @@ class ConversionFixups:
     def _asset_data_subpath(self, asset: AssetRef) -> str:
         """Return source_path with the correct game Data subdirectory prefix.
 
-        Bethesda record fields store paths relative to their asset directory:
-        - Model.File â†’ relative to Meshes/ (no prefix in record)
-        - Texture paths in NIFs/BGSMs â†’ already prefixed with textures/
-        - Material paths in NIFs â†’ already prefixed with materials/
-
-        This helper ensures the right prefix is present for each type so
-        files land under data/Meshes/, data/Textures/, etc.
+        Record fields store paths relative to their asset directory: Model.File is
+        relative to Meshes/ (no prefix), while texture paths in NIFs/BGSMs and
+        material paths in NIFs already carry textures/ or materials/.
         """
         path = asset.source_path.replace("\\", "/")
         lower = path.lower()

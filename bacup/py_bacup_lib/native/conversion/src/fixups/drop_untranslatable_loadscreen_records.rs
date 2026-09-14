@@ -1,30 +1,19 @@
 //! Fixup: drop loading-screen (LSCR) records whose gating conditions reference
 //! FO76-only condition functions that have no FO4 equivalent.
 //!
-//! # Why
-//! The translation pair hook (`drop_fo4_incompatible_conditions`) strips any
-//! CTDA whose function id is FO4-incompatible (id > 817, or a FO76-only
-//! blocklist entry) to keep the FO4 CK from indexing a non-existent
-//! function-table slot and crashing on load. For most record types an
-//! over-permissive condition list is harmless, but a loading screen that loses a
-//! gating condition becomes UNCONDITIONALLY eligible and shows constantly. FO76
-//! gates many of its loading screens (public-event / region / shelter screens)
-//! on such functions.
+//! The pair hook `drop_fo4_incompatible_conditions` strips CTDAs with
+//! FO4-incompatible function ids (id > 817, or FO76-only blocklist entries) so
+//! the FO4 CK doesn't index a missing function-table slot and crash on load. A
+//! loading screen that loses a gating condition becomes unconditional and shows
+//! constantly, and FO76 gates many (public-event, region, shelter) on such
+//! functions, so those LSCRs are dropped instead. `IsQuestActive` (876) maps to
+//! FO4 `GetQuestRunning` (56) and is exempt
+//! (`FO76_REMAPPED_CONDITION_FUNCTION_IDS`).
 //!
-//! `IsQuestActive` (876) IS faithfully remapped to FO4 `GetQuestRunning` (56) by
-//! the pair hook, so it is NOT treated as untranslatable here (see
-//! `FO76_REMAPPED_CONDITION_FUNCTION_IDS`). Every other FO4-incompatible
-//! function on an LSCR has no faithful conversion, so the safe action is to drop
-//! the whole loading screen rather than leave it always-on.
-//!
-//! Scoped to LSCR on purpose: applying "drop the record" to the thousands of
-//! INFO/COBJ/PERK records also gated by FO76-only functions would gut the game.
-//! For those, dropping just the condition (the pair-hook behavior) is retained.
-//!
-//! Source-driven: the decision reads the FO76 source LSCR (whose original CTDA
-//! functions are still present); the matching output LSCR — already condition-
-//! stripped by translation — is then removed. Every drop is logged with the
-//! offending function id(s).
+//! LSCR only: dropping the thousands of INFO/COBJ/PERK records gated the same
+//! way would gut the game. The decision reads the source LSCR, since the output
+//! copy is already condition-stripped; each drop logs the offending function
+//! ids.
 
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;

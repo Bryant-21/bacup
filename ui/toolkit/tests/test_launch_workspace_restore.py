@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 
 class FakeWorkspace:
@@ -42,7 +43,7 @@ def test_launch_file_open_does_not_replace_remembered_workspace(tmp_path):
 def test_user_workspace_switch_updates_remembered_workspace():
     from ui.toolkit.app import ToolkitApp
 
-    settings = SimpleNamespace(active_workspace="behavior")
+    settings = SimpleNamespace(active_workspace="behavior", save=Mock())
     behavior_workspace = FakeWorkspace("behavior")
     nif_workspace = FakeWorkspace("nif")
 
@@ -60,6 +61,7 @@ def test_user_workspace_switch_updates_remembered_workspace():
     assert behavior_workspace.active is False
     assert app._active_ws is nif_workspace
     assert settings.active_workspace == "nif"
+    settings.save.assert_called_once_with()
 
 
 def test_workspace_switch_keeps_current_workspace_active_when_init_fails():

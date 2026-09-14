@@ -10,13 +10,16 @@
 
 use rustc_hash::FxHashMap;
 
-use crate::fixups::synthesize_workshop_boundaries::{decode_target_record_opt, struct_form_key};
+use crate::fixups::synthesize_workshop_boundaries::{
+    LCSR_ROW_STRIDE, decode_target_record_opt, read_raw_form_id, struct_form_key,
+    target_form_key_from_raw,
+};
 use crate::fixups::{FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
 use crate::record::{FieldEntry, FieldValue, Record};
 use crate::session::PluginSession;
-use crate::sym::StringInterner;
+use crate::sym::{StringInterner, Sym};
 
 const PLACED_SIGS: &[&str] = &[
     "ACHR", "REFR", "PGRE", "PHZD", "PMIS", "PARW", "PBAR", "PBEA", "PCON", "PFLA",
@@ -34,6 +37,7 @@ pub fn backfill_placed_loc_ref_types(
         .ok_or_else(|| FixupError::SchemaError("missing target schema".into()))?;
     let interner = mapper.interner;
     let own_plugin = interner.intern(&session.target_slot().parsed.plugin_name);
+    let target_masters = session.target_masters().to_vec();
 
     let lctn_sig = SigCode::from_str("LCTN").map_err(FixupError::SchemaError)?;
     let lctn_fks = session
@@ -50,7 +54,9 @@ pub fn backfill_placed_loc_ref_types(
         else {
             continue;
         };
-        for (ref_fk, ref_type) in special_ref_type_pairs(&location, interner) {
+        for (ref_fk, ref_type) in
+            special_ref_type_pairs(&location, &target_masters, own_plugin, interner)
+        {
             if ref_fk.plugin != own_plugin {
                 continue;
             }
@@ -68,6 +74,7 @@ pub fn backfill_placed_loc_ref_types(
 
     let mut targets: Vec<(FormKey, Vec<FormKey>)> = wanted.into_iter().collect();
     targets.sort_by_key(|(fk, _)| fk.local);
+    let mut replacements = Vec::new();
     for (ref_fk, mut types) in targets {
         let Some(mut record) =
             decode_target_record_opt(session, &ref_fk, target_schema.as_ref(), interner)?
@@ -79,33 +86,60 @@ pub fn backfill_placed_loc_ref_types(
         }
         types.sort_by_key(|fk| (interner.resolve(fk.plugin), fk.local));
         if merge_loc_ref_types(&mut record, &types) {
-            if session
-                .replace_record_contents(record, target_schema.as_ref(), interner)
-                .map_err(|e| FixupError::HandleError(e.to_string()))?
-            {
-                report.records_changed = report.records_changed.saturating_add(1);
-            }
+            replacements.push(record);
         }
     }
+    report.records_changed = session
+        .replace_records_contents(replacements, target_schema.as_ref(), interner)
+        .map_err(|e| FixupError::HandleError(e.to_string()))?
+        .try_into()
+        .unwrap_or(u32::MAX);
 
     Ok(report)
 }
 
-fn special_ref_type_pairs(record: &Record, interner: &StringInterner) -> Vec<(FormKey, FormKey)> {
+/// The pipeline record model keeps LCTN special-ref arrays RAW (see
+/// `rewrite_raw_lctn_formids`), so live records carry LCSR as `Bytes`;
+/// unit-built records carry decoded `List` rows. Handle both — reading only the
+/// `List` shape silently matched nothing in production, so every location was
+/// skipped and no XLRT was ever backfilled.
+fn special_ref_type_pairs(
+    record: &Record,
+    target_masters: &[String],
+    own_plugin: Sym,
+    interner: &StringInterner,
+) -> Vec<(FormKey, FormKey)> {
     let mut out = Vec::new();
     for entry in &record.fields {
         if entry.sig.as_str() != "LCSR" {
             continue;
         }
-        let FieldValue::List(rows) = &entry.value else {
-            continue;
-        };
-        for row in rows {
-            let ref_fk = struct_form_key(row, "master_special_references_ref", interner);
-            let type_fk = struct_form_key(row, "master_special_references_loc_ref_type", interner);
-            if let (Some(ref_fk), Some(type_fk)) = (ref_fk, type_fk) {
-                out.push((ref_fk, type_fk));
+        match &entry.value {
+            FieldValue::List(rows) => {
+                for row in rows {
+                    let ref_fk = struct_form_key(row, "master_special_references_ref", interner);
+                    let type_fk =
+                        struct_form_key(row, "master_special_references_loc_ref_type", interner);
+                    if let (Some(ref_fk), Some(type_fk)) = (ref_fk, type_fk) {
+                        out.push((ref_fk, type_fk));
+                    }
+                }
             }
+            // Row layout: [LocRefType u32][Ref u32][WorldCell u32][GridY i16][GridX i16].
+            FieldValue::Bytes(bytes) if bytes.len() % LCSR_ROW_STRIDE == 0 => {
+                for row in bytes.chunks_exact(LCSR_ROW_STRIDE) {
+                    let type_fk = read_raw_form_id(row, 0).and_then(|raw| {
+                        target_form_key_from_raw(raw, target_masters, own_plugin, interner)
+                    });
+                    let ref_fk = read_raw_form_id(row, 4).and_then(|raw| {
+                        target_form_key_from_raw(raw, target_masters, own_plugin, interner)
+                    });
+                    if let (Some(ref_fk), Some(type_fk)) = (ref_fk, type_fk) {
+                        out.push((ref_fk, type_fk));
+                    }
+                }
+            }
+            _ => {}
         }
     }
     out
@@ -192,6 +226,144 @@ mod tests {
             fields,
             warnings: SmallVec::new(),
         }
+    }
+
+    #[test]
+    fn batched_backfill_preserves_placed_groups_and_is_idempotent() {
+        use crate::formkey_mapper::{MapperOptions, MapperState};
+        use crate::schema::AuthoringSchema;
+        use crate::session::open_session;
+        use esp_authoring_core::plugin_runtime::{
+            ParsedGroup, ParsedItem, ParsedRecord, ParsedSubrecord, plugin_handle_new_native,
+        };
+
+        let handle = plugin_handle_new_native("Performance.esm", Some("fo4")).unwrap();
+        let mut session = open_session(handle, None).unwrap();
+        let raw_record = |sig: &str, form_id, subrecords| {
+            ParsedItem::Record(ParsedRecord {
+                signature: sig.into(),
+                form_id,
+                flags: 0,
+                version_control: 0,
+                form_version: Some(131),
+                version2: Some(0),
+                subrecords,
+                raw_payload: None,
+                parse_error: None,
+            })
+        };
+        let subrecord = |sig: &str, data: Vec<u8>| ParsedSubrecord {
+            signature: sig.into(),
+            data: data.into(),
+            semantic_type: None,
+        };
+        let mut rows = Vec::new();
+        let mut placed = Vec::new();
+        for form_id in 0x2000u32..0x2010 {
+            rows.extend_from_slice(&0xF0001u32.to_le_bytes());
+            rows.extend_from_slice(&form_id.to_le_bytes());
+            rows.extend_from_slice(&[0; 8]);
+            placed.push(raw_record(
+                "REFR",
+                form_id,
+                vec![
+                    subrecord("NAME", 0xF0002u32.to_le_bytes().to_vec()),
+                    subrecord("DATA", vec![0; 24]),
+                ],
+            ));
+        }
+        session.target_slot_mut().parsed.root_items = vec![
+            ParsedItem::Group(ParsedGroup {
+                label: *b"LCTN",
+                group_type: 0,
+                tail: Vec::new().into(),
+                children: vec![raw_record("LCTN", 0x800, vec![subrecord("LCSR", rows)])],
+            }),
+            ParsedItem::Group(ParsedGroup {
+                label: *b"CELL",
+                group_type: 0,
+                tail: Vec::new().into(),
+                children: vec![ParsedItem::Group(ParsedGroup {
+                    label: 0x1000u32.to_le_bytes(),
+                    group_type: 9,
+                    tail: Vec::new().into(),
+                    children: placed,
+                })],
+            }),
+        ];
+        let interner = StringInterner::new();
+        let mut state = MapperState::new([], MapperOptions::default());
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let config = FixupConfig {
+            target_schema: Some(AuthoringSchema::for_game("fo4").unwrap()),
+            ..FixupConfig::default()
+        };
+        assert_eq!(
+            backfill_placed_loc_ref_types(&mut session, &mut mapper, &config)
+                .unwrap()
+                .records_changed,
+            16
+        );
+        assert_eq!(
+            backfill_placed_loc_ref_types(&mut session, &mut mapper, &config)
+                .unwrap()
+                .records_changed,
+            0
+        );
+        let ParsedItem::Group(top) = &session.target_slot().parsed.root_items[1] else {
+            panic!()
+        };
+        let ParsedItem::Group(cell) = &top.children[0] else {
+            panic!()
+        };
+        assert_eq!((cell.label, cell.group_type), (0x1000u32.to_le_bytes(), 9));
+        assert_eq!(cell.children.len(), 16);
+        for (index, item) in cell.children.iter().enumerate() {
+            let ParsedItem::Record(record) = item else {
+                panic!()
+            };
+            assert_eq!(record.form_id, 0x2000 + index as u32);
+            let xlrt = record
+                .subrecords
+                .iter()
+                .find(|sub| sub.signature == "XLRT")
+                .unwrap();
+            assert_eq!(xlrt.data.as_ref(), &0xF0001u32.to_le_bytes());
+            assert_eq!(record.subrecords.last().unwrap().signature, "DATA");
+        }
+    }
+
+    /// Production LCTNs carry LCSR as a raw `Bytes` blob, not decoded `List`
+    /// rows. Reading only the `List` shape made this pass a silent no-op: every
+    /// location was skipped, no XLRT was backfilled, and location-scoped quest
+    /// aliases could not fill (which makes FO4 refuse the quest start outright).
+    #[test]
+    fn special_ref_pairs_read_the_raw_bytes_lcsr_shape() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let masters = vec!["Fallout4.esm".to_string()];
+
+        // One row: [LocRefType 0x01405EA2][Ref 0x01405EA3][WorldCell][GridY][GridX]
+        let mut row: SmallVec<[u8; 32]> = SmallVec::new();
+        row.extend_from_slice(&0x01405EA2_u32.to_le_bytes());
+        row.extend_from_slice(&0x01405EA3_u32.to_le_bytes());
+        row.extend_from_slice(&0u32.to_le_bytes());
+        row.extend_from_slice(&0i16.to_le_bytes());
+        row.extend_from_slice(&0i16.to_le_bytes());
+        assert_eq!(row.len(), LCSR_ROW_STRIDE);
+
+        let location = placed_record(
+            "LCTN",
+            fk(0x405E9F, plugin),
+            smallvec![field("LCSR", FieldValue::Bytes(row))],
+        );
+
+        let pairs = special_ref_type_pairs(&location, &masters, plugin, &interner);
+
+        assert_eq!(pairs.len(), 1, "raw Bytes LCSR must yield a pair");
+        let (ref_fk, type_fk) = pairs[0];
+        assert_eq!(ref_fk.local, 0x405EA3);
+        assert_eq!(type_fk.local, 0x405EA2);
     }
 
     #[test]

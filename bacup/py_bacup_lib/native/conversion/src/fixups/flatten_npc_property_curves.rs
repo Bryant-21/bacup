@@ -349,20 +349,32 @@ mod tests {
         let mut record = npc_with_raw_properties(&[(0x000002D4, 0.0), (0x000002D5, 500.0)]);
         let changed = apply_resolved_properties(
             &mut record,
-            &[ResolvedProperty {
-                target_actor_value_raw: 0x000002D4,
-                value: 99_890.0,
-            }],
+            &[
+                ResolvedProperty {
+                    target_actor_value_raw: 0x000002D4,
+                    value: 99_890.0,
+                },
+                ResolvedProperty {
+                    target_actor_value_raw: 0x000002D5,
+                    value: 40_000.0,
+                },
+            ],
         );
         assert!(changed);
         let FieldValue::Bytes(bytes) = &record.fields[0].value else {
             panic!("expected raw PRPS");
         };
+        // Health above i16::MAX is written through unchanged. The engine's auto-calc wraps it
+        // to a negative int16, which the B21_TalesFromAppalachia F4SE plugin corrects at
+        // runtime by recomputing the true total into the actor's float Health ActorValue.
         assert_eq!(
             f32::from_le_bytes(bytes[4..8].try_into().unwrap()),
             99_890.0
         );
-        assert_eq!(f32::from_le_bytes(bytes[12..16].try_into().unwrap()), 500.0);
+        assert_eq!(
+            f32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+            40_000.0
+        );
     }
 
     #[test]

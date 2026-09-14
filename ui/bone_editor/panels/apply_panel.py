@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 from imgui_bundle import imgui
 
+from creation_lib.ui.widgets.modern import expandable_section
+
 if TYPE_CHECKING:
     from ..bone_editor_app import BoneEditorApp
 
@@ -76,17 +78,15 @@ class ApplyPanel:
 
         if self._failed:
             imgui.spacing()
-            expanded = imgui.collapsing_header(
+            with expandable_section(
                 f"Failed files ({len(self._failed)})##fail",
-            )
-            if isinstance(expanded, tuple):
-                expanded = expanded[0]
-            if expanded:
-                for fname, msg in self._failed:
-                    imgui.text_colored(imgui.ImVec4(1.0, 0.4, 0.4, 1.0), f"  {fname}")
-                    imgui.indent(24)
-                    imgui.text_wrapped(f"— {msg}")
-                    imgui.unindent(24)
+            ) as expanded:
+                if expanded:
+                    for fname, msg in self._failed:
+                        imgui.text_colored(imgui.ImVec4(1.0, 0.4, 0.4, 1.0), f"  {fname}")
+                        imgui.indent(24)
+                        imgui.text_wrapped(f"— {msg}")
+                        imgui.unindent(24)
 
         imgui.end()
 

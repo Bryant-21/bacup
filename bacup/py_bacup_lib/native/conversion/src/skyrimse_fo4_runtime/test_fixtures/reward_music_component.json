@@ -1,0 +1,29 @@
+{
+  "source_plugin": "Skyrim.esm",
+  "music": {
+    "local_id": 522256,
+    "editor_id": "MUSReward"
+  },
+  "tracks": [
+    {
+      "local_id": 149548,
+      "editor_id": "MUSReward01",
+      "record_path": "Data\\Music\\Reward\\MUS_Reward_01.wav"
+    },
+    {
+      "local_id": 503304,
+      "editor_id": "MUSReward02",
+      "record_path": "Data\\Music\\Reward\\MUS_Reward_02.wav"
+    },
+    {
+      "local_id": 503306,
+      "editor_id": "MUSReward03",
+      "record_path": "Data\\Music\\Reward\\MUS_Reward_03.wav"
+    },
+    {
+      "local_id": 503305,
+      "editor_id": "MUSReward04",
+      "record_path": "Data\\Music\\Reward\\MUS_Reward_04.wav"
+    }
+  ]
+}

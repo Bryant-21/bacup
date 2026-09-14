@@ -20,6 +20,7 @@ pub(crate) struct FlattenedLineage {
     pub strings: LocalizedStringsState,
     pub pack_origins: HashMap<u32, FlattenedPackOrigin>,
     pub raw_pack_records: u64,
+    pub runtime_origins: HashMap<u32, FlattenedRuntimeOrigin>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +29,24 @@ pub(crate) struct FlattenedPackOrigin {
     pub source_plugin: String,
     pub source_form_id: u32,
     pub form_id_remapped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FlattenedRuntimeOrigin {
+    pub signature: SmolStr,
+    pub source_game: String,
+    pub source_plugin: String,
+    pub source_form_id: u32,
+    pub contributing_plugin: String,
+    pub source_parent: Option<FlattenedRuntimeParent>,
+    pub merged_parent_form_id: Option<u32>,
+    pub child_group_type: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FlattenedRuntimeParent {
+    pub source_plugin: String,
+    pub source_form_id: u32,
 }
 
 struct PreparedPlugin {
@@ -54,6 +73,7 @@ pub(crate) fn flatten_lineage(handles: &[u64]) -> Result<FlattenedLineage, Merge
     let mut container_appends = HashMap::new();
     let mut pack_origins = HashMap::new();
     let mut raw_pack_records = 0;
+    let mut runtime_origins = HashMap::new();
     let mut strings = LocalizedStringsState::default();
     let mut used_string_ids = HashSet::new();
     let mut next_string_id = 1;
@@ -98,6 +118,7 @@ pub(crate) fn flatten_lineage(handles: &[u64]) -> Result<FlattenedLineage, Merge
             &mut container_appends,
             &mut pack_origins,
             &mut raw_pack_records,
+            &mut runtime_origins,
             plugin,
         )?;
     }
@@ -113,6 +134,7 @@ pub(crate) fn flatten_lineage(handles: &[u64]) -> Result<FlattenedLineage, Merge
         strings,
         pack_origins,
         raw_pack_records,
+        runtime_origins,
     })
 }
 
@@ -298,6 +320,7 @@ fn merge_prepared_plugin(
     container_appends: &mut HashMap<u32, (i32, Vec<ParsedItem>)>,
     pack_origins: &mut HashMap<u32, FlattenedPackOrigin>,
     raw_pack_records: &mut u64,
+    runtime_origins: &mut HashMap<u32, FlattenedRuntimeOrigin>,
     prepared: PreparedPlugin,
 ) -> Result<(), MergeError> {
     let PreparedPlugin {
@@ -305,6 +328,7 @@ fn merge_prepared_plugin(
         raw_to_output,
         overrides,
     } = prepared;
+    let plugin_name = plugin.plugin_name.to_lowercase();
     collect_pack_origins(
         &plugin.root_items,
         &raw_to_output,
@@ -313,7 +337,19 @@ fn merge_prepared_plugin(
         pack_origins,
         raw_pack_records,
     );
-    let plugin_name = plugin.plugin_name.to_lowercase();
+    collect_runtime_origins(
+        &plugin.root_items,
+        &raw_to_output,
+        &plugin_name,
+        &plugin.header.masters,
+        own_index_for_masters(&plugin.header.masters),
+        identities,
+        lineage_names,
+        plugin.game.as_deref().unwrap_or_default(),
+        &plugin.plugin_name,
+        runtime_origins,
+        None,
+    );
     let schema = plugin
         .game
         .as_deref()
@@ -341,6 +377,156 @@ fn merge_prepared_plugin(
         }
     }
     Ok(())
+}
+
+fn own_index_for_masters(masters: &[String]) -> u8 {
+    masters.len() as u8
+}
+
+fn is_runtime_signature(signature: &str) -> bool {
+    matches!(
+        signature,
+        "QUST"
+            | "DIAL"
+            | "INFO"
+            | "SCPT"
+            | "PACK"
+            | "SCEN"
+            | "ACHR"
+            | "ACRE"
+            | "REFR"
+            | "ACTI"
+            | "NPC_"
+            | "CREA"
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_runtime_origins(
+    items: &[ParsedItem],
+    raw_to_output: &HashMap<u32, u32>,
+    plugin_name: &str,
+    masters: &[String],
+    own_index: u8,
+    identities: &HashMap<(String, u32), u32>,
+    lineage_names: &[String],
+    source_game: &str,
+    source_plugin: &str,
+    origins: &mut HashMap<u32, FlattenedRuntimeOrigin>,
+    topology: Option<(u32, i32)>,
+) {
+    for item in items {
+        match item {
+            ParsedItem::Record(record) if is_runtime_signature(record.signature.as_str()) => {
+                let Some(&output_form_id) = raw_to_output.get(&record.form_id) else {
+                    continue;
+                };
+                let Some(source_identity) =
+                    source_identity_for_raw(record.form_id, source_plugin, masters)
+                else {
+                    continue;
+                };
+                let (source_parent, merged_parent_form_id, child_group_type) = topology
+                    .and_then(|(raw_parent, group_type)| {
+                        let source_parent =
+                            source_identity_for_raw(raw_parent, source_plugin, masters)?;
+                        let merged_parent_form_id = resolve_lineage_ref_if_known(
+                            raw_parent,
+                            plugin_name,
+                            masters,
+                            own_index,
+                            identities,
+                            lineage_names,
+                            raw_to_output,
+                        )?;
+                        Some((
+                            Some(source_parent),
+                            Some(merged_parent_form_id),
+                            Some(group_type),
+                        ))
+                    })
+                    .unwrap_or((None, None, None));
+                origins.insert(
+                    output_form_id,
+                    FlattenedRuntimeOrigin {
+                        signature: record.signature.clone(),
+                        source_game: source_game.to_string(),
+                        source_plugin: source_identity.source_plugin,
+                        source_form_id: source_identity.source_form_id,
+                        contributing_plugin: source_plugin.to_string(),
+                        source_parent,
+                        merged_parent_form_id,
+                        child_group_type,
+                    },
+                );
+            }
+            ParsedItem::Record(_) => {}
+            ParsedItem::Group(group) => {
+                let child_topology = match group.group_type {
+                    7 | 10 => Some((u32::from_le_bytes(group.label), group.group_type)),
+                    _ => topology,
+                };
+                collect_runtime_origins(
+                    &group.children,
+                    raw_to_output,
+                    plugin_name,
+                    masters,
+                    own_index,
+                    identities,
+                    lineage_names,
+                    source_game,
+                    source_plugin,
+                    origins,
+                    child_topology,
+                );
+            }
+        }
+    }
+}
+
+fn source_identity_for_raw(
+    raw: u32,
+    plugin_name: &str,
+    masters: &[String],
+) -> Option<FlattenedRuntimeParent> {
+    if raw == 0 || raw >= 0xFF00_0000 {
+        return None;
+    }
+    let source_index = (raw >> 24) as u8;
+    let source_plugin = if (source_index as usize) < masters.len() {
+        masters[source_index as usize].clone()
+    } else {
+        plugin_name.to_string()
+    };
+    Some(FlattenedRuntimeParent {
+        source_plugin,
+        source_form_id: raw & 0x00FF_FFFF,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_lineage_ref_if_known(
+    raw: u32,
+    plugin_name: &str,
+    masters: &[String],
+    own_index: u8,
+    identities: &HashMap<(String, u32), u32>,
+    lineage_names: &[String],
+    raw_to_output: &HashMap<u32, u32>,
+) -> Option<u32> {
+    if let Some(&output) = raw_to_output.get(&raw) {
+        return Some(output);
+    }
+    let source_index = (raw >> 24) as u8;
+    let object_id = raw & 0x00FF_FFFF;
+    let origin = if (source_index as usize) < masters.len() {
+        masters[source_index as usize].to_lowercase()
+    } else if source_index == own_index || source_index == 0xFF {
+        plugin_name.to_string()
+    } else {
+        lineage_names.get(source_index as usize)?.clone()
+    };
+    identities.get(&(origin, object_id)).copied()
 }
 
 fn collect_pack_origins(
@@ -695,6 +881,7 @@ fn container_group_type(record: &ParsedRecord) -> Option<i32> {
         "WRLD" => Some(1),
         "CELL" => Some(6),
         "DIAL" => Some(7),
+        "QUST" => Some(10),
         _ => None,
     }
 }
@@ -749,6 +936,21 @@ mod tests {
             data: Bytes::from(data),
             semantic_type: None,
         }
+    }
+
+    #[test]
+    fn runtime_origin_identity_uses_master_for_dlc_override_form_id() {
+        assert_eq!(
+            source_identity_for_raw(
+                0x0100_1200,
+                "ThePitt.esm",
+                &["Other.esm".to_string(), "Fallout3.esm".to_string()],
+            ),
+            Some(FlattenedRuntimeParent {
+                source_plugin: "Fallout3.esm".to_string(),
+                source_form_id: 0x1200,
+            })
+        );
     }
 
     fn skyrim_v12_nvnm(parent: u32, interior: bool, linked_navmesh: u32, door_ref: u32) -> Vec<u8> {
@@ -889,6 +1091,51 @@ mod tests {
             .unwrap();
         assert_eq!(
             u32::from_le_bytes(scri.data[0..4].try_into().unwrap()),
+            allocated
+        );
+        handles.into_iter().for_each(|handle| {
+            plugin_handle_close_native(handle);
+        });
+    }
+
+    #[test]
+    fn skyrim_race_actor_effect_follows_colliding_dlc_reallocation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = write_test_plugin_with_masters(
+            tmp.path(),
+            "Skyrim.esm",
+            "skyrimse",
+            Vec::new(),
+            vec![rec("WEAP", 0x1200, "BaseWeapon")],
+        );
+        let mut race = rec("RACE", 0x0100_1300, "DlcCreatureRace");
+        race.subrecords.push(formid_sub("SPLO", 0x0100_1200));
+        let dlc = write_test_plugin_with_masters(
+            tmp.path(),
+            "Dragonborn.esm",
+            "skyrimse",
+            vec!["Skyrim.esm".to_string()],
+            vec![rec("SPEL", 0x0100_1200, "DlcCreatureSpell"), race],
+        );
+        let handles = [
+            super::super::load_no_py(base.to_str().unwrap(), Some("skyrimse")).unwrap(),
+            super::super::load_no_py(dlc.to_str().unwrap(), Some("skyrimse")).unwrap(),
+        ];
+
+        let flattened = flatten_lineage(&handles).unwrap();
+        let allocated = find_record(&flattened.tree, "DlcCreatureSpell")
+            .unwrap()
+            .form_id;
+        let race = find_record(&flattened.tree, "DlcCreatureRace").unwrap();
+        let actor_effect = race
+            .subrecords
+            .iter()
+            .find(|subrecord| subrecord.signature.as_str() == "SPLO")
+            .unwrap();
+
+        assert_ne!(allocated, 0x1200);
+        assert_eq!(
+            u32::from_le_bytes(actor_effect.data[0..4].try_into().unwrap()),
             allocated
         );
         handles.into_iter().for_each(|handle| {
@@ -1147,10 +1394,14 @@ mod tests {
             super::super::load_no_py(dlc.to_str().unwrap(), Some("fnv")).unwrap(),
         ];
         let flattened = flatten_lineage(&handles).unwrap();
-        assert_eq!(
-            find_record(&flattened.tree, "GRAOwnedRef").unwrap().form_id,
-            0x00000801
-        );
+        let output_form_id = find_record(&flattened.tree, "GRAOwnedRef").unwrap().form_id;
+        assert_eq!(output_form_id, 0x00000801);
+        let origin = flattened
+            .runtime_origins
+            .get(&output_form_id)
+            .expect("plugin-owned runtime record must keep provenance");
+        assert_eq!(origin.source_plugin, "GunRunnersArsenal.esm");
+        assert_eq!(origin.source_form_id, 0x00000801);
         handles.into_iter().for_each(|handle| {
             plugin_handle_close_native(handle);
         });

@@ -17,6 +17,7 @@ from imgui_bundle import imgui
 from creation_lib.material_tools.base import BaseHeader
 from creation_lib.material_tools.bgsm_bin import BGSMData, BGSM_SIGNATURE, read_bgsm
 from creation_lib.material_tools.bgem_bin import BGEMData, BGEM_SIGNATURE, read_bgem
+from creation_lib.ui.widgets.forms import begin_form, end_form
 from creation_lib.ui.widgets.user_guide import (
     UserGuide,
     draw_generic_user_guide_window,
@@ -221,7 +222,7 @@ class MaterialEditorApp:
             _log.exception("Failed to open %s", path)
 
     def open_file_dialog(self) -> None:
-        from ui.tools.imgui_helpers import pick_file
+        from creation_lib.ui.widgets.forms import pick_file
 
         path = pick_file(
             "Open Material",
@@ -255,7 +256,7 @@ class MaterialEditorApp:
             _log.exception("Failed to save %s", path)
 
     def save_file_as(self) -> None:
-        from ui.tools.imgui_helpers import pick_save_file
+        from creation_lib.ui.widgets.forms import pick_save_file
 
         ext = f".{self.file_type}"
         ftype_label = "BGSM Files" if self.file_type == "bgsm" else "BGEM Files"
@@ -271,7 +272,7 @@ class MaterialEditorApp:
             self.save_file(path)
 
     def import_json(self) -> None:
-        from ui.tools.imgui_helpers import pick_file
+        from creation_lib.ui.widgets.forms import pick_file
 
         path = pick_file(
             "Import JSON Material",
@@ -299,7 +300,7 @@ class MaterialEditorApp:
             _log.exception("Failed to import JSON %s", path)
 
     def export_json(self) -> None:
-        from ui.tools.imgui_helpers import pick_save_file
+        from creation_lib.ui.widgets.forms import pick_save_file
 
         path = pick_save_file(
             "Export JSON Material",
@@ -467,7 +468,9 @@ class MaterialEditorApp:
                     imgui.ChildFlags_.none,
                     imgui.WindowFlags_.none,
                 )
-                draw_general_panel(self)
+                if begin_form("general_fields", label_width=210):
+                    draw_general_panel(self)
+                    end_form()
                 imgui.end_child()
                 imgui.end_tab_item()
 
@@ -479,7 +482,9 @@ class MaterialEditorApp:
                         imgui.ChildFlags_.none,
                         imgui.WindowFlags_.none,
                     )
-                    draw_material_panel(self)
+                    if begin_form("material_fields", label_width=210):
+                        draw_material_panel(self)
+                        end_form()
                     imgui.end_child()
                     imgui.end_tab_item()
 
@@ -491,7 +496,9 @@ class MaterialEditorApp:
                         imgui.ChildFlags_.none,
                         imgui.WindowFlags_.none,
                     )
-                    draw_effect_panel(self)
+                    if begin_form("effect_fields", label_width=210):
+                        draw_effect_panel(self)
+                        end_form()
                     imgui.end_child()
                     imgui.end_tab_item()
 

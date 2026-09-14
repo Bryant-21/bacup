@@ -186,12 +186,9 @@ class SphereData:
 class ClothScene:
     """Manages loaded cloth data and overlay-ready arrays.
 
-    Loading flow:
-    1. load_from_nif(path) — extracts the HCL blob via nif_core_native.cloth_extract_blob
-    2. Parses blob to a JSON dict via native cloth_inspect_full_json (display-only)
-    3. Extracts particle positions/masses/radii into numpy arrays
-    4. Extracts constraint links into a flat list
-    5. Extracts capsule/sphere data for overlay rendering
+    load_from_nif() extracts the HCL blob, parses it to display-only JSON via
+    native cloth_inspect_full_json, and pulls particle arrays, constraint links,
+    and capsule/sphere overlay data out of it.
 
     After any mutation (native cloth_* op that returns new blob bytes):
         scene.blob = new_blob
@@ -402,16 +399,11 @@ class ClothScene:
     def build_particle_to_vertex_mapping(self, mesh_vertices: np.ndarray) -> None:
         """Build vertex→particle mapping by nearest-particle matching.
 
-        For each mesh vertex, finds the closest cloth particle. Vertices
-        beyond a distance threshold are left unmapped (-1). This ensures
-        every cloth-region vertex is driven by a particle, not just one
-        vertex per particle.
-
-        The result is stored as TWO arrays:
+        Stores two arrays:
         - particle_to_vertex: (P,) int — particle_idx → nearest mesh vertex
           (for overlay/generation compatibility)
-        - vertex_to_particle: (V,) int — mesh_vertex_idx → nearest particle
-          (-1 if no particle is close enough)
+        - vertex_to_particle: (V,) int — mesh_vertex_idx → nearest particle,
+          or -1 when none is within the distance threshold
 
         Args:
             mesh_vertices: (V, 3) float32 array of mesh vertex positions.

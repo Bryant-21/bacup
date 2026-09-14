@@ -11,7 +11,6 @@ from __future__ import annotations
 import csv
 import json
 import logging
-import math
 import re
 import shutil
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -21,6 +20,9 @@ from pathlib import Path
 from typing import Any
 
 from imgui_bundle import imgui
+from creation_lib.ui.widgets.modern import loading_panel
+
+from creation_lib.ui.widgets.modern import expandable_section
 
 from creation_lib.esp.editor import (
     ConflictReport,
@@ -49,7 +51,7 @@ from creation_lib.esp.native_runtime import (
 from creation_lib.esp.record_types import record_type_display_label
 from creation_lib.esp.schema import get_schema
 from creation_lib.ui.widgets import pick_folder
-from ui.tools.imgui_helpers import pick_file, pick_save_file
+from creation_lib.ui.widgets.forms import pick_file, pick_save_file
 
 _log = logging.getLogger("ui.esp_editor")
 
@@ -947,50 +949,9 @@ class EspEditorApp:
                 cb(exc, True)
 
     def draw_busy_overlay(self) -> None:
-        """Draw a foreground spinner+dim mask if a background task is running."""
-        if not self._busy:
-            return
-        viewport = imgui.get_main_viewport()
-        pos = viewport.work_pos
-        size = viewport.work_size
-        draw_list = imgui.get_foreground_draw_list()
-        draw_list.add_rect_filled(
-            pos,
-            imgui.ImVec2(pos.x + size.x, pos.y + size.y),
-            imgui.get_color_u32((0.0, 0.0, 0.0, 0.45)),
-        )
-        cx = pos.x + size.x * 0.5
-        cy = pos.y + size.y * 0.5
-        spin_radius = 22.0
-        t = imgui.get_time()
-        angle_start = math.fmod(t * 3.0, math.tau)
-        arc_span = math.pi * 1.3
-        draw_list.add_circle(
-            imgui.ImVec2(cx, cy),
-            spin_radius,
-            imgui.get_color_u32((1.0, 1.0, 1.0, 0.2)),
-            32,
-            3.0,
-        )
-        draw_list.path_arc_to(
-            imgui.ImVec2(cx, cy),
-            spin_radius,
-            angle_start,
-            angle_start + arc_span,
-            32,
-        )
-        draw_list.path_stroke(
-            imgui.get_color_u32((1.0, 1.0, 1.0, 1.0)),
-            False,
-            3.0,
-        )
-        label = self._busy_message or "Working..."
-        tw = imgui.calc_text_size(label).x
-        draw_list.add_text(
-            imgui.ImVec2(cx - tw * 0.5, cy + spin_radius + 12),
-            imgui.get_color_u32((1.0, 1.0, 1.0, 1.0)),
-            label,
-        )
+        if self._busy:
+            viewport = imgui.get_main_viewport()
+            loading_panel("Working", self._busy_message, None, bounds=(viewport.work_pos, viewport.work_size))
 
     # -- panels -----------------------------------------------------------
 
@@ -2311,9 +2272,10 @@ class EspEditorApp:
         for signature in sorted(grouped_reports.keys()):
             reports = grouped_reports[signature]
             display = self._record_label(signature)
-            if imgui.collapsing_header(f"{display} ({len(reports)})##conf_grp_{signature}"):
-                for rpt in reports:
-                    self._draw_conflict_row(rpt)
+            with expandable_section(f"{display} ({len(reports)})##conf_grp_{signature}") as expanded:
+                if expanded:
+                    for rpt in reports:
+                        self._draw_conflict_row(rpt)
 
     def _draw_conflict_row(self, report: ConflictReport) -> None:
         eid = report.editor_id or ""

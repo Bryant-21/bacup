@@ -26,12 +26,66 @@ pub(super) const OMOD_DATA_ITEM_ROW_LEN: usize = 4;
 pub(super) const OMOD_DATA_INCLUDE_ROW_LEN: usize = 7;
 pub(super) const FO76_MSTT_FORM_TYPE: u32 = 0x5454_534D;
 pub(super) const LIBERATOR_BODY_ARMOR_OMOD_EDITOR_ID: &str = "Bot_Liberator_BodyArmor";
+pub(super) const LIBERATOR_RACE_EDITOR_ID: &str = "LiberatorRace";
 pub(super) const FO4_AP_BOT_ARMOR_SLOT1_OBJECT_ID: u32 = 0x000C_3666;
+
+/// FO76's six per-part power-armor attach points — `ap_PowerArmor_HeadMod`,
+/// `BodyMod`, `LArmMod`, `RArmMod`, `RLegMod`, `LLegMod`. Both games ship these
+/// EditorIDs at these object-ids, so the EditorID remap maps them onto
+/// themselves — but they mean opposite things. In FO76 each is displayed as
+/// "Paint" and carries the piece's paint OMOD; in FO4 each is an unnamed
+/// structural root carrying the chassis OMOD, which in turn grants
+/// `ap_PowerArmor_Paint`.
+pub(super) const FO76_POWER_ARMOR_PART_ATTACH_POINT_OBJECT_IDS: [u32; 6] = [
+    0x0003_DAFC, // ap_PowerArmor_HeadMod
+    0x0005_5F8C, // ap_PowerArmor_BodyMod
+    0x0005_5F8D, // ap_PowerArmor_LArmMod
+    0x0005_5F8E, // ap_PowerArmor_RArmMod
+    0x0005_5F8F, // ap_PowerArmor_RLegMod
+    0x0005_5F90, // ap_PowerArmor_LLegMod
+];
+
+/// `ap_PowerArmor_Paint` — FO4's paint attach point, displayed as "Material".
+pub(super) const FO4_AP_POWER_ARMOR_PAINT_OBJECT_ID: u32 = 0x0017_DAA8;
+
+/// Attach points that hold a weapon's STRUCTURAL geometry — the receiver and
+/// everything that hangs off it.
+///
+/// FO76 puts a material swap on these (the Enclave tint lives on the receiver, not
+/// on a separate paint mod), so the material-swap heuristic in
+/// `strip_material_omod_models` would delete the mesh from the parts the weapon is
+/// built out of. `WEAP.MODL` for these guns is a geometry-free dummy receiver
+/// (vanilla `PlasmaGun` uses the same dummy and gets its body from the receiver
+/// OMOD), so losing the receiver model leaves nothing to draw AND nothing for the
+/// barrel/grip/mag/scope to attach into: the whole assembly renders empty.
+/// Measured 2026-09-01: 141 WEAP structural OMODs hit this, against 3 that
+/// actually sit on `ap_WeaponMaterial`.
+///
+/// A denylist of structural slots rather than an allowlist of paint slots: the
+/// power-armor paint-doubling case the strip targets keys on FO76's per-part
+/// attach points, which are still un-retargeted here
+/// (`retarget_power_armor_paint_attach_point` runs later in `pre_translate`).
+/// Every non-weapon OMOD is unaffected.
+pub(super) const FO4_STRUCTURAL_MOD_ATTACH_POINT_OBJECT_IDS: [u32; 13] = [
+    0x0002_4004, // ap_gun_receiver
+    0x0002_249C, // ap_gun_Muzzle
+    0x0002_249D, // ap_gun_Barrel
+    0x0002_249F, // ap_gun_Grip
+    0x0002_2499, // ap_gun_Scope
+    0x0005_D4D7, // ap_gun_Mag
+    0x0014_9CA8, // ap_gun_Casing
+    0x0014_CDA5, // ap_gun_Sight
+    0x001E_9904, // ap_gun_FlashFar
+    0x001E_9905, // ap_gun_FlashMid
+    0x001E_9906, // ap_gun_FlashShort
+    0x001E_8CAD, // ap_gun_TankMove
+    0x0005_524C, // ap_melee_MeleeMod
+];
 
 /// FO76 OMOD `MNAM` (Target OMOD Keywords) entries with no useful FO4 role,
 /// dropped entirely during translation. Values are SeventySix.esm object-ids
-/// (master byte already stripped on decode). Append ARMO/ARMA appearance
-/// mod-association keywords here when armor support lands.
+/// (master byte already stripped on decode). Material OMOD associations need a
+/// forced FO4 keyword substitution instead because this filter preserves them.
 pub(super) const FO76_REDUNDANT_OMOD_TARGET_KEYWORD_OBJECT_IDS: &[u32] = &[
     0x0037_D0B2, // ma_Gun_Appearance (ModAssociation)
 ];
@@ -105,6 +159,112 @@ pub(super) fn formkey_array_value_is_empty(value: &FieldValue) -> bool {
         FieldValue::Bytes(bytes) => bytes.is_empty(),
         _ => false,
     }
+}
+
+pub(super) fn dedupe_formkey_array_value(value: &mut FieldValue) -> bool {
+    match value {
+        FieldValue::List(items) => {
+            let before = items.len();
+            let mut unique = Vec::with_capacity(before);
+            for item in std::mem::take(items) {
+                if !unique.contains(&item) {
+                    unique.push(item);
+                }
+            }
+            *items = unique;
+            items.len() != before
+        }
+        FieldValue::Bytes(bytes) => {
+            let before = bytes.len();
+            let chunks = bytes.chunks_exact(4);
+            let remainder = chunks.remainder().to_vec();
+            let mut seen = Vec::with_capacity(before / 4);
+            let mut unique = Vec::with_capacity(before);
+            for chunk in chunks {
+                let raw = u32::from_le_bytes(chunk.try_into().unwrap());
+                if !seen.contains(&raw) {
+                    seen.push(raw);
+                    unique.extend_from_slice(chunk);
+                }
+            }
+            unique.extend_from_slice(&remainder);
+            *bytes = smallvec::SmallVec::from_vec(unique);
+            bytes.len() != before
+        }
+        _ => false,
+    }
+}
+
+/// Whether `raw` is one of the six FO76 per-part power-armor attach points.
+///
+/// Matched on the object-id alone, ignoring the plugin: FO76 keeps its own
+/// object-ids on output, and both games use these ids for these keywords, so
+/// `SeventySix.esm:055F8C` and `Fallout4.esm:055F8C` are the same keyword.
+pub(super) fn is_fo76_power_armor_part_attach_point(raw: u32) -> bool {
+    FO76_POWER_ARMOR_PART_ATTACH_POINT_OBJECT_IDS.contains(&(raw & 0x00FF_FFFF))
+}
+
+pub(super) fn is_power_armor_part_attach_point_value(value: &FieldValue) -> bool {
+    let raw = match value {
+        FieldValue::FormKey(fk) => fk.local,
+        FieldValue::Uint(raw) => *raw as u32,
+        FieldValue::Int(raw) if *raw >= 0 => *raw as u32,
+        FieldValue::Bytes(bytes) if bytes.len() == 4 => {
+            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+        }
+        _ => return false,
+    };
+    is_fo76_power_armor_part_attach_point(raw)
+}
+
+pub(super) fn formkey_array_value_len(value: &FieldValue) -> Option<usize> {
+    match value {
+        FieldValue::List(items) => Some(items.len()),
+        FieldValue::Bytes(bytes) => Some(bytes.len() / 4),
+        _ => None,
+    }
+}
+
+/// Read the OMOD's attach point out of `DATA` (offset 16), handling both the raw
+/// byte layout and the decoded struct shape the schema sometimes yields.
+pub(super) fn omod_attach_point_raw(
+    interner: &crate::sym::StringInterner,
+    record: &Record,
+) -> Option<u32> {
+    record.fields.iter().find_map(|entry| {
+        if entry.sig.0 != *b"DATA" {
+            return None;
+        }
+        match &entry.value {
+            FieldValue::Bytes(bytes) if bytes.len() >= OMOD_DATA_HEADER_LEN => {
+                read_u32_le_at(bytes, OMOD_DATA_ATTACH_POINT_OFFSET)
+            }
+            FieldValue::Struct(fields) => {
+                let index = field_index_canonical(fields, "attach_point", interner)?;
+                match &fields[index].1 {
+                    FieldValue::FormKey(fk) => Some(fk.local),
+                    FieldValue::Uint(raw) => Some(*raw as u32),
+                    FieldValue::Int(raw) if *raw >= 0 => Some(*raw as u32),
+                    FieldValue::Bytes(bytes) if bytes.len() == 4 => {
+                        Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    })
+}
+
+/// Matched on the object-id alone, ignoring the plugin: FO76 keeps its own
+/// object-ids on output and both games use these ids for these keywords.
+pub(super) fn omod_attaches_at_structural_point(
+    interner: &crate::sym::StringInterner,
+    record: &Record,
+) -> bool {
+    omod_attach_point_raw(interner, record).is_some_and(|raw| {
+        FO4_STRUCTURAL_MOD_ATTACH_POINT_OBJECT_IDS.contains(&(raw & 0x00FF_FFFF))
+    })
 }
 
 pub(super) fn omod_has_power_armor_model(
@@ -639,6 +799,42 @@ pub(super) fn valid_object_mod_property(target: ObjectModPropertyTarget, propert
     }
 }
 impl Fo76Fo4Hook {
+    pub(super) fn dedupe_mapped_keyword_arrays(record: &mut Record) {
+        let (array_sig, sync_keyword_count) = match &record.sig.0 {
+            b"OMOD" => (*b"MNAM", false),
+            b"ARMO" => (*b"KWDA", true),
+            _ => return,
+        };
+
+        let mut changed = false;
+        for entry in record
+            .fields
+            .iter_mut()
+            .filter(|entry| entry.sig.0 == array_sig)
+        {
+            changed |= dedupe_formkey_array_value(&mut entry.value);
+        }
+        if !changed || !sync_keyword_count {
+            return;
+        }
+
+        let keyword_count = record
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.0 == array_sig)
+            .filter_map(|entry| formkey_array_value_len(&entry.value))
+            .sum::<usize>()
+            .try_into()
+            .unwrap_or(u32::MAX);
+        if let Some(entry) = record
+            .fields
+            .iter_mut()
+            .find(|entry| entry.sig.0 == *b"KSIZ")
+        {
+            crate::record::write_u32_field(&mut entry.value, keyword_count);
+        }
+    }
+
     pub(super) fn strip_invalid_object_mod_properties(
         interner: &crate::sym::StringInterner,
         record: &mut Record,
@@ -692,6 +888,7 @@ impl Fo76Fo4Hook {
         if record.sig.0 != *b"OMOD"
             || !omod_has_material_swap_data(interner, record)
             || omod_has_power_armor_model(interner, record)
+            || omod_attaches_at_structural_point(interner, record)
         {
             return;
         }
@@ -778,6 +975,110 @@ impl Fo76Fo4Hook {
         }
     }
 
+    /// Move a power-armor paint OMOD onto FO4's paint attach point.
+    ///
+    /// FO76 hangs the paint off the piece's per-part root
+    /// (`ap_PowerArmor_HeadMod` and friends, each displayed as "Paint"). FO4
+    /// uses those same EditorIDs for unnamed structural roots and puts paints
+    /// on `ap_PowerArmor_Paint` ("Material"), which the chassis OMOD grants.
+    /// Because the EditorIDs match, the remap maps the FO76 slot onto FO4's
+    /// root, so every paint lands on a slot the workbench renders no category
+    /// for and no power armor can be repainted. `expose_power_armor_paint_slot`
+    /// does the matching `ARMO` side; the paint keeps its own
+    /// `AttachParentSlots`, so lining/misc/headlamp stay reachable through it.
+    pub(super) fn retarget_power_armor_paint_attach_point(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        if record.sig.0 != *b"OMOD" {
+            return;
+        }
+
+        let paint_slot = FormKey {
+            local: FO4_AP_POWER_ARMOR_PAINT_OBJECT_ID,
+            plugin: interner.intern(FO4_MASTER_NAME),
+        };
+        for entry in &mut record.fields {
+            if entry.sig.0 != *b"DATA" {
+                continue;
+            }
+            match &mut entry.value {
+                FieldValue::Bytes(bytes) if bytes.len() >= OMOD_DATA_HEADER_LEN => {
+                    let raw = u32::from_le_bytes(
+                        bytes[OMOD_DATA_ATTACH_POINT_OFFSET..OMOD_DATA_ATTACH_POINT_OFFSET + 4]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    if is_fo76_power_armor_part_attach_point(raw) {
+                        set_u32_le_at(
+                            bytes,
+                            OMOD_DATA_ATTACH_POINT_OFFSET,
+                            (raw & 0xFF00_0000) | FO4_AP_POWER_ARMOR_PAINT_OBJECT_ID,
+                        );
+                    }
+                }
+                FieldValue::Struct(fields) => {
+                    let Some(index) = field_index_canonical(fields, "attach_point", interner)
+                    else {
+                        continue;
+                    };
+                    if is_power_armor_part_attach_point_value(&fields[index].1) {
+                        fields[index].1 = FieldValue::FormKey(paint_slot);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Expose `ap_PowerArmor_Paint` on a power-armor piece.
+    ///
+    /// The `ARMO` half of `retarget_power_armor_paint_attach_point`: the piece
+    /// advertises exactly one per-part slot, which that hook has moved the
+    /// paints off, so it must advertise FO4's paint slot instead.
+    pub(super) fn expose_power_armor_paint_slot(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        if record.sig.0 != *b"ARMO" {
+            return;
+        }
+
+        let paint_slot = FormKey {
+            local: FO4_AP_POWER_ARMOR_PAINT_OBJECT_ID,
+            plugin: interner.intern(FO4_MASTER_NAME),
+        };
+        for entry in &mut record.fields {
+            if entry.sig.0 != *b"APPR" {
+                continue;
+            }
+            match &mut entry.value {
+                FieldValue::List(items) => {
+                    for item in items.iter_mut() {
+                        if is_power_armor_part_attach_point_value(item) {
+                            *item = FieldValue::FormKey(paint_slot);
+                        }
+                    }
+                }
+                FieldValue::Bytes(bytes) => {
+                    for chunk in bytes.chunks_exact_mut(4) {
+                        let raw = u32::from_le_bytes(chunk.try_into().unwrap());
+                        if is_fo76_power_armor_part_attach_point(raw) {
+                            chunk.copy_from_slice(
+                                &((raw & 0xFF00_0000) | FO4_AP_POWER_ARMOR_PAINT_OBJECT_ID)
+                                    .to_le_bytes(),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+            // `APPR` carries no paired count subrecord, so collapsing a piece
+            // that advertised more than one part slot needs no count fixup.
+            dedupe_formkey_array_value(&mut entry.value);
+        }
+    }
+
     pub(super) fn repair_liberator_body_omod_attach_point(
         interner: &crate::sym::StringInterner,
         record: &mut Record,
@@ -821,6 +1122,58 @@ impl Fo76Fo4Hook {
             }
         }
     }
+
+    /// Expose `ap_Bot_ArmorSlot1` on `LiberatorRace` so the shell OMOD can bind.
+    ///
+    /// FO4 only attaches a model-bearing OMOD when its attach point is in the
+    /// actor's reachable slot set — the RACE's `APPR` plus the
+    /// `AttachParentSlots` of already-attached parent mods. FO76 attached the
+    /// Liberator shell with a NULL attach point, so
+    /// `repair_liberator_body_omod_attach_point` gives it
+    /// `ap_Bot_ArmorSlot1`; but in FO4 that keyword is exposed only by
+    /// `Bot_TorsoHandy`, a Mister Handy chassis the Liberator never attaches,
+    /// and the race carries just `ap_customName`. Without this the shell mod
+    /// resolves against nothing and the robot renders bare.
+    pub(super) fn ensure_liberator_race_armor_attach_slot(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        if record.sig.0 != *b"RACE"
+            || !record
+                .eid
+                .and_then(|eid| interner.resolve(eid))
+                .is_some_and(|eid| eid.eq_ignore_ascii_case(LIBERATOR_RACE_EDITOR_ID))
+        {
+            return;
+        }
+
+        let slot = FormKey {
+            local: FO4_AP_BOT_ARMOR_SLOT1_OBJECT_ID,
+            plugin: interner.intern(FO4_MASTER_NAME),
+        };
+        for entry in &mut record.fields {
+            if entry.sig.0 != *b"APPR" {
+                continue;
+            }
+            match &mut entry.value {
+                FieldValue::List(items) => {
+                    if !items.contains(&FieldValue::FormKey(slot)) {
+                        items.push(FieldValue::FormKey(slot));
+                    }
+                }
+                FieldValue::Bytes(bytes) => {
+                    if !bytes.chunks_exact(4).any(|chunk| {
+                        u32::from_le_bytes(chunk.try_into().unwrap())
+                            == FO4_AP_BOT_ARMOR_SLOT1_OBJECT_ID
+                    }) {
+                        bytes.extend_from_slice(&FO4_AP_BOT_ARMOR_SLOT1_OBJECT_ID.to_le_bytes());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub(super) fn drop_mstt_omod_data(interner: &crate::sym::StringInterner, record: &mut Record) {
         if record.sig.0 != *b"OMOD" {
             return;

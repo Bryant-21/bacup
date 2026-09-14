@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
@@ -55,6 +56,12 @@ fn trim_path(path: &str) -> &str {
 /// Does NOT lowercase (matching the deleted Python behaviour).
 pub(crate) fn normalize_texture_path(path: &str) -> String {
     let forward = trim_path(path).replace('\\', "/");
+    let lower = forward.to_ascii_lowercase();
+    let forward = if lower.starts_with("data/") {
+        forward[5..].to_owned()
+    } else {
+        forward
+    };
     let lower = forward.to_ascii_lowercase();
     if lower.starts_with("textures/") {
         forward
@@ -181,6 +188,8 @@ pub fn build_bundle(
     resolver: &Ba2Resolver,
     extraction_root: &Path,
     output_prefix_root: &str,
+    source_game: &str,
+    materials_cdb_path: Option<&Path>,
 ) -> Result<TextureBundle, String> {
     // Load the Rust-owned LTEX authoring value.
     // Terrain crate emits form keys as "ObjectId:Plugin"; ESP index expects "Plugin:ObjectId".
@@ -202,8 +211,9 @@ pub fn build_bundle(
         .map(|a| a.as_slice())
         .unwrap_or(&[]);
 
-    // ── 2. Texture field (BNAM, authoring key "Texture") ─────────────────────
+    // ── 2. Texture field (BNAM, authoring key "Texture"/FO76, "MaterialFile"/Starfield) ─
     let texture_field = field_str(fields, "Texture")
+        .or_else(|| field_str(fields, "MaterialFile"))
         .or_else(|| field_str(fields, "BNAM"))
         .unwrap_or("")
         .to_string();
@@ -214,9 +224,10 @@ pub fn build_bundle(
     // ── 4. Material type object id (MNAM → "MaterialType") ───────────────────
     let material_type_object_id = read_material_type_object_id(fields);
 
-    // ── 5. Dispatch: BGSM branch or TXST branch ──────────────────────────────
+    // ── 5. Dispatch: BGSM branch, Starfield .mat/CDB branch, or TXST branch ──
     let texture_lower = texture_field.to_ascii_lowercase();
     let is_bgsm = texture_lower.ends_with(".bgsm") || texture_lower.ends_with(".bgem");
+    let is_starfield_material = source_game == "starfield" && texture_lower.ends_with(".mat");
 
     let source_txst_form_key = field_reference_form_key(fields, "TNAM")
         .or_else(|| field_reference_form_key(fields, "TextureSet"));
@@ -234,6 +245,20 @@ pub fn build_bundle(
     ) = if is_bgsm {
         bgsm_branch(
             &texture_field,
+            resolver,
+            extraction_root,
+            output_prefix_root,
+            &ltex_eid,
+        )?
+    } else if is_starfield_material {
+        let cdb_path = materials_cdb_path.ok_or_else(|| {
+            format!(
+                "LTEX {ltex_form_key} references starfield material {texture_field} but no materials CDB path was provided"
+            )
+        })?;
+        mat_branch(
+            &texture_field,
+            cdb_path,
             resolver,
             extraction_root,
             output_prefix_root,
@@ -565,6 +590,116 @@ fn bgsm_branch(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Starfield .mat (CDB material) branch
+// ─────────────────────────────────────────────────────────────────────────────
+
+type MatBranchResult = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+);
+
+/// Convert a Starfield `.mat` CDB material reference into the same tuple
+/// shape `bgsm_branch` returns.
+///
+/// `cdb_to_bgsm` bakes roughness/metalness/AO into the scalar
+/// SpecularColor/Smoothness rather than a texture, and several terrain
+/// material classes (e.g. `BSMaterial::TerrainSettingsComponent`) resolve to
+/// an entirely empty diffuse/normal texture set — both are legitimate "no
+/// texture for this slot" outcomes here, not conversion failures, unlike
+/// `bgsm_branch`'s FO76 BGSM path where a missing spec/lighting texture is a
+/// genuine authoring defect.
+fn mat_branch(
+    texture_field: &str,
+    materials_cdb_path: &Path,
+    resolver: &Ba2Resolver,
+    extraction_root: &Path,
+    output_prefix_root: &str,
+    ltex_eid: &str,
+) -> Result<MatBranchResult, String> {
+    let bgsm_bytes = materials_native::cdb_to_bgsm::cdb_to_bgsm(materials_cdb_path, texture_field)
+        .map_err(|e| format!("cdb_to_bgsm failed for {texture_field}: {e}"))?;
+    let bgsm_data = bgsm::parse(&bgsm_bytes)
+        .map_err(|e| format!("failed to parse cdb_to_bgsm output for {texture_field}: {e}"))?;
+
+    let diffuse_out =
+        extract_optional_texture(&bgsm_data.DiffuseTexture, resolver, extraction_root)?;
+    let normal_out = extract_optional_texture(&bgsm_data.NormalTexture, resolver, extraction_root)?;
+    // cdb_to_bgsm never populates SpecularTexture/LightingTexture (roughness/
+    // metalness/AO land on scalar fields instead), so there is no reflectivity
+    // or lighting source texture to resolve for the Starfield material branch.
+    let spec_out = String::new();
+    let lighting_out = String::new();
+
+    let mat_rel = normalize_material_path(texture_field);
+    let bgsm_rel = format!("{mat_rel}.bgsm");
+    let mat_out = write_bytes_to_extraction_root(&bgsm_rel, &bgsm_bytes, extraction_root)?;
+    let source_material_file = path_to_string(mat_out);
+
+    let label = if !ltex_eid.is_empty() {
+        ltex_eid
+    } else {
+        mat_rel.rsplit('/').next().unwrap_or("Texture")
+    };
+    let prefix = join_manifest_path(output_prefix_root, &safe_name(label));
+    let output_material_path = Some(material_path_for_output_prefix(&prefix));
+
+    Ok((
+        diffuse_out,
+        normal_out,
+        spec_out,
+        lighting_out,
+        String::new(), // no TXST form_key in the material branch
+        String::new(), // no TXST editor_id in the material branch
+        output_material_path,
+        texture_field.to_owned(), // source_material_path (original LTEX reference)
+        source_material_file,     // absolute path to the extracted converted BGSM on disk
+    ))
+}
+
+/// Resolve and extract a BGSM texture-slot path, treating an empty slot as
+/// "no texture" rather than an error.
+fn extract_optional_texture(
+    raw: &str,
+    resolver: &Ba2Resolver,
+    extraction_root: &Path,
+) -> Result<String, String> {
+    let trimmed = raw.trim_matches(|c: char| c.is_ascii_whitespace() || c == '\0');
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    let norm = normalize_texture_path(trimmed);
+    resolver
+        .extract_to(&norm, extraction_root)
+        .map(path_to_string)
+        .map_err(|e| format!("failed to extract starfield texture {trimmed}: {e}"))
+}
+
+/// Write `bytes` under `extraction_root` at `rel_path`, mirroring
+/// `Ba2Resolver::extract_to`'s destination layout for material bytes that
+/// don't come from an archive or the extracted asset tree (the converted BGSM
+/// is synthesized in-memory by `cdb_to_bgsm`, not read from disk).
+fn write_bytes_to_extraction_root(
+    rel_path: &str,
+    bytes: &[u8],
+    extraction_root: &Path,
+) -> Result<PathBuf, String> {
+    let normalized = super::ba2_resolver::normalize_rel_path_strict(rel_path)?;
+    let out_path = extraction_root.join(normalized.replace('/', std::path::MAIN_SEPARATOR_STR));
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+    fs::write(&out_path, bytes).map_err(|e| format!("write {}: {e}", out_path.display()))?;
+    Ok(out_path)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Havok / material-type helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -643,6 +778,12 @@ mod tests {
             "textures/Foo/Bar.dds"
         );
         assert_eq!(normalize_texture_path("textures/x.dds"), "textures/x.dds");
+        assert_eq!(
+            normalize_texture_path(
+                r"Data\Textures\Landscape\Ground\Moss\MossClumpy01_Yellow_color.dds"
+            ),
+            "Textures/Landscape/Ground/Moss/MossClumpy01_Yellow_color.dds"
+        );
     }
 
     #[test]
@@ -753,6 +894,190 @@ mod tests {
         assert_eq!(
             txst_texture_field(&fields, &["Lighting", "Glow"]),
             Some("terrain\\appalachia\\foo_g.dds")
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Starfield .mat (CDB material) branch — gated on real extracted data.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    fn starfield_extracted_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(4)
+            .unwrap()
+            .join("extracted/starfield")
+    }
+
+    #[test]
+    fn mat_branch_resolves_real_starfield_material_instead_of_erroring_like_a_missing_bgsm() {
+        let extracted_root = starfield_extracted_root();
+        let cdb_path = extracted_root.join("materials").join("materialsbeta.cdb");
+        if !cdb_path.exists() {
+            eprintln!("skip: starfield extracted data not present");
+            return;
+        }
+        let resolver = Ba2Resolver::open_with_extracted_dir(&extracted_root, Some(&extracted_root))
+            .expect("resolver opens against the extracted starfield root");
+        let extraction_root = std::env::temp_dir().join("ltex_walk_mat_branch_test");
+        let _ = fs::remove_dir_all(&extraction_root);
+
+        // Real LTEX (LDefault001Solid, 01085C:Starfield.esm) MaterialFile value —
+        // see data/starfield_esm_yaml/Starfield/records/LTEX/LDefault001Solid*.yaml.
+        let result = mat_branch(
+            r"Materials\Terrain\Default001Solid.mat",
+            &cdb_path,
+            &resolver,
+            &extraction_root,
+            "textures/terrain/testworld",
+            "LDefault001Solid",
+        );
+
+        let (
+            diffuse,
+            normal,
+            spec,
+            lighting,
+            txst_form_key,
+            txst_editor_id,
+            output_material_path,
+            source_material_path,
+            source_material_file,
+        ) = result
+            .expect("a starfield .mat reference should convert, not error like a missing BGSM");
+
+        assert!(!diffuse.is_empty(), "expected a resolved diffuse texture");
+        assert!(!normal.is_empty(), "expected a resolved normal texture");
+        assert!(
+            spec.is_empty() && lighting.is_empty(),
+            "cdb_to_bgsm bakes spec/gloss into scalars, not texture slots"
+        );
+        assert!(txst_form_key.is_empty());
+        assert!(txst_editor_id.is_empty());
+        assert_eq!(
+            output_material_path.as_deref(),
+            Some("terrain/testworld/LDefault001Solid.bgsm")
+        );
+        assert_eq!(
+            source_material_path,
+            r"Materials\Terrain\Default001Solid.mat"
+        );
+        assert!(
+            Path::new(&source_material_file).is_file(),
+            "converted bgsm should be written to disk: {source_material_file}"
+        );
+        let written = fs::read(&source_material_file).expect("read converted bgsm");
+        bgsm::parse(&written).expect("converted bgsm bytes parse as BGSM");
+    }
+
+    #[test]
+    fn extracts_real_starfield_texture_with_data_prefix() {
+        let extracted_root = starfield_extracted_root();
+        let expected = extracted_root
+            .join("textures")
+            .join("landscape")
+            .join("ground")
+            .join("moss")
+            .join("mossclumpy01_yellow_color.dds");
+        if !expected.exists() {
+            eprintln!("skip: starfield extracted texture not present");
+            return;
+        }
+        let resolver = Ba2Resolver::open_with_extracted_dir(&extracted_root, Some(&extracted_root))
+            .expect("resolver opens against the extracted starfield root");
+
+        let resolved = extract_optional_texture(
+            r"Data\Textures\Landscape\Ground\Moss\MossClumpy01_Yellow_color.dds",
+            &resolver,
+            &std::env::temp_dir().join("ltex_walk_data_texture_test"),
+        )
+        .expect("Data\\Textures-rooted Starfield material slot should resolve");
+
+        assert_eq!(PathBuf::from(resolved), expected);
+    }
+
+    #[test]
+    fn mat_branch_resolves_moss_material_and_its_data_prefixed_textures() {
+        let extracted_root = starfield_extracted_root();
+        let cdb_path = extracted_root.join("materials").join("materialsbeta.cdb");
+        if !cdb_path.exists() {
+            eprintln!("skip: starfield extracted data not present");
+            return;
+        }
+        let resolver = Ba2Resolver::open_with_extracted_dir(&extracted_root, Some(&extracted_root))
+            .expect("resolver opens against the extracted starfield root");
+        let extraction_root = std::env::temp_dir().join("ltex_walk_moss_material_test");
+        let _ = fs::remove_dir_all(&extraction_root);
+
+        let result = mat_branch(
+            r"TERRAIN\MossClumpy01_Yellow.mat",
+            &cdb_path,
+            &resolver,
+            &extraction_root,
+            "textures/terrain/testworld",
+            "LMossForest01_Yellow",
+        )
+        .expect("the MossClumpy01 Yellow material and all populated texture slots should resolve");
+
+        assert!(
+            Path::new(&result.0).is_file(),
+            "diffuse texture should resolve"
+        );
+        assert!(
+            Path::new(&result.1).is_file(),
+            "normal texture should resolve"
+        );
+        assert!(
+            Path::new(&result.8).is_file(),
+            "converted BGSM should be written"
+        );
+    }
+
+    #[test]
+    fn mat_branch_leaves_empty_texture_slots_empty_for_a_textureless_terrain_material() {
+        let extracted_root = starfield_extracted_root();
+        let cdb_path = extracted_root.join("materials").join("materialsbeta.cdb");
+        if !cdb_path.exists() {
+            eprintln!("skip: starfield extracted data not present");
+            return;
+        }
+        let resolver = Ba2Resolver::open_with_extracted_dir(&extracted_root, Some(&extracted_root))
+            .expect("resolver opens against the extracted starfield root");
+        let extraction_root = std::env::temp_dir().join("ltex_walk_mat_branch_textureless_test");
+        let _ = fs::remove_dir_all(&extraction_root);
+
+        // Real LTEX (LDirtCracked01, 0084F7:Starfield.esm) whose CE2 material
+        // (BSMaterial::TerrainSettingsComponent) projects to an empty
+        // diffuse/normal texture set — must still succeed, not error.
+        let result = mat_branch(
+            r"Materials\Terrain\DirtCracked01.mat",
+            &cdb_path,
+            &resolver,
+            &extraction_root,
+            "textures/terrain/testworld",
+            "LDirtCracked01",
+        );
+
+        let (diffuse, normal, spec, lighting, _, _, output_material_path, _, source_material_file) =
+            result.expect("an empty-texture-set material should still convert, not error");
+
+        assert!(diffuse.is_empty());
+        assert!(normal.is_empty());
+        assert!(spec.is_empty());
+        assert!(lighting.is_empty());
+        assert!(output_material_path.is_some());
+        assert!(Path::new(&source_material_file).is_file());
+    }
+
+    #[test]
+    fn build_bundle_reads_starfield_materialfile_field() {
+        // MaterialFile (Starfield's authoring key for the LTEX BNAM subrecord)
+        // must be picked up by the same lookup chain as FO76's "Texture"/"BNAM".
+        use serde_json::json;
+        let fields = vec![json!({ "MaterialFile": r"Materials\Terrain\DirtCracked01.mat" })];
+        assert_eq!(
+            field_str(&fields, "MaterialFile"),
+            Some(r"Materials\Terrain\DirtCracked01.mat")
         );
     }
 }

@@ -1,32 +1,9 @@
 //! Fixup: correct near-zero AnimationFireSeconds on creature ranged weapons.
 //!
-
-//!
-//! # What this does
-//! FO76 creature weapons don't carry AnimationFireSeconds.  The translation map
-//! injects a near-zero default (1e-05) for the FO4 `FNAM.animation_fire_seconds`
-//! field.  For ranged creature weapons (`animation_type == 9`, i.e. "Gun"), the
-//! CK uses this value to determine attack animation length.  A near-zero value
-//! causes the CK to fail animation resolution, producing a T-pose.
-//!
-//! Fix: when `FNAM[0]` (animation_fire_seconds) < 0.001 and
-//! `DNAM[106]` (animation_attack_seconds) > 0 and `DNAM[54]` (animation_type)
-//! == 9 ("Gun"), set `FNAM[0] = DNAM[animation_attack_seconds] * 0.5`.
-//!
-//! # DNAM layout (relevant fields)
-//! | Offset | Size | Field                     |
-//! |--------|------|---------------------------|
-//! |     54 |    1 | animation_type (B; 9=Gun) |
-//! |    106 |    4 | animation_attack_seconds (f32 LE) |
-//!
-//! Total minimum DNAM length: 110 bytes.
-//!
-//! # FNAM layout
-//! | Offset | Size | Field                   |
-//! |--------|------|-------------------------|
-//! |      0 |    4 | animation_fire_seconds (f32 LE) |
-//!
-//! Minimum FNAM length: 4 bytes.
+//! FO76 creature weapons carry no AnimationFireSeconds, so the translation map
+//! fills FO4 `FNAM.animation_fire_seconds` (f32 at offset 0) with 1e-05. On Gun
+//! weapons (`animation_type == 9`) the CK uses it as the attack animation
+//! length, and a near-zero value fails animation resolution and T-poses.
 
 use crate::fixups::creature::{creature_internal_fixup_applies, likely_creature_weapon_editor_id};
 use crate::fixups::{Fixup, FixupConfig, FixupContext, FixupError, FixupReport};
@@ -98,6 +75,7 @@ impl Fixup for FixCreatureWeaponFireSecondsFixup {
             .form_keys_of_sig(weap_sig, mapper.interner)
             .map_err(|e| FixupError::HandleError(e.to_string()))?;
 
+        let mut replacements = Vec::new();
         for fk in weap_fks {
             let mut record = match session.record_decoded(&fk, target_schema, mapper.interner) {
                 Ok(r) => r,
@@ -116,12 +94,14 @@ impl Fixup for FixCreatureWeaponFireSecondsFixup {
             }
 
             if apply_to_record(&mut record) {
-                session
-                    .replace_record(record, target_schema, mapper.interner)
-                    .map_err(|e| FixupError::HandleError(e.to_string()))?;
-                report.records_changed += 1;
+                replacements.push(record);
             }
         }
+        report.records_changed = session
+            .replace_records_contents(replacements, target_schema, mapper.interner)
+            .map_err(|e| FixupError::HandleError(e.to_string()))?
+            .try_into()
+            .unwrap_or(u32::MAX);
 
         Ok(report)
     }
@@ -131,18 +111,9 @@ impl Fixup for FixCreatureWeaponFireSecondsFixup {
 // Record-level mutation
 // ---------------------------------------------------------------------------
 
-/// Fix near-zero `animation_fire_seconds` on Gun-type WEAP records.
-///
-/// Returns `true` if the FNAM was modified.
-///
-/// Algorithm:
-/// 1. Read `DNAM` — skip if missing or too short.
-/// 2. If `animation_type` != 9 (Gun) → skip.
-/// 3. Read `animation_attack_seconds` from DNAM[106..110].
-///    If ≤ 0.0 → skip (no usable attack timing).
-/// 4. Read `FNAM[0..4]` as f32 (animation_fire_seconds).
-///    If already ≥ 0.001 → skip (already reasonable).
-/// 5. Set `FNAM[0..4]` = `attack_seconds * 0.5` (round to 6 decimal places).
+/// Set a Gun WEAP's near-zero `animation_fire_seconds` to half its positive
+/// `animation_attack_seconds`, rounded to 6 decimals. Returns `true` if FNAM
+/// changed.
 pub fn apply_to_record(record: &mut Record) -> bool {
     let dnam_sig = match SubrecordSig::from_str("DNAM") {
         Ok(s) => s,
@@ -153,7 +124,6 @@ pub fn apply_to_record(record: &mut Record) -> bool {
         Err(_) => return false,
     };
 
-    // ── Step 1: read DNAM ─────────────────────────────────────────────────
     let (anim_type, attack_secs) = {
         let mut found = None;
         for entry in &record.fields {
@@ -180,17 +150,14 @@ pub fn apply_to_record(record: &mut Record) -> bool {
         }
     };
 
-    // ── Step 2: must be a Gun ─────────────────────────────────────────────
     if anim_type != ANIM_TYPE_GUN {
         return false;
     }
 
-    // ── Step 3: attack_secs must be positive ─────────────────────────────
     if attack_secs <= 0.0 {
         return false;
     }
 
-    // ── Step 4 & 5: patch FNAM ──────────────────────────────────────────
     let new_fire_secs = (attack_secs * 0.5 * 1_000_000.0).round() / 1_000_000.0;
 
     let mut mutated = false;

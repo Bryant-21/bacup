@@ -34,7 +34,9 @@ class ViewportPanel:
     def draw(self) -> None:
         flags = (imgui.WindowFlags_.no_scrollbar.value
                  | imgui.WindowFlags_.no_scroll_with_mouse.value)
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(0, 0))
         visible, _ = imgui.begin("Viewport##bone_editor", flags=flags)
+        imgui.pop_style_var()
         if not visible:
             imgui.end()
             return

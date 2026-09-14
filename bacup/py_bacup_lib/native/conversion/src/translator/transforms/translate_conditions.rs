@@ -1,6 +1,4 @@
-//! `translate_conditions` transform — clean CTDA condition lists for the target game.
-//!
-//! Port of `RecordTranslator._translate_conditions` (Python line 1655).
+//! `translate_conditions` transform: clean CTDA condition lists for the target game.
 //!
 //! For each condition Struct in the list:
 //! 1. If `Data.Function` is a numeric `Int`/`Uint`/`Float` value, look it up in
@@ -9,8 +7,8 @@
 //!    `CompareOperator` to `"EqualTo"`.
 //! 3. Remap all String FormKeys via source_esm → target_esm.
 //!
-//! NOTE: `normalize_legacy_condition` (FO4 target hook) is NOT called here —
-//! that is a target-hook concern wired separately.  A TODO is left below.
+//! `normalize_legacy_condition` (FO4 target hook) is not called here; see the
+//! TODO in `apply`.
 //!
 //! Config keys:
 //! - `source_esm` : e.g. `"SeventySix.esm"`

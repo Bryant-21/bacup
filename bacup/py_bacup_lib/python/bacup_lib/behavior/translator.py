@@ -1,19 +1,12 @@
 """Translate FO3 NiControllerSequence animation clips into a full Havok behavior graph.
 
-FO3 uses NiControllerManager with NiControllerSequence blocks to manage animations.
-FO4 uses Havok behavior graphs (hkbBehaviorGraph, hkbStateMachine, hkbClipGenerator,
-hkbBlendGenerator) with event-driven state transitions.
-
-This module performs a best-effort translation from one paradigm to the other:
-  1. Group clips by functional category (idle, attack, locomotion, etc.)
-  2. Build a hierarchical state machine with sub-state machines per category
-  3. Generate transition events between categories
-  4. Use blend generators for locomotion (walk/run) blending
-  5. Map NIF cycle types to Havok playback modes
-  6. Respect per-channel priority for blend ordering
-
-The generated behavior graph is functional enough that animations play in FO4,
-though manual tuning may be needed for complex animation sets.
+FO3 drives animation with NiControllerManager/NiControllerSequence; FO4 uses Havok
+behavior graphs (hkbBehaviorGraph, hkbStateMachine, hkbClipGenerator,
+hkbBlendGenerator) with event-driven state transitions. This best-effort translation
+groups clips by category (idle, attack, locomotion, ...) into sub-state machines
+with transition events between them, blends walk/run, maps NIF cycle types to Havok
+playback modes, and orders blends by channel priority. Animations play in FO4;
+complex sets may need manual tuning.
 """
 
 from __future__ import annotations
@@ -62,20 +55,7 @@ def translate_behavior(
     skeleton_path: str,
     output_path: str | Path,
 ) -> None:
-    """Translate FO3 AnimationClips into a Havok behavior graph XML.
-
-    Groups clips by functional category, builds nested state machines,
-    generates inter-state transition events, and writes the result as
-    Havok-compatible XML.
-
-    Args:
-        clips: Animation clips parsed from FO3 .kf files.
-        skeleton_path: Relative path to the skeleton .hkx file.
-        output_path: Destination for the generated behavior XML.
-
-    Raises:
-        ValueError: If *clips* is empty.
-    """
+    """Translate FO3 .kf AnimationClips into Havok behavior graph XML at ``output_path``."""
     if not clips:
         raise ValueError("At least one animation clip is required")
 

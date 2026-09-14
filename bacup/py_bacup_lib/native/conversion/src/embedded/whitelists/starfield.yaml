@@ -11204,4 +11204,12 @@ notes:
   in FO4/SkyrimSE. The whitelist will include them but no conversion map will exist.
 - Starfield animations are NOT Havok — .rig/.af/.agx formats. Field names for animation-related records
   will differ from FO4.
+- REFR and NAVM are absent from record_types/nested/canonical_order because the authoring-YAML
+  export corpus (data/starfield_esm_yaml/) never emitted top-level REFR or NAVM files — exterior
+  CELL children are folded into the WRLD grid tree with no per-record-type directory, and no NAVM
+  instances were captured at all — so tools/update_conversion_whitelists.py had nothing to scan.
+  Both signatures are confirmed real in the generated schema (creation_lib.esp.schema.games.starfield).
+  This is not a functional gap for starfield:fo4 — CELL, REFR, NAVM, and NAVI are routed to
+  skip_records in starfield_to_fo4.yaml and emitted by structured worldspace/cell phases, not the
+  generic whitelist-gated top-level writer.
 - Case sensitivity still matters; the same DATA/Data distinction as FO4 applies.

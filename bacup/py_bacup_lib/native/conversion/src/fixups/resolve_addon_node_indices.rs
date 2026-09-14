@@ -1,35 +1,21 @@
 //! Fixup: reconcile AddonNode (ADDN) `NodeIndex` values against the FO4 base
 //! game + DLC masters.
 //!
-//! # What an AddonNode index is
-//! Each ADDN record carries a `NodeIndex` in its `DATA` subrecord (a single
-//! `uint32`). The index must be **globally unique across every loaded ESM** —
-//! NIF meshes reference an addon node by that integer (a `BSValueNode` named
-//! `"AddOnNode<idx>"` with `Value == idx`), not by FormID.
+//! `DATA` holds a single `u32` `NodeIndex` that must be globally unique across every
+//! loaded ESM: NIFs reference an addon node by that integer (a `BSValueNode` named
+//! `"AddOnNode<idx>"` with `Value == idx`), not by FormID. Identity is content, not
+//! index:
 //!
-//! # The reconciliation rule (FO76 → FO4)
-//! Identity of an addon node is its **content**, not its index. For each ADDN in
-//! the converted plugin:
+//! * **DROP**: content matches a vanilla master ADDN byte-for-byte. The record is
+//!   removed, references are repointed to the master, and if the indices differ a
+//!   NIF remap `old_index → master_index` is emitted.
+//! * **KEEP**: novel content. The source index is kept when FO4 can load it and no
+//!   nonmatching vanilla node uses it, so records stay aligned with source NIF
+//!   names. Otherwise a fresh pool index is assigned with a NIF remap.
 //!
-//! * **DROP** — its content matches a vanilla master ADDN byte-for-byte. The
-//!   converted record is removed, every FormID reference to it is repointed to
-//!   the vanilla master, and (if the indices differ) a NIF remap
-//!   `old_index → master_index` is emitted so meshes name the surviving node.
-//! * **KEEP** — its content matches no vanilla node. Its source index is
-//!   preserved only when FO4 can load it and it is not already used by a
-//!   nonmatching vanilla node. Colliding or out-of-range kept nodes are assigned
-//!   a fresh index from the conversion pool and emit a NIF remap
-//!   `old_index → new_index`.
-//!
-//! Source ADDN indices are globally unique, so every NIF-remap key (`old_index`)
-//! is unique and the `old → new` map handed to the NIF phase is unambiguous.
-//! Preserving noncolliding FO76 indices keeps converted records aligned with
-//! source NIF `BSValueNode` names when the value is inside FO4's loader range.
-//!
-//! # Ordering
-//! This fixup MUST run before the null/dangling passes (see `run.rs` registry):
-//! dropped-ADDN references are repointed to master here; if this ran after
-//! null/dangling, those references would already have been nulled.
+//! Source ADDN indices are globally unique, so the `old → new` NIF map is
+//! unambiguous. Must run before the null/dangling passes (see the segment order in
+//! `store2/fixups_v2.rs`), which would otherwise null references to dropped ADDNs.
 //!
 //! # DATA subrecord layout (FO4 ADDN)
 //! | Offset | Size | Field      |

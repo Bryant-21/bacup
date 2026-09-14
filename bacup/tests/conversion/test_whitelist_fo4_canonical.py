@@ -1,8 +1,8 @@
 """Diagnostic whitelist artifact checks.
 
-The converter no longer loads generated field whitelists at runtime. These
-files remain as diagnostic snapshots for now, so this test only verifies their
-basic shape and that runtime modules do not import the old target-field filter.
+The converter doesn't load the generated field whitelists at runtime; they are
+diagnostic snapshots. This test checks their basic shape and that runtime modules
+don't import the target-field filter.
 """
 from __future__ import annotations
 

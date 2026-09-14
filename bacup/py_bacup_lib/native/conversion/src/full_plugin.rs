@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn explicit_unresolved_capture_does_not_reclassify_same_name_mapped_refs() {
         let interner = StringInterner::new();
-        let same_name_plugin = interner.intern("Skyrim_Merged.esm");
+        let same_name_plugin = interner.intern("Skyrim.esm");
         let target_master_plugin = interner.intern("Fallout4.esm");
         let owner = FormKey {
             local: 0x900,

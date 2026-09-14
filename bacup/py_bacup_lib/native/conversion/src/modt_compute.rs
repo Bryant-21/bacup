@@ -1,9 +1,9 @@
-//! Byte-exact FO4 `MODT` compute for novel converted meshes (Plan B core).
+//! FO4 `MODT` compute for novel converted meshes.
 //!
 //! Given a [`MeshModtEntry`] (the resolved material/texture/addon graph of one
-//! output mesh) this produces the raw `MODT` subrecord bytes the FO4 Creation Kit
-//! would build for that mesh — proven byte-exact against 7 vanilla meshes (see
-//! `src/test_fixtures/modt/README.md`).
+//! output mesh), produces the raw `MODT` bytes the FO4 Creation Kit would build,
+//! checked against 7 vanilla meshes (see `src/test_fixtures/modt/README.md`,
+//! which also defines the RULE numbers below).
 //!
 //! ## Byte layout (matches the ESP `model_info` codec)
 //! ```text
@@ -17,23 +17,20 @@
 //! (the FO4 BA2 file hash: `ext` is the extension 4CC little-endian, e.g.
 //! `dds\0`/`bgsm`/`bgem`).
 //!
-//! ## Rules (all byte-exact-verified)
-//! - **Hash:** `bsarchive_native::fo4::hash_file` (the real FO4 BA2 hash).
-//! - **Path form (RULE 1):** prepend `textures\` / `materials\` iff the stored
-//!   path doesn't already start with it (case-insensitive). Slash/case are
-//!   irrelevant — the hash normalizes them.
+//! ## Rules
+//! - **Hash:** `bsarchive_native::fo4::hash_file` (the FO4 BA2 hash).
+//! - **Path form (RULE 1):** prepend `textures\` / `materials\` unless the path
+//!   already starts with it (case-insensitive); the hash normalizes slash/case.
 //! - **Textures (RULE 2):** from the resolved material slots, deduped by file
 //!   hash.
-//! - **sRGB (RULE 4):** counted by slot ROLE (see [`crate::modt_manifest::role_is_srgb`]).
-//! - **Order:** irrelevant. Vanilla uses the CK scatter-table iteration order;
-//!   the correctness contract is entry-SET + all 4 counters + srgb_count, NOT
-//!   byte-identity. We emit gather order.
-//! - **Swaps (RULE 3):** v1 restricts compute to NON-swapped records; swapped
-//!   records return `None` from [`compute_modt`] (deferred).
+//! - **sRGB (RULE 4):** counted by slot role (see [`crate::modt_manifest::role_is_srgb`]).
+//! - **Order:** irrelevant. Vanilla uses CK scatter-table order; correctness is
+//!   the entry set plus all 4 counters, not byte identity. This emits gather order.
+//! - **Swaps (RULE 3):** swapped records get `None` from [`compute_modt`].
 //!
-//! The layout mirrors `esp_authoring_core::plugin_runtime::encode_model_info_json`
-//! (Plan C); we emit it locally to avoid threading a schema spec + `PyResult`
-//! across the crate boundary. The 7 vanilla fixtures are the byte-exact oracle.
+//! The layout mirrors `esp_authoring_core::plugin_runtime::encode_model_info_json`;
+//! it is emitted locally to avoid threading a schema spec and `PyResult` across
+//! the crate boundary.
 
 use bsarchive_native::{BStr, fo4::hash_file};
 use rustc_hash::FxHashSet;
@@ -112,9 +109,9 @@ pub fn encode_modt(entry: &MeshModtEntry) -> Vec<u8> {
     out
 }
 
-/// v1 compute entry: `Some(bytes)` for a non-swapped record, `None` if the record
-/// carries a material swap (`MODS`/`MSWP`) — swap resolution is deferred, so the
-/// caller falls back to deployed-ESM reuse (upgrade) or drop.
+/// `Some(bytes)` for a non-swapped record, `None` if the record carries a
+/// material swap (`MODS`/`MSWP`). Swaps aren't resolved, so the caller falls back
+/// to deployed-ESM reuse (upgrade) or drop.
 pub fn compute_modt(entry: &MeshModtEntry, has_material_swap: bool) -> Option<Vec<u8>> {
     if has_material_swap {
         return None;

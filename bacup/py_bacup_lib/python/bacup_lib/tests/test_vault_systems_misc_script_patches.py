@@ -20,19 +20,13 @@ REPO_ROOT = Path(__file__).resolve().parents[5]
 SOURCE_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 # VaultDefaultMultiStateActivator / VaultDefault2StateActivator are never
 # record-bound directly (only descendants like V96_1_CryoPipeScript /
-# VaultCircuitBreakerScript are VMAD-bound), so -- same situation as
-# RestrictedAccessScript in w1-hand-scanner and VaultDefault1StateActivator in
-# w2-vault-systems-activator-enable-disable-toggle-linked-ref -- neither parent was
-# ever decompiled to Source/User nor deployed to mods/SeventySix/data/Scripts. Their
-# only available compiled form is the raw FO76 client extraction (see the
-# cross-cutting finding in contracts/w2-vault-systems-misc.md; escalated to the
-# coordinator as a conversion-pipeline gap, not fixed here).
+# VaultCircuitBreakerScript are VMAD-bound), so neither parent is decompiled to
+# Source/User or deployed to mods/SeventySix/data/Scripts. Their only compiled
+# form is the raw FO76 client extraction.
 FO76_EXTRACTED_SCRIPTS = REPO_ROOT / "extracted" / "fo76" / "scripts" / "client"
 
-# Every script patched by shard w2-vault-systems-misc. The other 4 rows in this
-# shard's runbook resolved to non-defect/evidence-blocked (see
-# bacup/docs/stub_restoration/contracts/w2-vault-systems-misc.md) and are
-# intentionally not patched or covered here.
+# The contract's other 4 rows are non-defect or evidence-blocked and are not
+# patched here (bacup/docs/stub_restoration/contracts/w2-vault-systems-misc.md).
 PATCH_CASES = (
     "V94_TrapElectricArcSystem",
     "V96_1_CryoPipeScript",
@@ -41,7 +35,7 @@ PATCH_CASES = (
 )
 
 # The two patched scripts whose direct parent only resolves from the raw FO76
-# client extraction (see module docstring above).
+# client extraction (see FO76_EXTRACTED_SCRIPTS above).
 NEEDS_FO76_EXTRACTED_PARENT = {"V96_1_CryoPipeScript", "VaultCircuitBreakerScript"}
 
 

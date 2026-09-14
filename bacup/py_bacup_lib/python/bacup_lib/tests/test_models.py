@@ -153,6 +153,37 @@ def test_write_coverage_report_accepts_native_dict_decisions(tmp_path):
     assert "MISC.DATA.Unknown" in report
 
 
+def test_write_coverage_report_includes_asset_summary(tmp_path):
+    from bacup_lib.models import ConversionSummary, write_coverage_report
+
+    summary = ConversionSummary(
+        nifs_total=12,
+        nifs_converted=10,
+        nifs_failed=2,
+        textures_total=8,
+        textures_converted=7,
+        textures_failed=1,
+    )
+    out_path = tmp_path / "conversion_report.md"
+
+    write_coverage_report(
+        out_path,
+        decisions=[],
+        translated_counts={},
+        skipped_counts={},
+        failed_nifs=["Meshes/missing.nif"],
+        failed_textures=["terrain bundle missing"],
+        failed_bgsms=[],
+        asset_summary=summary,
+    )
+
+    report = out_path.read_text(encoding="utf-8")
+    assert "## Asset outcomes" in report
+    assert "NIF | 12 | 10 | 0 | 2" in report
+    assert "Texture | 8 | 7 | 0 | 1" in report
+    assert "Meshes/missing.nif" in report
+
+
 def test_write_provenance_files_ancestor_summary(tmp_path):
     """ancestor_counts keys on depth-1 ancestor, not the immediate adder."""
     from bacup_lib.models import (

@@ -7,7 +7,7 @@ Event OnActivate(ObjectReference akActionRef)
     EndIf
 
     If SelfCast
-        SpellToCast.Cast(Self, Self)
+        SpellToCast.Cast(akActionRef, akActionRef)
     Else
         SpellToCast.Cast(Self, akActionRef)
     EndIf

@@ -1,31 +1,54 @@
-; TODO
-
 Event OnTriggerEnter(ObjectReference akActionRef)
     Quest owningQuest = GetOwningQuest()
-    If owningQuest == None || currentPlayer == None || Lou == None || LouIntercom == None
+    ObjectReference playerRef = None
+    If currentPlayer != None
+        playerRef = currentPlayer.GetReference()
+    EndIf
+    If owningQuest == None || playerRef == None || akActionRef != playerRef
         Return
     EndIf
-
-    ObjectReference playerRef = currentPlayer.GetReference()
-    ObjectReference intercomRef = LouIntercom.GetReference()
-    Actor louRef = Lou.GetActorReference()
-    If playerRef == None || akActionRef != playerRef || intercomRef == None || louRef == None || W05_MQR_201P_LouSaysTopic_IntercomGreeting == None
+    If owningQuest.GetStage() < WeaselFollowingStage || owningQuest.GetStage() >= 1300
         Return
     EndIf
+    StartTimer(1.0, SayTimerID)
+EndEvent
 
-    Int currentStage = owningQuest.GetStage()
-    If currentStage < 1100 || currentStage >= 1300
+Event OnTriggerLeave(ObjectReference akActionRef)
+    ObjectReference playerRef = None
+    If currentPlayer != None
+        playerRef = currentPlayer.GetReference()
+    EndIf
+    If playerRef != None && akActionRef == playerRef
+        CancelTimer(SayTimerID)
+    EndIf
+EndEvent
+
+Event OnTimer(Int aiTimerID)
+    If aiTimerID != SayTimerID
         Return
     EndIf
-
-    If !owningQuest.IsStageDone(1200)
-        owningQuest.SetStage(1200)
+    Quest owningQuest = GetOwningQuest()
+    If owningQuest == None || owningQuest.GetStage() < 1200 || owningQuest.GetStage() >= 1300
+        Return
+    EndIf
+    If owningQuest.IsStageDone(PlayerTalkedToIntercomStage)
+        Return
+    EndIf
+    ObjectReference playerRef = None
+    ObjectReference intercomRef = None
+    Actor louRef = None
+    If currentPlayer != None
+        playerRef = currentPlayer.GetReference()
+    EndIf
+    If LouIntercom != None
+        intercomRef = LouIntercom.GetReference()
+    EndIf
+    If Lou != None
+        louRef = Lou.GetActorReference()
+    EndIf
+    If playerRef == None || intercomRef == None || louRef == None || W05_MQR_201P_LouSaysTopic_IntercomGreeting == None
+        Return
     EndIf
     intercomRef.Say(W05_MQR_201P_LouSaysTopic_IntercomGreeting, louRef, False, playerRef)
-    If !owningQuest.IsStageDone(1210)
-        owningQuest.SetStage(1210)
-    EndIf
-    If !owningQuest.IsStageDone(1300)
-        owningQuest.SetStage(1300)
-    EndIf
+    owningQuest.SetStage(PlayerTalkedToIntercomStage)
 EndEvent

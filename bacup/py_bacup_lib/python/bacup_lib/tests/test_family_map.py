@@ -25,7 +25,7 @@ def test_scripts_maps_to_misc_label():
 def test_terrain_sets_regen_terrain():
     plan = resolve_upgrade_plan(frozenset({"Terrain"}))
     assert plan.regen_terrain and plan.phases.convert_terrain
-    assert set(plan.swap_labels) == {"Terrain", "TerrainTextures"}
+    assert set(plan.swap_labels) == {"Materials", "Textures"}
 
 
 def test_lod_swaps_general_and_texture_archives():

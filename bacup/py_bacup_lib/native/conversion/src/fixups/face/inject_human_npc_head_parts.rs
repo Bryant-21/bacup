@@ -1,14 +1,12 @@
 //! Inject concrete head parts into converted humanoid NPCs that carry face
 //! data but no `PNAM` head-part block.
 //!
-//! The FO76->FO4 pipeline intentionally leaves `ConvertFacePhase` disabled for
-//! now because that phase rewrites more face payload than the whole-plugin port
-//! can safely validate. Whole-plugin output can still contain HumanRace NPCs
-//! with `MSDK`/`FMRI` face data and no `PNAM`; FO4 then queues a head load with
-//! no concrete head parts and can crash while building the head skin. This pass
-//! supplies the same conservative head-part sets used by FO4 raider templates
-//! for HumanRace, or the converted race's own head-part list for custom
-//! humanoid races, and leaves existing/non-humanoid NPCs untouched.
+//! The FO76->FO4 whole-plugin path leaves `ConvertFacePhase` off (it rewrites
+//! more face payload than the port can validate), so output can hold HumanRace
+//! NPCs with `MSDK`/`FMRI` face data and no `PNAM`. FO4 then queues a head load
+//! with no head parts and can crash building the head skin. HumanRace NPCs get
+//! FO4's raider-template head-part sets; custom humanoid races get the converted
+//! race's own head-part list.
 
 use rustc_hash::FxHashMap;
 
@@ -25,6 +23,7 @@ use crate::sym::{StringInterner, Sym};
 const BASE_MASTER: &str = "Fallout4.esm";
 const HUMAN_RACE_LOCAL: u32 = 0x0001_3746;
 const GHOUL_RACE_LOCAL: u32 = 0x000E_AFB6;
+const HUMAN_CHILD_RACE_LOCAL: u32 = 0x0011_D83F;
 const NPC_ACBS_FEMALE_FLAG: u32 = 0x0000_0001;
 
 #[derive(Clone, Debug, Default)]
@@ -63,6 +62,35 @@ const DEFAULT_FEMALE_HUMAN_HEAD_PARTS: &[u32] = &[
     0x000C_FB3F,
 ];
 
+const DEFAULT_MALE_GHOUL_HEAD_PARTS: &[u32] = &[
+    0x0005_1631,
+    0x000E_AFBB,
+    0x0017_A5E9,
+    0x0005_18FD,
+    0x001C_206F,
+];
+const DEFAULT_FEMALE_GHOUL_HEAD_PARTS: &[u32] = &[
+    0x000C_FB4E,
+    0x0004_D0E9,
+    0x000F_6E5A,
+    0x0017_A5EC,
+    0x0011_CCBC,
+];
+const DEFAULT_MALE_CHILD_HEAD_PARTS: &[u32] = &[
+    0x0024_7507,
+    0x0011_D802,
+    0x0011_D804,
+    0x0011_E7B0,
+    0x0017_9620,
+];
+const DEFAULT_FEMALE_CHILD_HEAD_PARTS: &[u32] = &[
+    0x0024_7508,
+    0x0011_D804,
+    0x0011_D801,
+    0x0011_E7B1,
+    0x0017_9D22,
+];
+
 /// Fallback hair color for a head-part-injected HumanRace NPC that carries no
 /// usable `HCLF`. This is FO76 `HumanRace`'s own default hair color
 /// (`HairColor01LightRed`), which shares its local FormID with FO4 — so the
@@ -71,13 +99,10 @@ const DEFAULT_HUMAN_HAIR_COLOR_FO4: u32 = 0x000A_0439;
 
 /// FO76 hair-color `CLFM` local FormID → FO4 hair-color `CLFM` local FormID.
 ///
-/// `HairColor01`–`22` share local FormIDs across both games (identity carry,
-/// only the master changes SeventySix→Fallout4). FO76's `HairColor23`–`32`
-/// (`3E48C0`..`3E48C9`) are the same colors as FO4's `HairColorNN_DLC04`
-/// records (`24A04E`..`24A058`), which live in `Fallout4.esm` (always a target
-/// master). Verified `ColorIndex`-identical on both sides — the FO76 palette
-/// IS the FO4 palette, only renumbered for the DLC entries, so this is an exact
-/// 1:1 mapping rather than a nearest-color approximation.
+/// `HairColor01`–`22` share local FormIDs across both games (only the master
+/// changes). FO76's `HairColor23`–`32` (`3E48C0`..`3E48C9`) are FO4's
+/// `HairColorNN_DLC04` (`24A04E`..`24A058`, in `Fallout4.esm`) with identical
+/// `ColorIndex`, so the mapping is exact.
 const FO76_TO_FO4_HAIR_COLOR: &[(u32, u32)] = &[
     // HairColor01–06 (identity)
     (0x000A_0439, 0x000A_0439),
@@ -286,8 +311,12 @@ fn parse_custom_humanoid_race_head_parts<'a>(
     interner: &StringInterner,
 ) -> Option<RaceHeadParts> {
     let mut armor_race = None;
-    let mut in_head_section = false;
-    let mut female_section = None;
+    // Head parts are keyed by which head-data section they sit in, counted off
+    // `NAM0`: the male marker `MNAM` PRECEDES the male `NAM0` (vanilla
+    // `MNAM NAM0 HEAD..` / `NAM0 FNAM HEAD..`), and `MNAM`/`FNAM` also mark the
+    // unrelated skeletal-model rows earlier in the record, so the markers alone
+    // cannot delimit the sections.
+    let mut head_section = 0usize;
     let mut parts = RaceHeadParts::default();
 
     for (signature, data) in subrecords {
@@ -296,15 +325,13 @@ fn parse_custom_humanoid_race_head_parts<'a>(
                 armor_race = read_raw_form_id(data)
                     .and_then(|raw| resolve_raw_form_id(raw, masters, plugin_name, interner));
             }
-            "NAM0" => {
-                in_head_section = true;
-                female_section = None;
-            }
-            "MNAM" if in_head_section => female_section = Some(false),
-            "FNAM" if in_head_section => female_section = Some(true),
+            "NAM0" => head_section += 1,
+            "FNAM" if head_section >= 1 => head_section = head_section.max(2),
             "HEAD" => {
-                let Some(is_female) = female_section else {
-                    continue;
+                let is_female = match head_section {
+                    0 => continue,
+                    1 => false,
+                    _ => true,
                 };
                 let Some(head_part) = read_raw_form_id(data)
                     .and_then(|raw| resolve_raw_form_id(raw, masters, plugin_name, interner))
@@ -397,6 +424,40 @@ fn inject_missing_humanoid_head_parts(
             DEFAULT_FEMALE_HUMAN_HEAD_PARTS
         } else {
             DEFAULT_MALE_HUMAN_HEAD_PARTS
+        };
+        (
+            defaults
+                .iter()
+                .copied()
+                .map(|local| FormKey {
+                    plugin: base_sym,
+                    local,
+                })
+                .collect::<Vec<_>>(),
+            true,
+        )
+    } else if is_fo4_race(race, GHOUL_RACE_LOCAL, interner) {
+        let defaults = if is_female {
+            DEFAULT_FEMALE_GHOUL_HEAD_PARTS
+        } else {
+            DEFAULT_MALE_GHOUL_HEAD_PARTS
+        };
+        (
+            defaults
+                .iter()
+                .copied()
+                .map(|local| FormKey {
+                    plugin: base_sym,
+                    local,
+                })
+                .collect::<Vec<_>>(),
+            false,
+        )
+    } else if is_fo4_race(race, HUMAN_CHILD_RACE_LOCAL, interner) {
+        let defaults = if is_female {
+            DEFAULT_FEMALE_CHILD_HEAD_PARTS
+        } else {
+            DEFAULT_MALE_CHILD_HEAD_PARTS
         };
         (
             defaults
@@ -535,7 +596,9 @@ fn npc_race(record: &Record) -> Option<FormKey> {
 }
 
 fn is_fo4_humanoid_race(race: FormKey, interner: &StringInterner) -> bool {
-    is_fo4_race(race, HUMAN_RACE_LOCAL, interner) || is_fo4_race(race, GHOUL_RACE_LOCAL, interner)
+    is_fo4_race(race, HUMAN_RACE_LOCAL, interner)
+        || is_fo4_race(race, GHOUL_RACE_LOCAL, interner)
+        || is_fo4_race(race, HUMAN_CHILD_RACE_LOCAL, interner)
 }
 
 fn is_fo4_race(race: FormKey, local: u32, interner: &StringInterner) -> bool {
@@ -585,6 +648,20 @@ mod tests {
         FieldValue::FormKey(FormKey {
             plugin: interner.intern(BASE_MASTER),
             local: HUMAN_RACE_LOCAL,
+        })
+    }
+
+    fn ghoul_race(interner: &StringInterner) -> FieldValue {
+        FieldValue::FormKey(FormKey {
+            plugin: interner.intern(BASE_MASTER),
+            local: GHOUL_RACE_LOCAL,
+        })
+    }
+
+    fn child_race(interner: &StringInterner) -> FieldValue {
+        FieldValue::FormKey(FormKey {
+            plugin: interner.intern(BASE_MASTER),
+            local: HUMAN_CHILD_RACE_LOCAL,
         })
     }
 
@@ -692,6 +769,65 @@ mod tests {
     }
 
     #[test]
+    fn injects_default_ghoul_head_parts_without_human_hair_color() {
+        let interner = StringInterner::new();
+        let base_sym = interner.intern(BASE_MASTER);
+        let mut npc = record(
+            vec![
+                ("ACBS", acbs(NPC_ACBS_FEMALE_FLAG)),
+                ("RNAM", ghoul_race(&interner)),
+                ("FMRI", bytes()),
+            ],
+            &interner,
+        );
+
+        assert!(inject_default_human_head_parts(
+            &mut npc, base_sym, &interner, NPC_ORDER
+        ));
+        let pnams: Vec<u32> = npc
+            .fields
+            .iter()
+            .filter_map(|entry| match (&*entry.sig.as_str(), &entry.value) {
+                ("PNAM", FieldValue::FormKey(fk)) => Some(fk.local),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pnams, DEFAULT_FEMALE_GHOUL_HEAD_PARTS);
+        assert_eq!(count_sig(&npc, "HCLF"), 0);
+    }
+
+    #[test]
+    fn injects_default_child_head_parts_and_hair_color() {
+        let interner = StringInterner::new();
+        let base_sym = interner.intern(BASE_MASTER);
+        let mut npc = record(
+            vec![
+                ("ACBS", acbs(0)),
+                ("RNAM", child_race(&interner)),
+                ("MSDK", bytes()),
+            ],
+            &interner,
+        );
+
+        assert!(inject_default_human_head_parts(
+            &mut npc, base_sym, &interner, NPC_ORDER
+        ));
+        let pnams: Vec<u32> = npc
+            .fields
+            .iter()
+            .filter_map(|entry| match (&*entry.sig.as_str(), &entry.value) {
+                ("PNAM", FieldValue::FormKey(fk)) => Some(fk.local),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pnams, DEFAULT_MALE_CHILD_HEAD_PARTS);
+        assert_eq!(
+            hclf_target(&npc),
+            Some((base_sym, DEFAULT_HUMAN_HAIR_COLOR_FO4))
+        );
+    }
+
+    #[test]
     fn preserves_existing_pnam() {
         let interner = StringInterner::new();
         let base_sym = interner.intern(BASE_MASTER);
@@ -772,6 +908,66 @@ mod tests {
                 FormKey {
                     plugin: own_sym,
                     local: 0x0076_9B9E,
+                },
+            ]
+        );
+        assert_eq!(
+            parts.female,
+            vec![
+                FormKey {
+                    plugin: own_sym,
+                    local: 0x0011_CCBC,
+                },
+                FormKey {
+                    plugin: own_sym,
+                    local: 0x0076_9B9D,
+                },
+            ]
+        );
+    }
+
+    /// Real FO4/FO76 races put the skeletal-model `MNAM`/`FNAM` markers first
+    /// and the male head marker BEFORE the male `NAM0`, so the male section can
+    /// only be identified by counting `NAM0`. Reading it off the markers gave
+    /// every head part to the female bucket and left male NPCs headless.
+    #[test]
+    fn parses_race_head_parts_with_male_marker_before_head_data() {
+        let interner = StringInterner::new();
+        let masters = vec![BASE_MASTER.to_string()];
+        let subrecords = [
+            ("MNAM", Vec::new()),
+            ("FNAM", Vec::new()),
+            ("RNAM", raw_form_id(GHOUL_RACE_LOCAL)),
+            ("MNAM", Vec::new()),
+            ("NAM0", Vec::new()),
+            ("HEAD", raw_form_id(0x011C_206F)),
+            ("HEAD", raw_form_id(0x0176_9BA4)),
+            ("NAM0", Vec::new()),
+            ("FNAM", Vec::new()),
+            ("HEAD", raw_form_id(0x0111_CCBC)),
+            ("HEAD", raw_form_id(0x0176_9B9D)),
+        ];
+
+        let parts = parse_custom_humanoid_race_head_parts(
+            subrecords
+                .iter()
+                .map(|(signature, data)| (*signature, data.as_slice())),
+            &masters,
+            "SeventySix.esm",
+            &interner,
+        )
+        .expect("custom humanoid head parts");
+        let own_sym = interner.intern("SeventySix.esm");
+        assert_eq!(
+            parts.male,
+            vec![
+                FormKey {
+                    plugin: own_sym,
+                    local: 0x001C_206F,
+                },
+                FormKey {
+                    plugin: own_sym,
+                    local: 0x0076_9BA4,
                 },
             ]
         );

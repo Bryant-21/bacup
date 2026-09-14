@@ -1,14 +1,20 @@
-//! Read-only FNV/FO3 PACK inventory for a future verified FO4 lowerer.
+//! FNV/FO3 PACK inventory plus the first verified FO4 template-backed lowerer.
 //!
 //! Legacy PACK records and FO4 PACK records share several subrecord signatures, but their
 //! payloads are not ABI-compatible. In particular, both PKDT layouts are 12 bytes while assigning
 //! those bytes different meanings. This module therefore classifies legacy records without
-//! mutating them and deliberately does not synthesize FO4 PKCU, XNAM, or procedure-tree data.
+//! mutating them. Lowering is restricted to source shapes that have an audited FO4 base-game
+//! package template; unsupported shapes remain fail-closed.
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
+use smallvec::SmallVec;
+use thiserror::Error;
 
+use super::fnv_conditions::{LegacyConditionFamily, normalize_legacy_condition_scope};
+use crate::formkey_mapper::FormKeyMapper;
+use crate::ids::{FormKey, SigCode, SubrecordSig};
 use crate::record::{FieldEntry, FieldValue, Record};
 use crate::sym::StringInterner;
 
@@ -24,6 +30,55 @@ pub const LEGACY_SCHR_LEN: usize = 20;
 pub const AUDITED_FNV_PACK_COUNT: usize = 4_888;
 pub const AUDITED_FO3_PACK_COUNT: usize = 4_567;
 pub const AUDITED_LEGACY_PACK_COUNT: usize = AUDITED_FNV_PACK_COUNT + AUDITED_FO3_PACK_COUNT;
+
+const FO4_TRAVEL_TEMPLATE_LOCAL: u32 = 0x002C_B0;
+const FO4_PATROL_TEMPLATE_LOCAL: u32 = 0x002C_E0;
+const FO4_FORCE_GREET_TEMPLATE_LOCAL: u32 = 0x017B_AB;
+const FO4_FORCE_GREET_DONOR_LOCAL: u32 = 0x05B3_07;
+const FO4_SHARED_LEGACY_GENERAL_FLAGS: u32 = 0x0026_06C5;
+const FO4_FORCE_GREET_INPUT_TYPES: [&str; 24] = [
+    "Topic",
+    "Location",
+    "Location",
+    "Location",
+    "Bool",
+    "SingleRef",
+    "Location",
+    "Bool",
+    "Bool",
+    "Bool",
+    "Bool",
+    "Bool",
+    "Bool",
+    "Bool",
+    "Bool",
+    "Bool",
+    "Bool",
+    "Bool",
+    "Bool",
+    "Bool",
+    "TargetSelector",
+    "Float",
+    "Int",
+    "TargetSelector",
+];
+const FO4_FORCE_GREET_UNAM: [u8; 24] = [
+    0x00, 0x01, 0x02, 0x05, 0x07, 0x04, 0x09, 0x0D, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x1A, 0x16,
+    0x18, 0x1C, 0x1D, 0x1F, 0x20, 0x21, 0x22, 0x24,
+];
+
+const AUDITED_SOURCE_PLUGIN: &str = "FalloutNV.esm";
+const TEC_MINE_HOSTAGE_TRAVEL_LOCAL: u32 = 0x1231_B7;
+const TEC_MINE_HOSTAGE_ESCAPE_LOCAL: u32 = 0x1231_B6;
+const RENOLDS_DIALOGUE_PACK_LOCAL: u32 = 0x1328_9E;
+const RENOLDS_PATROL_PACK_LOCAL: u32 = 0x133F_3E;
+const VTECHATTICUP_QUEST_LOCAL: u32 = 0x11F9_35;
+const TEC_MINE_HOSTAGE_ESCAPE_SOURCE: &str = "ref hostage\r\nhostage.disable";
+const TEC_MINE_HOSTAGE_ESCAPE_BYTECODE: [u8; 10] = [0x1C, 0, 1, 0, 0x22, 0x10, 2, 0, 0, 0];
+const RENOLDS_GET_STAGE_CTDA: [u8; LEGACY_CTDA_LEN] = [
+    0x80, 0, 0, 0, 0, 0, 0x20, 0x41, 0x3A, 0, 0, 0, 0x35, 0xF9, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0,
+];
 
 const TYPE_SPECIFIC_SIGS: [[u8; 4]; 8] = [
     *b"PKED", *b"PKE2", *b"PKFD", *b"PKPT", *b"PKW3", *b"PUID", *b"PKAM", *b"PKDD",
@@ -122,6 +177,8 @@ pub struct LegacyPackPkdt {
     pub package_type: LegacyPackType,
     pub fallout_behavior_flags: u16,
     pub type_specific_flags: u16,
+    pub unused_1: u8,
+    pub unused_2: u16,
     pub unused_bytes_nonzero: bool,
 }
 
@@ -164,11 +221,16 @@ pub enum LegacyPackUnionKind {
     Target(LegacyPackTargetType),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LegacyPackUnionPayload {
-    Reference { present: bool },
-    ObjectType { value: u32 },
+    Reference {
+        present: bool,
+        source_form_key: Option<String>,
+    },
+    ObjectType {
+        value: u32,
+    },
     Implicit,
 }
 
@@ -189,6 +251,7 @@ pub struct LegacyPackConditionGroup {
     pub observed_size: usize,
     pub cis1_present: bool,
     pub cis2_present: bool,
+    pub raw_ctda: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -214,9 +277,18 @@ pub struct LegacyPackScriptInventory {
     pub local_references: usize,
     pub idle_present: bool,
     pub topic_present: bool,
+    pub requires_port: bool,
+    pub compiled_payload: Vec<u8>,
+    pub source_text: Option<String>,
     pub compiled_size_matches: bool,
     pub reference_count_matches: bool,
     pub variable_count_matches: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LegacyPackPatrolData {
+    pub repeatable: bool,
+    pub unused_byte_nonzero: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -270,6 +342,7 @@ pub struct LegacyPackInventory {
     pub unions: Vec<LegacyPackUnionInventory>,
     pub scripts: Vec<LegacyPackScriptInventory>,
     pub type_specific_subrecords: Vec<LegacyPackSubrecordInventory>,
+    pub patrol_data: Option<LegacyPackPatrolData>,
     pub use_weapon_data: Option<LegacyPackUseWeaponData>,
     pub support: LegacyPackSupport,
 }
@@ -361,11 +434,10 @@ pub struct LegacyPackCorpusReport {
     pub exact_audited_coverage: bool,
 }
 
-/// Contract for a future lowerer once every FO4 procedure-tree blueprint is byte-verified.
+/// Contract for a lowerer whose supported FO4 procedure-tree blueprints are byte-verified.
 ///
-/// Implementations must consume only an accepted inventory. This classifier intentionally has no
-/// implementation of this trait because inventing PKCU, XNAM, or procedure-tree rows would turn a
-/// safe audit into an unverified conversion.
+/// Implementations must consume only an accepted inventory and reject every shape they do not
+/// explicitly support.
 pub trait LegacyPackLowerer {
     type Error;
 
@@ -373,6 +445,998 @@ pub trait LegacyPackLowerer {
         &self,
         inventory: &LegacyPackInventory,
     ) -> Result<Record, Self::Error>;
+}
+
+pub trait LegacyPackReferenceMapper {
+    fn remap_legacy_pack_reference(&self, source_form_key: &str) -> Option<FormKey>;
+}
+
+impl<F> LegacyPackReferenceMapper for F
+where
+    F: Fn(&str) -> Option<FormKey>,
+{
+    fn remap_legacy_pack_reference(&self, source_form_key: &str) -> Option<FormKey> {
+        self(source_form_key)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum LegacyPackLoweringError {
+    #[error("legacy PACK conditions require semantic lowering ({count} rows)")]
+    ConditionsRequirePort { count: usize },
+    #[error("legacy PACK event scripts require porting ({count} events)")]
+    EventScriptsRequirePort { count: usize },
+    #[error("legacy PACK type {package_type_code} has no verified FO4 blueprint")]
+    UnsupportedPackageType { package_type_code: u8 },
+    #[error("legacy PACK {package_type_code} has unsupported semantic shape: {issue}")]
+    UnsupportedPackageShape {
+        package_type_code: u8,
+        issue: String,
+    },
+    #[error("legacy PACK reference payload in {sig} was not decoded to a FormKey")]
+    UnresolvedEncodedReference { sig: String },
+    #[error("legacy PACK reference remap failed for {source_form_key}")]
+    ReferenceRemapFailed { source_form_key: String },
+    #[error("legacy PACK record identity is invalid: {identity}")]
+    InvalidRecordIdentity { identity: String },
+    #[error("legacy PACK condition normalization failed: {issue}")]
+    ConditionNormalizeFailed { issue: String },
+    #[error("verified FO4 ForceGreet donor is invalid: {issue}")]
+    InvalidForceGreetDonor { issue: String },
+}
+
+impl LegacyPackLoweringError {
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::ConditionsRequirePort { .. } => "legacy_conditions_require_semantic_lowering",
+            Self::EventScriptsRequirePort { .. } => "legacy_event_scripts_require_port",
+            Self::UnsupportedPackageType { .. } => "no_verified_fo4_procedure_blueprint",
+            Self::UnsupportedPackageShape { .. } => "unsupported_verified_package_shape",
+            Self::UnresolvedEncodedReference { .. } => "unresolved_encoded_reference",
+            Self::ReferenceRemapFailed { .. } => "reference_remap_failed",
+            Self::InvalidRecordIdentity { .. } => "invalid_record_identity",
+            Self::ConditionNormalizeFailed { .. } => "condition_normalize_failed",
+            Self::InvalidForceGreetDonor { .. } => "invalid_force_greet_donor",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LegacyPackLoweringSummary {
+    pub attempted_records: usize,
+    pub lowered_records: usize,
+    pub blocked_records: usize,
+    pub blockers: BTreeMap<String, usize>,
+}
+
+pub fn summarize_legacy_pack_lowering_results<'a>(
+    results: impl IntoIterator<Item = &'a Result<Record, LegacyPackLoweringError>>,
+) -> LegacyPackLoweringSummary {
+    let mut summary = LegacyPackLoweringSummary {
+        attempted_records: 0,
+        lowered_records: 0,
+        blocked_records: 0,
+        blockers: BTreeMap::new(),
+    };
+    for result in results {
+        summary.attempted_records += 1;
+        match result {
+            Ok(_) => summary.lowered_records += 1,
+            Err(error) => {
+                summary.blocked_records += 1;
+                *summary
+                    .blockers
+                    .entry(error.code().to_string())
+                    .or_default() += 1;
+            }
+        }
+    }
+    summary
+}
+
+pub struct VerifiedFo4LegacyPackLowerer<'a, M> {
+    interner: &'a StringInterner,
+    reference_mapper: M,
+}
+
+impl<'a, M> VerifiedFo4LegacyPackLowerer<'a, M> {
+    pub fn new(interner: &'a StringInterner, reference_mapper: M) -> Self {
+        Self {
+            interner,
+            reference_mapper,
+        }
+    }
+}
+
+impl<M> VerifiedFo4LegacyPackLowerer<'_, M>
+where
+    M: LegacyPackReferenceMapper,
+{
+    /// Lower the one audited Renolds dialogue package by cloning the verified
+    /// Fallout4.esm ForceGreet package rather than reconstructing its procedure
+    /// tree. The caller must load `05B307:Fallout4.esm` through the FO4 schema.
+    pub fn lower_audited_renolds_dialogue_with_donor(
+        &self,
+        inventory: &LegacyPackInventory,
+        mapper: &mut FormKeyMapper<'_>,
+        donor: &Record,
+    ) -> Result<Record, LegacyPackLoweringError> {
+        validate_audited_renolds_dialogue(inventory)?;
+        validate_force_greet_donor(donor, self.interner)?;
+
+        let condition = inventory.conditions.first().ok_or_else(|| {
+            unsupported_shape(inventory, "renolds_dialogue_requires_getstage_condition")
+        })?;
+        let raw_ctda = condition
+            .raw_ctda
+            .as_ref()
+            .ok_or_else(|| unsupported_shape(inventory, "renolds_dialogue_requires_raw_ctda"))?;
+        let source_scope = [FieldEntry {
+            sig: SubrecordSig(*b"CTDA"),
+            value: FieldValue::Bytes(SmallVec::from_vec(raw_ctda.clone())),
+        }];
+        let (normalized_scope, _) =
+            normalize_legacy_condition_scope(&source_scope, LegacyConditionFamily::Fnv, mapper)
+                .map_err(|error| LegacyPackLoweringError::ConditionNormalizeFailed {
+                    issue: format!("{error:?}"),
+                })?;
+
+        let source_owner = source_local_reference(inventory, VTECHATTICUP_QUEST_LOCAL)?;
+        let target_owner = self
+            .reference_mapper
+            .remap_legacy_pack_reference(&source_owner)
+            .ok_or_else(|| LegacyPackLoweringError::ReferenceRemapFailed {
+                source_form_key: source_owner,
+            })?;
+
+        let mut output = donor.clone();
+        output.form_key = FormKey::parse(&inventory.form_key, self.interner).map_err(|_| {
+            LegacyPackLoweringError::InvalidRecordIdentity {
+                identity: inventory.form_key.clone(),
+            }
+        })?;
+        set_serialized_editor_id(&mut output, inventory.editor_id.as_deref(), self.interner);
+        canonicalize_force_greet_union_fields(&mut output)?;
+        let counter = output
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.0 == *b"PKCU")
+            .ok_or_else(|| LegacyPackLoweringError::InvalidForceGreetDonor {
+                issue: "missing_pkcu".to_string(),
+            })?;
+        counter.value = pack_counter_value(24, FO4_FORCE_GREET_TEMPLATE_LOCAL, 11, self.interner);
+        output
+            .fields
+            .retain(|field| !matches!(&field.sig.0, b"CTDA" | b"CIS1" | b"CIS2" | b"QNAM"));
+        let insert_at = output
+            .fields
+            .iter()
+            .position(|field| field.sig.0 == *b"PKCU")
+            .ok_or_else(|| LegacyPackLoweringError::InvalidForceGreetDonor {
+                issue: "missing_pkcu".to_string(),
+            })?;
+        let mut replacement = normalized_scope;
+        replacement.push(FieldEntry {
+            sig: SubrecordSig(*b"QNAM"),
+            value: FieldValue::FormKey(target_owner),
+        });
+        for field in replacement.into_iter().rev() {
+            output.fields.insert(insert_at, field);
+        }
+        Ok(output)
+    }
+}
+
+impl<M> LegacyPackLowerer for VerifiedFo4LegacyPackLowerer<'_, M>
+where
+    M: LegacyPackReferenceMapper,
+{
+    type Error = LegacyPackLoweringError;
+
+    fn lower_supported_legacy_pack(
+        &self,
+        inventory: &LegacyPackInventory,
+    ) -> Result<Record, Self::Error> {
+        if !inventory.conditions.is_empty() {
+            return Err(LegacyPackLoweringError::ConditionsRequirePort {
+                count: inventory.conditions.len(),
+            });
+        }
+        let audited_hostage_escape = is_exact_record(
+            inventory,
+            TEC_MINE_HOSTAGE_ESCAPE_LOCAL,
+            "TecMineHostageEscape",
+        );
+        if audited_hostage_escape {
+            validate_audited_hostage_escape(inventory)?;
+        }
+        let script_count = if audited_hostage_escape {
+            0
+        } else {
+            inventory
+                .scripts
+                .iter()
+                .filter(|script| script.requires_port)
+                .count()
+        };
+        if script_count != 0 {
+            return Err(LegacyPackLoweringError::EventScriptsRequirePort {
+                count: script_count,
+            });
+        }
+        if let Some(unresolved) = inventory.unions.iter().find(|union| {
+            matches!(
+                &union.payload,
+                LegacyPackUnionPayload::Reference {
+                    present: true,
+                    source_form_key: None,
+                }
+            )
+        }) {
+            return Err(LegacyPackLoweringError::UnresolvedEncodedReference {
+                sig: unresolved.sig.clone(),
+            });
+        }
+
+        match inventory.package_type {
+            LegacyPackType::Travel => lower_verified_travel(inventory, self.interner),
+            LegacyPackType::Patrol => {
+                lower_verified_patrol(inventory, self.interner, &self.reference_mapper)
+            }
+            _ => Err(LegacyPackLoweringError::UnsupportedPackageType {
+                package_type_code: inventory.package_type_code,
+            }),
+        }
+    }
+}
+
+fn has_all_day_schedule(inventory: &LegacyPackInventory) -> bool {
+    inventory.schedule.month == -1
+        && inventory.schedule.day_of_week == -1
+        && inventory.schedule.date == 0
+        && inventory.schedule.hour == -1
+        && inventory.schedule.duration_hours == 0
+}
+
+fn has_three_empty_event_scripts(inventory: &LegacyPackInventory) -> bool {
+    let events = inventory
+        .scripts
+        .iter()
+        .map(|script| script.event)
+        .collect::<Vec<_>>();
+    events
+        == [
+            LegacyPackScriptEvent::OnBegin,
+            LegacyPackScriptEvent::OnEnd,
+            LegacyPackScriptEvent::OnChange,
+        ]
+        && inventory.scripts.iter().all(|script| {
+            script.header_size == LEGACY_SCHR_LEN
+                && script.declared_reference_count == 0
+                && script.declared_compiled_size == 0
+                && script.declared_variable_count == 0
+                && script.compiled_payload.is_empty()
+                && script.source_text.is_none()
+                && script.local_variable_rows == 0
+                && script.named_local_variables == 0
+                && script.global_references == 0
+                && script.local_references == 0
+                && !script.idle_present
+                && !script.topic_present
+                && !script.requires_port
+                && script.compiled_size_matches
+                && script.reference_count_matches
+                && script.variable_count_matches
+        })
+}
+
+fn validate_audited_hostage_travel(
+    inventory: &LegacyPackInventory,
+) -> Result<(), LegacyPackLoweringError> {
+    let [location] = inventory.unions.as_slice() else {
+        return Err(unsupported_shape(
+            inventory,
+            "hostage_travel_union_count_changed",
+        ));
+    };
+    let exact_shape = is_exact_record(
+        inventory,
+        TEC_MINE_HOSTAGE_TRAVEL_LOCAL,
+        "TecMineHostagePackage",
+    ) && inventory.package_type == LegacyPackType::Travel
+        && inventory.pkdt.general_flags == 0x0400_1206
+        && inventory.pkdt.fallout_behavior_flags == 0x20
+        && inventory.pkdt.type_specific_flags == 55
+        && inventory.pkdt.unused_1 == 0
+        && inventory.pkdt.unused_2 == 877
+        && inventory.pkdt.unused_bytes_nonzero
+        && has_all_day_schedule(inventory)
+        && location.sig == "PLDT"
+        && location.union_kind
+            == LegacyPackUnionKind::Location(LegacyPackLocationType::NearLinkedReference)
+        && location.payload == LegacyPackUnionPayload::Implicit
+        && location.radius_or_distance == 0
+        && !location.trailing_unknown_nonzero
+        && inventory.type_specific_subrecords.is_empty()
+        && has_three_empty_event_scripts(inventory);
+    if exact_shape {
+        Ok(())
+    } else {
+        Err(unsupported_shape(
+            inventory,
+            "audited_hostage_travel_shape_changed",
+        ))
+    }
+}
+
+fn validate_audited_renolds_patrol(
+    inventory: &LegacyPackInventory,
+) -> Result<(), LegacyPackLoweringError> {
+    let [path_start] = inventory.unions.as_slice() else {
+        return Err(unsupported_shape(
+            inventory,
+            "renolds_patrol_union_count_changed",
+        ));
+    };
+    let exact_reference = matches!(
+        &path_start.payload,
+        LegacyPackUnionPayload::Reference {
+            present: true,
+            source_form_key: Some(source),
+        } if source_local(source) == Some(0x133F_3D)
+    );
+    let exact_shape = is_exact_record(
+        inventory,
+        RENOLDS_PATROL_PACK_LOCAL,
+        "TechaticupNCRRenoldsPatrolPackage",
+    ) && inventory.package_type == LegacyPackType::Patrol
+        && inventory.pkdt.general_flags == 0
+        && inventory.pkdt.fallout_behavior_flags == 0
+        && inventory.pkdt.type_specific_flags == 0
+        && inventory.pkdt.unused_1 == 0
+        && inventory.pkdt.unused_2 == 3
+        && inventory.pkdt.unused_bytes_nonzero
+        && has_all_day_schedule(inventory)
+        && path_start.sig == "PLDT"
+        && path_start.union_kind
+            == LegacyPackUnionKind::Location(LegacyPackLocationType::NearReference)
+        && exact_reference
+        && path_start.radius_or_distance == 0
+        && !path_start.trailing_unknown_nonzero
+        && inventory
+            .patrol_data
+            .as_ref()
+            .is_some_and(|data| !data.repeatable && !data.unused_byte_nonzero)
+        && has_three_empty_event_scripts(inventory);
+    if exact_shape {
+        Ok(())
+    } else {
+        Err(unsupported_shape(
+            inventory,
+            "audited_renolds_patrol_shape_changed",
+        ))
+    }
+}
+
+fn validate_audited_hostage_escape(
+    inventory: &LegacyPackInventory,
+) -> Result<(), LegacyPackLoweringError> {
+    if !is_exact_record(
+        inventory,
+        TEC_MINE_HOSTAGE_ESCAPE_LOCAL,
+        "TecMineHostageEscape",
+    ) {
+        return Err(unsupported_shape(
+            inventory,
+            "not_audited_hostage_escape_identity",
+        ));
+    }
+    let [path_start] = inventory.unions.as_slice() else {
+        return Err(unsupported_shape(
+            inventory,
+            "hostage_escape_union_count_changed",
+        ));
+    };
+    let exact_path = matches!(
+        &path_start.payload,
+        LegacyPackUnionPayload::Reference {
+            present: true,
+            source_form_key: Some(source),
+        } if source_local(source) == Some(0x0E70_CA)
+    );
+    let exact_scripts = inventory.scripts.iter().all(|script| {
+        if script.event == LegacyPackScriptEvent::OnEnd {
+            script.header_size == LEGACY_SCHR_LEN
+                && script.declared_reference_count == 1
+                && script.declared_compiled_size == TEC_MINE_HOSTAGE_ESCAPE_BYTECODE.len() as u32
+                && script.declared_variable_count == 1
+                && script.compiled_payload == TEC_MINE_HOSTAGE_ESCAPE_BYTECODE
+                && script.source_text.as_deref() == Some(TEC_MINE_HOSTAGE_ESCAPE_SOURCE)
+                && script.local_variable_rows == 1
+                && script.named_local_variables == 1
+                && script.global_references == 0
+                && script.local_references == 1
+                && !script.idle_present
+                && !script.topic_present
+                && script.requires_port
+                && script.compiled_size_matches
+                && script.reference_count_matches
+                && script.variable_count_matches
+        } else {
+            !script.requires_port
+                && script.compiled_size_matches
+                && script.reference_count_matches
+                && script.variable_count_matches
+        }
+    }) && inventory.scripts.len() == 3;
+    let exact_shape = inventory.source == LegacyPackSourceFamily::Fnv
+        && inventory.package_type == LegacyPackType::Patrol
+        && inventory.pkdt.general_flags == 0x0408_3206
+        && inventory.pkdt.fallout_behavior_flags == 0x20
+        && inventory.pkdt.type_specific_flags == 0
+        && inventory.pkdt.unused_1 == 103
+        && inventory.pkdt.unused_2 == 21_572
+        && inventory.pkdt.unused_bytes_nonzero
+        && inventory.schedule.month == -1
+        && inventory.schedule.day_of_week == -1
+        && inventory.schedule.date == 0
+        && inventory.schedule.hour == -1
+        && inventory.schedule.duration_hours == 0
+        && path_start.sig == "PLDT"
+        && path_start.union_kind
+            == LegacyPackUnionKind::Location(LegacyPackLocationType::NearReference)
+        && exact_path
+        && path_start.radius_or_distance == 0
+        && !path_start.trailing_unknown_nonzero
+        && inventory
+            .patrol_data
+            .as_ref()
+            .is_some_and(|data| !data.repeatable && !data.unused_byte_nonzero)
+        && exact_scripts;
+    if exact_shape {
+        Ok(())
+    } else {
+        Err(unsupported_shape(
+            inventory,
+            "audited_hostage_escape_shape_changed",
+        ))
+    }
+}
+
+fn validate_audited_renolds_dialogue(
+    inventory: &LegacyPackInventory,
+) -> Result<(), LegacyPackLoweringError> {
+    if !is_exact_record(
+        inventory,
+        RENOLDS_DIALOGUE_PACK_LOCAL,
+        "TechaticupNCRRenoldsDialoguePackage",
+    ) {
+        return Err(unsupported_shape(
+            inventory,
+            "not_audited_renolds_dialogue_identity",
+        ));
+    }
+    let [target] = inventory.unions.as_slice() else {
+        return Err(unsupported_shape(inventory, "renolds_target_count_changed"));
+    };
+    let [condition] = inventory.conditions.as_slice() else {
+        return Err(unsupported_shape(
+            inventory,
+            "renolds_condition_count_changed",
+        ));
+    };
+    let exact_shape = inventory.source == LegacyPackSourceFamily::Fnv
+        && inventory.package_type == LegacyPackType::Dialogue
+        && inventory.pkdt.general_flags == 0x2000
+        && inventory.pkdt.fallout_behavior_flags == 0
+        && inventory.pkdt.type_specific_flags == 0
+        && inventory.pkdt.unused_1 == 0
+        && inventory.pkdt.unused_2 == 0
+        && !inventory.pkdt.unused_bytes_nonzero
+        && inventory.schedule.month == -1
+        && inventory.schedule.day_of_week == -1
+        && inventory.schedule.date == 0
+        && inventory.schedule.hour == -1
+        && inventory.schedule.duration_hours == 0
+        && target.sig == "PTDT"
+        && target.union_kind
+            == LegacyPackUnionKind::Target(LegacyPackTargetType::SpecificReference)
+        && matches!(
+            &target.payload,
+            LegacyPackUnionPayload::Reference {
+                present: true,
+                source_form_key: Some(source),
+            } if source_local(source) == Some(0x0000_14)
+        )
+        && target.radius_or_distance == 128
+        && !target.trailing_unknown_nonzero
+        && condition.observed_size == LEGACY_CTDA_LEN
+        && !condition.cis1_present
+        && !condition.cis2_present
+        && condition.raw_ctda.as_deref() == Some(RENOLDS_GET_STAGE_CTDA.as_slice())
+        && inventory.type_specific_subrecords.as_slice()
+            == [LegacyPackSubrecordInventory {
+                sig: "PKDD".to_string(),
+                count: 1,
+                observed_sizes: vec![24],
+            }]
+        && inventory.scripts.iter().all(|script| !script.requires_port);
+    if exact_shape {
+        Ok(())
+    } else {
+        Err(unsupported_shape(
+            inventory,
+            "audited_renolds_dialogue_shape_changed",
+        ))
+    }
+}
+
+fn validate_force_greet_donor(
+    donor: &Record,
+    interner: &StringInterner,
+) -> Result<(), LegacyPackLoweringError> {
+    let plugin = interner.resolve(donor.form_key.plugin).unwrap_or_default();
+    let editor_id = donor.eid.and_then(|eid| interner.resolve(eid));
+    if donor.sig.0 != *b"PACK"
+        || donor.form_key.local != FO4_FORCE_GREET_DONOR_LOCAL
+        || !plugin.eq_ignore_ascii_case("Fallout4.esm")
+        || editor_id != Some("RETravelCC01_Forcegreet")
+    {
+        return Err(LegacyPackLoweringError::InvalidForceGreetDonor {
+            issue: "identity_mismatch".to_string(),
+        });
+    }
+    let counters = donor
+        .fields
+        .iter()
+        .filter(|field| field.sig.0 == *b"PKCU")
+        .collect::<Vec<_>>();
+    let [counter] = counters.as_slice() else {
+        return Err(LegacyPackLoweringError::InvalidForceGreetDonor {
+            issue: "expected_one_pkcu".to_string(),
+        });
+    };
+    let exact_counter = match &counter.value {
+        FieldValue::Struct(fields) => {
+            let template = struct_field(fields, "package_template", interner);
+            struct_u32(fields, "data_input_count", interner) == Some(24)
+                && struct_u32(fields, "version_counter_autoincremented", interner) == Some(11)
+                && matches!(
+                    template,
+                    Some(FieldValue::FormKey(FormKey { local, plugin }))
+                        if *local == FO4_FORCE_GREET_TEMPLATE_LOCAL
+                            && interner.resolve(*plugin).is_some_and(|name| name.eq_ignore_ascii_case("Fallout4.esm"))
+                )
+        }
+        FieldValue::Bytes(bytes) if bytes.len() == 12 => {
+            read_u32(bytes, 0) == 24
+                && read_u32(bytes, 4) == FO4_FORCE_GREET_TEMPLATE_LOCAL
+                && read_u32(bytes, 8) == 11
+        }
+        _ => false,
+    };
+    let input_types = donor
+        .fields
+        .iter()
+        .filter_map(|field| {
+            (field.sig.0 == *b"ANAM").then(|| match &field.value {
+                FieldValue::String(value) => interner.resolve(*value),
+                _ => None,
+            })
+        })
+        .collect::<Option<Vec<_>>>();
+    let exact_inputs = input_types.as_deref() == Some(FO4_FORCE_GREET_INPUT_TYPES.as_slice());
+    let unam = donor
+        .fields
+        .iter()
+        .filter_map(|field| {
+            (field.sig.0 == *b"UNAM").then(|| match &field.value {
+                FieldValue::Bytes(bytes) if bytes.len() == 1 => Some(bytes[0]),
+                value => numeric_value(value).and_then(|value| u8::try_from(value).ok()),
+            })
+        })
+        .collect::<Option<Vec<_>>>();
+    let exact_unam = unam.as_deref() == Some(FO4_FORCE_GREET_UNAM.as_slice());
+    let union_signatures = donor
+        .fields
+        .iter()
+        .filter(|field| matches!(&field.sig.0, b"PLDT" | b"PTDA"))
+        .map(|field| field.sig.0)
+        .collect::<Vec<_>>();
+    let exact_unions = union_signatures
+        == [
+            *b"PLDT", *b"PLDT", *b"PLDT", *b"PTDA", *b"PLDT", *b"PTDA", *b"PTDA",
+        ];
+    let exact_tree_marker = donor.fields.iter().any(|field| {
+        field.sig.0 == *b"XNAM"
+            && matches!(&field.value, FieldValue::Bytes(bytes) if bytes.as_slice() == [0x0C])
+    });
+    if exact_counter && exact_inputs && exact_unam && exact_unions && exact_tree_marker {
+        Ok(())
+    } else {
+        Err(LegacyPackLoweringError::InvalidForceGreetDonor {
+            issue: "template_or_input_shape_mismatch".to_string(),
+        })
+    }
+}
+
+fn canonicalize_force_greet_union_fields(
+    record: &mut Record,
+) -> Result<(), LegacyPackLoweringError> {
+    let canonical = canonical_force_greet_union_fields();
+    let union_fields = record
+        .fields
+        .iter_mut()
+        .filter(|field| matches!(&field.sig.0, b"PLDT" | b"PTDA"))
+        .collect::<Vec<_>>();
+    if union_fields.len() != canonical.len()
+        || union_fields
+            .iter()
+            .zip(canonical.iter())
+            .any(|(field, (sig, _))| field.sig.0 != *sig)
+    {
+        return Err(LegacyPackLoweringError::InvalidForceGreetDonor {
+            issue: "union_shape_mismatch".to_string(),
+        });
+    }
+    for (field, (_, bytes)) in union_fields.into_iter().zip(canonical) {
+        field.value = FieldValue::Bytes(SmallVec::from_slice(bytes));
+    }
+    Ok(())
+}
+
+fn canonical_force_greet_union_fields() -> [([u8; 4], &'static [u8]); 7] {
+    [
+        (
+            *b"PLDT",
+            &[0x0C, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+        ),
+        (
+            *b"PLDT",
+            &[0x0C, 0, 0, 0, 0, 0, 0, 0, 0xB8, 0x0B, 0, 0, 0, 0, 0, 0],
+        ),
+        (
+            *b"PLDT",
+            &[0, 0, 0, 0, 0x14, 0, 0, 0, 0x80, 0, 0, 0, 0, 0, 0, 0],
+        ),
+        (*b"PTDA", &[0, 0, 0, 0, 0x14, 0, 0, 0, 0, 0, 0, 0]),
+        (
+            *b"PLDT",
+            &[0, 0, 0, 0, 0x14, 0, 0, 0, 0x88, 0x13, 0, 0, 0, 0, 0, 0],
+        ),
+        (*b"PTDA", &[2, 0, 0, 0, 0x14, 0, 0, 0, 0, 0, 0, 0]),
+        (*b"PTDA", &[2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+    ]
+}
+
+fn source_local_reference(
+    inventory: &LegacyPackInventory,
+    local: u32,
+) -> Result<String, LegacyPackLoweringError> {
+    let Some((_, plugin)) = inventory.form_key.split_once('@') else {
+        return Err(LegacyPackLoweringError::InvalidRecordIdentity {
+            identity: inventory.form_key.clone(),
+        });
+    };
+    Ok(format!("{local:06X}@{plugin}"))
+}
+
+fn source_local(source: &str) -> Option<u32> {
+    u32::from_str_radix(source.split(['@', ':']).next()?, 16).ok()
+}
+
+fn is_exact_identity(
+    source: LegacyPackSourceFamily,
+    form_key: &str,
+    editor_id: Option<&str>,
+    local: u32,
+    expected_editor_id: &str,
+) -> bool {
+    let plugin_matches = form_key
+        .split_once('@')
+        .is_some_and(|(_, plugin)| plugin.eq_ignore_ascii_case(AUDITED_SOURCE_PLUGIN));
+    source == LegacyPackSourceFamily::Fnv
+        && plugin_matches
+        && source_local(form_key) == Some(local)
+        && editor_id.is_some_and(|actual| actual.eq_ignore_ascii_case(expected_editor_id))
+}
+
+fn is_exact_record(inventory: &LegacyPackInventory, local: u32, editor_id: &str) -> bool {
+    is_exact_identity(
+        inventory.source,
+        &inventory.form_key,
+        inventory.editor_id.as_deref(),
+        local,
+        editor_id,
+    )
+}
+
+fn lower_verified_travel(
+    inventory: &LegacyPackInventory,
+    interner: &StringInterner,
+) -> Result<Record, LegacyPackLoweringError> {
+    validate_audited_hostage_travel(inventory)?;
+    let [location] = inventory.unions.as_slice() else {
+        return Err(unsupported_shape(inventory, "travel_requires_one_location"));
+    };
+    if location.sig != "PLDT"
+        || location.union_kind
+            != LegacyPackUnionKind::Location(LegacyPackLocationType::NearLinkedReference)
+        || location.payload != LegacyPackUnionPayload::Implicit
+        || !inventory.type_specific_subrecords.is_empty()
+    {
+        return Err(unsupported_shape(
+            inventory,
+            "travel_requires_near_linked_reference_without_type_specific_data",
+        ));
+    }
+
+    let mut output = target_record(inventory, interner)?;
+    push_common_header(&mut output, inventory);
+    push_pack_counter(&mut output, 4, FO4_TRAVEL_TEMPLATE_LOCAL, 1, interner);
+    push_string(&mut output, b"ANAM", "Location", interner);
+    let mut location_data = Vec::with_capacity(16);
+    location_data.extend_from_slice(&6_i32.to_le_bytes());
+    location_data.extend_from_slice(&0_u32.to_le_bytes());
+    location_data.extend_from_slice(&location.radius_or_distance.to_le_bytes());
+    location_data.extend_from_slice(&0_u32.to_le_bytes());
+    push_bytes(&mut output, b"PLDT", location_data);
+    for _ in 0..3 {
+        push_string(&mut output, b"ANAM", "Bool", interner);
+        push_bytes(&mut output, b"CNAM", vec![0]);
+    }
+    for index in [1_u8, 3, 5, 7] {
+        push_bytes(&mut output, b"UNAM", vec![index]);
+    }
+    push_bytes(&mut output, b"XNAM", vec![0x08]);
+    push_empty_fo4_event_blocks(&mut output);
+    Ok(output)
+}
+
+fn lower_verified_patrol<M>(
+    inventory: &LegacyPackInventory,
+    interner: &StringInterner,
+    reference_mapper: &M,
+) -> Result<Record, LegacyPackLoweringError>
+where
+    M: LegacyPackReferenceMapper,
+{
+    if is_exact_record(
+        inventory,
+        RENOLDS_PATROL_PACK_LOCAL,
+        "TechaticupNCRRenoldsPatrolPackage",
+    ) {
+        validate_audited_renolds_patrol(inventory)?;
+    } else if is_exact_record(
+        inventory,
+        TEC_MINE_HOSTAGE_ESCAPE_LOCAL,
+        "TecMineHostageEscape",
+    ) {
+        validate_audited_hostage_escape(inventory)?;
+    } else {
+        return Err(unsupported_shape(
+            inventory,
+            "not_an_audited_vtechatticup_patrol_identity",
+        ));
+    }
+    let [path_start] = inventory.unions.as_slice() else {
+        return Err(unsupported_shape(
+            inventory,
+            "patrol_requires_one_path_start",
+        ));
+    };
+    let LegacyPackUnionPayload::Reference {
+        present: true,
+        source_form_key: Some(source_form_key),
+    } = &path_start.payload
+    else {
+        return Err(unsupported_shape(
+            inventory,
+            "patrol_requires_specific_reference_path_start",
+        ));
+    };
+    if path_start.sig != "PLDT"
+        || path_start.union_kind
+            != LegacyPackUnionKind::Location(LegacyPackLocationType::NearReference)
+        || inventory.type_specific_subrecords.as_slice()
+            != [LegacyPackSubrecordInventory {
+                sig: "PKPT".to_string(),
+                count: 1,
+                observed_sizes: vec![2],
+            }]
+    {
+        return Err(unsupported_shape(
+            inventory,
+            "patrol_requires_pldt_reference_and_one_pkpt",
+        ));
+    }
+    let patrol = inventory
+        .patrol_data
+        .as_ref()
+        .ok_or_else(|| unsupported_shape(inventory, "patrol_data_missing"))?;
+    let target_path_start = reference_mapper
+        .remap_legacy_pack_reference(source_form_key)
+        .ok_or_else(|| LegacyPackLoweringError::ReferenceRemapFailed {
+            source_form_key: source_form_key.clone(),
+        })?;
+
+    let mut output = target_record(inventory, interner)?;
+    push_common_header(&mut output, inventory);
+    push_pack_counter(&mut output, 7, FO4_PATROL_TEMPLATE_LOCAL, 2, interner);
+    push_string(&mut output, b"ANAM", "SingleRef", interner);
+    push_struct(
+        &mut output,
+        b"PTDA",
+        [
+            ("target_data_type", FieldValue::Int(0)),
+            ("target_data_target", FieldValue::FormKey(target_path_start)),
+            ("target_data_count_distance", FieldValue::Int(0)),
+        ],
+        interner,
+    );
+    push_string(&mut output, b"ANAM", "Float", interner);
+    push_value(
+        &mut output,
+        b"CNAM",
+        FieldValue::Float(path_start.radius_or_distance.max(0) as f32),
+    );
+    for value in [patrol.repeatable, false, false, false] {
+        push_string(&mut output, b"ANAM", "Bool", interner);
+        push_value(&mut output, b"CNAM", FieldValue::Bool(value));
+    }
+    push_string(&mut output, b"ANAM", "Float", interner);
+    push_value(&mut output, b"CNAM", FieldValue::Float(0.0));
+    for index in [0_u8, 1, 2, 4, 6, 8, 10] {
+        push_bytes(&mut output, b"UNAM", vec![index]);
+    }
+    push_bytes(&mut output, b"XNAM", vec![0x0B]);
+    push_empty_fo4_event_blocks(&mut output);
+    Ok(output)
+}
+
+fn unsupported_shape(inventory: &LegacyPackInventory, issue: &str) -> LegacyPackLoweringError {
+    LegacyPackLoweringError::UnsupportedPackageShape {
+        package_type_code: inventory.package_type_code,
+        issue: issue.to_string(),
+    }
+}
+
+fn target_record(
+    inventory: &LegacyPackInventory,
+    interner: &StringInterner,
+) -> Result<Record, LegacyPackLoweringError> {
+    let form_key = FormKey::parse(&inventory.form_key, interner).map_err(|_| {
+        LegacyPackLoweringError::InvalidRecordIdentity {
+            identity: inventory.form_key.clone(),
+        }
+    })?;
+    let mut output = Record::new(SigCode(*b"PACK"), form_key);
+    set_serialized_editor_id(&mut output, inventory.editor_id.as_deref(), interner);
+    Ok(output)
+}
+
+fn set_serialized_editor_id(
+    record: &mut Record,
+    editor_id: Option<&str>,
+    interner: &StringInterner,
+) {
+    record.fields.retain(|field| field.sig.0 != *b"EDID");
+    record.eid = editor_id.map(|value| interner.intern(value));
+    if let Some(editor_id) = record.eid {
+        record.fields.insert(
+            0,
+            FieldEntry {
+                sig: SubrecordSig(*b"EDID"),
+                value: FieldValue::String(editor_id),
+            },
+        );
+    }
+}
+
+fn push_common_header(output: &mut Record, inventory: &LegacyPackInventory) {
+    let mut pack_data = [0_u8; 12];
+    pack_data[..4].copy_from_slice(
+        &(inventory.pkdt.general_flags & FO4_SHARED_LEGACY_GENERAL_FLAGS).to_le_bytes(),
+    );
+    pack_data[4] = 18;
+    pack_data[6] = 2;
+    pack_data[8..10].copy_from_slice(&inventory.pkdt.fallout_behavior_flags.to_le_bytes());
+    push_bytes(output, b"PKDT", pack_data.to_vec());
+
+    let mut schedule = [0_u8; 12];
+    schedule[0] = inventory.schedule.month as u8;
+    schedule[1] = inventory.schedule.day_of_week as u8;
+    schedule[2] = inventory.schedule.date.max(0) as u8;
+    schedule[3] = inventory.schedule.hour as u8;
+    schedule[4] = u8::MAX;
+    schedule[8..12].copy_from_slice(&inventory.schedule.duration_hours.to_le_bytes());
+    push_bytes(output, b"PSDT", schedule.to_vec());
+}
+
+fn push_pack_counter(
+    output: &mut Record,
+    data_input_count: u32,
+    template_local: u32,
+    version_counter: u32,
+    interner: &StringInterner,
+) {
+    push_value(
+        output,
+        b"PKCU",
+        pack_counter_value(data_input_count, template_local, version_counter, interner),
+    );
+}
+
+fn pack_counter_value(
+    data_input_count: u32,
+    template_local: u32,
+    version_counter: u32,
+    interner: &StringInterner,
+) -> FieldValue {
+    let template = FormKey {
+        local: template_local,
+        plugin: interner.intern("Fallout4.esm"),
+    };
+    FieldValue::Struct(
+        [
+            (
+                interner.intern("data_input_count"),
+                FieldValue::Uint(u64::from(data_input_count)),
+            ),
+            (
+                interner.intern("package_template"),
+                FieldValue::FormKey(template),
+            ),
+            (
+                interner.intern("version_counter_autoincremented"),
+                FieldValue::Uint(u64::from(version_counter)),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    )
+}
+
+fn push_empty_fo4_event_blocks(output: &mut Record) {
+    for marker in [b"POBA", b"POEA", b"POCA"] {
+        push_value(output, marker, FieldValue::None);
+        push_bytes(output, b"INAM", vec![0; 4]);
+        push_bytes(output, b"PDTO", vec![0; 8]);
+    }
+}
+
+fn push_struct<const N: usize>(
+    output: &mut Record,
+    sig: &[u8; 4],
+    fields: [(&str, FieldValue); N],
+    interner: &StringInterner,
+) {
+    push_value(
+        output,
+        sig,
+        FieldValue::Struct(
+            fields
+                .into_iter()
+                .map(|(name, value)| (interner.intern(name), value))
+                .collect(),
+        ),
+    );
+}
+
+fn push_string(output: &mut Record, sig: &[u8; 4], value: &str, interner: &StringInterner) {
+    push_value(output, sig, FieldValue::String(interner.intern(value)));
+}
+
+fn push_bytes(output: &mut Record, sig: &[u8; 4], bytes: Vec<u8>) {
+    push_value(output, sig, FieldValue::Bytes(SmallVec::from_vec(bytes)));
+}
+
+fn push_value(output: &mut Record, sig: &[u8; 4], value: FieldValue) {
+    output.fields.push(FieldEntry {
+        sig: SubrecordSig(*sig),
+        value,
+    });
 }
 
 /// Classify one source-shaped PACK without changing it or retaining raw payload bytes.
@@ -417,10 +1481,10 @@ pub fn classify_legacy_pack(
     let schedule =
         parse_unique_required(record, b"PSDT", interner, &mut rejections, parse_schedule);
     let conditions = classify_conditions(record, interner, &mut rejections);
-    let unions = classify_unions(record, interner, &mut rejections);
+    let unions = classify_unions(record, source, interner, &mut rejections);
     let (scripts, script_owned) = classify_scripts(record, interner, &mut rejections);
     reject_orphan_script_fields(record, &script_owned, &mut rejections);
-    let (type_specific_subrecords, use_weapon_data) =
+    let (type_specific_subrecords, patrol_data, use_weapon_data) =
         classify_type_specific(record, interner, &mut rejections);
 
     if !rejections.is_empty() || pkdt.is_none() || schedule.is_none() {
@@ -433,19 +1497,33 @@ pub fn classify_legacy_pack(
     }
 
     let pkdt = pkdt.expect("checked above");
-    let mut lowering_blockers = vec![LegacyPackLoweringBlocker::NoVerifiedFo4ProcedureBlueprint {
-        package_type_code: pkdt.package_type_code,
-    }];
+    let mut lowering_blockers = Vec::new();
+    if !has_verified_fo4_blueprint(
+        source,
+        &form_key,
+        editor_id.as_deref(),
+        pkdt.package_type,
+        &unions,
+        &type_specific_subrecords,
+        patrol_data.as_ref(),
+    ) {
+        lowering_blockers.push(LegacyPackLoweringBlocker::NoVerifiedFo4ProcedureBlueprint {
+            package_type_code: pkdt.package_type_code,
+        });
+    }
     if !conditions.is_empty() {
         lowering_blockers.push(LegacyPackLoweringBlocker::LegacyConditionsRequireSemanticLowering);
     }
-    if !scripts.is_empty() {
+    if scripts.iter().any(|script| script.requires_port) {
         lowering_blockers.push(LegacyPackLoweringBlocker::LegacyEventScriptsRequirePort);
     }
     if unions.iter().any(|union| {
         matches!(
-            union.payload,
-            LegacyPackUnionPayload::Reference { present: true }
+            &union.payload,
+            LegacyPackUnionPayload::Reference {
+                present: true,
+                source_form_key: None,
+            }
         )
     }) {
         lowering_blockers.push(LegacyPackLoweringBlocker::EncodedReferencesRequireMapper);
@@ -461,7 +1539,7 @@ pub fn classify_legacy_pack(
         }
     }
 
-    let inventory = LegacyPackInventory {
+    let mut inventory = LegacyPackInventory {
         source,
         form_key,
         editor_id,
@@ -473,18 +1551,123 @@ pub fn classify_legacy_pack(
         unions,
         scripts,
         type_specific_subrecords,
+        patrol_data,
         use_weapon_data,
         support: LegacyPackSupport {
             classification_supported: true,
-            lowering_supported: false,
+            lowering_supported: lowering_blockers.is_empty(),
             lowering_blockers,
         },
     };
+    let audited_shape_verified = match inventory.package_type {
+        LegacyPackType::Travel => validate_audited_hostage_travel(&inventory).is_ok(),
+        LegacyPackType::Patrol => {
+            validate_audited_renolds_patrol(&inventory).is_ok()
+                || validate_audited_hostage_escape(&inventory).is_ok()
+        }
+        _ => true,
+    };
+    if !audited_shape_verified
+        && !inventory.support.lowering_blockers.iter().any(|blocker| {
+            matches!(
+                blocker,
+                LegacyPackLoweringBlocker::NoVerifiedFo4ProcedureBlueprint { .. }
+            )
+        })
+    {
+        inventory.support.lowering_blockers.push(
+            LegacyPackLoweringBlocker::NoVerifiedFo4ProcedureBlueprint {
+                package_type_code: inventory.package_type_code,
+            },
+        );
+        inventory.support.lowering_supported = false;
+    }
+    if is_exact_record(
+        &inventory,
+        TEC_MINE_HOSTAGE_ESCAPE_LOCAL,
+        "TecMineHostageEscape",
+    ) && validate_audited_hostage_escape(&inventory).is_ok()
+    {
+        inventory
+            .support
+            .lowering_blockers
+            .retain(|blocker| *blocker != LegacyPackLoweringBlocker::LegacyEventScriptsRequirePort);
+        inventory.support.lowering_supported = inventory.support.lowering_blockers.is_empty();
+    }
     LegacyPackClassificationReport {
         source,
         status: LegacyPackClassificationStatus::Accepted,
         inventory: Some(inventory),
         rejection_reasons: Vec::new(),
+    }
+}
+
+fn has_verified_fo4_blueprint(
+    source: LegacyPackSourceFamily,
+    form_key: &str,
+    editor_id: Option<&str>,
+    package_type: LegacyPackType,
+    unions: &[LegacyPackUnionInventory],
+    type_specific: &[LegacyPackSubrecordInventory],
+    patrol: Option<&LegacyPackPatrolData>,
+) -> bool {
+    match package_type {
+        LegacyPackType::Travel => {
+            is_exact_identity(
+                source,
+                form_key,
+                editor_id,
+                TEC_MINE_HOSTAGE_TRAVEL_LOCAL,
+                "TecMineHostagePackage",
+            ) && matches!(
+                unions,
+                [LegacyPackUnionInventory {
+                    sig,
+                    union_kind: LegacyPackUnionKind::Location(
+                        LegacyPackLocationType::NearLinkedReference
+                    ),
+                    payload: LegacyPackUnionPayload::Implicit,
+                    ..
+                }] if sig == "PLDT" && type_specific.is_empty()
+            )
+        }
+        LegacyPackType::Patrol => {
+            let exact_identity = is_exact_identity(
+                source,
+                form_key,
+                editor_id,
+                RENOLDS_PATROL_PACK_LOCAL,
+                "TechaticupNCRRenoldsPatrolPackage",
+            ) || is_exact_identity(
+                source,
+                form_key,
+                editor_id,
+                TEC_MINE_HOSTAGE_ESCAPE_LOCAL,
+                "TecMineHostageEscape",
+            );
+            exact_identity
+                && matches!(
+                    unions,
+                    [LegacyPackUnionInventory {
+                        sig,
+                        union_kind: LegacyPackUnionKind::Location(
+                            LegacyPackLocationType::NearReference
+                        ),
+                        payload: LegacyPackUnionPayload::Reference {
+                            present: true,
+                            source_form_key: Some(_),
+                        },
+                        ..
+                    }] if sig == "PLDT"
+                        && type_specific == [LegacyPackSubrecordInventory {
+                            sig: "PKPT".to_string(),
+                            count: 1,
+                            observed_sizes: vec![2],
+                        }]
+                        && patrol.is_some_and(|data| !data.unused_byte_nonzero)
+                )
+        }
+        _ => false,
     }
 }
 
@@ -589,14 +1772,15 @@ fn parse_pkdt(
     field_index: usize,
     interner: &StringInterner,
 ) -> Result<LegacyPackPkdt, LegacyPackRejectionReason> {
-    let (general_flags, type_code, fallout_behavior_flags, type_specific_flags, unused_nonzero) =
+    let (general_flags, type_code, fallout_behavior_flags, type_specific_flags, unused_1, unused_2) =
         match value {
             FieldValue::Bytes(bytes) if bytes.len() == LEGACY_PKDT_LEN => (
                 read_u32(bytes, 0),
                 bytes[4],
                 read_u16(bytes, 6),
                 read_u16(bytes, 8),
-                bytes[5] != 0 || read_u16(bytes, 10) != 0,
+                bytes[5],
+                read_u16(bytes, 10),
             ),
             FieldValue::Struct(fields) => {
                 let general_flags = struct_u32(fields, "general_flags", interner);
@@ -612,14 +1796,20 @@ fn parse_pkdt(
                 else {
                     return Err(malformed("PKDT", field_index, &[LEGACY_PKDT_LEN], None));
                 };
-                let unused_nonzero = struct_u64(fields, "unused_1", interner).unwrap_or(0) != 0
-                    || struct_u64(fields, "unused_2", interner).unwrap_or(0) != 0;
+                let unused_1 = struct_u64(fields, "unused_1", interner).unwrap_or(0);
+                let unused_2 = struct_u64(fields, "unused_2", interner).unwrap_or(0);
+                let (Ok(unused_1), Ok(unused_2)) =
+                    (u8::try_from(unused_1), u16::try_from(unused_2))
+                else {
+                    return Err(malformed("PKDT", field_index, &[LEGACY_PKDT_LEN], None));
+                };
                 (
                     general_flags,
                     type_code,
                     fallout_behavior_flags,
                     type_specific_flags,
-                    unused_nonzero,
+                    unused_1,
+                    unused_2,
                 )
             }
             other => {
@@ -643,7 +1833,9 @@ fn parse_pkdt(
         package_type,
         fallout_behavior_flags,
         type_specific_flags,
-        unused_bytes_nonzero: unused_nonzero,
+        unused_1,
+        unused_2,
+        unused_bytes_nonzero: unused_1 != 0 || unused_2 != 0,
     })
 }
 
@@ -702,6 +1894,7 @@ fn classify_conditions(
     while index < record.fields.len() {
         match &record.fields[index].sig.0 {
             b"CTDA" => {
+                let condition_field_index = index;
                 let observed_size = value_size(&record.fields[index].value, interner);
                 if !matches!(observed_size, Some(LEGACY_OLD_CTDA_LEN | LEGACY_CTDA_LEN)) {
                     rejections.push(malformed(
@@ -746,6 +1939,10 @@ fn classify_conditions(
                     observed_size: observed_size.unwrap_or(0),
                     cis1_present,
                     cis2_present,
+                    raw_ctda: match &record.fields[condition_field_index].value {
+                        FieldValue::Bytes(bytes) => Some(bytes.to_vec()),
+                        _ => None,
+                    },
                 });
                 continue;
             }
@@ -764,15 +1961,17 @@ fn classify_conditions(
 
 fn classify_unions(
     record: &Record,
+    source: LegacyPackSourceFamily,
     interner: &StringInterner,
     rejections: &mut Vec<LegacyPackRejectionReason>,
 ) -> Vec<LegacyPackUnionInventory> {
+    let raw_reference_plugin = audited_raw_reference_plugin(record, source, interner);
     let mut unions = Vec::new();
     for (field_index, field) in record.fields.iter().enumerate() {
         if !matches!(&field.sig.0, b"PLDT" | b"PLD2" | b"PTDT" | b"PTD2") {
             continue;
         }
-        match parse_union(field, field_index, interner) {
+        match parse_union(field, field_index, raw_reference_plugin, interner) {
             Ok(union) => unions.push(union),
             Err(reason) => rejections.push(reason),
         }
@@ -780,9 +1979,32 @@ fn classify_unions(
     unions
 }
 
+fn audited_raw_reference_plugin<'a>(
+    record: &Record,
+    source: LegacyPackSourceFamily,
+    interner: &'a StringInterner,
+) -> Option<&'a str> {
+    if source != LegacyPackSourceFamily::Fnv {
+        return None;
+    }
+    let plugin = interner.resolve(record.form_key.plugin)?;
+    if !plugin.eq_ignore_ascii_case(AUDITED_SOURCE_PLUGIN) {
+        return None;
+    }
+    let editor_id = record.eid.and_then(|eid| interner.resolve(eid))?;
+    let exact_patrol = record.form_key.local == RENOLDS_PATROL_PACK_LOCAL
+        && editor_id.eq_ignore_ascii_case("TechaticupNCRRenoldsPatrolPackage");
+    let exact_escape = record.form_key.local == TEC_MINE_HOSTAGE_ESCAPE_LOCAL
+        && editor_id.eq_ignore_ascii_case("TecMineHostageEscape");
+    let exact_dialogue = record.form_key.local == RENOLDS_DIALOGUE_PACK_LOCAL
+        && editor_id.eq_ignore_ascii_case("TechaticupNCRRenoldsDialoguePackage");
+    (exact_patrol || exact_escape || exact_dialogue).then_some(plugin)
+}
+
 fn parse_union(
     field: &FieldEntry,
     field_index: usize,
+    raw_reference_plugin: Option<&str>,
     interner: &StringInterner,
 ) -> Result<LegacyPackUnionInventory, LegacyPackRejectionReason> {
     let is_location = matches!(&field.sig.0, b"PLDT" | b"PLD2");
@@ -791,55 +2013,82 @@ fn parse_union(
     } else {
         LEGACY_TARGET_LEN
     };
-    let (type_code, payload_value, payload_is_reference, radius_or_distance, trailing_nonzero) =
-        match &field.value {
-            FieldValue::Bytes(bytes) if bytes.len() == expected_size => (
-                read_u32(bytes, 0),
-                read_u32(bytes, 4),
-                false,
+    let (
+        type_code,
+        payload_value,
+        payload_is_reference,
+        source_form_key,
+        radius_or_distance,
+        trailing_nonzero,
+    ) = match &field.value {
+        FieldValue::Bytes(bytes) if bytes.len() == expected_size => {
+            let type_code = read_u32(bytes, 0);
+            let payload_value = read_u32(bytes, 4);
+            let reference_typed = if is_location {
+                matches!(type_code, 0 | 1 | 4)
+            } else {
+                matches!(type_code, 0 | 1)
+            };
+            let source_form_key = raw_reference_plugin
+                .filter(|_| {
+                    reference_typed && payload_value != 0 && payload_value & 0xFF00_0000 == 0
+                })
+                .map(|plugin| format!("{payload_value:06X}@{plugin}"));
+            (
+                type_code,
+                payload_value,
+                source_form_key.is_some(),
+                source_form_key,
                 read_i32(bytes, 8),
                 !is_location && read_u32(bytes, 12) != 0,
-            ),
-            FieldValue::Struct(fields) => {
-                let type_code = struct_u32(fields, "type", interner);
-                let payload = struct_field(fields, "location", interner)
-                    .or_else(|| struct_field(fields, "target", interner));
-                let radius = struct_i32(fields, "radius", interner)
-                    .or_else(|| struct_i32(fields, "count_distance", interner));
-                let Some((type_code, payload, radius_or_distance)) = type_code
-                    .zip(payload)
-                    .zip(radius)
-                    .map(|((a, b), c)| (a, b, c))
-                else {
-                    return Err(malformed(
-                        field.sig.as_str(),
-                        field_index,
-                        &[expected_size],
-                        None,
-                    ));
-                };
-                let payload_is_reference = matches!(payload, FieldValue::FormKey(_));
-                let payload_value =
-                    numeric_value(payload).unwrap_or(u64::from(payload_is_reference));
-                let trailing_nonzero =
-                    struct_field(fields, "unknown", interner).is_some_and(value_nonzero);
-                (
-                    type_code,
-                    u32::try_from(payload_value).unwrap_or(u32::MAX),
-                    payload_is_reference,
-                    radius_or_distance,
-                    trailing_nonzero,
-                )
-            }
-            other => {
+            )
+        }
+        FieldValue::Struct(fields) => {
+            let type_code = struct_u32(fields, "type", interner);
+            let payload = struct_field(fields, "location", interner)
+                .or_else(|| struct_field(fields, "target", interner));
+            let radius = struct_i32(fields, "radius", interner)
+                .or_else(|| struct_i32(fields, "count_distance", interner));
+            let Some((type_code, payload, radius_or_distance)) = type_code
+                .zip(payload)
+                .zip(radius)
+                .map(|((a, b), c)| (a, b, c))
+            else {
                 return Err(malformed(
                     field.sig.as_str(),
                     field_index,
                     &[expected_size],
-                    value_size(other, interner),
+                    None,
                 ));
-            }
-        };
+            };
+            let payload_is_reference = matches!(payload, FieldValue::FormKey(_));
+            let source_form_key = match payload {
+                FieldValue::FormKey(form_key) if form_key.local != 0 => {
+                    Some(form_key.format(interner))
+                }
+                _ => None,
+            };
+            let payload_value = numeric_value(payload).unwrap_or(u64::from(payload_is_reference));
+            let trailing_nonzero =
+                struct_field(fields, "unknown", interner).is_some_and(value_nonzero);
+            (
+                type_code,
+                u32::try_from(payload_value).unwrap_or(u32::MAX),
+                payload_is_reference,
+                source_form_key,
+                radius_or_distance,
+                trailing_nonzero,
+            )
+        }
+        other => {
+            return Err(malformed(
+                field.sig.as_str(),
+                field_index,
+                &[expected_size],
+                value_size(other, interner),
+            ));
+        }
+    };
 
     let (union_kind, payload) = if is_location {
         let location_type = match type_code {
@@ -864,6 +2113,7 @@ fn parse_union(
             | LegacyPackLocationType::InCell
             | LegacyPackLocationType::ObjectId => LegacyPackUnionPayload::Reference {
                 present: payload_is_reference || payload_value != 0,
+                source_form_key,
             },
             LegacyPackLocationType::ObjectType => LegacyPackUnionPayload::ObjectType {
                 value: payload_value,
@@ -892,6 +2142,7 @@ fn parse_union(
             LegacyPackTargetType::SpecificReference | LegacyPackTargetType::ObjectId => {
                 LegacyPackUnionPayload::Reference {
                     present: payload_is_reference || payload_value != 0,
+                    source_form_key,
                 }
             }
             LegacyPackTargetType::ObjectType => LegacyPackUnionPayload::ObjectType {
@@ -1009,10 +2260,22 @@ fn parse_script_block(
         .first()
         .and_then(|field| value_size(&field.value, interner))
         .unwrap_or(0);
+    let compiled_payload = compiled
+        .first()
+        .and_then(|field| match &field.value {
+            FieldValue::Bytes(bytes) => Some(bytes.to_vec()),
+            _ => None,
+        })
+        .unwrap_or_default();
     let source_payload_size = sources
         .first()
         .and_then(|field| value_size(&field.value, interner))
         .unwrap_or(0);
+    let source_text = sources.first().and_then(|field| match &field.value {
+        FieldValue::Bytes(bytes) => std::str::from_utf8(bytes).ok().map(str::to_owned),
+        FieldValue::String(value) => interner.resolve(*value).map(str::to_owned),
+        _ => None,
+    });
     let local_variable_rows = fields
         .iter()
         .filter(|field| field.sig.0 == *b"SLSD")
@@ -1029,6 +2292,20 @@ fn parse_script_block(
         .iter()
         .filter(|field| field.sig.0 == *b"SCRV")
         .count();
+    let idle_present = fields
+        .iter()
+        .any(|field| field.sig.0 == *b"INAM" && value_nonzero(&field.value));
+    let topic_present = fields
+        .iter()
+        .any(|field| field.sig.0 == *b"TNAM" && value_nonzero(&field.value));
+    let requires_port = compiled_payload_size != 0
+        || source_payload_size != 0
+        || local_variable_rows != 0
+        || named_local_variables != 0
+        || global_references != 0
+        || local_references != 0
+        || idle_present
+        || topic_present;
     Ok(LegacyPackScriptInventory {
         event,
         header_size: LEGACY_SCHR_LEN,
@@ -1041,8 +2318,11 @@ fn parse_script_block(
         named_local_variables,
         global_references,
         local_references,
-        idle_present: fields.iter().any(|field| field.sig.0 == *b"INAM"),
-        topic_present: fields.iter().any(|field| field.sig.0 == *b"TNAM"),
+        idle_present,
+        topic_present,
+        requires_port,
+        compiled_payload,
+        source_text,
         compiled_size_matches: declared_compiled_size as usize == compiled_payload_size,
         reference_count_matches: declared_reference_count as usize
             == global_references + local_references,
@@ -1086,9 +2366,11 @@ fn classify_type_specific(
     rejections: &mut Vec<LegacyPackRejectionReason>,
 ) -> (
     Vec<LegacyPackSubrecordInventory>,
+    Option<LegacyPackPatrolData>,
     Option<LegacyPackUseWeaponData>,
 ) {
     let mut inventory = Vec::new();
+    let mut patrol = None;
     let mut use_weapon = None;
     for sig in TYPE_SPECIFIC_SIGS {
         let matches = record
@@ -1130,13 +2412,47 @@ fn classify_type_specific(
                 Err(reason) => rejections.push(reason),
             }
         }
+        if sig == *b"PKPT" && matches.len() == 1 {
+            match parse_patrol_data(&matches[0].1.value, matches[0].0, interner) {
+                Ok(decoded) => patrol = Some(decoded),
+                Err(reason) => rejections.push(reason),
+            }
+        }
         inventory.push(LegacyPackSubrecordInventory {
             sig: sig_text(sig),
             count: matches.len(),
             observed_sizes,
         });
     }
-    (inventory, use_weapon)
+    (inventory, patrol, use_weapon)
+}
+
+fn parse_patrol_data(
+    value: &FieldValue,
+    field_index: usize,
+    interner: &StringInterner,
+) -> Result<LegacyPackPatrolData, LegacyPackRejectionReason> {
+    match value {
+        FieldValue::Bytes(bytes) if bytes.len() == 2 => Ok(LegacyPackPatrolData {
+            repeatable: bytes[0] != 0,
+            unused_byte_nonzero: bytes[1] != 0,
+        }),
+        FieldValue::Struct(fields) => {
+            let Some(repeatable) = struct_u8(fields, "repeatable", interner) else {
+                return Err(malformed("PKPT", field_index, &[2], None));
+            };
+            Ok(LegacyPackPatrolData {
+                repeatable: repeatable != 0,
+                unused_byte_nonzero: struct_u8(fields, "unknown_u8_1", interner).unwrap_or(0) != 0,
+            })
+        }
+        other => Err(malformed(
+            "PKPT",
+            field_index,
+            &[2],
+            value_size(other, interner),
+        )),
+    }
 }
 
 fn parse_use_weapon(
@@ -1480,7 +2796,14 @@ fn read_i32(bytes: &[u8], offset: usize) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formkey_mapper::MapperOptions;
     use crate::ids::{FormKey, SigCode, SubrecordSig};
+    use crate::schema::AuthoringSchema;
+    use esp_authoring_core::plugin_runtime::{
+        ParsedItem, ParsedRecord, plugin_handle_add_master_native, plugin_handle_close_native,
+        plugin_handle_load_no_py, plugin_handle_new_no_py, plugin_handle_save_no_py,
+        plugin_handle_store_ref,
+    };
     use smallvec::SmallVec;
 
     fn record(interner: &StringInterner, local: u32, plugin: &str, eid: &str) -> Record {
@@ -1516,6 +2839,281 @@ mod tests {
         bytes[..4].copy_from_slice(&[0xFF, 0xFF, 15, 8]);
         bytes[4..].copy_from_slice(&6_i32.to_le_bytes());
         field(b"PSDT", &bytes)
+    }
+
+    fn exact_pkdt(
+        package_type: LegacyPackType,
+        general_flags: u32,
+        behavior_flags: u16,
+        type_specific_flags: u16,
+        unused_1: u8,
+        unused_2: u16,
+    ) -> FieldEntry {
+        let mut bytes = [0_u8; LEGACY_PKDT_LEN];
+        bytes[..4].copy_from_slice(&general_flags.to_le_bytes());
+        bytes[4] = package_type.code();
+        bytes[5] = unused_1;
+        bytes[6..8].copy_from_slice(&behavior_flags.to_le_bytes());
+        bytes[8..10].copy_from_slice(&type_specific_flags.to_le_bytes());
+        bytes[10..12].copy_from_slice(&unused_2.to_le_bytes());
+        field(b"PKDT", &bytes)
+    }
+
+    fn all_day_schedule() -> FieldEntry {
+        let mut bytes = [0_u8; LEGACY_PSDT_LEN];
+        bytes[..4].copy_from_slice(&[u8::MAX, u8::MAX, 0, u8::MAX]);
+        field(b"PSDT", &bytes)
+    }
+
+    fn push_empty_legacy_events(record: &mut Record) {
+        for marker in [b"POBA", b"POEA", b"POCA"] {
+            record.fields.extend(empty_script(marker));
+        }
+    }
+
+    fn push_force_greet_inputs(record: &mut Record, interner: &StringInterner) {
+        let mut push_input = |kind: &str, sig: &[u8; 4], data: &[u8]| {
+            push_string(record, b"ANAM", kind, interner);
+            record.fields.push(field(sig, data));
+        };
+        push_input("Topic", b"PDTO", &[1, 0, 0, 0, b'H', b'E', b'L', b'O']);
+        push_input(
+            "Location",
+            b"PLDT",
+            &[0x0C, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+        );
+        push_input(
+            "Location",
+            b"PLDT",
+            &[0x0C, 0, 0, 0, 0, 0, 0, 0, 0xB8, 0x0B, 0, 0, 0, 0, 0, 0],
+        );
+        push_input(
+            "Location",
+            b"PLDT",
+            &[0, 0, 0, 0, 0x14, 0, 0, 0, 0x80, 0, 0, 0, 0, 0, 0, 0],
+        );
+        push_input("Bool", b"CNAM", &[1]);
+        push_input(
+            "SingleRef",
+            b"PTDA",
+            &[0, 0, 0, 0, 0x14, 0, 0, 0, 0, 0, 0, 0],
+        );
+        push_input(
+            "Location",
+            b"PLDT",
+            &[0, 0, 0, 0, 0x14, 0, 0, 0, 0x88, 0x13, 0, 0, 0, 0, 0],
+        );
+        for value in [1_u8, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0] {
+            push_input("Bool", b"CNAM", &[value]);
+        }
+        push_input(
+            "TargetSelector",
+            b"PTDA",
+            &[2, 0, 0, 0, 0x14, 0, 0, 0, 0, 0, 0, 0],
+        );
+        push_input("Float", b"CNAM", &[0; 4]);
+        push_input("Int", b"CNAM", &[0; 4]);
+        push_input(
+            "TargetSelector",
+            b"PTDA",
+            &[2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
+        for index in FO4_FORCE_GREET_UNAM {
+            record.fields.push(field(b"UNAM", &[index]));
+        }
+        record.fields.push(field(b"XNAM", &[0x0C]));
+    }
+
+    fn signature_order(record: &Record) -> Vec<String> {
+        record
+            .fields
+            .iter()
+            .map(|field| field.sig.as_str().to_string())
+            .collect()
+    }
+
+    fn string_field_values(
+        record: &Record,
+        sig: &[u8; 4],
+        interner: &StringInterner,
+    ) -> Vec<String> {
+        record
+            .fields
+            .iter()
+            .filter_map(|field| {
+                if field.sig.0 != *sig {
+                    return None;
+                }
+                let FieldValue::String(value) = &field.value else {
+                    return None;
+                };
+                interner.resolve(*value).map(str::to_owned)
+            })
+            .collect()
+    }
+
+    fn one_byte_field_values(record: &Record, sig: &[u8; 4]) -> Vec<u8> {
+        record
+            .fields
+            .iter()
+            .filter_map(|field| {
+                if field.sig.0 != *sig {
+                    return None;
+                }
+                let FieldValue::Bytes(bytes) = &field.value else {
+                    return None;
+                };
+                (bytes.len() == 1).then_some(bytes[0])
+            })
+            .collect()
+    }
+
+    fn find_parsed_record<'a>(
+        items: &'a [ParsedItem],
+        signature: &str,
+        local: u32,
+    ) -> Option<&'a ParsedRecord> {
+        for item in items {
+            match item {
+                ParsedItem::Record(record)
+                    if record.signature.as_str() == signature
+                        && (record.form_id & 0x00FF_FFFF) == local =>
+                {
+                    return Some(record);
+                }
+                ParsedItem::Group(group) => {
+                    if let Some(record) = find_parsed_record(&group.children, signature, local) {
+                        return Some(record);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn assert_pack_editor_ids_survive_save_reopen(
+        records: &[(&Record, &str, u32)],
+        interner: &StringInterner,
+    ) {
+        let schema = AuthoringSchema::for_game("fo4").expect("FO4 schema loads");
+        let handle = plugin_handle_new_no_py(AUDITED_SOURCE_PLUGIN, Some("fo4"));
+        let masters = [
+            "Fallout4.esm",
+            "DLCRobot.esm",
+            "DLCworkshop01.esm",
+            "DLCCoast.esm",
+            "DLCworkshop02.esm",
+            "DLCworkshop03.esm",
+            "DLCNukaWorld.esm",
+        ];
+        for master in masters {
+            plugin_handle_add_master_native(handle, master, None).expect("add FO4 target master");
+        }
+        for (record, expected_editor_id, expected_template_local) in records {
+            assert_eq!(record.fields[0].sig.0, *b"EDID");
+            assert!(matches!(
+                &record.fields[0].value,
+                FieldValue::String(value) if interner.resolve(*value) == Some(*expected_editor_id)
+            ));
+            let counter = record
+                .fields
+                .iter()
+                .find(|field| field.sig.0 == *b"PKCU")
+                .expect("typed PKCU");
+            let FieldValue::Struct(counter) = &counter.value else {
+                panic!("PKCU must retain typed FormKey ownership before save");
+            };
+            assert!(matches!(
+                struct_field(counter, "package_template", interner),
+                Some(FieldValue::FormKey(FormKey { local, plugin }))
+                    if *local == *expected_template_local
+                        && interner.resolve(*plugin).is_some_and(|name| name.eq_ignore_ascii_case("Fallout4.esm"))
+            ));
+            crate::target_write::add_record_native(handle, (*record).clone(), &schema, interner)
+                .expect("insert PACK");
+        }
+
+        let directory = tempfile::tempdir().expect("temp output");
+        let path = directory.path().join(AUDITED_SOURCE_PLUGIN);
+        plugin_handle_save_no_py(handle, path.to_str().unwrap()).expect("save PACK plugin");
+        assert!(plugin_handle_close_native(handle));
+        let reopened =
+            plugin_handle_load_no_py(path.to_str().unwrap(), Some("fo4"), None, None, true)
+                .expect("reopen PACK plugin");
+        let store = plugin_handle_store_ref().lock().unwrap();
+        let slot = store.get(&reopened).expect("reopened slot");
+        assert_eq!(
+            slot.parsed
+                .header
+                .masters
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            masters
+        );
+        for (record, expected_editor_id, expected_template_local) in records {
+            let parsed = find_parsed_record(&slot.parsed.root_items, "PACK", record.form_key.local)
+                .expect("saved PACK");
+            assert_eq!(
+                parsed
+                    .subrecords
+                    .iter()
+                    .filter(|subrecord| subrecord.signature.as_str() == "EDID")
+                    .count(),
+                1
+            );
+            let first = parsed.subrecords.first().expect("first PACK subrecord");
+            assert_eq!(first.signature.as_str(), "EDID");
+            let bytes = first.data.as_ref();
+            assert_eq!(
+                std::str::from_utf8(bytes.strip_suffix(&[0]).unwrap_or(bytes)).unwrap(),
+                *expected_editor_id
+            );
+            let counter = parsed
+                .subrecords
+                .iter()
+                .find(|subrecord| subrecord.signature.as_str() == "PKCU")
+                .expect("saved PKCU");
+            assert_eq!(counter.data.len(), 12);
+            assert_eq!(read_u32(counter.data.as_ref(), 4), *expected_template_local);
+            if *expected_template_local == FO4_FORCE_GREET_TEMPLATE_LOCAL {
+                let saved_unions = parsed
+                    .subrecords
+                    .iter()
+                    .filter(|subrecord| matches!(subrecord.signature.as_str(), "PLDT" | "PTDA"))
+                    .collect::<Vec<_>>();
+                let canonical = canonical_force_greet_union_fields();
+                assert_eq!(saved_unions.len(), canonical.len());
+                for (saved, (expected_sig, expected_data)) in
+                    saved_unions.into_iter().zip(canonical)
+                {
+                    assert_eq!(saved.signature.as_str().as_bytes(), expected_sig);
+                    assert_eq!(saved.data.as_ref(), expected_data);
+                }
+                let saved_unam = parsed
+                    .subrecords
+                    .iter()
+                    .filter(|subrecord| subrecord.signature.as_str() == "UNAM")
+                    .map(|subrecord| subrecord.data.as_ref())
+                    .collect::<Vec<_>>();
+                assert_eq!(saved_unam.len(), FO4_FORCE_GREET_UNAM.len());
+                assert!(
+                    saved_unam
+                        .iter()
+                        .zip(FO4_FORCE_GREET_UNAM)
+                        .all(|(saved, expected)| *saved == [expected])
+                );
+            }
+        }
+        drop(store);
+        assert!(plugin_handle_close_native(reopened));
+    }
+
+    fn inventory(record: &Record, interner: &StringInterner) -> LegacyPackInventory {
+        let report = classify_legacy_pack(record, LegacyPackSourceFamily::Fnv, interner);
+        assert_eq!(report.status, LegacyPackClassificationStatus::Accepted);
+        report.inventory.expect("accepted inventory")
     }
 
     fn location(sig: &[u8; 4], kind: u32, value: u32, radius: i32) -> FieldEntry {
@@ -1620,6 +3218,7 @@ mod tests {
                 assert_eq!(inventory.pkdt.observed_size, LEGACY_PKDT_LEN);
                 assert_eq!(inventory.schedule.observed_size, LEGACY_PSDT_LEN);
                 assert_eq!(inventory.scripts.len(), 1);
+                assert!(!inventory.scripts[0].requires_port);
                 assert!(!inventory.support.lowering_supported);
                 if package_type == LegacyPackType::UseWeapon {
                     assert!(inventory.use_weapon_data.is_some());
@@ -1725,7 +3324,7 @@ mod tests {
                 sig: SubrecordSig(*b"CIS1"),
                 value: FieldValue::String(interner.intern("parameter one")),
             },
-            field(b"CTDA", &[0; LEGACY_CTDA_LEN]),
+            field(b"CTDA", &RENOLDS_GET_STAGE_CTDA),
             FieldEntry {
                 sig: SubrecordSig(*b"CIS2"),
                 value: FieldValue::String(interner.intern("parameter two")),
@@ -1836,6 +3435,556 @@ mod tests {
             assert!(report.inventory.is_none());
             assert_eq!(format!("{:?}", record.fields), before);
         }
+    }
+
+    #[test]
+    fn vtechatticup_pack_goldens_lower_only_verified_travel_and_patrol_shapes() {
+        let interner = StringInterner::new();
+        let merged = "FalloutNV.esm";
+
+        let mut hostage_travel = record(&interner, 0x1231B7, merged, "TecMineHostagePackage");
+        hostage_travel.fields.extend([
+            exact_pkdt(LegacyPackType::Travel, 0x0400_1206, 0x20, 55, 0, 877),
+            location(b"PLDT", 6, 0, 0),
+            all_day_schedule(),
+        ]);
+        push_empty_legacy_events(&mut hostage_travel);
+
+        let mut renolds_patrol = record(
+            &interner,
+            0x133F3E,
+            merged,
+            "TechaticupNCRRenoldsPatrolPackage",
+        );
+        renolds_patrol.fields.extend([
+            exact_pkdt(LegacyPackType::Patrol, 0, 0, 0, 0, 3),
+            location(b"PLDT", 0, 0x133F3D, 0),
+            all_day_schedule(),
+            field(b"PKPT", &[0, 0]),
+        ]);
+        push_empty_legacy_events(&mut renolds_patrol);
+
+        let mut hostage_escape = record(&interner, 0x1231B6, merged, "TecMineHostageEscape");
+        hostage_escape.fields.extend([
+            exact_pkdt(LegacyPackType::Patrol, 0x0408_3206, 0x20, 0, 103, 21_572),
+            location(b"PLDT", 0, 0x0E70CA, 0),
+            all_day_schedule(),
+            field(b"PKPT", &[0, 0]),
+        ]);
+        hostage_escape.fields.extend(empty_script(b"POBA"));
+        let mut header = [0_u8; LEGACY_SCHR_LEN];
+        header[4..8].copy_from_slice(&1_u32.to_le_bytes());
+        header[8..12].copy_from_slice(&10_u32.to_le_bytes());
+        header[12..16].copy_from_slice(&1_u32.to_le_bytes());
+        hostage_escape.fields.extend([
+            field(b"POEA", &[]),
+            field(b"SCHR", &header),
+            field(b"SCDA", &[0x1C, 0, 1, 0, 0x22, 0x10, 2, 0, 0, 0]),
+            field(b"SCTX", b"ref hostage\r\nhostage.disable"),
+            field(b"SLSD", &[0; 24]),
+            FieldEntry {
+                sig: SubrecordSig(*b"SCVR"),
+                value: FieldValue::String(interner.intern("hostage")),
+            },
+            FieldEntry {
+                sig: SubrecordSig(*b"SCRV"),
+                value: FieldValue::Uint(1),
+            },
+        ]);
+        hostage_escape.fields.extend(empty_script(b"POCA"));
+
+        let mut renolds_dialogue = record(
+            &interner,
+            0x13289E,
+            merged,
+            "TechaticupNCRRenoldsDialoguePackage",
+        );
+        renolds_dialogue.fields.extend([
+            exact_pkdt(LegacyPackType::Dialogue, 0x2000, 0, 0, 0, 0),
+            all_day_schedule(),
+            target(b"PTDT", 0, 0x0000_14, 128),
+            field(b"CTDA", &[0; LEGACY_CTDA_LEN]),
+            field(b"PKDD", &[0; 24]),
+        ]);
+        push_empty_legacy_events(&mut renolds_dialogue);
+
+        let inventories = [
+            inventory(&hostage_travel, &interner),
+            inventory(&renolds_patrol, &interner),
+            inventory(&hostage_escape, &interner),
+            inventory(&renolds_dialogue, &interner),
+        ];
+        assert!(inventories[0].support.lowering_supported);
+        assert!(inventories[1].support.lowering_supported);
+        assert!(inventories[2].support.lowering_supported);
+        assert!(!inventories[3].support.lowering_supported);
+        assert_eq!(inventories[0].pkdt.unused_1, 0);
+        assert_eq!(inventories[0].pkdt.unused_2, 877);
+        assert_eq!(inventories[1].pkdt.unused_1, 0);
+        assert_eq!(inventories[1].pkdt.unused_2, 3);
+        assert_eq!(inventories[2].pkdt.unused_1, 103);
+        assert_eq!(inventories[2].pkdt.unused_2, 21_572);
+        assert!(matches!(
+            &inventories[1].unions[0].payload,
+            LegacyPackUnionPayload::Reference {
+                present: true,
+                source_form_key: Some(source),
+            } if source == "133F3D@FalloutNV.esm"
+        ));
+        assert!(matches!(
+            &inventories[2].unions[0].payload,
+            LegacyPackUnionPayload::Reference {
+                present: true,
+                source_form_key: Some(source),
+            } if source == "0E70CA@FalloutNV.esm"
+        ));
+        assert!(
+            inventories
+                .iter()
+                .all(|inventory| inventory.schedule.date == 0)
+        );
+        let mut wrong_plugin_record = hostage_travel.clone();
+        wrong_plugin_record.form_key.plugin = interner.intern("FalloutNV.esm");
+        assert!(
+            !inventory(&wrong_plugin_record, &interner)
+                .support
+                .lowering_supported
+        );
+        assert!(
+            inventories[2]
+                .scripts
+                .iter()
+                .any(|script| script.requires_port)
+        );
+        assert_eq!(
+            inventories[1].patrol_data.as_ref().unwrap().repeatable,
+            false
+        );
+
+        let remapped_patrol_start = FormKey {
+            local: 0x00AB_CDEF,
+            plugin: interner.intern("FalloutNV.esm"),
+        };
+        let remapped_escape_start = FormKey {
+            local: 0x00AB_CDF0,
+            plugin: interner.intern("FalloutNV.esm"),
+        };
+        let mapper = |source: &str| match source {
+            "133F3D@FalloutNV.esm" => Some(remapped_patrol_start),
+            "0E70CA@FalloutNV.esm" => Some(remapped_escape_start),
+            _ => None,
+        };
+        let lowerer = VerifiedFo4LegacyPackLowerer::new(&interner, mapper);
+        let results = inventories
+            .iter()
+            .map(|inventory| lowerer.lower_supported_legacy_pack(inventory))
+            .collect::<Vec<_>>();
+
+        let summary = summarize_legacy_pack_lowering_results(&results);
+        assert_eq!(summary.attempted_records, 4);
+        assert_eq!(summary.lowered_records, 3);
+        assert_eq!(summary.blocked_records, 1);
+        assert_eq!(
+            summary.blockers,
+            BTreeMap::from([("legacy_conditions_require_semantic_lowering".to_string(), 1)])
+        );
+
+        let travel = results[0].as_ref().expect("verified travel lowers");
+        let travel_pkdt = travel
+            .fields
+            .iter()
+            .find(|field| field.sig.0 == *b"PKDT")
+            .expect("PKDT");
+        let FieldValue::Bytes(travel_pkdt) = &travel_pkdt.value else {
+            panic!("target PKDT is raw target-layout bytes");
+        };
+        assert_eq!(read_u32(travel_pkdt, 0), 0x204);
+        assert_eq!(travel_pkdt[4], 18);
+        assert_eq!(travel_pkdt[5], 0);
+        assert_eq!(travel_pkdt[6], 2);
+        assert_eq!(read_u16(travel_pkdt, 8), 0x20);
+        assert_eq!(read_u16(travel_pkdt, 10), 0);
+        let travel_schedule = travel
+            .fields
+            .iter()
+            .find(|field| field.sig.0 == *b"PSDT")
+            .expect("PSDT");
+        let FieldValue::Bytes(travel_schedule) = &travel_schedule.value else {
+            panic!("target PSDT is raw target-layout bytes");
+        };
+        assert_eq!(travel_schedule[2], 0);
+        assert_eq!(
+            travel
+                .fields
+                .iter()
+                .filter(|field| field.sig.0 == *b"PDTO")
+                .count(),
+            3
+        );
+        assert_eq!(
+            string_field_values(travel, b"ANAM", &interner),
+            ["Location", "Bool", "Bool", "Bool"]
+        );
+        assert_eq!(one_byte_field_values(travel, b"UNAM"), [1, 3, 5, 7]);
+        assert_eq!(one_byte_field_values(travel, b"XNAM"), [0x08]);
+        assert_eq!(
+            signature_order(travel),
+            [
+                "EDID", "PKDT", "PSDT", "PKCU", "ANAM", "PLDT", "ANAM", "CNAM", "ANAM", "CNAM",
+                "ANAM", "CNAM", "UNAM", "UNAM", "UNAM", "UNAM", "XNAM", "POBA", "INAM", "PDTO",
+                "POEA", "INAM", "PDTO", "POCA", "INAM", "PDTO",
+            ]
+        );
+
+        let schema = AuthoringSchema::for_game("fo4").expect("FO4 schema loads");
+        let travel_counter = travel
+            .fields
+            .iter()
+            .find(|field| field.sig.0 == *b"PKCU")
+            .expect("travel PKCU");
+        let encoded_travel_counter = crate::target_write::encode_field_pub(
+            travel_counter,
+            schema.record_def("PACK"),
+            &interner,
+        )
+        .expect("travel PKCU encodes");
+        assert_eq!(encoded_travel_counter.len(), 12);
+        assert_eq!(read_u32(&encoded_travel_counter, 0), 4);
+        assert_eq!(
+            read_u32(&encoded_travel_counter, 4),
+            FO4_TRAVEL_TEMPLATE_LOCAL
+        );
+        assert_eq!(read_u32(&encoded_travel_counter, 8), 1);
+
+        let patrol = results[1].as_ref().expect("verified patrol lowers");
+        let patrol_target = patrol
+            .fields
+            .iter()
+            .find(|field| field.sig.0 == *b"PTDA")
+            .expect("patrol PTDA");
+        let encoded_patrol_target = crate::target_write::encode_field_pub(
+            patrol_target,
+            schema.record_def("PACK"),
+            &interner,
+        )
+        .expect("patrol PTDA encodes");
+        assert_eq!(encoded_patrol_target.len(), 12);
+        assert_eq!(read_u32(&encoded_patrol_target, 0), 0);
+        assert_eq!(
+            read_u32(&encoded_patrol_target, 4),
+            remapped_patrol_start.local
+        );
+        assert_eq!(
+            patrol
+                .fields
+                .iter()
+                .filter_map(|field| match &field.value {
+                    FieldValue::Bool(value) => Some(*value),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![false, false, false, false]
+        );
+        assert_eq!(
+            string_field_values(patrol, b"ANAM", &interner),
+            [
+                "SingleRef",
+                "Float",
+                "Bool",
+                "Bool",
+                "Bool",
+                "Bool",
+                "Float",
+            ]
+        );
+        assert_eq!(
+            one_byte_field_values(patrol, b"UNAM"),
+            [0, 1, 2, 4, 6, 8, 10]
+        );
+        assert_eq!(one_byte_field_values(patrol, b"XNAM"), [0x0B]);
+        assert_eq!(
+            signature_order(patrol),
+            [
+                "EDID", "PKDT", "PSDT", "PKCU", "ANAM", "PTDA", "ANAM", "CNAM", "ANAM", "CNAM",
+                "ANAM", "CNAM", "ANAM", "CNAM", "ANAM", "CNAM", "ANAM", "CNAM", "UNAM", "UNAM",
+                "UNAM", "UNAM", "UNAM", "UNAM", "UNAM", "XNAM", "POBA", "INAM", "PDTO", "POEA",
+                "INAM", "PDTO", "POCA", "INAM", "PDTO",
+            ]
+        );
+
+        let patrol_counter = patrol
+            .fields
+            .iter()
+            .find(|field| field.sig.0 == *b"PKCU")
+            .expect("patrol PKCU");
+        let encoded_patrol_counter = crate::target_write::encode_field_pub(
+            patrol_counter,
+            schema.record_def("PACK"),
+            &interner,
+        )
+        .expect("patrol PKCU encodes");
+        assert_eq!(read_u32(&encoded_patrol_counter, 0), 7);
+        assert_eq!(
+            read_u32(&encoded_patrol_counter, 4),
+            FO4_PATROL_TEMPLATE_LOCAL
+        );
+        assert_eq!(read_u32(&encoded_patrol_counter, 8), 2);
+
+        let escape = results[2]
+            .as_ref()
+            .expect("audited hostage escape lowers with alias OnPackageEnd contract");
+        assert_eq!(
+            escape
+                .fields
+                .iter()
+                .filter(|field| field.sig.0 == *b"POEA")
+                .count(),
+            1
+        );
+        assert_pack_editor_ids_survive_save_reopen(
+            &[
+                (travel, "TecMineHostagePackage", FO4_TRAVEL_TEMPLATE_LOCAL),
+                (
+                    patrol,
+                    "TechaticupNCRRenoldsPatrolPackage",
+                    FO4_PATROL_TEMPLATE_LOCAL,
+                ),
+                (escape, "TecMineHostageEscape", FO4_PATROL_TEMPLATE_LOCAL),
+            ],
+            &interner,
+        );
+        assert!(matches!(
+            &results[3],
+            Err(LegacyPackLoweringError::ConditionsRequirePort { count: 1 })
+        ));
+
+        let no_mapper = VerifiedFo4LegacyPackLowerer::new(&interner, |_source: &str| None);
+        assert!(matches!(
+            no_mapper.lower_supported_legacy_pack(&inventories[1]),
+            Err(LegacyPackLoweringError::ReferenceRemapFailed { .. })
+        ));
+        let mut unresolved_patrol = inventories[1].clone();
+        unresolved_patrol.unions[0].payload = LegacyPackUnionPayload::Reference {
+            present: true,
+            source_form_key: None,
+        };
+        assert!(matches!(
+            lowerer.lower_supported_legacy_pack(&unresolved_patrol),
+            Err(LegacyPackLoweringError::UnresolvedEncodedReference { .. })
+        ));
+
+        let mut wrong_plugin = inventories[0].clone();
+        wrong_plugin.form_key = "1231B7@FalloutNV.esm".to_string();
+        assert!(matches!(
+            lowerer.lower_supported_legacy_pack(&wrong_plugin),
+            Err(LegacyPackLoweringError::UnsupportedPackageShape { .. })
+        ));
+
+        let mut ambiguous_reference_record = renolds_patrol.clone();
+        ambiguous_reference_record
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.0 == *b"PLDT")
+            .expect("raw PLDT")
+            .value = location(b"PLDT", 0, 0x0113_3F3D, 0).value;
+        let ambiguous_reference = inventory(&ambiguous_reference_record, &interner);
+        assert!(matches!(
+            &ambiguous_reference.unions[0].payload,
+            LegacyPackUnionPayload::Reference {
+                present: true,
+                source_form_key: None,
+            }
+        ));
+        assert!(matches!(
+            lowerer.lower_supported_legacy_pack(&ambiguous_reference),
+            Err(LegacyPackLoweringError::UnresolvedEncodedReference { .. })
+        ));
+    }
+
+    #[test]
+    fn renolds_dialogue_clones_verified_force_greet_and_normalizes_getstage() {
+        let interner = StringInterner::new();
+        let merged = "FalloutNV.esm";
+        let mut source = record(
+            &interner,
+            RENOLDS_DIALOGUE_PACK_LOCAL,
+            merged,
+            "TechaticupNCRRenoldsDialoguePackage",
+        );
+        source.fields.extend([
+            exact_pkdt(LegacyPackType::Dialogue, 0x2000, 0, 0, 0, 0),
+            all_day_schedule(),
+            target(b"PTDT", 0, 0x0000_14, 128),
+            field(b"CTDA", &RENOLDS_GET_STAGE_CTDA),
+            field(b"PKDD", &[0; 24]),
+        ]);
+        push_empty_legacy_events(&mut source);
+        let mut ambiguous_source = source.clone();
+        ambiguous_source
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.0 == *b"PTDT")
+            .expect("raw PTDT")
+            .value = target(b"PTDT", 0, 0x0100_0014, 128).value;
+        let ambiguous_source = inventory(&ambiguous_source, &interner);
+        assert!(matches!(
+            &ambiguous_source.unions[0].payload,
+            LegacyPackUnionPayload::Reference {
+                present: true,
+                source_form_key: None,
+            }
+        ));
+        assert!(validate_audited_renolds_dialogue(&ambiguous_source).is_err());
+        let source = inventory(&source, &interner);
+        assert!(matches!(
+            &source.unions[0].payload,
+            LegacyPackUnionPayload::Reference {
+                present: true,
+                source_form_key: Some(player),
+            } if player == "000014@FalloutNV.esm"
+        ));
+
+        let mut donor = record(
+            &interner,
+            FO4_FORCE_GREET_DONOR_LOCAL,
+            "Fallout4.esm",
+            "RETravelCC01_Forcegreet",
+        );
+        push_string(&mut donor, b"EDID", "RETravelCC01_Forcegreet", &interner);
+        let mut donor_counter = Vec::with_capacity(12);
+        donor_counter.extend_from_slice(&24_u32.to_le_bytes());
+        donor_counter.extend_from_slice(&FO4_FORCE_GREET_TEMPLATE_LOCAL.to_le_bytes());
+        donor_counter.extend_from_slice(&11_u32.to_le_bytes());
+        push_bytes(&mut donor, b"PKCU", donor_counter);
+        push_force_greet_inputs(&mut donor, &interner);
+        for field in donor
+            .fields
+            .iter_mut()
+            .filter(|field| field.sig.0 == *b"UNAM")
+        {
+            let FieldValue::Bytes(bytes) = &field.value else {
+                panic!("fixture UNAM starts raw");
+            };
+            field.value = FieldValue::Int(i64::from(bytes[0]));
+        }
+        push_empty_fo4_event_blocks(&mut donor);
+        let mut ambiguous_donor = donor.clone();
+        ambiguous_donor
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.0 == *b"PKCU")
+            .expect("raw PKCU")
+            .value = {
+            let mut bytes = Vec::with_capacity(12);
+            bytes.extend_from_slice(&24_u32.to_le_bytes());
+            bytes.extend_from_slice(&0x0101_7BAB_u32.to_le_bytes());
+            bytes.extend_from_slice(&11_u32.to_le_bytes());
+            FieldValue::Bytes(SmallVec::from_vec(bytes))
+        };
+        assert!(matches!(
+            validate_force_greet_donor(&ambiguous_donor, &interner),
+            Err(LegacyPackLoweringError::InvalidForceGreetDonor { .. })
+        ));
+        let mut wrong_union_donor = donor.clone();
+        wrong_union_donor
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.0 == *b"PLDT")
+            .expect("donor PLDT")
+            .sig = SubrecordSig(*b"PLD2");
+        assert!(matches!(
+            validate_force_greet_donor(&wrong_union_donor, &interner),
+            Err(LegacyPackLoweringError::InvalidForceGreetDonor { .. })
+        ));
+
+        let target_owner = FormKey {
+            local: 0x002000,
+            plugin: interner.intern("Converted.esm"),
+        };
+        let reference_mapper =
+            |source: &str| (source == "11F935@FalloutNV.esm").then_some(target_owner);
+        let lowerer = VerifiedFo4LegacyPackLowerer::new(&interner, reference_mapper);
+        let mut condition_mapper = FormKeyMapper::new(
+            std::iter::empty(),
+            MapperOptions {
+                output_plugin_name: "Converted.esm".into(),
+                source_plugin_name: merged.into(),
+                target_master_names: vec!["Fallout4.esm".into()],
+                ..MapperOptions::default()
+            },
+            &interner,
+        );
+        condition_mapper.add_mapping(
+            FormKey {
+                local: VTECHATTICUP_QUEST_LOCAL,
+                plugin: interner.intern(merged),
+            },
+            target_owner,
+        );
+
+        let output = lowerer
+            .lower_audited_renolds_dialogue_with_donor(&source, &mut condition_mapper, &donor)
+            .expect("audited ForceGreet lowers");
+        assert_eq!(output.form_key.local, RENOLDS_DIALOGUE_PACK_LOCAL);
+        assert_eq!(output.fields[0].sig.0, *b"EDID");
+        assert!(matches!(
+            &output.fields[0].value,
+            FieldValue::String(value)
+                if interner.resolve(*value) == Some("TechaticupNCRRenoldsDialoguePackage")
+        ));
+        assert_eq!(
+            output
+                .fields
+                .iter()
+                .filter(|field| field.sig.0 == *b"EDID")
+                .count(),
+            1
+        );
+        assert_pack_editor_ids_survive_save_reopen(
+            &[(
+                &output,
+                "TechaticupNCRRenoldsDialoguePackage",
+                FO4_FORCE_GREET_TEMPLATE_LOCAL,
+            )],
+            &interner,
+        );
+        assert_eq!(
+            output
+                .fields
+                .iter()
+                .filter(|field| field.sig.0 == *b"ANAM")
+                .count(),
+            24
+        );
+        assert!(output.fields.iter().any(|field| {
+            field.sig.0 == *b"QNAM" && field.value == FieldValue::FormKey(target_owner)
+        }));
+        let normalized = output
+            .fields
+            .iter()
+            .find(|field| field.sig.0 == *b"CTDA")
+            .expect("normalized CTDA");
+        let FieldValue::Bytes(bytes) = &normalized.value else {
+            panic!("normalized CTDA must remain raw");
+        };
+        assert_eq!(bytes.len(), super::super::fnv_conditions::FO4_CTDA_LEN);
+        assert_eq!(read_u16(bytes, 8), 58);
+        assert_ne!(read_u32(bytes, 12), VTECHATTICUP_QUEST_LOCAL);
+
+        let generic = lowerer.lower_supported_legacy_pack(&source);
+        assert!(matches!(
+            generic,
+            Err(LegacyPackLoweringError::ConditionsRequirePort { count: 1 })
+        ));
+        donor.form_key.local += 1;
+        assert!(matches!(
+            lowerer.lower_audited_renolds_dialogue_with_donor(
+                &source,
+                &mut condition_mapper,
+                &donor,
+            ),
+            Err(LegacyPackLoweringError::InvalidForceGreetDonor { .. })
+        ));
     }
 
     #[test]

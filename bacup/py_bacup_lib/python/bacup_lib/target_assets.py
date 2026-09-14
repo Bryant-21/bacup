@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import TYPE_CHECKING, Callable, Iterable
 
 from creation_lib.db.native_runtime import Database
+
+from bacup_lib.models import PhaseProgress
+
+if TYPE_CHECKING:
+    from bacup_lib.runner import ConversionRunner
 
 
 CATALOG_FILENAME = "fo4_target_assets.sqlite3"
@@ -50,6 +56,7 @@ def ensure_target_asset_catalog(
     game_build: str = "",
     workers: int | None = None,
     log: Callable[[str], None] | None = None,
+    runner: ConversionRunner | None = None,
 ) -> Path:
     """Build the FO4 target-asset catalog from the official BA2s if it is
     missing or built against an older schema, then return its path.
@@ -68,12 +75,33 @@ def ensure_target_asset_catalog(
             "Building FO4 target-asset catalog from official BA2s "
             f"(one-time, a few minutes): {catalog_path}"
         )
-    catalog_path.parent.mkdir(parents=True, exist_ok=True)
-    from bacup_lib.native_runtime import load_native_module
-
-    load_native_module().conversion_build_target_asset_catalog(
-        str(fo4_data_dir), str(catalog_path), game_build, workers
+    progress = PhaseProgress(
+        phase=0,
+        phase_name="Building FO4 target-asset catalog",
+        status="running",
+        current_item="Indexing official Fallout 4 archives; this can take a few minutes.",
     )
+    started = time.perf_counter()
+    if runner is not None:
+        runner.emit_phase_start(progress)
+    try:
+        catalog_path.parent.mkdir(parents=True, exist_ok=True)
+        from bacup_lib.native_runtime import load_native_module
+
+        load_native_module().conversion_build_target_asset_catalog(
+            str(fo4_data_dir), str(catalog_path), game_build, workers
+        )
+    except Exception as exc:
+        progress.status = "error"
+        progress.error = str(exc)
+        raise
+    else:
+        progress.status = "completed"
+        progress.current_item = ""
+    finally:
+        progress.elapsed_seconds = time.perf_counter() - started
+        if runner is not None:
+            runner.emit_phase_complete(progress)
     if log:
         log(f"FO4 target-asset catalog ready: {catalog_path}")
     return catalog_path
@@ -161,6 +189,9 @@ class TargetAssetStore:
 
     def stats(self) -> dict[str, int]:
         return {str(key): int(value) for key, value in self._native.stats().items()}
+
+    def open_timings(self) -> dict[str, float]:
+        return dict(self._native.open_timings())
 
 
 def build_target_asset_store(

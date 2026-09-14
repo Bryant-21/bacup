@@ -7,8 +7,10 @@ name = "bacup-lib"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
+    "numpy>=2.2.6",
     "psutil>=7.0",
     "py-creation-lib",
+    "sounddevice>=0.4.6",
 ]
 
 [tool.maturin]
@@ -24,6 +26,7 @@ include = [
     { path = "python/bacup_lib/record/*.yaml", format = "wheel" },
     { path = "python/bacup_lib/record/whitelists/**", format = "wheel" },
     { path = "python/bacup_lib/resources/**/*.yaml", format = "wheel" },
+    { path = "python/bacup_lib/script_additions/**/*.psc", format = "wheel" },
     { path = "python/bacup_lib/script_patches/**/*.psc", format = "wheel" },
     { path = "native/conversion/src/embedded/*.yaml", format = "wheel" },
     { path = "native/conversion/src/embedded/translation_maps/*.yaml", format = "wheel" },

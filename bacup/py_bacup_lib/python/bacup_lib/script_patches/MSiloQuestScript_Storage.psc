@@ -27,10 +27,11 @@ EndFunction
 
 MSiloPersonalQuestScript Function GetPersonalQuest()
     Quest personalQuest = Game.GetFormFromFile(0x003E03AA, "SeventySix.esm") as Quest
-    If personalQuest != None && !personalQuest.IsRunning()
-        personalQuest.Start()
+    MSiloPersonalQuestScript personal = personalQuest as MSiloPersonalQuestScript
+    If personal != None && !personalQuest.IsRunning()
+        personal.EnsureSiloStarted(Game.GetPlayer().GetCurrentLocation())
     EndIf
-    Return personalQuest as MSiloPersonalQuestScript
+    Return personal
 EndFunction
 
 Function HandlePanelActivation(ObjectReference akPanel, ObjectReference akActivator)
@@ -53,12 +54,16 @@ Function HandlePanelActivation(ObjectReference akPanel, ObjectReference akActiva
 EndFunction
 
 Function FinishMainframeBoot(ObjectReference akTerminalRef)
-    If akTerminalRef != None
-        akTerminalRef.SetValue(MSilo_Storage_SuccessfulBootValue, 1.0)
+    MSiloPersonalQuestScript personal = GetPersonalQuest()
+    If personal == None
+        Return
     EndIf
-    GetPersonalQuest().TryToSetStage(419)
+    If akTerminalRef != None
+        akTerminalRef.SetValue(personal.MSilo_Storage_SuccessfulBootValue, 1.0)
+    EndIf
+    personal.TryToSetStage(419)
     If Storage_MainframeCoresCurrent >= Storage_MainframeCoresMax
-        GetPersonalQuest().TryToSetStage(430)
+        personal.TryToSetStage(430)
     EndIf
 EndFunction
 
@@ -74,8 +79,9 @@ Function OpenSecurityDoor(Bool abSetStage = True)
 EndFunction
 
 Function UpdateTerminal(ObjectReference akTerminalRef)
-    If akTerminalRef != None && Storage_MainframeCoresCurrent >= Storage_MainframeCoresMax
-        akTerminalRef.SetValue(MSilo_Storage_SuccessfulBootValue, 1.0)
+    MSiloPersonalQuestScript personal = GetPersonalQuest()
+    If akTerminalRef != None && personal != None && Storage_MainframeCoresCurrent >= Storage_MainframeCoresMax
+        akTerminalRef.SetValue(personal.MSilo_Storage_SuccessfulBootValue, 1.0)
     EndIf
 EndFunction
 

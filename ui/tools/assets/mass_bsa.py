@@ -9,13 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from imgui_bundle import imgui, icons_fontawesome_6 as fa
+from creation_lib.ui.widgets.modern import loading_panel
 
 from creation_lib.ba2 import native_runtime
 from creation_lib.core.game_profiles import get_profile
 from creation_lib.esp.editor.session import detect_game
 from ui.tools.base import BaseTool
 from creation_lib.ui.widgets import pick_folder
-from ui.tools.imgui_helpers import begin_form, draw_combo_field, draw_path_row, end_form
+from creation_lib.ui.widgets.forms import begin_form, draw_combo_field, draw_path_row, end_form
 
 _log = logging.getLogger("tools.mass_bsa")
 
@@ -349,31 +350,7 @@ class MassBSATool(BaseTool):
         self._result_msg = f"Converted {converted} mod(s). {failed} failed."
 
     def _draw_loading_mask(self) -> None:
-        win_pos = imgui.get_window_pos()
-        win_size = imgui.get_window_size()
-        draw_list = imgui.get_foreground_draw_list()
-
-        bg_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.0, 0.0, 0.0, 0.58))
-        draw_list.add_rect_filled(
-            imgui.ImVec2(win_pos.x, win_pos.y),
-            imgui.ImVec2(win_pos.x + win_size.x, win_pos.y + win_size.y),
-            bg_col,
-        )
-
-        spinner = ["|", "/", "-", "\\"][int(imgui.get_time() * 8) % 4]
-        text = f"{spinner}  {self._status_msg or 'Working...'}"
-        text_size = imgui.calc_text_size(text)
-        pad = 14.0
-        cx = win_pos.x + (win_size.x - text_size.x) * 0.5
-        cy = win_pos.y + (win_size.y - text_size.y) * 0.5
-        panel_min = imgui.ImVec2(cx - pad, cy - pad)
-        panel_max = imgui.ImVec2(cx + text_size.x + pad, cy + text_size.y + pad)
-        panel_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.14, 0.14, 0.16, 1.0))
-        border_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.36, 0.36, 0.42, 1.0))
-        text_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.92, 0.92, 0.94, 1.0))
-        draw_list.add_rect_filled(panel_min, panel_max, panel_col, 6.0)
-        draw_list.add_rect(panel_min, panel_max, border_col, 6.0)
-        draw_list.add_text(imgui.ImVec2(cx, cy), text_col, text)
+        loading_panel("Converting archives", self._status_msg, self._progress if self._progress > 0 else None)
 
     def get_default_settings(self) -> dict:
         return {

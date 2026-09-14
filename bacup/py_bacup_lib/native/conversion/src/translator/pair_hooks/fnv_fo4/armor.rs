@@ -115,12 +115,22 @@ pub(super) fn relayout_armo_loader_fields(
         .find(|entry| entry.sig.0 == *b"DNAM")
         .map(|entry| entry.value.clone());
     let had_legacy_etyp = record.fields.iter().any(|entry| entry.sig.0 == *b"ETYP");
+    let had_fnv_animation_sound_template = matches!(source, LegacyArmorSource::Fnv)
+        && record.fields.iter().any(|entry| entry.sig.0 == *b"TNAM");
     let dropped_materials = record.fields.iter().any(|entry| {
         matches!(entry.sig.0, sig if sig == *b"MODS" || sig == *b"MO2S" || sig == *b"MO3S" || sig == *b"MO4S" || sig == *b"MO5S")
     });
 
     record.fields.retain(|entry| {
-        !matches!(entry.sig.0, sig if sig == *b"DNAM" || sig == *b"ETYP" || sig == *b"MODL" || sig == *b"MODS" || sig == *b"MO2S" || sig == *b"MO3S" || sig == *b"MO4S" || sig == *b"MO5S")
+        !matches!(entry.sig.0, sig if sig == *b"DNAM"
+            || sig == *b"ETYP"
+            || sig == *b"MODL"
+            || sig == *b"MODS"
+            || sig == *b"MO2S"
+            || sig == *b"MO3S"
+            || sig == *b"MO4S"
+            || sig == *b"MO5S"
+            || (matches!(source, LegacyArmorSource::Fnv) && sig == *b"TNAM"))
     });
 
     if let Some(dnam) = dnam {
@@ -161,6 +171,13 @@ pub(super) fn relayout_armo_loader_fields(
 
     if had_legacy_etyp {
         push_armor_warning(record, interner, "legacy_armor_numeric_etyp_dropped");
+    }
+    if had_fnv_animation_sound_template {
+        push_armor_warning(
+            record,
+            interner,
+            "fnv_armor_animation_sound_template_dropped_for_fo4",
+        );
     }
     if dropped_materials {
         push_armor_warning(

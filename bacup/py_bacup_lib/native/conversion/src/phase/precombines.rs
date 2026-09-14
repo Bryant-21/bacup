@@ -1,8 +1,6 @@
-//! Phase: `generate_precombines` — source-free CK-free precombine generation
-//! (v0 spike). Runs `ck_native::precombine::{plan, bake, stamp}` against the
-//! open target handle only; no source plugin is read.
-//!
-//! Plan: `docs/superpowers/plans/2026-07-12-precombine-generation-v0.md` Task 5.
+//! Phase: `generate_precombines`, source-free and CK-free precombine generation.
+//! Runs `ck_native::precombine::{plan, bake, stamp}` against the open target
+//! handle only; no source plugin is read.
 //!
 //! ## Params (JSON)
 //! ```text
@@ -21,15 +19,14 @@
 //!                                  // after all loose roots.
 //! }
 //! ```
-//! `pcmb_date` is the grounded internal constant `0x1F24`; it is never a JSON
-//! key. Stale keys `output_handle_id`, `own_index`, and `vc_stamp` are
-//! rejected outright.
+//! `pcmb_date` is the internal constant `0x1F24`, never a JSON key. Stale keys
+//! `output_handle_id`, `own_index`, and `vc_stamp` are rejected outright.
 //!
-//! Phase contract: NO Python / GIL. `ctx.run.target_handle_id` is passed to
-//! `ck_native` internally — both crates are compiled into this same BACUP
-//! native extension and therefore share one `esp_authoring_core` handle
-//! registry (see `py_creation_lib/native/ck/src/precombine/plan.rs` module
-//! doc and root CLAUDE.md's handle-isolation rule).
+//! Phase contract: NO Python / GIL. `ctx.run.target_handle_id` can go straight
+//! to `ck_native`: both crates are compiled into this BACUP native extension
+//! and share one `esp_authoring_core` handle registry (see
+//! `py_creation_lib/native/ck/src/precombine/plan.rs` and root CLAUDE.md's
+//! handle-isolation rule).
 
 use std::path::{Path, PathBuf};
 
@@ -37,8 +34,7 @@ use ck_native::precombine::{bake, plan, stamp};
 
 use crate::phase::{LogLevel, Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
 
-/// v0 grounded internal constant (see plan "Current-state grounding" — the
-/// live FO76 CELL's PCMB bytes decode to this date). Never a JSON key.
+/// The live FO76 CELL's PCMB bytes decode to this date. Never a JSON key.
 const PCMB_DATE: u16 = 0x1F24;
 
 const STALE_PARAM_KEYS: [&str; 3] = ["output_handle_id", "own_index", "vc_stamp"];
@@ -745,8 +741,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// MINOR-2: a group whose source mesh is missing on disk (e.g. it only
-    /// exists BA2-packed, which v0 doesn't read) must surface as a phase
+    /// A group whose source mesh is missing on disk (e.g. it only exists
+    /// BA2-packed and no `mesh_archives` are given) must surface as a phase
     /// report warning, not a silent zero-asset no-op. Confirms `bake_cell`'s
     /// warnings propagate through `PhaseReport.warnings` end-to-end.
     #[test]

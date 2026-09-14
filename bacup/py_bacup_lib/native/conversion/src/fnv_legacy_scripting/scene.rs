@@ -8,9 +8,23 @@ use serde_json::{Value, json};
 
 use super::form_keys::object_id_from_form_key;
 use super::naming::scene_action_fragment_name;
-use super::quest::{extract_first_event_body, field_value, filtered_payload, upsert_field};
-use super::vmad::synthesize_scene_vmad;
+use super::quest::{extract_first_event_body, field_value, filtered_payload};
 use super::{FnvScriptContext, TranslateError, translate_to_papyrus};
+
+#[path = "dialogue_graph.rs"]
+pub mod dialogue_graph;
+pub use dialogue_graph::{
+    DialogueEdge, DialogueEdgeKind, DialogueGraph, DialogueGraphError, SceneBranchPlan,
+    bounded_scene_branch_from_graph, build_bounded_scene_branch_plan, build_legacy_dialogue_graph,
+    remap_scene_branch_plan_topics,
+};
+
+#[path = "scene_emitter.rs"]
+pub mod scene_emitter;
+pub use scene_emitter::{
+    SceneEmitError, SceneRuntimeManifest, SceneRuntimeOptions, SceneTopicRuntime,
+    emit_fo4_scene_runtime,
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -122,17 +136,14 @@ fn build_scene_psc(class_name: &str, functions: &[(String, String)]) -> String {
 
 fn build_scene_payload(
     record: &Value,
-    fragment_class_name: &str,
-    action_count: usize,
+    _fragment_class_name: &str,
+    _action_count: usize,
     _strict: bool,
 ) -> Value {
     let drop_fields: HashSet<&str> = ["SCTX", "VMAD", "VirtualMachineAdapter"]
         .into_iter()
         .collect();
-    let mut payload = filtered_payload(record, &drop_fields);
-    let vmad = synthesize_scene_vmad(fragment_class_name, action_count);
-    upsert_field(&mut payload, "VirtualMachineAdapter", vmad);
-    payload
+    filtered_payload(record, &drop_fields)
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +216,17 @@ mod tests {
         assert_eq!(ts.actions.len(), 1);
         assert!(ts.fragment_psc_text.contains("Fragment_1"));
         assert!(ts.fragment_psc_text.contains("EndFunction"));
+        let fields = ts
+            .authoring_record_payload
+            .as_ref()
+            .and_then(|payload| payload.get("fields"))
+            .and_then(Value::as_array)
+            .unwrap();
+        assert!(fields.iter().all(|field| {
+            !field
+                .as_object()
+                .is_some_and(|field| field.contains_key("VirtualMachineAdapter"))
+        }));
     }
 
     #[test]

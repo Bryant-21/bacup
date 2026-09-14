@@ -44,6 +44,69 @@ fn serial_magic_dispatch_reports_unmapped_effect_reference() {
 }
 
 #[test]
+fn serial_magic_uses_source_form_key_for_doctor_limb_restoration() {
+    let interner = StringInterner::new();
+    for (source_plugin, expected_effects) in [("FalloutNV.esm", 6), ("Fallout3.esm", 0)] {
+        let mut record = make_record("SPEL", &interner);
+        record.form_key = FormKey {
+            local: 0x0000_1234,
+            plugin: interner.intern("ConvertedOutput.esp"),
+        };
+        record.eid = Some(interner.intern("DoctorLimbRestoration"));
+        push_field(
+            &mut record,
+            "SPIT",
+            FieldValue::Bytes(smallvec::SmallVec::from_vec(vec![0_u8; 16])),
+        );
+        push_field(
+            &mut record,
+            "EFID",
+            FieldValue::Bytes(smallvec::SmallVec::from_slice(&0x0CB05D_u32.to_le_bytes())),
+        );
+        push_field(
+            &mut record,
+            "EFIT",
+            FieldValue::Bytes(smallvec::SmallVec::from_vec(vec![0_u8; 20])),
+        );
+        let source_fk = FormKey {
+            local: 0x172091,
+            plugin: interner.intern(source_plugin),
+        };
+        let mut mapper = legacy_magic_mapper(&interner);
+        mapper.add_mapping(
+            FormKey {
+                local: 0x0CB05D,
+                plugin: interner.intern("FalloutNV.esm"),
+            },
+            FormKey {
+                local: 0x00397E,
+                plugin: interner.intern("Fallout4.esm"),
+            },
+        );
+        let mut state = LegacySerialNormalizationState::default();
+
+        let report = normalize_legacy_serial_record_once(
+            Game::Fnv,
+            Game::Fo4,
+            source_fk,
+            &mut record,
+            &mut mapper,
+            &mut state,
+        )
+        .expect("SPEL dispatch")
+        .expect("SPEL normalization");
+
+        let LegacySerialNormalizeReport::Effects(effect_report) = report else {
+            panic!("SPEL must produce an effects report");
+        };
+        assert_eq!(
+            effect_report.converted_effects, expected_effects,
+            "{source_plugin}"
+        );
+    }
+}
+
+#[test]
 fn serial_dispatch_isolated_from_fo76() {
     let interner = StringInterner::new();
     for (sig, field_sig, bytes) in [
@@ -145,6 +208,60 @@ fn serial_perk_dispatch_is_exactly_once_and_transient() {
     assert_eq!(record.fields, converted_fields);
     assert_eq!(record.warnings, converted_warnings);
     assert!(record.warnings.is_empty(), "once-only guard must not leak");
+}
+
+#[test]
+fn serial_perk_uses_source_form_key_for_native_power_armor_adaptation() {
+    let interner = StringInterner::new();
+    let mut record = make_record("PERK", &interner);
+    record.form_key = FormKey {
+        local: 0x0000_1234,
+        plugin: interner.intern("ConvertedOutput.esp"),
+    };
+    record.eid = Some(interner.intern("PowerArmorTraining"));
+    push_field(
+        &mut record,
+        "DATA",
+        FieldValue::Bytes(smallvec::SmallVec::from_slice(&[1, 0, 0, 0, 0])),
+    );
+    push_field(
+        &mut record,
+        "PRKE",
+        FieldValue::Bytes(smallvec::SmallVec::from_slice(&[0, 0, 0])),
+    );
+    push_field(
+        &mut record,
+        "DATA",
+        FieldValue::Bytes(smallvec::SmallVec::from_slice(&[
+            0xB2, 0x38, 0, 0, 80, 0, 0, 0,
+        ])),
+    );
+    push_field(&mut record, "PRKF", FieldValue::None);
+    let source_fk = FormKey {
+        local: 0x058FDF,
+        plugin: interner.intern("FalloutNV.esm"),
+    };
+    let mut mapper = legacy_magic_mapper(&interner);
+    let mut state = LegacySerialNormalizationState::default();
+
+    let report = normalize_legacy_serial_record_once(
+        Game::Fnv,
+        Game::Fo4,
+        source_fk,
+        &mut record,
+        &mut mapper,
+        &mut state,
+    )
+    .expect("PERK dispatch")
+    .expect("PERK normalization");
+
+    let LegacySerialNormalizeReport::Perk(perk_report) = report else {
+        panic!("PERK must produce a perk report");
+    };
+    assert_eq!(perk_report.adapted_entries, 1);
+    assert_eq!(perk_report.dropped_entries, 0);
+    assert_eq!(record.fields.len(), 1);
+    assert_eq!(record.fields[0].sig.0, *b"DATA");
 }
 
 #[test]

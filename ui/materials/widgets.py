@@ -7,12 +7,10 @@ the FieldDef.kind, handling version visibility and dependency checks.
 from __future__ import annotations
 
 from imgui_bundle import imgui
+from creation_lib.ui.widgets.forms import form_row_label
+from creation_lib.ui.widgets.modern import scaled
 
 from .field_registry import FieldDef
-
-# Fixed label column width for two-column form layout
-_LABEL_WIDTH = 210.0
-
 
 def _browse_path(attr: str, current: str, kind: str) -> tuple[str, bool]:
     """Open a native file dialog for a path field. Returns (new_value, changed)."""
@@ -51,12 +49,10 @@ def draw_field(field: FieldDef, value, version: int, fields_dict: dict) -> tuple
     if field.depends_on and not fields_dict.get(field.depends_on):
         return False, value
 
-    # 3. Layout: label left, widget right
-    imgui.text(field.name)
+    form_row_label(field.name)
     if field.tooltip:
         if imgui.is_item_hovered():
             imgui.set_tooltip(field.tooltip)
-    imgui.same_line(_LABEL_WIDTH)
     imgui.set_next_item_width(-1)
 
     # 4. Dispatch by kind
@@ -88,7 +84,7 @@ def draw_field(field: FieldDef, value, version: int, fields_dict: dict) -> tuple
 
     elif kind in ("texture_path", "material_path"):
         # Text input sized to leave room for browse button
-        imgui.set_next_item_width(-35)
+        imgui.set_next_item_width(-scaled(35))
         changed, new_val = imgui.input_text(tag, str(value or ""))
 
         imgui.same_line()

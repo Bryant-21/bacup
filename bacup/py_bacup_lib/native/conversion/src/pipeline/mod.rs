@@ -51,6 +51,7 @@ pub struct StageReport {
     pub warnings: u32,
     /// Filled in by the executor.
     pub elapsed_ms: u64,
+    pub phase_report: Option<crate::phase::PhaseReport>,
 }
 
 #[derive(Debug, Error)]

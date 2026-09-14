@@ -296,7 +296,9 @@ class ClothMakerApp(MeshWorkspaceBase):
 
         flags = (imgui.WindowFlags_.no_scrollbar.value
                  | imgui.WindowFlags_.no_scroll_with_mouse.value)
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(0, 0))
         visible, _ = imgui.begin("Viewport##cloth_maker", flags=flags)
+        imgui.pop_style_var()
         if not visible:
             imgui.end()
             return
@@ -924,9 +926,8 @@ class ClothMakerApp(MeshWorkspaceBase):
     def deform_mesh(self, solver_positions: np.ndarray) -> None:
         """Deform the skinned mesh vertices to match solver particle positions.
 
-        Uses the vertex→particle mapping: for each mapped mesh vertex,
-        applies the displacement of its nearest particle from rest position.
-        This ensures ALL cloth-region vertices deform, not just one per particle.
+        Each mapped mesh vertex takes its nearest particle's displacement from
+        rest, so every cloth-region vertex deforms, not just one per particle.
 
         Args:
             solver_positions: (P, 3) float32 particle positions from the solver.

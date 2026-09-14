@@ -8,6 +8,9 @@ pub(super) const GET_LOCKED_CONDITION_FUNCTION_ID: u16 = 5;
 pub(super) const GET_LOCK_LEVEL_CONDITION_FUNCTION_ID: u16 = 65;
 pub(super) const GET_LEVEL_CONDITION_FUNCTION_ID: u16 = 80;
 pub(super) const HAS_PERK_CONDITION_FUNCTION_ID: u16 = 448;
+// `GetRandomPercent` (77, shared FO4/FO76). FO76 `LPI_` placement lists gate the
+// normal-world leaf behind a chance roll against a percentage GLOB.
+pub(super) const GET_RANDOM_PERCENT_CONDITION_FUNCTION_ID: u16 = 77;
 pub(super) const LEVELED_LIST_USE_ALL_FLAG: u8 = 0x04;
 // GetLockLevel comparisons use GLOB references instead of literal floats in the
 // live FO76 lists, so the conservative baseline cannot be derived from bytes
@@ -16,6 +19,13 @@ pub(super) const FO76_LOCK_LEVEL_NOVICE_GLOBAL: u32 = 0x0AEF4F;
 pub(super) const FO76_LOCK_LEVEL_ADVANCED_GLOBAL: u32 = 0x0AEF50;
 pub(super) const FO76_LOCK_LEVEL_EXPERT_GLOBAL: u32 = 0x0AEF51;
 pub(super) const FO76_LOCK_LEVEL_MASTER_GLOBAL: u32 = 0x0AEF5D;
+pub(super) const FO76_GLOWING_CREATURE_SPAWN_CONDITION_FORM: u32 = 0x8464EF;
+pub(super) const FO76_GLOWING_CREATURE_VARIANT_KEYWORD: u32 = 0x2D3EBE;
+pub(super) const FO76_SCORCHED_CREATURE_VARIANT_KEYWORD: u32 = 0x2D3EBF;
+const FO76_SPECIAL_CREATURE_VARIANT_KEYWORDS: &[u32] = &[
+    FO76_GLOWING_CREATURE_VARIANT_KEYWORD,
+    FO76_SCORCHED_CREATURE_VARIANT_KEYWORD,
+];
 pub(super) const FO76_LEVELED_ENTRY_TAIL_SIGS: &[[u8; 4]] = &[
     *b"COED", *b"CTDA", *b"CTDT", *b"CIS1", *b"CIS2", *b"LVUD", *b"LVOV", *b"LVOC", *b"LVOT",
     *b"LVIV", *b"LVIG", *b"LVIT", *b"LVLV", *b"LVOG", *b"LVLT",
@@ -128,7 +138,10 @@ pub(super) fn fo4_lvlo_value(
         _ => "item",
     };
     FieldValue::Struct(vec![
-        (interner.intern("level"), bytes_value(&level.to_le_bytes())),
+        (
+            interner.intern("level"),
+            bytes_value(&level.max(1).to_le_bytes()),
+        ),
         (interner.intern("unknown_u8_1"), bytes_value(&[0])),
         (interner.intern("unknown_u8_2"), bytes_value(&[0])),
         (
@@ -222,7 +235,7 @@ impl Fo76Fo4Hook {
                 keep_entries[index] = !old_fields[span.start + 1..span.end]
                     .iter()
                     .filter(|entry| matches!(&entry.sig.0, b"CTDA" | b"CTDT"))
-                    .any(|entry| Self::condition_gates_dropped_world_state(&entry.value));
+                    .any(|entry| Self::condition_gates_dropped_world_state(interner, &entry.value));
             }
         }
 
@@ -359,6 +372,18 @@ impl Fo76Fo4Hook {
         if function_id == FO4_LOCATION_HAS_KEYWORD_CONDITION_FUNCTION_ID {
             return LeveledEntryDisposition::Keep;
         }
+        // A chance roll is world-state independent and survives into FO4 as-is.
+        if function_id == GET_RANDOM_PERCENT_CONDITION_FUNCTION_ID {
+            return LeveledEntryDisposition::Keep;
+        }
+        // A FO76 condition *form* hides world state this pass cannot read, and it
+        // is how nuke/radstorm variants are gated (e.g.
+        // `Radstorm_NukaFlora_Spawn_Condition`). Its CTDA is dropped downstream as
+        // untranslatable, so keeping the entry would make the special-state
+        // variant unconditional.
+        if function_id == FO76_CONDITION_FORM_CONDITION_FUNCTION_ID {
+            return LeveledEntryDisposition::Unknown;
+        }
         if Self::is_fo4_incompatible_condition_function_id(function_id) {
             return LeveledEntryDisposition::Keep;
         }
@@ -454,21 +479,35 @@ impl Fo76Fo4Hook {
         Self::condition_comparison_value(interner, value)
     }
 
-    /// True when a `CTDA` gates its entry behind FO76-only world state that never
-    /// obtains in FO4: a nuke-zone check (func 849), or a `GetGlobalValue` gate
-    /// (func 74) requiring an event/seasonal global to be ON.
-    pub(super) fn condition_gates_dropped_world_state(value: &FieldValue) -> bool {
+    /// True when a `CTDA` gates its entry behind FO76-only world state that the
+    /// target leveled-list shape cannot represent.
+    pub(super) fn condition_gates_dropped_world_state(
+        interner: &crate::sym::StringInterner,
+        value: &FieldValue,
+    ) -> bool {
+        let function_id = Self::condition_function_id(interner, value);
+        if function_id == Some(FO76_NUKE_ZONE_CONDITION_FUNCTION_ID) {
+            return true;
+        }
+        if function_id == Some(FO76_CONDITION_FORM_CONDITION_FUNCTION_ID) {
+            return Self::condition_parameter_1(interner, value).is_some_and(|parameter| {
+                parameter & 0x00FF_FFFF == FO76_GLOWING_CREATURE_SPAWN_CONDITION_FORM
+            });
+        }
+        if matches!(
+            function_id,
+            Some(FO76_EDITOR_LOCATION_HAS_KEYWORD_CONDITION_FUNCTION_ID)
+                | Some(FO4_LOCATION_HAS_KEYWORD_CONDITION_FUNCTION_ID)
+        ) {
+            return Self::condition_parameter_1(interner, value).is_some_and(|parameter| {
+                FO76_SPECIAL_CREATURE_VARIANT_KEYWORDS.contains(&(parameter & 0x00FF_FFFF))
+            });
+        }
         let FieldValue::Bytes(bytes) = value else {
             return false;
         };
-        let bytes = bytes.as_slice();
-        match Self::raw_condition_function_id(bytes) {
-            Some(FO76_NUKE_ZONE_CONDITION_FUNCTION_ID) => true,
-            Some(GET_GLOBAL_VALUE_CONDITION_FUNCTION_ID) => {
-                Self::condition_requires_global_on(bytes)
-            }
-            _ => false,
-        }
+        function_id == Some(GET_GLOBAL_VALUE_CONDITION_FUNCTION_ID)
+            && Self::condition_requires_global_on(bytes)
     }
 
     /// True when a `GetGlobalValue` condition can only be satisfied while the

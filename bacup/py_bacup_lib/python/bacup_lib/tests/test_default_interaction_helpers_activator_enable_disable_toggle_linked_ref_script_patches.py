@@ -18,20 +18,16 @@ from creation_lib.pex.native_runtime import compile_psc
 REPO_ROOT = Path(__file__).resolve().parents[5]
 SOURCE_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 
-# Every script patched by shard
-# w2-default-interaction-helpers-activator-enable-disable-toggle-linked-ref,
-# mapped to the top-level member(s) its patch must supply. State-scoped members
-# (DefaultExplosionOnActivate's startstate/donestate OnActivate overrides) are
-# verified separately below via _state_block, matching test_two_state_sync's
-# pattern (_iter_top_level_papyrus_members only sees top-level members).
+# Each patched script mapped to the top-level member(s) its patch must supply.
+# State-scoped members (DefaultExplosionOnActivate's startstate/donestate
+# OnActivate overrides) are checked separately via _state_block, since
+# _iter_top_level_papyrus_members sees only top-level members.
 #
 # DefaultKeypadTargetScript, DefaultOnReadAddToMap, and
-# defaultunlockandopenlinkonactivate are deterministic guarded one-shot
-# handlers (no named states/timers) — a full compile of the merged patch is
-# sufficient coverage for them; see repair-papyrus-stubs SKILL.md's
-# dedicated-test-file criteria. DefaultExplosionOnActivate (named-state
-# reentry lock) and DefaultLockRefOnUnload (armed countdown timer) are
-# genuinely stateful and keep their detailed regression tests below.
+# defaultunlockandopenlinkonactivate are guarded one-shot handlers (no named
+# states or timers), covered by a full compile of the merged patch.
+# DefaultExplosionOnActivate (named-state reentry lock) and DefaultLockRefOnUnload
+# (armed countdown timer) are stateful and have dedicated tests below.
 PATCH_CASES = {
     "DefaultExplosionOnActivate": {"onactivate"},
     "DefaultKeypadTargetScript": {"oninit"},

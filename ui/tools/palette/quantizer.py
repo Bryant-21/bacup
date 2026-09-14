@@ -8,7 +8,7 @@ import os
 from imgui_bundle import imgui
 
 from ui.tools.base import BaseTool
-from ui.tools.imgui_helpers import begin_form, end_form, draw_path_row, draw_combo_field, pick_file, pick_save_file
+from creation_lib.ui.widgets.forms import begin_form, end_form, draw_path_row, draw_combo_field, pick_file, pick_save_file
 
 _log = logging.getLogger("tools.image_quantizer")
 

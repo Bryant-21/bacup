@@ -1,13 +1,19 @@
 Function BreakStatue()
-    If GetState() == "done"
+    If IsDestroyed() && GetCurrentDestructionStage() >= 2
         Return
     EndIf
     GoToState("done")
     UnRegisterForHitEvent(Self)
-    DamageObject(1000000.0)
-    If GetCurrentDestructionStage() < 1
+    If GetCurrentDestructionStage() < 2
         DamageObject(1000000.0)
     EndIf
+    If GetCurrentDestructionStage() < 2
+        DamageObject(1000000.0)
+    EndIf
+    If GetCurrentDestructionStage() < 2
+        DamageObject(1000000.0)
+    EndIf
+    SetDestroyed()
 EndFunction
 
 Event OnInit()
@@ -72,7 +78,7 @@ Event OnTimer(Int aiTimerID)
 EndEvent
 
 Event OnDestructionStageChanged(Int aiOldStage, Int aiCurrentStage)
-    If aiCurrentStage > 0
-        GoToState("done")
+    If aiCurrentStage >= 0
+        BreakStatue()
     EndIf
 EndEvent

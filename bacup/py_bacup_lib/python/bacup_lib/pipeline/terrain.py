@@ -13,7 +13,8 @@ if TYPE_CHECKING:
 
 
 _RUST_TRANSLATED_SOURCES: set[str] = {"fnv", "fo3", "skyrimse"}
-_SUPPORTED_SOURCES: set[str] = {"fo76"}
+_SUPPORTED_SOURCES: set[str] = {"fo76", "starfield"}
+
 
 def convert_terrain(
     ctx: "ConversionContext",
@@ -52,7 +53,8 @@ def _run_fo76_btd(ctx, runner, progress) -> None:
     if not work_items:
         runner.emit_log(
             "WARN",
-            "convert_terrain: FO76 source but no BTD path configured; skipping",
+            f"convert_terrain: {ctx.source_game.upper()} source but no BTD path "
+            "configured; skipping",
         )
         progress.total_items = 0
         progress.completed_items = 0
@@ -64,7 +66,8 @@ def _run_fo76_btd(ctx, runner, progress) -> None:
     if rust_run is None:
         runner.emit_log(
             "ERROR",
-            "convert_terrain: FO76 BTD conversion requires a native ConversionRun context",
+            f"convert_terrain: {ctx.source_game.upper()} BTD conversion requires "
+            "a native ConversionRun context",
         )
         progress.status = "error"
         return
@@ -145,7 +148,8 @@ def _run_fo76_btd_native(
     if not fo76_data_dir:
         runner.emit_log(
             "ERROR",
-            "convert_terrain: FO76 terrain conversion requires TerrainOptions.fo76_data_dir for installed FO76 Data fallback reads",
+            f"convert_terrain: {ctx.source_game.upper()} terrain conversion requires "
+            "TerrainOptions.fo76_data_dir for installed source Data fallback reads",
         )
         progress.status = "error"
         return
@@ -163,10 +167,14 @@ def _run_fo76_btd_native(
     debug_output_dir = diagnostics_root / "debug" / "terrain"
     source_worldspace_authoring_dir = opts.source_worldspace_authoring_dir or ""
     water_manifest_path = getattr(opts, "water_manifest_path", "") or ""
-    can_auto_write_water = _can_auto_write_water_manifest(source_worldspace_authoring_dir)
-    if not water_manifest_path:
+    if ctx.source_game == "fo76" and not water_manifest_path:
         water_manifest_path = str(debug_output_dir / "water_manifest.json")
-    if water_manifest_path and (can_auto_write_water or getattr(opts, "water_manifest_path", "")):
+    can_auto_write_water = ctx.source_game == "fo76" and _can_auto_write_water_manifest(
+        source_worldspace_authoring_dir
+    )
+    if ctx.source_game == "fo76" and water_manifest_path and (
+        can_auto_write_water or getattr(opts, "water_manifest_path", "")
+    ):
         from bacup_lib.terrain.fo76_btd import write_fo76_water_manifest
 
         write_fo76_water_manifest(
@@ -211,7 +219,7 @@ def _run_fo76_btd_native(
         )
     runner.emit_log(
         "INFO",
-        "convert_terrain: running FO76 BTD -> FO4 LAND (native) for "
+        f"convert_terrain: running {ctx.source_game.upper()} BTD -> FO4 LAND (native) for "
         f"{worldspace_eid} in {plugin_name}",
     )
     report = rust_run.run_phase(

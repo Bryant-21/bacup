@@ -24,6 +24,15 @@ EXPECTED_MEMBER = """Function Fragment_End(ObjectReference akSpeakerRef)
     If WaywardMM
         WaywardMM.AddToMap(False)
     EndIf
+    Quest owningQuest = GetOwningQuest()
+    If owningQuest
+        If !owningQuest.IsStageDone(15)
+            owningQuest.SetStage(15)
+        EndIf
+        If !owningQuest.IsStageDone(100)
+            owningQuest.SetStage(100)
+        EndIf
+    EndIf
 EndFunction"""
 
 

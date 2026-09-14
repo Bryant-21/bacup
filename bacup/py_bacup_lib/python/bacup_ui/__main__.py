@@ -35,6 +35,8 @@ def _run_bacup_project_setup(settings: ToolkitSettings) -> tuple[bool, bool]:
         BacupProjectPicker,
         BacupProjectSetup,
         clear_pending_project_setup,
+        games_needing_extraction,
+        get_active_project,
         get_pending_project_setup,
     )
 
@@ -46,6 +48,8 @@ def _run_bacup_project_setup(settings: ToolkitSettings) -> tuple[bool, bool]:
         if selected_project_id is None:
             return True, False
         setup = BacupProjectSetup(settings, selected_project_id)
+    elif games_needing_extraction(settings, get_active_project(settings)):
+        setup = BacupProjectSetup(settings, get_active_project(settings))
     else:
         return False, True
 

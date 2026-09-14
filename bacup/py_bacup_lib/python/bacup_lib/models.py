@@ -41,6 +41,14 @@ class RecordProvenance:
 
 
 @dataclass
+class WorkshopSnapPoint:
+    name: str
+    translation: tuple[float, float, float]
+    rotation: tuple[float, float, float, float]
+    scale: float = 1.0
+
+
+@dataclass
 class AssetRef:
     """Reference to a game asset (mesh, texture, material, sound, etc.)."""
 
@@ -53,6 +61,8 @@ class AssetRef:
     force_convert: bool = False
     force_reason: str = ""
     output_subpath: str | None = None
+    workshop_wire_point: tuple[float, float, float] | None = None
+    workshop_snap_points: tuple[WorkshopSnapPoint, ...] = ()
 
 
 @dataclass
@@ -305,16 +315,13 @@ class PhaseSelection:
     regenerate_modt: bool = True        # Bucket B: post-asset MODT compute, always on (see family_map)
     rebuild_cell_offsets: bool = True   # Bucket B: WRLD OFST/CLSZ rebuild, last ESM mutation, always on (see family_map)
     generate_anim_text_data: bool = True
-    # EXPERIMENTAL gate — deliberately defaults False, breaking the all-True
-    # PhaseSelection convention. `generate_precombines` is a post-asset HYBRID
-    # phase (Bucket A: emits Meshes-family `*_OC.nif`; Bucket B: stamps CELL
-    # PCMB/XCRI + REFR VC into the rebuilt ESM). END-STATE INVARIANT for when the
-    # gate is lifted (flip this default to True): it must behave restamp-always
-    # like `regenerate_modt` — i.e. become a Meshes feeder AND be force-enabled in
-    # family_map._phases_off(), because the ESM is always rebuilt on upgrade and a
-    # rebuild drops the stamps unless the phase re-runs. While the default is
-    # False the whole wiring stays dormant (family_map._PRECOMBINES_ENABLED),
-    # so flipping this one flag is all that's needed to enable it.
+    # EXPERIMENTAL gate, deliberately False unlike the rest of PhaseSelection.
+    # `generate_precombines` is a post-asset hybrid phase (Bucket A: emits
+    # Meshes-family `*_OC.nif`; Bucket B: stamps CELL PCMB/XCRI + REFR VC into the
+    # rebuilt ESM). Enabled, it must be restamp-always like `regenerate_modt`: every
+    # upgrade rebuilds the ESM, which drops the stamps unless the phase re-runs.
+    # family_map._PRECOMBINES_ENABLED derives the Meshes-feeder and _phases_off()
+    # wiring from this default, so flipping it is the only edit needed.
     generate_precombines: bool = False
     lod_mode: str = "convert"  # {"convert","generate","hybrid","hybrid-atlas","none"}: native lodgen delivery switch
 
@@ -363,6 +370,8 @@ class ConversionContext:
     overwrite_existing: bool = False
     source_data_dir: Path | None = None
     additional_source_asset_roots: tuple[Path, ...] = ()
+    skyrim_quest_runtime_converted_asset_roots: tuple[Path, ...] = ()
+    legacy_music_tracks: tuple[dict[str, str], ...] = ()
     conversion_workers: int | None = None
     disable_nif_collision_memo: bool = False
     records_limit: int | None = None
@@ -400,6 +409,10 @@ class TerrainOptions:
     source_worldspace_authoring_dir: str = ""
     water_manifest_path: str = ""
     lod_mode: str = "convert"  # carried from PhaseSelection; interpreted by regen LOD hook
+    # fo4:starfield only — crops the synthesized Starfield BTD to an
+    # origin-centred NxN cell window (`terrain_btd_write`'s
+    # `terrain_extent_cells` param). None writes the full measured extent.
+    extent_cells: int | None = None
 
 
 @dataclass(slots=True)
@@ -467,11 +480,18 @@ class PluginPortOptions:
     base_asset_relocation_mesh_roots: tuple[str, ...] = ()
     base_asset_namespace: str = ""
     papyrus_compiler: Literal["exe", "exe-batch", "native"] = "native"
+    fnv_quest_slice: bool = False
+    mvp_melee_only: bool = False
     include_interior: bool = True
     carry_interior_previs: bool = False
     # Derived from PhaseSelection.generate_precombines by _build_options; consulted
     # by the unified driver's post-asset window. Experimental, default off.
     generate_precombines: bool = False
+    # fo4:starfield only — skips the Wwise transcode/bank leg and points the
+    # output's music/ambience at vanilla Starfield records instead
+    # (`wwise_audio`'s `placeholder_audio` param). Required until the
+    # licence-gated Wwise 2021.1.x authoring toolchain is installed (R6 D5).
+    placeholder_audio: bool = False
 
 
 @dataclass(frozen=True)
@@ -508,10 +528,16 @@ class PluginPortRequest:
     source_plugins: list[Path]
     output_root: Path
     output_mod_name: str | None = None
+    # Base name for generated BA2s. The game mounts them by PLUGIN name, so
+    # this tracks the output plugin stem, not the mod folder. None falls back
+    # to the mod folder name (correct for every pair whose names agree).
+    archive_base_name: str | None = None
     target_extracted_dir: Path | None = None
     target_data_dir: Path | None = None
     source_data_dir: Path | None = None
     additional_source_asset_roots: tuple[Path, ...] = ()
+    skyrim_quest_runtime_converted_asset_roots: tuple[Path, ...] = ()
+    legacy_music_tracks: tuple[dict[str, str], ...] = ()
     target_asset_catalog_path: Path | None = None
     target_asset_cache_dir: Path | None = None
     target_master_paths: list[Path] = field(default_factory=list)
@@ -611,8 +637,26 @@ def write_coverage_report(
     failed_textures: list[str],
     failed_bgsms: list[str],
     creature_coverages: "list[CreatureCoverage] | None" = None,
+    asset_summary: "ConversionSummary | None" = None,
 ) -> None:
     lines = ["# Conversion Report", ""]
+    if asset_summary is not None:
+        lines.extend(
+            [
+                "## Asset outcomes",
+                "",
+                "| Asset | Total | Converted | Base-game skipped | Failed |",
+                "|---|---:|---:|---:|---:|",
+                f"NIF | {asset_summary.nifs_total} | {asset_summary.nifs_converted} | {asset_summary.nifs_base_game_skipped} | {asset_summary.nifs_failed}",
+                f"BTO | {asset_summary.btos_total} | {asset_summary.btos_converted} | {asset_summary.btos_base_game_skipped} | {asset_summary.btos_failed}",
+                f"Texture | {asset_summary.textures_total} | {asset_summary.textures_converted} | {asset_summary.textures_base_game_skipped} | {asset_summary.textures_failed}",
+                f"Material | {asset_summary.materials_total} | {asset_summary.materials_converted} | {asset_summary.materials_base_game_skipped} | {asset_summary.materials_failed}",
+                f"Havok | {asset_summary.havok_total} | {asset_summary.havok_converted} | {asset_summary.havok_base_game_skipped} | {asset_summary.havok_failed}",
+                f"Animation | {asset_summary.animations_total} | {asset_summary.animations_converted} | {asset_summary.animations_base_game_skipped} | {asset_summary.animations_failed}",
+                f"Audio | {asset_summary.audio_total} | {asset_summary.audio_copied} | {asset_summary.audio_base_game_skipped} | {asset_summary.audio_failed}",
+                "",
+            ]
+        )
     lines.extend(_count_table("Translated", translated_counts))
     lines.extend([""])
     lines.extend(_count_table("Skipped (V2)", skipped_counts))

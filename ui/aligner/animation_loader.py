@@ -1,7 +1,7 @@
 """Parse HKX animation files to extract frame 0 bone poses.
 
-Uses creation_lib.hkxpack to unpack HKX → XML (pure Python, no Java),
-then parses the animation format to get bone transforms.
+Unpacks HKX → XML with the native ``hkx_to_xml``, then parses the animation
+format to get bone transforms.
 
 Strategy:
 - Translations: use skeleton reference pose (bone lengths don't change)

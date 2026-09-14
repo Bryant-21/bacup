@@ -47,6 +47,15 @@ pub enum TextureTask {
         lighting: TexturePathInput,
         out_specular: TexturePathOutput,
     },
+    /// Starfield color+metal+rough(+AO) → FO4 diffuse+spec/gloss.
+    StarfieldPbr {
+        diffuse: TexturePathInput,
+        metallic: TexturePathInput,
+        roughness: TexturePathInput,
+        ao: Option<TexturePathInput>,
+        out_diffuse: TexturePathOutput,
+        out_specular: TexturePathOutput,
+    },
     /// FNV/FO3/Skyrim normal (+ optional env mask) → FO4 normal + spec/gloss.
     LegacySpecGloss {
         normal: TexturePathInput,
@@ -72,6 +81,7 @@ impl TextureTask {
             TextureTask::SingleResidue { .. }
             | TextureTask::Bundle { .. }
             | TextureTask::SpecGloss { .. }
+            | TextureTask::StarfieldPbr { .. }
             | TextureTask::LegacySpecGloss { .. }
             | TextureTask::CubemapNormalize { .. } => TriageClass::BundleRecompile,
         }
@@ -95,6 +105,11 @@ impl TextureTask {
                 .map(|o| o.path.as_path())
                 .collect(),
             TextureTask::SpecGloss { out_specular, .. } => vec![out_specular.path.as_path()],
+            TextureTask::StarfieldPbr {
+                out_diffuse,
+                out_specular,
+                ..
+            } => vec![out_diffuse.path.as_path(), out_specular.path.as_path()],
             TextureTask::LegacySpecGloss {
                 out_normal,
                 out_specular,
@@ -302,21 +317,94 @@ fn triage_request_impl(
 
     let mut bundled_roles: &[&str] = &[];
 
+    if request.source_game.eq_ignore_ascii_case("starfield") {
+        let diffuse = find_input(request, "diffuse");
+        let metallic = find_input(request, "metallic");
+        let roughness = find_input(request, "roughness");
+        let out_diffuse = find_output(request, "diffuse");
+        let out_specular = find_output(request, "specular");
+        let has_pbr_bundle = diffuse.is_some()
+            && metallic.is_some()
+            && roughness.is_some()
+            && out_diffuse.is_some()
+            && out_specular.is_some();
+        if let (
+            Some(diffuse),
+            Some(metallic),
+            Some(roughness),
+            Some(out_diffuse),
+            Some(out_specular),
+        ) = (diffuse, metallic, roughness, out_diffuse, out_specular)
+        {
+            tasks.push(TextureTask::StarfieldPbr {
+                diffuse: diffuse.clone(),
+                metallic: metallic.clone(),
+                roughness: roughness.clone(),
+                ao: find_input(request, "ao").cloned(),
+                out_diffuse: out_diffuse.clone(),
+                out_specular: out_specular.clone(),
+            });
+        }
+        let has_specgloss_bundle =
+            !has_pbr_bundle && diffuse.is_some() && reflectivity.is_some() && lighting.is_some();
+        if let (Some(diffuse), Some(reflectivity), Some(lighting)) =
+            (diffuse, reflectivity, lighting)
+            && has_specgloss_bundle
+        {
+            tasks.push(TextureTask::Bundle {
+                diffuse: diffuse.clone(),
+                reflectivity: reflectivity.clone(),
+                lighting: lighting.clone(),
+                out_diffuse: find_output(request, "diffuse").cloned(),
+                out_specular: find_output(request, "specular").cloned(),
+                out_glow: find_output(request, "glow").cloned(),
+                force_diffuse_alpha_opaque,
+            });
+        }
+        for input in &request.inputs {
+            if has_pbr_bundle
+                && matches!(
+                    input.role.as_str(),
+                    "diffuse" | "metallic" | "roughness" | "ao"
+                )
+            {
+                continue;
+            }
+            if has_specgloss_bundle
+                && matches!(input.role.as_str(), "diffuse" | "reflectivity" | "lighting")
+            {
+                continue;
+            }
+            if !matches!(input.role.as_str(), "diffuse" | "normal" | "glow") {
+                continue;
+            }
+            let Some(output) = find_output(request, &input.role) else {
+                continue;
+            };
+            tasks.push(classify_single(input, output, format_overrides));
+        }
+        return tasks;
+    }
+
     // FNV/FO3/Skyrim → FO4 dispatch. Returns early so the FO76 chain below is
     // untouched for these sources.
-    if is_gamebryo_source(&request.source_game)
-        && let Some(normal) = find_input(request, "normal")
-        && let Some(out_specular) = find_output(request, "specular")
-    {
-        tasks.push(TextureTask::LegacySpecGloss {
-            normal: normal.clone(),
-            envmask: find_input(request, "envmask").cloned(),
-            out_normal: find_output(request, "normal").cloned(),
-            out_specular: out_specular.clone(),
-            gloss_baseline: legacy_gloss_baseline(&request.source_game),
-        });
+    if is_gamebryo_source(&request.source_game) {
+        let has_legacy_spec =
+            find_input(request, "normal").is_some() && find_output(request, "specular").is_some();
+        if let (Some(normal), Some(out_specular)) = (
+            find_input(request, "normal"),
+            find_output(request, "specular"),
+        ) {
+            tasks.push(TextureTask::LegacySpecGloss {
+                normal: normal.clone(),
+                envmask: find_input(request, "envmask").cloned(),
+                out_normal: find_output(request, "normal").cloned(),
+                out_specular: out_specular.clone(),
+                gloss_baseline: legacy_gloss_baseline(&request.source_game),
+            });
+        }
         for input in &request.inputs {
-            if matches!(input.role.as_str(), "normal" | "envmask") {
+            if has_legacy_spec && matches!(input.role.as_str(), "normal" | "envmask") {
                 continue;
             }
             let Some(out_role) = mapped_legacy_output_role(&input.role) else {
@@ -601,6 +689,35 @@ mod tests {
         .unwrap();
         let tasks = triage_request(&request, &overrides, false);
         assert_ne!(tasks[0].class(), TriageClass::PassThrough);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn standalone_gamebryo_cubemap_is_normalized() {
+        let tmp = std::env::temp_dir().join("triage_gamebryo_standalone_cubemap");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_tex(&tmp, "ShinyDull_e.dds", 16, 16, "BC1_UNORM", true);
+        let paths = vec![tmp.join("ShinyDull_e.dds").to_string_lossy().to_string()];
+        let groups = group_textures(&paths, &tmp, game_texture_suffixes("fnv"), "fnv");
+        let request = build_request(
+            &groups[0],
+            &tmp.join("out"),
+            "fnv",
+            "fo4",
+            game_texture_suffixes("fnv"),
+            game_texture_suffixes("fo4"),
+            &HashMap::new(),
+            TextureConversionParamsPayload::default(),
+            false,
+            0,
+        )
+        .unwrap();
+
+        let tasks = triage_request(&request, &HashMap::new(), false);
+
+        assert_eq!(tasks.len(), 1);
+        assert!(matches!(tasks[0], TextureTask::CubemapNormalize { .. }));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

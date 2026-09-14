@@ -1,20 +1,13 @@
 //! Fixup: point LIGH gobos at the vanilla FO4 `_d` gobo when one exists.
 //!
-//! # What this does
-//! FO76 light (`LIGH`) records reference a projected-light mask (gobo) in their
-//! `NAM0` subrecord, e.g. `data\Textures\Effects\Gobos\HemisphereSoft_e.DDS`.
-//! FO76 names these with FO76 suffixes (`_e`, `_fire`, …) and ships them as
-//! sRGB textures, whereas every vanilla FO4 gobo is the `_d` variant stored as a
-//! linear `BC1_UNORM` mask.
+//! FO76 `LIGH.NAM0` gobos (e.g. `data\Textures\Effects\Gobos\HemisphereSoft_e.DDS`)
+//! use FO76 suffixes (`_e`, `_fire`, ...) and ship as sRGB; every vanilla FO4 gobo
+//! is a `_d` linear `BC1_UNORM` mask. When the base game ships the matching `_d`
+//! gobo (checked against `config.target_membership_root`), `NAM0` is repointed to it
+//! and nothing ships. Other gobos become linear masks in the texture phase
+//! (`materials_native::texture_convert`).
 //!
-//! When the FO4 base game already ships the matching `_d` gobo (verified against
-//! `config.target_extracted_dir`), this fixup rewrites `NAM0` to that base-game
-//! path. The light then uses FO4's own correct, linear gobo and we ship nothing.
-//! Gobos with no FO4 equivalent are left untouched — the texture phase converts
-//! those to a linear mask instead (`materials_native::texture_convert`).
-//!
-//! # FixupReport mapping
-//! `records_changed` = number of LIGH records whose `NAM0` gobo was repointed.
+//! `records_changed` = LIGH records whose `NAM0` gobo was repointed.
 
 use std::path::Path;
 
@@ -38,7 +31,7 @@ impl Fixup for RemapLightGoboToFo4BaseFixup {
     }
 
     fn applies_to_session(&self, _session: &PluginSession, config: &FixupConfig) -> bool {
-        config.target_extracted_dir.is_some()
+        config.target_membership_root.is_some()
     }
 
     fn run_with_session(
@@ -49,7 +42,7 @@ impl Fixup for RemapLightGoboToFo4BaseFixup {
     ) -> Result<FixupReport, FixupError> {
         let mut report = FixupReport::empty();
 
-        let Some(base_dir) = config.target_extracted_dir.as_deref() else {
+        let Some(base_dir) = config.target_membership_root.as_deref() else {
             return Ok(report);
         };
         let target_schema = config
@@ -276,7 +269,7 @@ mod tests {
         let mut state = MapperState::new(std::iter::empty(), MapperOptions::default());
         let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
         let config = FixupConfig {
-            target_extracted_dir: Some(base_dir.path().to_path_buf()),
+            target_membership_root: Some(base_dir.path().to_path_buf()),
             target_schema: Some(schema),
             ..FixupConfig::default()
         };
@@ -411,7 +404,7 @@ mod tests {
         std::fs::create_dir_all(&gobo_dir).unwrap();
         std::fs::write(gobo_dir.join("Duplicate_d.DDS"), []).unwrap();
         let config = FixupConfig {
-            target_extracted_dir: Some(base_dir.path().to_path_buf()),
+            target_membership_root: Some(base_dir.path().to_path_buf()),
             target_schema: Some(schema.clone()),
             ..FixupConfig::default()
         };

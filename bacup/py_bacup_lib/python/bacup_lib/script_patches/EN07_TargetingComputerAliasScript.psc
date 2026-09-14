@@ -50,6 +50,13 @@ Event OnActivate(ObjectReference akActionRef)
         masterQuest.Start()
     EndIf
     EN07_NukeMasterScript masterScript = masterQuest as EN07_NukeMasterScript
+    ObjectReference targetingComputer = GetReference()
+    Keyword awaitingLaunchKeyword = Game.GetFormFromFile(0x003A66EC, "SeventySix.esm") as Keyword
+    ObjectReference awaitingLaunchRef
+    If targetingComputer != None && awaitingLaunchKeyword != None
+        awaitingLaunchRef = targetingComputer.GetLinkedRef(awaitingLaunchKeyword)
+    EndIf
+    EN07_FleeQuestStartKeyword.SendStoryEventAndWait(player.GetCurrentLocation(), awaitingLaunchRef, player)
     If masterScript == None || !masterScript.BeginLocalLaunch(iSiloID, iLaunchID, player, BlastTarget)
         SayLocalTopic(EN07_TargetComputerDenialTopic)
         bPermitActivation = False
@@ -66,7 +73,6 @@ Event OnActivate(ObjectReference akActionRef)
     EndIf
     player.SetValue(PlayerLaunchCooldown, Utility.GetCurrentGameTime() + (cooldownSeconds / 86400.0))
 
-    ObjectReference targetingComputer = GetReference()
     If targetingComputer != None
         targetingComputer.BlockActivation(True, False)
     EndIf

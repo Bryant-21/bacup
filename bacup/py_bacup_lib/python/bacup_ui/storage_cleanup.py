@@ -54,6 +54,7 @@ def _resolved(path: Path) -> Path:
 def _safe_standalone_directory(
     path: Path,
     forbidden_roots: Iterable[Path],
+    game_roots: Iterable[Path] = (),
 ) -> bool:
     if not path.is_dir():
         return False
@@ -63,6 +64,11 @@ def _safe_standalone_directory(
     for forbidden in forbidden_roots:
         forbidden = _resolved(forbidden)
         if candidate == forbidden or candidate in forbidden.parents:
+            return False
+    for game_root in game_roots:
+        game_root = _resolved(game_root)
+        if (candidate == game_root or candidate in game_root.parents
+                or game_root in candidate.parents):
             return False
     return True
 
@@ -86,16 +92,19 @@ def discover_cleanup_targets(
     fo4_extracted_dir: Path | None,
     fo76_extracted_dir: Path | None,
     forbidden_roots: Iterable[Path] = (),
+    game_roots: Iterable[Path] = (),
     temp_root: Path | None = None,
     legacy_local_data_root: Path | None = None,
 ) -> tuple[CleanupTarget, ...]:
     temp_root = temp_root or windows_temp_dir()
     legacy_local_data_root = legacy_local_data_root or legacy_local_data_dir()
+    forbidden_roots = tuple(forbidden_roots)
+    game_roots = tuple(game_roots)
     protected = (*forbidden_roots, temp_root)
     targets: list[CleanupTarget] = []
 
     if fo4_extracted_dir and _safe_standalone_directory(
-        fo4_extracted_dir, protected
+        fo4_extracted_dir, protected, game_roots
     ):
         targets.append(
             CleanupTarget(
@@ -125,7 +134,7 @@ def discover_cleanup_targets(
             ),
         ):
             child = _case_insensitive_child(fo76_extracted_dir, name)
-            if child is None:
+            if child is None or not _safe_standalone_directory(child, forbidden_roots, game_roots):
                 continue
             targets.append(
                 CleanupTarget(
@@ -139,7 +148,7 @@ def discover_cleanup_targets(
     temp_paths: list[Path] = []
     try:
         for child in temp_root.iterdir():
-            if not child.is_dir():
+            if not _safe_standalone_directory(child, forbidden_roots, game_roots):
                 continue
             lowered = child.name.casefold()
             if any(lowered.startswith(prefix) for prefix in _TEMP_DIR_PREFIXES):
@@ -155,7 +164,7 @@ def discover_cleanup_targets(
                 paths=tuple(sorted(temp_paths, key=lambda path: path.name.casefold())),
             )
         )
-    if _safe_standalone_directory(legacy_local_data_root, protected):
+    if _safe_standalone_directory(legacy_local_data_root, protected, game_roots):
         targets.append(
             CleanupTarget(
                 key="legacy_local_data",

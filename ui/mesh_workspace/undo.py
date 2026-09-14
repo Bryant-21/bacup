@@ -1,7 +1,6 @@
 """Generic undo/redo stack for mesh workspaces.
 
-Extracted from WeightPainterApp's inline undo logic. Each entry
-is a (label, snapshot) tuple where snapshot is an opaque object
+Each entry is a (label, snapshot) tuple where snapshot is an opaque object
 that the workspace subclass knows how to restore.
 """
 from __future__ import annotations

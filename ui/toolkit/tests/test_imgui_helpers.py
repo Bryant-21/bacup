@@ -1,6 +1,17 @@
-"""Tests for imgui_helpers form layout helpers."""
+"""Tests for the shared form layout helpers."""
 from unittest.mock import MagicMock, call, patch
 import sys
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolate_imgui_modules(monkeypatch):
+    from creation_lib.ui.widgets import forms, modern
+
+    for name in ("imgui_bundle", "imgui_bundle.imgui"):
+        monkeypatch.setitem(sys.modules, name, sys.modules[name])
+    monkeypatch.setattr(forms, "imgui", forms.imgui)
+    monkeypatch.setattr(modern, "imgui", modern.imgui)
 
 
 def _mock_imgui():
@@ -23,6 +34,9 @@ def _mock_imgui():
         frame_padding=MagicMock(x=4.0),
         item_spacing=MagicMock(x=8.0),
     )
+    m.get_font_size.return_value = 16.0
+    from creation_lib.ui.widgets import modern
+    modern.imgui = m
     return m
 
 
@@ -32,7 +46,7 @@ def test_begin_form_calls_begin_table():
     sys.modules["imgui_bundle"] = MagicMock(imgui=imgui_mock)
 
     from importlib import reload
-    import ui.tools.imgui_helpers as h
+    import creation_lib.ui.widgets.forms as h
     reload(h)
 
     result = h.begin_form("##test")
@@ -49,7 +63,7 @@ def test_end_form_calls_end_table():
     sys.modules["imgui_bundle"] = MagicMock(imgui=imgui_mock)
 
     from importlib import reload
-    import ui.tools.imgui_helpers as h
+    import creation_lib.ui.widgets.forms as h
     reload(h)
 
     h.end_form()
@@ -63,7 +77,7 @@ def test_draw_int_field_returns_clamped_value():
     sys.modules["imgui_bundle"] = MagicMock(imgui=imgui_mock)
 
     from importlib import reload
-    import ui.tools.imgui_helpers as h
+    import creation_lib.ui.widgets.forms as h
     reload(h)
 
     changed, val = h.draw_int_field("Scale", 999, min_val=1, max_val=8)
@@ -78,7 +92,7 @@ def test_draw_int_field_no_clamp_when_bounds_not_set():
     sys.modules["imgui_bundle"] = MagicMock(imgui=imgui_mock)
 
     from importlib import reload
-    import ui.tools.imgui_helpers as h
+    import creation_lib.ui.widgets.forms as h
     reload(h)
 
     changed, val = h.draw_int_field("Top N", 50)
@@ -91,7 +105,7 @@ def test_draw_float_field_advances_table_columns():
     sys.modules["imgui_bundle"] = MagicMock(imgui=imgui_mock)
 
     from importlib import reload
-    import ui.tools.imgui_helpers as h
+    import creation_lib.ui.widgets.forms as h
     reload(h)
 
     h.draw_float_field("Pitch", 0.5)
@@ -108,7 +122,7 @@ def test_draw_text_field_uses_full_width():
     sys.modules["imgui_bundle"] = MagicMock(imgui=imgui_mock)
 
     from importlib import reload
-    import ui.tools.imgui_helpers as h
+    import creation_lib.ui.widgets.forms as h
     reload(h)
 
     h.draw_text_field("Model", "esrgan")
@@ -121,7 +135,7 @@ def test_draw_combo_field_uses_full_width():
     sys.modules["imgui_bundle"] = MagicMock(imgui=imgui_mock)
 
     from importlib import reload
-    import ui.tools.imgui_helpers as h
+    import creation_lib.ui.widgets.forms as h
     reload(h)
 
     changed, idx = h.draw_combo_field("Method", ["a", "b"], 0)
@@ -136,7 +150,7 @@ def test_draw_path_row_calls_table_row():
     sys.modules["imgui_bundle"] = MagicMock(imgui=imgui_mock)
 
     from importlib import reload
-    import ui.tools.imgui_helpers as h
+    import creation_lib.ui.widgets.forms as h
     reload(h)
 
     path, clicked = h.draw_path_row("Input", "/some/path")

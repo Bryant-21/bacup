@@ -5,13 +5,13 @@ Entry point: ``uv run python -m ui.editor [nif_path]``
 
 import json
 import logging
-import math
 import os
 import sys
 import time
 from pathlib import Path
 
 from imgui_bundle import imgui, hello_imgui, immapp, imguizmo
+from creation_lib.ui.widgets.modern import loading_panel
 
 from creation_lib.renderer.camera import OrbitCamera
 from creation_lib.renderer.scene_renderer import SceneRenderer
@@ -590,7 +590,9 @@ class NifEditorApp:
             imgui.WindowFlags_.no_scrollbar.value
             | imgui.WindowFlags_.no_scroll_with_mouse.value
         )
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(0, 0))
         imgui.begin(self._viewport_label, flags=flags)
+        imgui.pop_style_var()
         viewport_pos = imgui.get_cursor_screen_pos()
         size = imgui.get_content_region_avail()
 
@@ -757,52 +759,8 @@ class NifEditorApp:
         )
         imgui.text_colored(imgui.ImVec4(0.8, 0.8, 0.8, 1.0), self.status_text)
 
-        # Loading spinner — shown while a NIF is being loaded on background thread.
-        # Uses the already-computed viewport_pos and size from the top of this method.
         branch_paste_busy = getattr(self, "_branch_paste_busy", False)
-        if (
-            self._loading
-            or self._attaching
-            or branch_paste_busy
-        ) and size.x > 0 and size.y > 0:
-            draw_list = imgui.get_foreground_draw_list()
-
-            # Semi-transparent dark overlay covering the content area
-            draw_list.add_rect_filled(
-                viewport_pos,
-                imgui.ImVec2(viewport_pos.x + size.x, viewport_pos.y + size.y),
-                imgui.get_color_u32((0.0, 0.0, 0.0, 0.55)),
-            )
-
-            cx = viewport_pos.x + size.x * 0.5
-            cy = viewport_pos.y + size.y * 0.5
-            spin_radius = 20.0
-            t = imgui.get_time()
-            angle_start = math.fmod(t * 3.0, math.tau)
-            arc_span = math.pi * 1.3
-
-            # Dim background ring — add_circle takes ImVec2 center in imgui_bundle
-            draw_list.add_circle(
-                imgui.ImVec2(cx, cy),
-                spin_radius,
-                imgui.get_color_u32((1.0, 1.0, 1.0, 0.2)),
-                32,
-                3.0,
-            )
-            # Rotating bright arc
-            draw_list.path_arc_to(
-                imgui.ImVec2(cx, cy),
-                spin_radius,
-                angle_start,
-                angle_start + arc_span,
-                32,
-            )
-            draw_list.path_stroke(
-                imgui.get_color_u32((1.0, 1.0, 1.0, 1.0)),
-                thickness=3.0,
-            )
-
-            # Centered filename label
+        if (self._loading or self._attaching or branch_paste_busy) and size.x > 0 and size.y > 0:
             label = (
                 f"Attaching {self._attach_filename}…"
                 if self._attaching
@@ -810,12 +768,7 @@ class NifEditorApp:
                 if branch_paste_busy
                 else f"Loading {self._loading_filename}…"
             )
-            tw = imgui.calc_text_size(label).x
-            draw_list.add_text(
-                imgui.ImVec2(cx - tw * 0.5, cy + spin_radius + 10),
-                imgui.get_color_u32((1.0, 1.0, 1.0, 1.0)),
-                label,
-            )
+            loading_panel("Working", label, None, bounds=(viewport_pos, size))
 
         imgui.end()
 

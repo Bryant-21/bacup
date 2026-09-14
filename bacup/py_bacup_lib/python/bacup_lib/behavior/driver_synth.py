@@ -1,14 +1,12 @@
 """Inject Havok modifier chains to drive telemetry-driven behavior variables.
 
-When converting FO76 weapon behaviors to FO4, some behavior graphs (e.g.
-MeltdownFX) declare a float variable bound to a Havok generator member
-path (typically ``BGSGamebryoSequenceGenerator.fTimePercent``) but contain
-no internal modifier that writes the variable. In FO76 the engine or an
-external Papyrus driver fed those variables; that driver does not survive
-the conversion.
+Some FO76 weapon behaviors (e.g. MeltdownFX) declare a float variable bound to a
+generator member path (typically ``BGSGamebryoSequenceGenerator.fTimePercent``)
+with no modifier writing it. FO76 fed it from the engine or Papyrus; that driver
+does not survive conversion.
 
-FO4 vanilla weapons (Cryolator, Flamer, Minigun) solve the same problem
-with an **HKX-internal modifier chain** — no Papyrus. Pattern:
+FO4 vanilla weapons (Cryolator, Flamer, Minigun) drive such variables with an
+HKX-internal modifier chain, no Papyrus:
 
     hkbDampingModifier (kP~0.15-0.2)
        rawValue   <- fRaw variable (1 on fire, 0 on idle)
@@ -19,14 +17,8 @@ with an **HKX-internal modifier chain** — no Papyrus. Pattern:
     every frame. State machine transitions set ``fRaw`` on WeaponFire /
     WeaponSheathe, and the damper smoothly lerps toward the target.
 
-This module:
-
-1. Detects telemetry-driven, externally-fed variables in a behavior HKX.
-2. Mutates the unpacked HKX XML to add the modifier chain, new variables,
-   and self-transition wiring so the variable is driven internally.
-3. Writes the mutated XML back to disk (caller repacks to .hkx).
-
-No Papyrus, MGEF, or ENCH records are emitted.
+This module detects such variables and rewrites the unpacked HKX XML to add that
+chain; the caller repacks. No Papyrus, MGEF, or ENCH records are emitted.
 """
 from __future__ import annotations
 
@@ -60,19 +52,7 @@ _FALLBACK_PATTERN: dict = {
 
 @dataclass(frozen=True)
 class BehaviorDriverSpec:
-    """A single (behavior, variable) tuple that needs an internal driver.
-
-    The renderer uses this to emit an HKX modifier chain:
-      * a new "raw" companion variable (the target value, stepped on events)
-      * a new "damp rate" companion variable (const, not externally bound)
-      * a ``hkbDampingModifier`` that writes ``variable_name`` from the raw
-        companion with kP = ``damping_kp``
-      * a ``hkbModifierGenerator`` wrapping the existing generator so the
-        damper ticks every frame
-      * self-transitions on the hosting state that pulse the raw companion
-        to ``ramp_target`` on ``ramp_events`` and ``decay_target`` on
-        ``decay_events``
-    """
+    """A (behavior, variable) pair that needs an internal driver; see ``inject_driver_chain``."""
 
     behavior_path: str  # forward-slash rel path under data/meshes/
     behavior_name: str  # bare folder name, e.g. "MeltdownFX"
@@ -409,14 +389,9 @@ def _build_assign_variables_modifier(
     """Build a ``BSAssignVariablesModifier`` that assigns up to 20 float
     values into bound variables every tick.
 
-    The modifier has 20 ``floatValueN`` slots and 20 ``floatVariableN``
-    slots; the bound set points the slot indices at target variables via
-    ``memberPath="floatVariableN"`` bindings. Our callers typically bind
-    ``floatVariable1`` to the raw companion variable and leave slots 2-20
-    untouched, mirroring Cryolator's #0040 with only slots 1+2 bound.
-
-    ``float_values`` are the ``floatValue1..N`` constants (missing slots
-    default to 0.0 per vanilla).
+    The binding set maps ``memberPath="floatVariableN"`` to target variables;
+    callers bind only ``floatVariable1`` (vanilla Cryolator #0040 binds slots 1-2).
+    ``float_values`` fill ``floatValue1..N``; missing slots default to 0.0.
     """
     mod = _hkobject(obj_id, "BSAssignVariablesModifier", "0x64a6ca08")
     _hkparam(mod, "variableBindingSet", binding_set_ref)
@@ -712,34 +687,24 @@ def inject_driver_chain(
     """Mutate the unpacked behavior XML so ``spec.variable_name`` is driven
     internally by a Havok modifier chain with event-driven pulsing.
 
-    Writes the mutated tree back to ``xml_path``. Caller repacks to .hkx.
+    Writes ``xml_path`` in place; the caller repacks to .hkx. Mirrors vanilla FO4
+    Cryolator / Flamer / Minigun:
 
-    Strategy (matches vanilla FO4 Cryolator / Flamer / Minigun):
+    1. Add variables ``<var>_Raw`` and ``<var>_DampRate``.
+    2. Add a ``hkbDampingModifier`` writing ``<var>`` (dampedValue) from
+       ``<var>_Raw`` (rawValue) with kP = ``<var>_DampRate``.
+    3. Wrap the host state's generator in a ``hkbModifierGenerator`` so the damper
+       ticks every frame.
+    4. Build an inner 2-state ``hkbStateMachine``. IdleState (start, stateId=0) runs
+       a ``BSAssignVariablesModifier`` writing ``decay_target`` to ``<var>_Raw`` over
+       a ``hkbReferencePoseGenerator``. FiringState (stateId=1) writes
+       ``ramp_target`` over the damper-wrapped generator. Ramp events go
+       Idle -> Firing, decay events Firing -> Idle; missing event names are added
+       to the event table.
+    5. Re-point the host state's generator at the inner state machine.
+    6. Seed ``<var>_Raw`` to ``decay_target`` so the FX starts idle on equip.
 
-    1. Append helper variables ``<var>_Raw`` + ``<var>_DampRate``.
-    2. Append a ``hkbDampingModifier`` that writes ``<var>`` (dampedValue)
-       from ``<var>_Raw`` (rawValue) with kP = ``<var>_DampRate``.
-    3. Wrap the host state's original generator in a ``hkbModifierGenerator``
-       so the damper ticks every frame — same as v2.
-    4. Build an inner 2-state ``hkbStateMachine``:
-         * IdleState (startState, stateId=0): generator is a
-           ``hkbModifierGenerator`` whose modifier is a
-           ``BSAssignVariablesModifier`` that writes ``decay_target``
-           to ``<var>_Raw`` each tick, and whose inner generator is a
-           ``hkbReferencePoseGenerator`` (no-op pose).
-         * FiringState (stateId=1): generator is the damper-wrapped
-           original generator from step 3, with a ``BSAssignVariablesModifier``
-           prepended via another ``hkbModifierGenerator`` that writes
-           ``ramp_target`` to ``<var>_Raw``.
-       Transitions: Idle -> Firing on each ramp event, Firing -> Idle
-       on each decay event. Missing event names are added to the
-       behavior's event table so the transition eventIds resolve.
-    5. Re-point the host state's generator at this inner state machine.
-    6. Seed ``<var>_Raw``'s initial value to ``decay_target`` so the
-       FX starts idle on weapon equip.
-
-    Idempotent: if the behavior already contains a ``hkbDampingModifier``
-    writing ``variable_name``, this function is a no-op.
+    No-op if a ``hkbDampingModifier`` already writes ``variable_name``.
     """
     tree = ET.parse(os.fspath(xml_path))
     root = tree.getroot()
@@ -829,8 +794,8 @@ def inject_driver_chain(
 
     # Step 4: ensure all ramp / decay event names exist in the event
     # table. Unknown events get appended so the transition eventIds
-    # resolve. We must do this BEFORE allocating state-machine pieces
-    # so the recorded indices are stable.
+    # resolve. Must run before allocating state-machine pieces so the
+    # recorded indices are stable.
     ramp_event_ids = _resolve_or_append_event_ids(
         string_data, list(spec.ramp_events) or ["WeaponFire"]
     )

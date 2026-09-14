@@ -3,7 +3,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use nif_core_native::model::NifFile;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -51,6 +51,10 @@ pub struct TargetAssetStats {
     pub files_extracted: u64,
     pub bytes_extracted: u64,
     pub archives_reindexed: u64,
+    pub membership_preparations: u64,
+    pub membership_cache_hits: u64,
+    pub relocation_preparations: u64,
+    pub relocation_cache_hits: u64,
 }
 
 pub struct TargetAssetStore {
@@ -59,10 +63,18 @@ pub struct TargetAssetStore {
     overlay_files: HashMap<String, PathBuf>,
     cache_data_root: PathBuf,
     membership_root: PathBuf,
+    prepared_membership_filters: Mutex<HashSet<(String, String)>>,
+    relocation_preparations: Mutex<
+        HashMap<
+            crate::relocation::RelocationPreparationKey,
+            Weak<crate::relocation::RelocationPreparation>,
+        >,
+    >,
     archive_readers: Mutex<HashMap<PathBuf, Arc<Mutex<bsarchive_native::python::ArchiveReader>>>>,
     archive_paths: Vec<PathBuf>,
     warnings: Vec<String>,
     stats: Mutex<TargetAssetStats>,
+    open_timings: BTreeMap<String, f64>,
 }
 
 impl TargetAssetStore {
@@ -118,6 +130,8 @@ impl TargetAssetStore {
         cache_dir: &Path,
         overlay_dir: Option<&Path>,
     ) -> Result<Self, String> {
+        let started = Instant::now();
+        let mut open_timings = BTreeMap::new();
         if !target_data_dir.is_dir() {
             return Err(format!(
                 "target asset store: FO4 Data directory is missing: {}",
@@ -182,6 +196,11 @@ impl TargetAssetStore {
             active_archives.insert(key, (path.clone(), catalog_valid, spec.priority));
         }
 
+        open_timings.insert(
+            "catalog_and_archives".into(),
+            started.elapsed().as_secs_f64(),
+        );
+        let asset_started = Instant::now();
         let mut assets = load_catalog_assets(&connection, &active_archives)?;
         let mut archive_paths: Vec<(i64, PathBuf)> = active_archives
             .values()
@@ -218,6 +237,8 @@ impl TargetAssetStore {
             }
         }
 
+        open_timings.insert("asset_rows".into(), asset_started.elapsed().as_secs_f64());
+        let dependency_started = Instant::now();
         let mut dependencies = load_dependencies(&connection, &assets)?;
         for (archive_path, mut members) in mismatch_dependency_members {
             members.retain(|path| {
@@ -243,12 +264,30 @@ impl TargetAssetStore {
             values.sort_unstable();
             values.dedup();
         }
-        let overlay_files = overlay_dir
+        open_timings.insert(
+            "dependencies".into(),
+            dependency_started.elapsed().as_secs_f64(),
+        );
+        let overlay_started = Instant::now();
+        let overlay_entries = overlay_dir
             .filter(|path| path.is_dir())
             .map(index_overlay)
             .transpose()?
             .unwrap_or_default();
-        let fingerprint = archive_fingerprint(&active_archives, &overlay_files, schema_version)?;
+        open_timings.insert(
+            "overlay_scan".into(),
+            overlay_started.elapsed().as_secs_f64(),
+        );
+        let fingerprint_started = Instant::now();
+        let fingerprint = archive_fingerprint(&active_archives, &overlay_entries, schema_version)?;
+        open_timings.insert(
+            "fingerprint".into(),
+            fingerprint_started.elapsed().as_secs_f64(),
+        );
+        let overlay_files = overlay_entries
+            .into_iter()
+            .map(|(key, entry)| (key, entry.path))
+            .collect();
         let cache_data_root = cache_dir.join("fo4").join(fingerprint).join("Data");
         let membership_root = cache_data_root
             .parent()
@@ -267,12 +306,15 @@ impl TargetAssetStore {
             )?;
         }
 
+        open_timings.insert("total".into(), started.elapsed().as_secs_f64());
         Ok(Self {
             assets,
             dependencies,
             overlay_files,
             cache_data_root,
             membership_root,
+            prepared_membership_filters: Mutex::new(HashSet::new()),
+            relocation_preparations: Mutex::new(HashMap::new()),
             archive_readers: Mutex::new(HashMap::new()),
             archive_paths,
             warnings,
@@ -280,6 +322,7 @@ impl TargetAssetStore {
                 archives_reindexed: reindexed,
                 ..TargetAssetStats::default()
             }),
+            open_timings,
         })
     }
 
@@ -447,7 +490,21 @@ impl TargetAssetStore {
     }
 
     pub fn prepare_membership_tree(&self, prefix: &str, suffix: &str) -> Result<&Path, String> {
-        for path in self.list_assets(prefix, suffix) {
+        let key = (normalize_rel(prefix), suffix.to_ascii_lowercase());
+        let mut prepared = self
+            .prepared_membership_filters
+            .lock()
+            .map_err(|_| "target asset membership preparation lock poisoned".to_string())?;
+        if !self.membership_root.is_dir() {
+            prepared.clear();
+        }
+        if prepared.contains(&key) {
+            self.with_stats(|stats| stats.membership_cache_hits += 1);
+            return Ok(&self.membership_root);
+        }
+        prepared.remove(&key);
+        self.with_stats(|stats| stats.membership_preparations += 1);
+        for path in self.list_assets(&key.0, &key.1) {
             let marker = self.membership_root.join(path_from_data_relative(&path));
             if marker.is_file() {
                 continue;
@@ -463,7 +520,27 @@ impl TargetAssetStore {
                 .open(&marker)
                 .map_err(|error| format!("create membership marker: {error}"))?;
         }
+        prepared.insert(key);
         Ok(&self.membership_root)
+    }
+
+    pub(crate) fn relocation_preparation(
+        &self,
+        key: crate::relocation::RelocationPreparationKey,
+        build: impl FnOnce() -> crate::relocation::RelocationPreparation,
+    ) -> Arc<crate::relocation::RelocationPreparation> {
+        let mut preparations = self
+            .relocation_preparations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(preparation) = preparations.get(&key).and_then(Weak::upgrade) {
+            self.with_stats(|stats| stats.relocation_cache_hits += 1);
+            return preparation;
+        }
+        let preparation = Arc::new(build());
+        preparations.insert(key, Arc::downgrade(&preparation));
+        self.with_stats(|stats| stats.relocation_preparations += 1);
+        preparation
     }
 
     pub fn warnings(&self) -> &[String] {
@@ -776,7 +853,12 @@ fn join_asset_path(directory: &str, name: &str) -> String {
     }
 }
 
-fn index_overlay(root: &Path) -> Result<HashMap<String, PathBuf>, String> {
+struct OverlayEntry {
+    path: PathBuf,
+    metadata: fs::Metadata,
+}
+
+fn index_overlay(root: &Path) -> Result<HashMap<String, OverlayEntry>, String> {
     let mut files = HashMap::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(directory) = stack.pop() {
@@ -785,11 +867,22 @@ fn index_overlay(root: &Path) -> Result<HashMap<String, PathBuf>, String> {
         {
             let entry = entry.map_err(|error| format!("scan overlay entry: {error}"))?;
             let path = entry.path();
-            if path.is_dir() {
+            let metadata = entry.metadata().and_then(|metadata| {
+                if metadata.file_type().is_symlink() {
+                    path.metadata()
+                } else {
+                    Ok(metadata)
+                }
+            });
+            let Ok(metadata) = metadata else { continue };
+            if metadata.is_dir() {
                 stack.push(path);
-            } else if path.is_file() {
+            } else if metadata.is_file() {
                 if let Ok(relative) = path.strip_prefix(root) {
-                    files.insert(normalize_rel(&relative.to_string_lossy()), path);
+                    files.insert(
+                        normalize_rel(&relative.to_string_lossy()),
+                        OverlayEntry { path, metadata },
+                    );
                 }
             }
         }
@@ -799,7 +892,7 @@ fn index_overlay(root: &Path) -> Result<HashMap<String, PathBuf>, String> {
 
 fn archive_fingerprint(
     active_archives: &HashMap<String, (PathBuf, bool, i64)>,
-    overlay_files: &HashMap<String, PathBuf>,
+    overlay_files: &HashMap<String, OverlayEntry>,
     schema_version: i64,
 ) -> Result<String, String> {
     let mut entries: Vec<_> = active_archives.iter().collect();
@@ -824,10 +917,8 @@ fn archive_fingerprint(
     }
     let mut overlay_entries: Vec<_> = overlay_files.iter().collect();
     overlay_entries.sort_unstable_by_key(|(path, _)| *path);
-    for (relative, path) in overlay_entries {
-        let metadata = path
-            .metadata()
-            .map_err(|error| format!("fingerprint overlay {}: {error}", path.display()))?;
+    for (relative, entry) in overlay_entries {
+        let metadata = &entry.metadata;
         let modified = metadata
             .modified()
             .ok()
@@ -1194,11 +1285,7 @@ struct CatalogParsedDependencies {
 fn catalog_worker_count(workers: Option<usize>) -> usize {
     workers
         .filter(|workers| *workers > 0)
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(usize::from)
-                .unwrap_or(1)
-        })
+        .unwrap_or(1)
         .min(CATALOG_MAX_WORKERS)
 }
 
@@ -1580,6 +1667,14 @@ pub struct PyTargetAssetStore {
 
 #[pymethods]
 impl PyTargetAssetStore {
+    fn open_timings(&self) -> BTreeMap<String, f64> {
+        if self.opened_store {
+            self.inner.open_timings.clone()
+        } else {
+            BTreeMap::new()
+        }
+    }
+
     #[new]
     #[pyo3(signature = (target_data_dir, catalog_path, cache_dir, overlay_dir=None))]
     fn new(
@@ -1698,6 +1793,30 @@ impl PyTargetAssetStore {
                     0
                 },
             ),
+            (
+                "membership_preparations".to_string(),
+                stats
+                    .membership_preparations
+                    .saturating_sub(self.baseline.membership_preparations),
+            ),
+            (
+                "membership_cache_hits".to_string(),
+                stats
+                    .membership_cache_hits
+                    .saturating_sub(self.baseline.membership_cache_hits),
+            ),
+            (
+                "relocation_preparations".to_string(),
+                stats
+                    .relocation_preparations
+                    .saturating_sub(self.baseline.relocation_preparations),
+            ),
+            (
+                "relocation_cache_hits".to_string(),
+                stats
+                    .relocation_cache_hits
+                    .saturating_sub(self.baseline.relocation_cache_hits),
+            ),
         ])
     }
 }
@@ -1728,6 +1847,107 @@ pub fn build_catalog_py(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_store(root: &Path, overlay_files: HashMap<String, PathBuf>) -> TargetAssetStore {
+        TargetAssetStore {
+            assets: HashMap::new(),
+            dependencies: HashMap::new(),
+            overlay_files,
+            cache_data_root: root.join("Data"),
+            membership_root: root.join("Membership"),
+            prepared_membership_filters: Mutex::new(HashSet::new()),
+            relocation_preparations: Mutex::new(HashMap::new()),
+            archive_readers: Mutex::new(HashMap::new()),
+            archive_paths: Vec::new(),
+            warnings: Vec::new(),
+            stats: Mutex::new(TargetAssetStats::default()),
+            open_timings: BTreeMap::new(),
+        }
+    }
+
+    fn legacy_overlay(root: &Path) -> HashMap<String, OverlayEntry> {
+        let mut files = HashMap::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(directory) = stack.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.is_file() {
+                    let relative = path.strip_prefix(root).unwrap();
+                    files.insert(normalize_rel(&relative.to_string_lossy()), path);
+                }
+            }
+        }
+        files
+            .into_iter()
+            .map(|(key, path)| {
+                let metadata = path.metadata().unwrap();
+                (key, OverlayEntry { path, metadata })
+            })
+            .collect()
+    }
+
+    fn assert_same_overlay(
+        old: &HashMap<String, OverlayEntry>,
+        new: &HashMap<String, OverlayEntry>,
+    ) {
+        assert_eq!(old.len(), new.len());
+        for (key, before) in old {
+            let after = &new[key];
+            assert_eq!(before.path, after.path);
+            assert_eq!(before.metadata.len(), after.metadata.len());
+            assert_eq!(
+                before.metadata.modified().unwrap(),
+                after.metadata.modified().unwrap()
+            );
+        }
+        assert_eq!(
+            archive_fingerprint(&HashMap::new(), old, 2).unwrap(),
+            archive_fingerprint(&HashMap::new(), new, 2).unwrap()
+        );
+    }
+
+    #[test]
+    fn overlay_metadata_preserves_membership_and_fingerprint() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("Meshes/Nested")).unwrap();
+        fs::create_dir(root.join("empty")).unwrap();
+        fs::write(root.join("Meshes/Nested/Test.NIF"), b"mesh").unwrap();
+        fs::write(root.join("extra.txt"), b"extra").unwrap();
+        let before = index_overlay(root).unwrap();
+        assert_same_overlay(&legacy_overlay(root), &before);
+        fs::write(root.join("Meshes/Nested/Test.NIF"), b"overwritten mesh").unwrap();
+        let after = index_overlay(root).unwrap();
+        assert_same_overlay(&legacy_overlay(root), &after);
+        assert_ne!(
+            archive_fingerprint(&HashMap::new(), &before, 2).unwrap(),
+            archive_fingerprint(&HashMap::new(), &after, 2).unwrap()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the extracted target overlay"]
+    fn overlay_metadata_matches_full_corpus() {
+        let root = PathBuf::from(std::env::var_os("OVERLAY_CORPUS_ROOT").unwrap());
+        let started = Instant::now();
+        let old = legacy_overlay(&root);
+        let legacy_seconds = started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let new = index_overlay(&root).unwrap();
+        let optimized_seconds = started.elapsed().as_secs_f64();
+        assert_same_overlay(&old, &new);
+        let report = serde_json::json!({
+            "files": new.len(), "legacy_seconds": legacy_seconds,
+            "optimized_seconds": optimized_seconds, "identical": true,
+            "fingerprint": archive_fingerprint(&HashMap::new(), &new, 2).unwrap(),
+        });
+        eprintln!("{report}");
+        if let Some(path) = std::env::var_os("OVERLAY_CORPUS_REPORT") {
+            fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        }
+    }
 
     #[test]
     fn anim_text_data_scope_includes_target_and_base_race_handles() {
@@ -1803,12 +2023,194 @@ mod tests {
     }
 
     #[test]
+    fn membership_preparation_reuses_success_and_rebuilds_after_root_removal() {
+        let temp = tempfile::tempdir().unwrap();
+        let gobo = temp.path().join("gobo.dds");
+        let particle = temp.path().join("particle.dds");
+        fs::write(&gobo, b"gobo").unwrap();
+        fs::write(&particle, b"particle").unwrap();
+        let store = test_store(
+            temp.path(),
+            HashMap::from([
+                ("textures/effects/gobos/gobo.dds".to_string(), gobo),
+                (
+                    "textures/effects/particles/particle.dds".to_string(),
+                    particle,
+                ),
+            ]),
+        );
+
+        store
+            .prepare_membership_tree("Textures/Effects/Gobos/", ".DDS")
+            .unwrap();
+        store
+            .prepare_membership_tree("textures/effects/particles/", ".dds")
+            .unwrap();
+        store
+            .prepare_membership_tree("textures/effects/gobos/", ".dds")
+            .unwrap();
+        let stats = store.stats();
+        assert_eq!(stats.membership_preparations, 2);
+        assert_eq!(stats.membership_cache_hits, 1);
+
+        fs::remove_dir_all(&store.membership_root).unwrap();
+        store
+            .prepare_membership_tree("textures/effects/gobos/", ".dds")
+            .unwrap();
+        store
+            .prepare_membership_tree("textures/effects/particles/", ".dds")
+            .unwrap();
+        assert!(
+            store
+                .membership_root
+                .join("textures/effects/gobos/gobo.dds")
+                .is_file()
+        );
+        assert!(
+            store
+                .membership_root
+                .join("textures/effects/particles/particle.dds")
+                .is_file()
+        );
+        let stats = store.stats();
+        assert_eq!(stats.membership_preparations, 4);
+        assert_eq!(stats.membership_cache_hits, 1);
+    }
+
+    #[test]
+    fn failed_membership_preparation_is_retried() {
+        let temp = tempfile::tempdir().unwrap();
+        let asset = temp.path().join("gobo.dds");
+        fs::write(&asset, b"dds").unwrap();
+        let store = test_store(
+            temp.path(),
+            HashMap::from([("textures/effects/gobos/gobo.dds".to_string(), asset)]),
+        );
+        fs::write(&store.membership_root, b"blocks directory creation").unwrap();
+
+        assert!(
+            store
+                .prepare_membership_tree("textures/effects/gobos", ".dds")
+                .is_err()
+        );
+        fs::remove_file(&store.membership_root).unwrap();
+        store
+            .prepare_membership_tree("textures/effects/gobos", ".dds")
+            .unwrap();
+        let stats = store.stats();
+        assert_eq!(stats.membership_preparations, 2);
+        assert_eq!(stats.membership_cache_hits, 0);
+    }
+
+    #[test]
+    fn relocation_preparation_reuses_members_but_forks_run_cache() {
+        use indexmap::IndexMap;
+        use nif_core_native::model::NifValue;
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let valid_mesh = "meshes/landscape/rocks/valid.nif";
+        let malformed_mesh = "meshes/landscape/rocks/malformed.nif";
+        let source_valid = source.join(path_from_data_relative(valid_mesh));
+        let source_malformed = source.join(path_from_data_relative(malformed_mesh));
+        fs::create_dir_all(source_valid.parent().unwrap()).unwrap();
+        let write_valid_nif = |path: &Path, material: &str| {
+            let mut nif = NifFile::new("fo76");
+            let mut fields = IndexMap::new();
+            fields.insert("Name".into(), NifValue::String(material.into()));
+            nif.add_block("BSLightingShaderProperty", Some(fields));
+            nif.save(Some(path.to_path_buf())).unwrap();
+        };
+        write_valid_nif(&source_valid, "Materials/Before.bgsm");
+        write_valid_nif(&source_malformed, "Materials/Truncated.bgsm");
+        let malformed_bytes = fs::read(&source_malformed).unwrap();
+        let mut header_reader =
+            nif_core_native::io::BasicReader::new(std::io::Cursor::new(malformed_bytes.as_slice()));
+        let header = nif_core_native::io::reader::read_header(&mut header_reader).unwrap();
+        let block_end = header_reader.pos() as usize + header.block_sizes[0] as usize;
+        fs::write(&source_malformed, &malformed_bytes[..block_end - 1]).unwrap();
+        assert!(NifFile::load_referenced_asset_paths(&source_malformed).is_err());
+        let target_valid = temp.path().join("target-valid.nif");
+        let target_malformed = temp.path().join("target-malformed.nif");
+        fs::write(&target_valid, b"target").unwrap();
+        fs::write(&target_malformed, b"target").unwrap();
+        let store = test_store(
+            temp.path(),
+            HashMap::from([
+                (valid_mesh.to_string(), target_valid),
+                (malformed_mesh.to_string(), target_malformed),
+            ]),
+        );
+        let roots = vec!["meshes/landscape".to_string()];
+
+        let oracle = crate::relocation::build_relocation_member_set_with_target_store_uncached(
+            &roots, &source, &store,
+        );
+
+        let mut first = crate::relocation::build_relocation_member_set_with_target_store(
+            &roots, &source, &store,
+        );
+        assert_eq!(first.members, oracle.members);
+        assert_eq!(first.mesh_only_members, oracle.mesh_only_members);
+        assert_eq!(first.warnings, oracle.warnings);
+        first
+            .members
+            .insert("materials/per-run-decal.bgsm".to_string());
+        let second = crate::relocation::build_relocation_member_set_with_target_store(
+            &roots, &source, &store,
+        );
+        assert!(first.members.contains(valid_mesh));
+        assert!(first.members.contains(malformed_mesh));
+        assert!(second.members.contains(valid_mesh));
+        assert!(second.members.contains(malformed_mesh));
+        assert!(!second.members.contains("materials/per-run-decal.bgsm"));
+        assert!(!Arc::ptr_eq(
+            &first.nif_dependencies,
+            &second.nif_dependencies
+        ));
+        assert_eq!(
+            second
+                .nif_dependencies
+                .get(&source_valid)
+                .unwrap()
+                .materials,
+            ["materials/before.bgsm"]
+        );
+        assert!(second.nif_dependencies.get(&source_malformed).is_none());
+        assert_eq!(second.nif_dependencies.counts(), (2, 0));
+        write_valid_nif(&source_valid, "Materials/AfterLongerName.bgsm");
+        assert_eq!(
+            second
+                .nif_dependencies
+                .get(&source_valid)
+                .unwrap()
+                .materials,
+            ["materials/afterlongername.bgsm"]
+        );
+        assert_eq!(second.nif_dependencies.counts(), (3, 1));
+        let stats = store.stats();
+        assert_eq!(stats.relocation_preparations, 1);
+        assert_eq!(stats.relocation_cache_hits, 1);
+
+        drop(first);
+        drop(second);
+        let third = crate::relocation::build_relocation_member_set_with_target_store(
+            &roots, &source, &store,
+        );
+        assert!(third.members.contains(valid_mesh));
+        let stats = store.stats();
+        assert_eq!(stats.relocation_preparations, 2);
+        assert_eq!(stats.relocation_cache_hits, 1);
+    }
+
+    #[test]
     fn catalog_dependency_source_stays_compact() {
         assert!(std::mem::size_of::<CatalogDependencySource>() <= 12);
     }
 
     #[test]
     fn catalog_worker_count_is_bounded() {
+        assert_eq!(catalog_worker_count(None), 1);
         assert_eq!(catalog_worker_count(Some(1)), 1);
         assert_eq!(
             catalog_worker_count(Some(CATALOG_MAX_WORKERS + 1)),

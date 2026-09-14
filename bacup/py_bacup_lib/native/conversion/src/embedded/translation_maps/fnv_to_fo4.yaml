@@ -3,15 +3,119 @@ skip_records:
   # Gamebryo NVER=11/NVMI byte layout into FO4 is structurally invalid.
   - NAVI
   - NAVM
-  - PACK
-  - LVLN
-  - LVLC
-  - HDPT
-  - OUTF
+  # Source-only gameplay/UI records with no FO4 runtime analogue. AMEF is
+  # folded into AMMO by the legacy ammo lowerer; appearance is rebuilt on the
+  # target actor rather than by copying HAIR records.
+  - ALOC
+  - AMEF
+  - CHAL
+  - CDCK
+  - CSNO
+  - DEHY
+  - HAIR
+  - HUNG
+  - LSCT
+  - MICN
+  - MSET
+  - RADS
+  - REPU
+  - RGDL
+  - SLPD
+  # Gamebryo IDLE records do not carry FO4's behavior graph, animation event,
+  # or animation-file contract. The conversion also ships no legacy HKX files,
+  # so emitting these records makes CK build clip data from incomplete entries.
+  - IDLE
+  - IDLM
+  - ANIO
+  # FNV IMOD carries a `struct:I,f` value/weight DATA. FO4 OMOD DATA is the
+  # `omod_data` blob (28-byte minimum: counts, form type, attach point, then
+  # the attach-parent-slot and item arrays), so a verbatim copy makes
+  # BGSAttachParentArray::Load read a bogus slot count off the end of the
+  # chunk and hard-crash the loader. Emitting OMOD needs the attach-point
+  # KYWD / loose-mod MISC / COBJ fan-out in bacup_lib.weapon_attachment_synth,
+  # which nothing calls yet.
+  - IMOD
+
+# Explicit ownership for records that do not need a field-map entry.  A target
+# projection is a deliberate policy: decode with the FNV schema, retain only
+# FO4-recognized subrecords, re-encode with the FO4 codec, and preserve source
+# ordering only inside target scopes.  This list is audited per signature; an
+# undeclared same-4CC record may not silently pass through.
+record_routes:
+  compatible: [PLYR, TES4, VTYP]
+  target_projection:
+    - ASPC
+    - AVIF
+    - CAMS
+    - CLMT
+    - CONT
+    - CPTH
+    - DOBJ
+    - DOOR
+    - ECZN
+    - ENCH
+    - FLST
+    - GRAS
+    - GMST
+    - IMAD
+    - IMGS
+    - INGR
+    - LGTM
+    - LIGH
+    - LSCR
+    - MESG
+    - NOTE
+    - REGN
+    - SCOL
+    - SPEL
+    - STAT
+    - TACT
+    - TREE
+  pair_hook:
+    - ADDN
+    - BPTD
+    - CSTY
+    - DEBR
+    - EFSH
+    - EYES
+    - FACT
+    - HDPT
+    - IPDS
+    - LAND
+    - LTEX
+    - MUSC
+    - PACK
+    - PERK
+    - SOUN
+    # SOUN is rewritten to a complete FO4 SNDR before route lookup.
+    - SNDR
+    - TERM
+    - TXST
+    - WATR
+    - WTHR
+  topology_rebuild: [ACRE, CELL, PBEA, PGRE, PMIS]
 
 material_overrides:
   bgsm_default:
     bCastShadows: true
+
+CCRD:
+  target_record_type: MISC
+
+CHIP:
+  target_record_type: MISC
+
+CMNY:
+  target_record_type: MISC
+
+PWAT:
+  target_record_type: REFR
+
+RCCT:
+  target_record_type: KYWD
+
+RCPE:
+  target_record_type: COBJ
 
 CREA:
   target_record_type: NPC_
@@ -40,15 +144,6 @@ WEAP:
   drop:
   - Ammo
   - VATS
-
-IMOD:
-  fields:
-    Data: Data
-
-  transforms:
-    Name:
-      type: trim_languages
-      keep: [English]
 
 COBJ:
   drop:
@@ -93,8 +188,6 @@ NPC_:
       target_esm: Fallout4.esm
   drop:
   - Hair
-  - CNTO
-  - COED
   - Eyes
   - NAM5
 
@@ -170,13 +263,12 @@ RGDL:
   - ANAM
 
 MGEF:
+  fields:
+    DATA: DATA
   transforms:
     Name:
       type: trim_languages
       keep: [English]
-  drop:
-  - Data
-
 ALCH:
   transforms:
     Name:
@@ -195,16 +287,12 @@ MISC:
     Name:
       type: trim_languages
       keep: [English]
-  drop:
-  - DATA
 
 KEYM:
   transforms:
     Name:
       type: trim_languages
       keep: [English]
-  drop:
-  - DATA
 
 MSTT:
   transforms:

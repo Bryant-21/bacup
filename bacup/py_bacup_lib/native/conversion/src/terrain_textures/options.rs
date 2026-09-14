@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -83,8 +84,8 @@ pub struct Options {
     pub target_cell_editor_ids: Vec<String>,
     #[serde(default)]
     pub target_record_reuse: Vec<TargetRecordReuseRef>,
-    /// Retained for compatibility; texture conversion workers are now owned by
-    /// `convert_textures_v2`.
+    /// Unused; kept for compatibility (`convert_textures_v2` owns the texture
+    /// conversion workers).
     #[serde(default)]
     pub conversion_workers: Option<usize>,
     /// When true, LAND BTXT/ATXT layers resolve the PLAIN base LTEX instead of the
@@ -93,7 +94,7 @@ pub struct Options {
     /// channel for the native scatter. Default false preserves baked-GC behavior.
     #[serde(default)]
     pub land_skip_ground_cover_variants: bool,
-    /// Retained for compatibility; terrain no longer encodes DDS files.
+    /// Unused; kept for compatibility (terrain doesn't encode DDS files).
     #[serde(default)]
     pub reuse_existing_textures: bool,
 }
@@ -131,6 +132,8 @@ pub struct Report {
     #[serde(default)]
     pub layers_recovered: u32,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub operation_counts: BTreeMap<String, u64>,
     pub timings: Vec<TimingEntry>,
     #[serde(skip)]
     pub emitted_records: Vec<terrain_native::authoring_emit::AuthoringRecordPayload>,

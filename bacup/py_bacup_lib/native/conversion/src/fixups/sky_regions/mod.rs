@@ -1,25 +1,17 @@
 //! FO76→FO4 interior sky-region assignment (post-copy).
 //!
-//! FO4 renders a "Show Sky" interior's weather **only** from `XCCM` "Sky/Weather
-//! from Region" → REGN. FO76 also uses the FO76-only `XISR` "Interior Sky
-//! Override" (→ a WTHR weather directly), which has no FO4 equivalent and is not
-//! in the FO4 CELL whitelist, so it is dropped in translation. Any FO76 show-sky
-//! interior without an `XCCM` therefore lands in FO4 with no sky source.
+//! FO4 renders a "Show Sky" interior's weather only from `XCCM` "Sky/Weather from
+//! Region" → REGN. FO76's `XISR` "Interior Sky Override" (→ WTHR directly) has no
+//! FO4 equivalent and is not in the FO4 CELL whitelist, so a show-sky interior
+//! without `XCCM` lands with no sky source. This pass stamps `XCCM` on each one:
+//!   - **T1**: read the dropped `XISR` weather from the still-open source handle;
+//!     if a converted REGN lists it in `RDWT`, point `XCCM` at that region.
+//!   - **T4**: otherwise use the data-derived default region (the `XCCM` target most
+//!     already-correct cells point at).
 //!
-//! This pass stamps `XCCM` on every such cell, layered by fidelity:
-//!   - **T1** — the cell's dropped `XISR` weather is read from the still-open
-//!     SOURCE handle; if some converted REGN already lists that weather in an
-//!     `RDWT` entry, point `XCCM` at that region (faithful, zero new records).
-//!   - **T4** — otherwise fall back to the data-derived default region (the
-//!     `XCCM` target most of the already-correct cells point at).
-//!
-//! Tiers T2 (location→marker→point-in-polygon) and T3 (synthesize a weather-only
-//! REGN) layer on later for cells with no weather signal / no existing region.
-//!
-//! Runs as a free function (not a registry `Fixup`) because interior CELLs do not
-//! exist at fixup time — they are inserted post-fixups by `emit_interior_cells`.
-//! Invoked by `ConversionRun::synthesize_sky_regions` AFTER interior-cell emit
-//! and encounter-zone synthesis, with the source handle still open.
+//! A free function, not a registry `Fixup`: interior CELLs are inserted after the
+//! fixups by `emit_interior_cells`. `ConversionRun::synthesize_sky_regions` calls it
+//! after interior-cell emit and encounter-zone synthesis, with the source handle open.
 
 mod index;
 

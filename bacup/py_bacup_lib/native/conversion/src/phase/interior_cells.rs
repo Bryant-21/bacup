@@ -40,7 +40,7 @@ mod tests {
     use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
     use crate::translator::Game;
     use bytes::Bytes;
-    use esp_authoring_core::nvnm::{NvnmParent, NvnmPayload, write_nvnm};
+    use esp_authoring_core::nvnm::{NvnmParent, NvnmPayload, NvnmVertex, write_nvnm};
     use esp_authoring_core::plugin_runtime::{
         ParsedGroup, ParsedItem, ParsedRecord, ParsedSubrecord, clone_plugin_handle_state_no_py,
         ensure_interior_cell_and_child_group, insert_placed_child_into_cell_group,
@@ -109,6 +109,22 @@ mod tests {
         )
     }
 
+    fn refr_at(form_id: u32, base_raw: u32, position: [f32; 3]) -> ParsedRecord {
+        let data = position
+            .into_iter()
+            .chain([0.0; 3])
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        parsed_record(
+            "REFR",
+            form_id,
+            vec![
+                sub("NAME", base_raw.to_le_bytes().to_vec()),
+                sub("DATA", data),
+            ],
+        )
+    }
+
     /// A REFR carrying an XEZN pointing at `xezn_raw` (a FO76 LCTN). The placed
     /// normalizer strips XEZN that resolves to a non-ECZN type.
     fn refr_with_xezn(form_id: u32, base_raw: u32, xezn_raw: u32) -> ParsedRecord {
@@ -123,11 +139,22 @@ mod tests {
     }
 
     fn interior_navm_record(form_id: u32, cell_local: u32) -> ParsedRecord {
+        interior_navm_with_vertices(form_id, cell_local, &[])
+    }
+
+    fn interior_navm_with_vertices(
+        form_id: u32,
+        cell_local: u32,
+        vertices: &[[f32; 3]],
+    ) -> ParsedRecord {
         let payload = NvnmPayload {
             version: 15,
             flags: 0,
             parent: NvnmParent::Interior { cell: cell_local },
-            vertices: vec![],
+            vertices: vertices
+                .iter()
+                .map(|&[x, y, z]| NvnmVertex { x, y, z })
+                .collect(),
             triangles: vec![],
             edge_links: vec![],
             door_refs: vec![],
@@ -656,6 +683,118 @@ mod tests {
             found,
             "NAVI must contain an NVMI entry for the interior NAVM"
         );
+        drop_run(run_id).unwrap();
+    }
+
+    fn data_position(record: &ParsedRecord) -> [f32; 3] {
+        let data = &record
+            .subrecords
+            .iter()
+            .find(|s| s.signature.as_str() == "DATA")
+            .expect("placed DATA")
+            .data;
+        [0, 4, 8].map(|at| f32::from_le_bytes(data[at..at + 4].try_into().unwrap()))
+    }
+
+    /// The missile-silo shape: one interior straddling Y -30,000.
+    fn far_interior_source() -> u64 {
+        let source = new_fo76_source();
+        ensure_interior_cell_and_child_group(source, interior_cell_record(0x00275EDE, "TestSilo"))
+            .expect("source interior cell");
+        for (section, child) in [
+            (
+                PERSISTENT_GROUP,
+                refr_at(0x002F749F, 0x0001_0000, [100.0, -35_000.0, 50.0]),
+            ),
+            (
+                TEMPORARY_GROUP,
+                refr_at(0x002F74A0, 0x0001_0000, [-200.0, -25_000.0, 60.0]),
+            ),
+            (
+                TEMPORARY_GROUP,
+                interior_navm_with_vertices(0x002F7500, 0x00275EDE, &[[0.0, -34_000.0, 40.0]]),
+            ),
+        ] {
+            insert_placed_child_into_cell_group(source, 0x00275EDE, section, child)
+                .expect("source child");
+        }
+        source
+    }
+
+    #[test]
+    fn far_interior_refs_and_navmesh_move_by_one_offset() {
+        let target = new_fo4_target();
+        let run_id = make_run(far_interior_source(), target);
+        run_emit(run_id, false);
+
+        let (plugin, _) = clone_plugin_handle_state_no_py(target).expect("snapshot");
+        let child = |section, object_id| {
+            cell_section_record(&plugin.root_items, 0x275EDE, section, object_id)
+                .expect("child copied")
+        };
+        assert_eq!(
+            data_position(child(PERSISTENT_GROUP, 0x2F749F)),
+            [100.0, -5_000.0, 50.0]
+        );
+        assert_eq!(
+            data_position(child(TEMPORARY_GROUP, 0x2F74A0)),
+            [-200.0, 5_000.0, 60.0]
+        );
+        let nvnm = child(TEMPORARY_GROUP, 0x2F7500)
+            .subrecords
+            .iter()
+            .find(|s| s.signature.as_str() == "NVNM")
+            .expect("NVNM");
+        let payload =
+            esp_authoring_core::nvnm::parse_nvnm(nvnm.data.as_ref()).expect("NVNM parses");
+        let vertex = &payload.vertices[0];
+        assert_eq!([vertex.x, vertex.y, vertex.z], [0.0, -4_000.0, 40.0]);
+        with_run(run_id, |run| -> Result<(), RunError> {
+            let offset = Some(&[0.0, 30_000.0, 0.0]);
+            assert_eq!(
+                run.interior_recentre.placed_ref_offsets.get(&0x2F74A0),
+                offset
+            );
+            assert_eq!(run.interior_recentre.navmesh_offsets.get(&0x2F7500), offset);
+            Ok(())
+        })
+        .unwrap();
+        drop_run(run_id).unwrap();
+    }
+
+    #[test]
+    fn far_interior_stays_put_when_previs_is_carried() {
+        let target = new_fo4_target();
+        let run_id = make_run(far_interior_source(), target);
+        run_emit(run_id, true);
+
+        let (plugin, _) = clone_plugin_handle_state_no_py(target).expect("snapshot");
+        let refr = cell_section_record(&plugin.root_items, 0x275EDE, PERSISTENT_GROUP, 0x2F749F)
+            .expect("persistent REFR copied");
+        assert_eq!(data_position(refr), [100.0, -35_000.0, 50.0]);
+        drop_run(run_id).unwrap();
+    }
+
+    #[test]
+    fn interior_inside_the_engine_limit_keeps_source_positions() {
+        let source = new_fo76_source();
+        let target = new_fo4_target();
+        ensure_interior_cell_and_child_group(source, interior_cell_record(0x00275EDE, "TestVault"))
+            .expect("source interior cell");
+        insert_placed_child_into_cell_group(
+            source,
+            0x00275EDE,
+            PERSISTENT_GROUP,
+            refr_at(0x002F749F, 0x0001_0000, [100.0, -29_000.0, 50.0]),
+        )
+        .expect("source child");
+
+        let run_id = make_run(source, target);
+        run_emit(run_id, false);
+        let (plugin, _) = clone_plugin_handle_state_no_py(target).expect("snapshot");
+        let refr = cell_section_record(&plugin.root_items, 0x275EDE, PERSISTENT_GROUP, 0x2F749F)
+            .expect("persistent REFR copied");
+        assert_eq!(data_position(refr), [100.0, -29_000.0, 50.0]);
         drop_run(run_id).unwrap();
     }
 

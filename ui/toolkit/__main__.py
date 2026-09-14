@@ -34,7 +34,7 @@ def _prepare_first_run_settings(settings: ToolkitSettings, variant) -> bool:
         return False
 
     from creation_lib.core.game_profiles import GAME_PROFILES
-    from ui.toolkit.path_detector import detect_game_path, validate_game_path
+    from creation_lib.core.path_detector import detect_game_path, validate_game_path
 
     for profile in GAME_PROFILES.values():
         game_id = profile.id

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from creation_lib.pex.native_runtime import compile_psc
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 SOURCE_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
+STATUS_PATH = REPO_ROOT / "bacup" / "docs" / "stub_restoration" / "status.csv"
+PACKAGE_CLOSURE_CONTRACT = "contracts/w05-re-package-client-body-closure.md"
 
 PATCH_CASES = {
     "W05_RE_ObjJP01_DistanceCheckStageSet": (
@@ -28,11 +31,6 @@ PATCH_CASES = {
         "kRotator.SetAngle(",
         "SetStage(StageToSetAfterInit)",
     ),
-    "W05_RE_CryptidStories_Master": (
-        "CryptidList = new Int[4]",
-        "ChosenCryptid = CryptidList[Utility.RandomInt(0, ListLength - 1)]",
-        "ShouldSpawn = 1",
-    ),
     "W05_RE_ObjectBB02_ObjectMoveScript": (
         "kNote.MoveTo(kTable)",
         "kBox.MoveTo(kTable)",
@@ -42,13 +40,12 @@ PATCH_CASES = {
         'RegisterForRemoteEvent(kWanderer, "OnDeath")',
         "W05_RE_TravelBB01_DeadScene.Start()",
     ),
-    # Cannibal package fragments (approved narrow partial repair): only the
-    # 3 rows whose OWN bound Cannibal02Alias property resolves to the owning
-    # quest's ClutterMarkerEnable alias (562281, alias 24) get this patch.
-    # The 4th fragment in this family, PF_W05_RE_SceneAF04_TravelTo_00584A26,
-    # binds the identically-named property to a *different* quest's alias 24
-    # (5849E2's "CraterDoor", not ClutterMarkerEnable) and stays
-    # evidence-blocked — protocol lesson 18: bindings govern, names lie.
+    # Cannibal package fragments (narrow partial repair): only the 3 rows whose
+    # own bound Cannibal02Alias property resolves to the owning quest's
+    # ClutterMarkerEnable alias (562281, alias 24) get this patch.
+    # PF_W05_RE_SceneAF04_TravelTo_00584A26 binds the same-named property to
+    # another quest's alias 24 (5849E2's "CraterDoor"), so it gets none; its client
+    # PEX is memberless (non-defect).
     "Fragments:Packages:PF_W05_RE_CampAF03_TravelToL_00573891": (
         "Cannibal02Alias as ReferenceAlias",
         "kClutterRef.Enable()",
@@ -66,7 +63,6 @@ PATCH_CASES = {
 EXPECTED_MEMBERS = {
     "W05_RE_ObjJP01_DistanceCheckStageSet": {"oninit", "ontimer"},
     "W05_RE_PositionAndRotationCorrection": {"oninit"},
-    "W05_RE_CryptidStories_Master": {"oninit"},
     "W05_RE_ObjectBB02_ObjectMoveScript": {"oninit"},
     "W05_RE_TravelBB01_SoundtrackBotScript": {
         "oninit",
@@ -83,15 +79,22 @@ EXPECTED_MEMBERS = {
 MIN_NONE_GUARD_TOKENS = {
     "W05_RE_ObjJP01_DistanceCheckStageSet": 3,
     "W05_RE_PositionAndRotationCorrection": 10,
-    # No guards needed per the adjudicated A3 contract: all 4 AVRefs are
-    # populated on the only bound record, so the index mapping cannot fail.
-    "W05_RE_CryptidStories_Master": 0,
     "W05_RE_ObjectBB02_ObjectMoveScript": 3,
     "W05_RE_TravelBB01_SoundtrackBotScript": 5,
     "Fragments:Packages:PF_W05_RE_CampAF03_TravelToL_00573891": 2,
     "Fragments:Packages:PF_W05_RE_CampAF03_TravelToL_00573892": 2,
     "Fragments:Packages:PF_W05_RE_CampAF03_TravelToL_00573895": 2,
 }
+
+BODYLESS_PACKAGE_CASES = (
+    "Fragments:Packages:PF_W05_RE_SceneAF04_TravelTo_00584A26",
+    "Fragments:Packages:PF_W05_RE_Scene_TravelersJM0_00569407",
+    "Fragments:Packages:PF_W05_RE_Scene_TravelersJM0_0056EC46",
+    "Fragments:Packages:PF_W05_RE_Scene_TravelersJM0_00571D1C",
+    "Fragments:Packages:PF_W05_RE_Scene_TravelersJM0_00587BDF",
+    "Fragments:Packages:PF_W05_RE_Scene_TravelersJM0_00587BE0",
+    "Fragments:Packages:PF_W05_RE_TravelAF02_TravelT_0059DD34",
+)
 
 
 def _fo4_base_source() -> Path | None:
@@ -146,30 +149,6 @@ def test_w3b_re_infra_patch_restores_confirmed_behavior(
         assert call in patch
 
 
-def test_w3b_re_infra_cryptid_list_is_assigned_not_dead_code():
-    # Regression for a shipped defect: CryptidList is a script-local Int[]
-    # that defaults to None when never assigned, so a body that only reads
-    # it (`If CryptidList`) is unreachable dead code. The adjudicated A3
-    # contract requires a literal assignment before any read.
-    patch = _script_patch_source("W05_RE_CryptidStories_Master")
-    assert patch is not None
-    assert "CryptidList = new Int[" in patch
-    assign_index = patch.index("CryptidList = new Int[")
-    read_index = patch.index("CryptidList[Utility.RandomInt")
-    assert assign_index < read_index
-
-
-def test_w3b_re_infra_cryptid_master_has_no_speculative_gate():
-    # Regression for a shipped defect: SpawnCryptidChance is an
-    # uninitialized script-local Float (defaults to 0.0) with no bound
-    # value or consuming property anywhere in the evidence — the
-    # adjudicated A3 contract explicitly rules it must stay unwired, not
-    # used to gate the pick (which made the gate false in practice).
-    patch = _script_patch_source("W05_RE_CryptidStories_Master")
-    assert patch is not None
-    assert "SpawnCryptidChance" not in patch
-
-
 @pytest.mark.parametrize("script_name", PATCH_CASES)
 def test_w3b_re_infra_actions_are_none_guarded(script_name: str):
     patch = _script_patch_source(script_name)
@@ -199,4 +178,16 @@ def test_w3b_re_infra_patch_merge_native_compiles_for_fo4(script_name: str):
 
 
 def test_w3b_re_infra_patch_count_matches_confirmed_batch():
-    assert len(PATCH_CASES) == 8
+    assert len(PATCH_CASES) == 7
+
+
+def test_w3b_re_bodyless_packages_are_closed_without_invented_patches():
+    with STATUS_PATH.open(encoding="utf-8", newline="") as status_file:
+        rows = {row["script_name"].lower(): row for row in csv.DictReader(status_file)}
+
+    assert len(BODYLESS_PACKAGE_CASES) == 7
+    for script_name in BODYLESS_PACKAGE_CASES:
+        row = rows[script_name.lower()]
+        assert row["terminal_state"] == "non-defect"
+        assert row["evidence"] == PACKAGE_CLOSURE_CONTRACT
+        assert _script_patch_source(script_name) is None

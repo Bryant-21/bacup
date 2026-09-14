@@ -1,25 +1,8 @@
 //! Fixup: add WildlifeFaction to creature NPC records that lack it.
 //!
-
-//!
-//! # What this does
-//! FO4 creatures need `WildlifeFaction` (FK `022B31:Fallout4.esm`) for the AI
-//! to treat them as hostile wildlife.  FO76 omits this faction — its aggression
-//! uses different systems.  Without it, converted creatures may not aggro correctly.
-//!
-//! This fixup scans every NPC_ record in the target plugin.  For each one that
-//! does not already have an SNAM entry whose faction FormID matches WildlifeFaction,
-//! it appends a new SNAM entry (rank 0).
-//!
-//! # SNAM struct layout (FO4, codec `struct:I,b`, 5 bytes)
-//! | Offset | Size | Field   |
-//! |--------|------|---------|
-//! |      0 |    4 | faction (FormID, little-endian) |
-//! |      4 |    1 | rank (int8) |
-//!
-//! # WildlifeFaction
-//! FK `022B31:Fallout4.esm` — raw FormID `0x00_022B31` (Fallout4.esm is master
-//! index 0 in every FO4 plugin).
+//! FO4 creatures need `WildlifeFaction` (`022B31:Fallout4.esm`) for the AI to
+//! treat them as hostile wildlife; FO76 aggression uses other systems and omits
+//! it. Appends a rank-0 SNAM (`struct:I,b`: faction FormID, int8 rank).
 
 use crate::fixups::creature::{
     creature_internal_fixup_applies, npc_internal_fixup_applies_to_record,

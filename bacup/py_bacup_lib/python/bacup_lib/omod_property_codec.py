@@ -258,17 +258,10 @@ def encode_property(
 ) -> dict:
     """Return a canonical property dict {ValueType, FunctionType, Property, Value1, Value2}.
 
-    Args:
-        form_type:     uint32 FormType from OMOD Data (little-endian SIG).
-        property_name: human-readable property name (e.g. 'AttackDamage').
-        value_type:    ValueType integer (VT_INT=0, VT_FLOAT=1, VT_BOOL=2, …).
-        value:         the typed payload for Value1.
-        value2:        the typed payload for Value2 (default 0).
-        function_type: FunctionType integer (SET=0, MUL+ADD/AND/REM=1, ADD/OR=2).
-
-    Raises:
-        KeyError:   if property_name is not in the table for this form_type.
-        ValueError: if value cannot be encoded for the given value_type.
+    ``form_type`` is the OMOD Data FormType (little-endian SIG as uint32);
+    ``function_type`` is SET=0, MUL+ADD/AND/REM=1, ADD/OR=2. Raises KeyError for a
+    property name missing from the form_type's table, ValueError when a value can't
+    be encoded as ``value_type``.
     """
     prop_id = property_name_to_id(form_type, property_name)
 

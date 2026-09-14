@@ -3,16 +3,14 @@
 //! math kernels + legacy mip regen + chain encoder (BC7 via GpuService);
 //! SingleResidue = the unmodified legacy converter on a one-pair sub-request.
 
-use std::fs;
 use std::path::Path;
 
 use materials_native::texture_convert::{
     GamebryoSpecParams, TextureConversionParams, TextureConversionParamsPayload, TexturePathInput,
     TexturePathOutput, TextureSetPathRequest, TextureSetPathResult, convert_texture_set_paths,
-    f32_vec_to_bytes, fo76_bundle_to_fo4_buffers,
-    fo76_reflectivity_lighting_to_fo4_specgloss_buffers,
-    gamebryo_normal_envmask_to_fo4_specgloss_buffers, is_named_glow_lighting_path,
-    output_format_for_path,
+    fo76_bundle_to_fo4_pixels, fo76_reflectivity_lighting_to_fo4_specgloss_pixels,
+    gamebryo_normal_envmask_to_fo4_specgloss_pixels, is_named_glow_lighting_path,
+    output_format_for_path, starfield_pbr_to_fo4_pixels,
 };
 
 use super::gpu_service::GpuService;
@@ -25,8 +23,11 @@ pub(crate) struct TextureOutputSink<'a> {
 }
 
 fn ensure_parent(path: &Path) -> Result<(), String> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Write);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+        directxtex_native::profiling::create_dir_all(parent)
+            .map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     Ok(())
 }
@@ -36,6 +37,8 @@ fn write_output_bytes(
     bytes: &[u8],
     sink: Option<&TextureOutputSink<'_>>,
 ) -> Result<(), String> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Write);
     if let Some(writer) = sink {
         if let Ok(rel) = output.path.strip_prefix(writer.data_root) {
             let rel_str = rel.to_string_lossy().replace('\\', "/");
@@ -43,7 +46,8 @@ fn write_output_bytes(
         }
     }
     ensure_parent(&output.path)?;
-    fs::write(&output.path, bytes).map_err(|e| format!("write {}: {e}", output.path.display()))
+    directxtex_native::profiling::write(&output.path, bytes)
+        .map_err(|e| format!("write {}: {e}", output.path.display()))
 }
 
 pub(crate) fn execute_pass_through(
@@ -51,13 +55,15 @@ pub(crate) fn execute_pass_through(
     output: &TexturePathOutput,
     sink: Option<&TextureOutputSink<'_>>,
 ) -> Result<(), String> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Copy);
     if sink.is_some() {
-        let bytes =
-            fs::read(&input.path).map_err(|e| format!("read {}: {e}", input.path.display()))?;
+        let bytes = directxtex_native::profiling::read(&input.path)
+            .map_err(|e| format!("read {}: {e}", input.path.display()))?;
         return write_output_bytes(output, &bytes, sink);
     }
     ensure_parent(&output.path)?;
-    fs::copy(&input.path, &output.path)
+    std::fs::copy(&input.path, &output.path)
         .map(|_| ())
         .map_err(|e| {
             format!(
@@ -68,17 +74,13 @@ pub(crate) fn execute_pass_through(
         })
 }
 
-/// Shared BC7 hook: adapts GpuService::encode_bc7 to the chain-encoder
-/// callback shape. The extra Vec copy per level is accepted v1 overhead.
 fn bc7_via_service<'a>(
     gpu: &'a GpuService,
     gpu_min_pixels: u32,
-) -> impl Fn(&[(u32, u32, &[u8])], bool) -> Result<Vec<Vec<u8>>, String> + Sync + 'a {
-    move |imgs, srgb| {
-        let owned: Vec<(u32, u32, Vec<u8>)> =
-            imgs.iter().map(|(w, h, p)| (*w, *h, p.to_vec())).collect();
-        gpu.encode_bc7(owned, srgb, gpu_min_pixels)
-    }
+) -> impl Fn(std::sync::Arc<directxtex_native::Rgba8MipChain>, bool) -> Result<Vec<Vec<u8>>, String>
++ Sync
++ 'a {
+    move |images, srgb| gpu.encode_bc7_shared(images, srgb, gpu_min_pixels)
 }
 
 pub(crate) fn execute_per_texel(
@@ -113,6 +115,8 @@ fn encode_per_texel_chain(
     sink: Option<&TextureOutputSink<'_>>,
     mip_flooding: bool,
 ) -> Result<(), String> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
     if normal_kernel {
         for (_, _, px) in chain.iter_mut() {
             kernel_normal_zero_b(px);
@@ -130,8 +134,12 @@ fn encode_per_texel_chain(
         target_format.to_string()
     };
     let bc7 = bc7_via_service(gpu, gpu_min_pixels);
-    let bytes =
-        directxtex_native::encode_dds_from_rgba8_chain(&chain, &output_format, false, Some(&bc7))?;
+    let bytes = directxtex_native::encode_dds_from_owned_rgba8_chain(
+        chain,
+        &output_format,
+        false,
+        Some(&bc7),
+    )?;
     write_output_bytes(output, &bytes, sink)
 }
 
@@ -146,6 +154,8 @@ fn encode_per_texel_chain(
 const PER_TEXEL_MIP_CONSISTENCY_MAX_RMSE: f64 = 12.0;
 
 fn source_mips_box_consistent(chain: &[(u32, u32, Vec<u8>)]) -> bool {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Mips);
     let Some((w0, h0, base)) = chain.first() else {
         return false;
     };
@@ -188,6 +198,8 @@ fn write_f32_as_dds_with_mips(
     sink: Option<(&TexturePathOutput, &TextureOutputSink<'_>)>,
     mip_flooding: bool,
 ) -> Result<(), String> {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Encode);
     let rgba_u8: Vec<u8> = rgba_f32
         .iter()
         .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
@@ -204,13 +216,18 @@ fn write_f32_as_dds_with_mips(
     } else {
         format
     };
-    let bytes =
-        directxtex_native::encode_dds_from_rgba8_chain(&chain, output_format, false, Some(&bc7))?;
+    let bytes = directxtex_native::encode_dds_from_owned_rgba8_chain(
+        chain,
+        output_format,
+        false,
+        Some(&bc7),
+    )?;
     if let Some((output, writer)) = sink {
         return write_output_bytes(output, &bytes, Some(writer));
     }
     ensure_parent(out_path)?;
-    fs::write(out_path, bytes).map_err(|e| format!("write {}: {e}", out_path.display()))
+    directxtex_native::profiling::write(out_path, bytes)
+        .map_err(|e| format!("write {}: {e}", out_path.display()))
 }
 
 /// d+r+l bundle — mirrors convert_fo76_to_fo4_paths' bundle branch: same math
@@ -237,10 +254,10 @@ pub(crate) fn execute_bundle(
     let l = directxtex_native::read_dds_float_rgba_image(&lighting.path)?;
     let mut params: TextureConversionParams = conv_params.into();
     params.preserve_lighting_rgb_for_glow = is_named_glow_lighting_path(&lighting.path);
-    let mut outputs = fo76_bundle_to_fo4_buffers(
-        &f32_vec_to_bytes(&d.rgba),
-        &f32_vec_to_bytes(&r.rgba),
-        &f32_vec_to_bytes(&l.rgba),
+    let mut outputs = fo76_bundle_to_fo4_pixels(
+        &d.rgba,
+        &r.rgba,
+        &l.rgba,
         d.width as usize,
         d.height as usize,
         r.width as usize,
@@ -309,6 +326,86 @@ pub(crate) fn execute_bundle(
     Ok(written)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_starfield_pbr(
+    diffuse: &TexturePathInput,
+    metallic: &TexturePathInput,
+    roughness: &TexturePathInput,
+    ao: Option<&TexturePathInput>,
+    out_diffuse: &TexturePathOutput,
+    out_specular: &TexturePathOutput,
+    conv_params: TextureConversionParamsPayload,
+    gpu: &GpuService,
+    use_gpu: bool,
+    gpu_min_pixels: u32,
+    sink: Option<&TextureOutputSink<'_>>,
+    mip_flood_diffuse: bool,
+) -> Result<u32, String> {
+    let d = directxtex_native::read_dds_float_rgba_image(&diffuse.path)?;
+    let m = directxtex_native::read_dds_float_rgba_image(&metallic.path)?;
+    let r = directxtex_native::read_dds_float_rgba_image(&roughness.path)?;
+    let a = match ao {
+        Some(input) => Some(directxtex_native::read_dds_float_rgba_image(&input.path)?),
+        None => None,
+    };
+    let ao_pixels = a.as_ref().map(|image| image.rgba.as_slice());
+    let outputs = starfield_pbr_to_fo4_pixels(
+        &d.rgba,
+        &m.rgba,
+        &r.rgba,
+        ao_pixels,
+        d.width as usize,
+        d.height as usize,
+        m.width as usize,
+        m.height as usize,
+        r.width as usize,
+        r.height as usize,
+        a.as_ref().map_or(0, |image| image.width as usize),
+        a.as_ref().map_or(0, |image| image.height as usize),
+        conv_params.into(),
+    )
+    .map_err(|error| error.to_string())?;
+
+    let diffuse_format = output_format_for_path(
+        &out_diffuse.role,
+        d.dxgi_format,
+        &out_diffuse.format,
+        &out_diffuse.path,
+    );
+    write_f32_as_dds_with_mips(
+        &outputs.diffuse,
+        d.width,
+        d.height,
+        &diffuse_format,
+        &out_diffuse.path,
+        gpu,
+        gpu_min_pixels,
+        use_gpu,
+        sink.map(|writer| (out_diffuse, writer)),
+        mip_flood_diffuse,
+    )?;
+
+    let specular_format = output_format_for_path(
+        &out_specular.role,
+        r.dxgi_format,
+        &out_specular.format,
+        &out_specular.path,
+    );
+    write_f32_as_dds_with_mips(
+        &outputs.specgloss,
+        d.width,
+        d.height,
+        &specular_format,
+        &out_specular.path,
+        gpu,
+        gpu_min_pixels,
+        use_gpu,
+        sink.map(|writer| (out_specular, writer)),
+        false,
+    )?;
+    Ok(2)
+}
+
 /// r+l (no d) — mirrors the legacy converter (output at reflectivity dims).
 pub(crate) fn execute_specgloss(
     reflectivity: &TexturePathInput,
@@ -321,9 +418,9 @@ pub(crate) fn execute_specgloss(
 ) -> Result<(), String> {
     let r = directxtex_native::read_dds_float_rgba_image(&reflectivity.path)?;
     let l = directxtex_native::read_dds_float_rgba_image(&lighting.path)?;
-    let specgloss = fo76_reflectivity_lighting_to_fo4_specgloss_buffers(
-        &f32_vec_to_bytes(&r.rgba),
-        &f32_vec_to_bytes(&l.rgba),
+    let specgloss = fo76_reflectivity_lighting_to_fo4_specgloss_pixels(
+        &r.rgba,
+        &l.rgba,
         r.width as usize,
         r.height as usize,
         l.width as usize,
@@ -385,14 +482,14 @@ pub(crate) fn execute_legacy_specgloss(
         None => None,
     };
 
-    let mask_bytes = mask.as_ref().map(|image| f32_vec_to_bytes(&image.rgba));
+    let mask_pixels = mask.as_ref().map(|image| image.rgba.as_slice());
     let params = GamebryoSpecParams {
         gloss_baseline,
         ..GamebryoSpecParams::default()
     };
-    let outputs = gamebryo_normal_envmask_to_fo4_specgloss_buffers(
-        &f32_vec_to_bytes(&n.rgba),
-        mask_bytes.as_deref(),
+    let outputs = gamebryo_normal_envmask_to_fo4_specgloss_pixels(
+        &n.rgba,
+        mask_pixels,
         n.width as usize,
         n.height as usize,
         mask.as_ref().map_or(0, |image| image.width as usize),
@@ -451,8 +548,10 @@ pub(crate) fn execute_cubemap_normalize(
     output: &TexturePathOutput,
     sink: Option<&TextureOutputSink<'_>>,
 ) -> Result<bool, String> {
-    let source =
-        fs::read(&input.path).map_err(|e| format!("read {}: {e}", input.path.display()))?;
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Decode);
+    let source = directxtex_native::profiling::read(&input.path)
+        .map_err(|e| format!("read {}: {e}", input.path.display()))?;
     let Some(bytes) = super::cubemaps::normalize_cubemap_bytes(&source)? else {
         return Ok(false);
     };
@@ -583,10 +682,10 @@ pub(crate) fn execute_task_with_landscape_mip_flooding(
                 }
                 TriageClass::PerTexel => {
                     let min_pixels = if use_gpu { gpu_min_pixels } else { u32::MAX };
-                    let chain = directxtex_native::read_dds_mips_rgba8(&input.path)?.mips;
-                    if source_mips_box_consistent(&chain) {
+                    let decoded = directxtex_native::read_dds_mips_rgba8(&input.path)?;
+                    if source_mips_box_consistent(&decoded.mips) {
                         encode_per_texel_chain(
-                            chain,
+                            decoded.mips,
                             output,
                             target_format,
                             *normal_kernel,
@@ -597,17 +696,19 @@ pub(crate) fn execute_task_with_landscape_mip_flooding(
                         )
                         .map(|()| (1, 0, false, u32::from(mip_flooding)))
                     } else {
-                        let result =
-                            execute_residue(input, output, conv_params, use_gpu, gpu_min_pixels)?;
-                        if mip_flooding && !result.converted.is_empty() {
+                        materials_native::texture_convert::convert_fo76_individual_image(
+                            &input.role,
+                            output,
+                            decoded.into_base_float_image()?,
+                            use_gpu,
+                            gpu_min_pixels,
+                            false,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        if mip_flooding {
                             rewrite_output_mip_flooded(output, gpu, min_pixels, sink)?;
                         }
-                        Ok((
-                            result.converted.len() as u32,
-                            result.skipped.len() as u32,
-                            true,
-                            u32::from(mip_flooding && !result.converted.is_empty()),
-                        ))
+                        Ok((1, 0, true, u32::from(mip_flooding)))
                     }
                 }
                 TriageClass::BundleRecompile => {
@@ -679,6 +780,32 @@ pub(crate) fn execute_task_with_landscape_mip_flooding(
             sink,
         )
         .map(|()| (1, 0, false, 0)),
+        TextureTask::StarfieldPbr {
+            diffuse,
+            metallic,
+            roughness,
+            ao,
+            out_diffuse,
+            out_specular,
+        } => {
+            let mip_flood_diffuse =
+                landscape_mip_flooding && is_landscape_diffuse_output(out_diffuse);
+            execute_starfield_pbr(
+                diffuse,
+                metallic,
+                roughness,
+                ao.as_ref(),
+                out_diffuse,
+                out_specular,
+                conv_params,
+                gpu,
+                use_gpu,
+                gpu_min_pixels,
+                sink,
+                mip_flood_diffuse,
+            )
+            .map(|written| (written, 0, false, u32::from(mip_flood_diffuse)))
+        }
         TextureTask::LegacySpecGloss {
             normal,
             envmask,
@@ -813,6 +940,37 @@ mod tests {
         let out = std::fs::read(&output.path).unwrap();
         assert_eq!(out, src, "PassThrough must be a byte copy");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn legacy_residue_reports_shared_decode_material_encode_and_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tex(tmp.path(), "normal_n.dds", 16, 16, "BC7_UNORM", true);
+        let input = TexturePathInput {
+            role: "normal".into(),
+            path: tmp.path().join("normal_n.dds"),
+        };
+        let output = TexturePathOutput {
+            role: "normal".into(),
+            path: tmp.path().join("out.dds"),
+            format: "BC7_UNORM".into(),
+        };
+        let (result, timings) = directxtex_native::profiling::capture(|| {
+            execute_residue(
+                &input,
+                &output,
+                TextureConversionParamsPayload::default(),
+                false,
+                u32::MAX,
+            )
+        });
+        assert_eq!(result.unwrap().converted.len(), 1);
+        assert!(timings.read_ns > 0);
+        assert!(timings.decode_ns > 0);
+        assert!(timings.material_ns > 0);
+        assert!(timings.encode_ns > 0);
+        assert!(timings.write_ns > 0);
+        assert_eq!(timings.gpu_wait_ns, 0);
     }
 
     #[test]

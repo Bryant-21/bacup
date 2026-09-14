@@ -5,6 +5,7 @@ import os
 from collections import deque
 
 from imgui_bundle import imgui
+from creation_lib.ui.widgets.modern import action_button, scaled, semantic_color
 
 try:
     from ui.ai import AI_AVAILABLE
@@ -203,13 +204,9 @@ class LogPanel:
 
     _MAX_LINES = 5000
 
-    # Colors per log level
-    _LEVEL_COLORS = {
-        logging.DEBUG: imgui.ImVec4(0.5, 0.5, 0.5, 1.0),
-        logging.INFO: imgui.ImVec4(0.8, 0.8, 0.8, 1.0),
-        logging.WARNING: imgui.ImVec4(1.0, 0.8, 0.2, 1.0),
-        logging.ERROR: imgui.ImVec4(1.0, 0.3, 0.3, 1.0),
-        logging.CRITICAL: imgui.ImVec4(1.0, 0.2, 0.2, 1.0),
+    _LEVEL_ROLES = {
+        logging.DEBUG: "muted", logging.INFO: "text", logging.WARNING: "warning",
+        logging.ERROR: "error", logging.CRITICAL: "error",
     }
 
     # Level filter buttons (label, level constant)
@@ -247,25 +244,20 @@ class LogPanel:
     def draw(self):
         imgui.begin("Log")
 
-        # Level filter toggle buttons (plain — no per-level button color)
-        _dim_button = imgui.ImVec4(0.15, 0.15, 0.17, 1.0)
-        _dim_hovered = imgui.ImVec4(0.20, 0.20, 0.22, 1.0)
-        for label, level in self._LEVEL_BUTTONS:
+        right = imgui.get_cursor_screen_pos().x + imgui.get_content_region_avail().x
+        for index, (label, level) in enumerate(self._LEVEL_BUTTONS):
+            width = imgui.calc_text_size(label).x + 2 * imgui.get_style().frame_padding.x
+            if index and imgui.get_item_rect_max().x + imgui.get_style().item_spacing.x + width <= right:
+                imgui.same_line()
             active = level in self._level_filter
-            if not active:
-                imgui.push_style_color(imgui.Col_.button, _dim_button)
-                imgui.push_style_color(imgui.Col_.button_hovered, _dim_hovered)
-            if imgui.button(label):
+            if action_button(label, primary=active):
                 if active:
                     self._level_filter.discard(level)
                 else:
                     self._level_filter.add(level)
-            if not active:
-                imgui.pop_style_color(2)
-            imgui.same_line()
 
         # Filter text input
-        imgui.set_next_item_width(160)
+        imgui.set_next_item_width(min(scaled(160), imgui.get_content_region_avail().x))
         _, self._filter_text = imgui.input_text("##filter", self._filter_text, 256)
         imgui.same_line()
         if imgui.button("Clear"):
@@ -284,8 +276,10 @@ class LogPanel:
                 continue
             if filt and filt not in text.lower():
                 continue
-            color = self._LEVEL_COLORS.get(level, self._LEVEL_COLORS[logging.INFO])
-            imgui.text_colored(color, text)
+            color = semantic_color(self._LEVEL_ROLES.get(level, "text"))
+            imgui.push_style_color(imgui.Col_.text, color)
+            imgui.text_wrapped(text)
+            imgui.pop_style_color()
 
         if self._auto_scroll and imgui.get_scroll_y() >= imgui.get_scroll_max_y() - 10:
             imgui.set_scroll_here_y(1.0)

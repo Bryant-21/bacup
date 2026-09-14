@@ -8,7 +8,7 @@ Bool Function BeginLocalLaunch(Int aiSiloID, Int aiLaunchID, Location akSiloLoca
     Quest fleeQuest = Self as Quest
     Bool questWasRunning = fleeQuest.IsRunning()
     If !questWasRunning
-        fleeQuest.Start()
+        Return False
     EndIf
     If akSiloLocation != None
         TargetSiloLoc.ForceLocationTo(akSiloLocation)

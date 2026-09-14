@@ -48,6 +48,7 @@ def _prepare_game_root(tmp_path: Path, archive_names: list[str]) -> tuple[Path, 
 
 def test_extraction_only_section_has_no_yaml_or_index_actions(tmp_path, monkeypatch):
     from creation_lib.ui.settings import indexes_section
+    from creation_lib.ui.widgets import modern
 
     settings = SimpleNamespace(
         get_game_paths=lambda _game: {
@@ -55,9 +56,12 @@ def test_extraction_only_section_has_no_yaml_or_index_actions(tmp_path, monkeypa
             "extracted_dir": "",
         }
     )
-    ctx = SimpleNamespace(settings=settings)
+    ctx = SimpleNamespace(settings=settings, scale=1.0)
     imgui = MagicMock()
     monkeypatch.setattr(indexes_section, "imgui", imgui)
+    monkeypatch.setattr(modern, "imgui", imgui)
+    imgui.get_font_size.return_value = 16.0
+    imgui.get_style_color_vec4.return_value = SimpleNamespace(x=0.1)
     imgui.combo.return_value = (False, 0)
     imgui.input_int.return_value = (False, 8)
     imgui.is_item_hovered.return_value = False

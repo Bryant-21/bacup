@@ -84,7 +84,7 @@ def test_explicit_lod_worldspaces_override_discovery():
     assert uses_fo76_bto is False
 
 
-def test_pair_profile_selects_tamriel_without_discovering_every_worldspace():
+def test_skyrim_pair_profile_discovers_every_worldspace():
     settings = _fo76_settings()
     settings["_pair_id"] = "skyrimse:fo4"
     settings["global"]["worldspaces"] = ["Tamriel"]
@@ -107,15 +107,15 @@ def test_pair_profile_selects_tamriel_without_discovering_every_worldspace():
 
     assert prepared is not None
     worldspaces, prepared_settings, uses_fo76_bto, discover = prepared
-    assert worldspaces == ["Tamriel"]
-    assert prepared_settings["global"]["worldspaces"] == ["Tamriel"]
+    assert worldspaces == []
+    assert prepared_settings["global"]["worldspaces"] == []
     assert prepared_settings["grass"]["enabled"] is True
     assert uses_fo76_bto is False
-    assert discover is False
+    assert discover is True
 
 
 def test_discovery_expands_all_eligible_worldspaces(monkeypatch, tmp_path):
-    plugin = tmp_path / "Skyrim_Merged.esm"
+    plugin = tmp_path / "Skyrim.esm"
     logs = []
     monkeypatch.setattr(
         "creation_lib.lod.native_runtime.discover_worldspaces",
@@ -154,7 +154,7 @@ def test_explicit_worldspaces_do_not_call_discovery(monkeypatch, tmp_path):
     assert regen_pipeline._resolve_lod_worldspaces(
         ["Mojave"],
         discover_from_plugin=False,
-        working_esm=tmp_path / "FNV_FO3_Merged.esm",
+        working_esm=tmp_path / "FalloutNV.esm",
         runner_log=lambda *_args: None,
     ) == ["Mojave"]
 
@@ -359,7 +359,7 @@ def test_lod_generation_rejects_missing_required_outputs(
         regen_pipeline._run_generate_lod(
             mod_root=tmp_path / "mod",
             worldspaces=["Mojave"],
-            working_esm=tmp_path / "mod" / "FNV_FO3_Merged.esm",
+            working_esm=tmp_path / "mod" / "FalloutNV.esm",
             asset_dirs=[],
             settings={"global": {"generate_terrain": True, "write_lodsettings": True}},
             runner_log=lambda *_args: None,

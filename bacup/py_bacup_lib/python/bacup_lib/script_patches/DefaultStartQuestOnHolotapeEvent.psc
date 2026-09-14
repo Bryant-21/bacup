@@ -1,4 +1,5 @@
 Event OnQuestInit()
+    RebuildHolotapeEventFilters()
     Actor player = Game.GetPlayer()
     If player
         ; FO4 Holotape forms cannot send OnHolotapePlay remotely. Use the
@@ -6,6 +7,37 @@ Event OnQuestInit()
         RegisterForRemoteEvent(player, "OnItemAdded")
     EndIf
 EndEvent
+
+Event OnQuestShutdown()
+    Actor player = Game.GetPlayer()
+    If player
+        UnregisterForRemoteEvent(player, "OnItemAdded")
+    EndIf
+    RemoveAllInventoryEventFilters()
+EndEvent
+
+Function RebuildHolotapeEventFilters()
+    RemoveAllInventoryEventFilters()
+    Int index = 0
+    While HolotapeData != None && index < HolotapeData.Length
+        Holotape tapeFilter = HolotapeData[index].TriggeringTape
+        If tapeFilter != None && !HasEarlierHolotapeEventFilter(tapeFilter, index)
+            AddInventoryEventFilter(tapeFilter)
+        EndIf
+        index += 1
+    EndWhile
+EndFunction
+
+Bool Function HasEarlierHolotapeEventFilter(Holotape tapeFilter, Int beforeIndex)
+    Int index = 0
+    While HolotapeData != None && index < beforeIndex
+        If HolotapeData[index].TriggeringTape == tapeFilter
+            Return True
+        EndIf
+        index += 1
+    EndWhile
+    Return False
+EndFunction
 
 Event ObjectReference.OnHolotapePlay(ObjectReference akSender, ObjectReference akTerminalRef)
     Holotape playedTape = GetPlayedHolotape(akSender)

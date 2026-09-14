@@ -1,11 +1,13 @@
+; TODO
+; Deferred: no FO4 replacement for the per-state display-name override.
+
 Function DoUpdateState(Int stateIndex)
     If AnimationStates == None || stateIndex < 0 || stateIndex >= AnimationStates.Length
         Return
     EndIf
 
-    If AnimationStates[stateIndex].EnableOverrideDisplayName
-        SetOverrideName(AnimationStates[stateIndex].OverrideDisplayName)
-    EndIf
+    ; EnableOverrideDisplayName/OverrideDisplayName have no Fallout 4 equivalent:
+    ; per-state display-name override was FO76 ObjectReference.SetOverrideName.
     If AnimationStates[stateIndex].EnableOverrideActivateText
         SetActivateTextOverride(AnimationStates[stateIndex].OverrideActivateText)
     EndIf
@@ -64,10 +66,10 @@ Event OnInit()
     InitializeLocalState()
 EndEvent
 
-Event OnSimpleNetworkStateSet()
-    ; TODO
-    SetLocalState(CurrentStateIndex, True)
-EndEvent
+; OnSimpleNetworkStateSet was raised by the FO76 server when a replicated state
+; variable changed. Single-player has no replication: SetLocalState is already
+; the authoritative entry point, so the handler is dropped rather than re-homed.
+; @drop-member OnSimpleNetworkStateSet
 
 Event OnLoad()
     InitializeLocalState()

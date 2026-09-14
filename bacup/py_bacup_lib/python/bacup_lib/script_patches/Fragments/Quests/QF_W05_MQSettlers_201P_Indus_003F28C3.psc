@@ -1,4 +1,11 @@
-; TODO
+; Complete single-player stage implementation for Trade Secrets.
+
+Function Fragment_Stage_0001_Item_00()
+    ; Source note: DEBUG - Complete MTR05.
+    If MTR05_Mother != None && !MTR05_Mother.IsStageDone(500)
+        MTR05_Mother.SetStage(500)
+    EndIf
+EndFunction
 
 Function Fragment_Stage_0010_Item_00()
     If GetStage() < 100
@@ -10,21 +17,42 @@ Function Fragment_Stage_0100_Item_00()
     SetObjectiveDisplayed(100)
 EndFunction
 
+Function Fragment_Stage_0125_Item_00()
+    SetObjectiveCompleted(100)
+
+    Actor playerRef = Game.GetPlayer()
+    Bool motherlodeReady = MTR05_Mother != None && MTR05_Mother.IsStageDone(500)
+    If playerRef != None && playerRef.GetValue(MTR05_PlayerRepairedMotherlode) >= 1.0
+        motherlodeReady = True
+    EndIf
+
+    If motherlodeReady
+        If !IsStageDone(175)
+            SetStage(175)
+        EndIf
+    ElseIf !IsStageDone(150)
+        SetStage(150)
+    EndIf
+EndFunction
+
 Function Fragment_Stage_0150_Item_00()
     SetObjectiveDisplayed(150)
 EndFunction
 
 Function Fragment_Stage_0175_Item_00()
+    SetObjectiveCompleted(150)
     If GetStage() < 200
         SetStage(200)
     EndIf
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
+    SetObjectiveCompleted(100)
     SetObjectiveDisplayed(200)
 EndFunction
 
 Function Fragment_Stage_0225_Item_00()
+    SetObjectiveCompleted(200)
     If W05_MQS_201P_Scene1 != None
         W05_MQS_201P_Scene1.Start()
     EndIf
@@ -37,18 +65,28 @@ Function Fragment_Stage_0250_Item_00()
 EndFunction
 
 Function Fragment_Stage_0300_Item_00()
+    SetObjectiveCompleted(200)
     SetObjectiveDisplayed(300)
+    If !IsStageDone(310)
+        SetStage(310)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0310_Item_00()
     SetObjectiveDisplayed(310)
 EndFunction
 
+Function Fragment_Stage_0311_Item_00()
+    SetObjectiveCompleted(310)
+EndFunction
+
 Function Fragment_Stage_0325_Item_00()
+    SetObjectiveCompleted(300)
     SetObjectiveDisplayed(325)
 EndFunction
 
 Function Fragment_Stage_0400_Item_00()
+    SetObjectiveCompleted(325)
     SetObjectiveDisplayed(400)
 EndFunction
 
@@ -60,6 +98,9 @@ Function Fragment_Stage_0426_Item_00()
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
         playerRef.SetValue(W05_MQS_201P_KeycardClue01Found, 1.0)
+        If playerRef.GetValue(W05_MQS_201P_KeycardClue02Found) >= 1.0 && playerRef.GetValue(W05_MQS_201P_KeycardClue03Found) >= 1.0 && playerRef.GetValue(W05_MQS_201P_KeycardClue04Found) >= 1.0 && !IsStageDone(430)
+            SetStage(430)
+        EndIf
     EndIf
 EndFunction
 
@@ -68,6 +109,9 @@ Function Fragment_Stage_0427_Item_00()
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
         playerRef.SetValue(W05_MQS_201P_KeycardClue02Found, 1.0)
+        If playerRef.GetValue(W05_MQS_201P_KeycardClue01Found) >= 1.0 && playerRef.GetValue(W05_MQS_201P_KeycardClue03Found) >= 1.0 && playerRef.GetValue(W05_MQS_201P_KeycardClue04Found) >= 1.0 && !IsStageDone(430)
+            SetStage(430)
+        EndIf
     EndIf
 EndFunction
 
@@ -76,6 +120,9 @@ Function Fragment_Stage_0428_Item_00()
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
         playerRef.SetValue(W05_MQS_201P_KeycardClue03Found, 1.0)
+        If playerRef.GetValue(W05_MQS_201P_KeycardClue01Found) >= 1.0 && playerRef.GetValue(W05_MQS_201P_KeycardClue02Found) >= 1.0 && playerRef.GetValue(W05_MQS_201P_KeycardClue04Found) >= 1.0 && !IsStageDone(430)
+            SetStage(430)
+        EndIf
     EndIf
 EndFunction
 
@@ -84,14 +131,35 @@ Function Fragment_Stage_0429_Item_00()
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
         playerRef.SetValue(W05_MQS_201P_KeycardClue04Found, 1.0)
+        If playerRef.GetValue(W05_MQS_201P_KeycardClue01Found) >= 1.0 && playerRef.GetValue(W05_MQS_201P_KeycardClue02Found) >= 1.0 && playerRef.GetValue(W05_MQS_201P_KeycardClue03Found) >= 1.0 && !IsStageDone(430)
+            SetStage(430)
+        EndIf
     EndIf
 EndFunction
 
+Function Fragment_Stage_0430_Item_00()
+    SetObjectiveCompleted(425)
+EndFunction
+
+Function Fragment_Stage_0431_Item_00()
+    SetObjectiveFailed(428)
+EndFunction
+
+Function Fragment_Stage_0432_Item_00()
+    SetObjectiveFailed(429)
+EndFunction
+
 Function Fragment_Stage_0449_Item_00()
+    SetObjectiveCompleted(425)
+    SetObjectiveCompleted(427)
+    SetObjectiveFailed(428)
+    SetObjectiveFailed(429)
     SetObjectiveDisplayed(449)
 EndFunction
 
 Function Fragment_Stage_0450_Item_00()
+    SetObjectiveCompleted(400)
+    SetObjectiveCompleted(449)
     SetObjectiveDisplayed(450)
     Actor playerRef = Game.GetPlayer()
     If playerRef != None && playerRef.GetItemCount(W05_MQS_201P_HornwrightSaferoomKeycard) < 1
@@ -100,6 +168,7 @@ Function Fragment_Stage_0450_Item_00()
 EndFunction
 
 Function Fragment_Stage_0490_Item_00()
+    SetObjectiveCompleted(450)
     If W05_MQS_201P_Scene_Safe_Room != None
         W05_MQS_201P_Scene_Safe_Room.Start()
     EndIf
@@ -110,6 +179,7 @@ Function Fragment_Stage_0500_Item_00()
 EndFunction
 
 Function Fragment_Stage_0510_Item_00()
+    SetObjectiveCompleted(500)
     If W05_MQS_201P_Scene2a != None
         W05_MQS_201P_Scene2a.Start()
     EndIf
@@ -128,6 +198,7 @@ Function Fragment_Stage_0550_Item_00()
 EndFunction
 
 Function Fragment_Stage_0600_Item_00()
+    SetObjectiveCompleted(500)
     SetObjectiveDisplayed(600)
 EndFunction
 
@@ -136,6 +207,7 @@ Function Fragment_Stage_0700_Item_00()
 EndFunction
 
 Function Fragment_Stage_0625_Item_00()
+    SetObjectiveCompleted(600)
     If !IsStageDone(700)
         SetStage(700)
     EndIf
@@ -149,6 +221,7 @@ Function Fragment_Stage_0725_Item_00()
 EndFunction
 
 Function Fragment_Stage_0730_Item_00()
+    SetObjectiveCompleted(700)
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
         playerRef.SetValue(W05_MQS_201P_PlayerFoundPipboyKit, 1.0)
@@ -159,6 +232,7 @@ Function Fragment_Stage_0730_Item_00()
 EndFunction
 
 Function Fragment_Stage_0731_Item_00()
+    SetObjectiveCompleted(725)
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
         playerRef.SetValue(W05_MQS_201P_PlayerFoundPipboyPhoto, 1.0)
@@ -169,6 +243,8 @@ Function Fragment_Stage_0731_Item_00()
 EndFunction
 
 Function Fragment_Stage_0750_Item_00()
+    SetObjectiveCompleted(700)
+    SetObjectiveCompleted(725)
     If GetStage() < 800
         SetStage(800)
     EndIf
@@ -179,6 +255,7 @@ Function Fragment_Stage_0800_Item_00()
 EndFunction
 
 Function Fragment_Stage_0810_Item_00()
+    SetObjectiveCompleted(800)
     If W05_MQS_201P_Scene3 != None
         W05_MQS_201P_Scene3.Start()
     EndIf
@@ -191,10 +268,12 @@ Function Fragment_Stage_0825_Item_00()
 EndFunction
 
 Function Fragment_Stage_0850_Item_00()
+    SetObjectiveCompleted(800)
     SetObjectiveDisplayed(850)
 EndFunction
 
 Function Fragment_Stage_0851_Item_00()
+    SetObjectiveCompleted(850)
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
         playerRef.RemoveItem(W05_MQS_201P_MiscItem_PipboyKit, 1, True)
@@ -205,6 +284,16 @@ Function Fragment_Stage_0851_Item_00()
 EndFunction
 
 Function Fragment_Stage_0875_Item_00()
+    Actor playerRef = Game.GetPlayer()
+    If playerRef != None
+        If W05_MQS_201P_EyebotPartPerk != None && !playerRef.HasPerk(W05_MQS_201P_EyebotPartPerk)
+            playerRef.AddPerk(W05_MQS_201P_EyebotPartPerk)
+        EndIf
+        If W05_MQS_201P_RobobrainPartPerk != None && !playerRef.HasPerk(W05_MQS_201P_RobobrainPartPerk)
+            playerRef.AddPerk(W05_MQS_201P_RobobrainPartPerk)
+        EndIf
+    EndIf
+
     If !IsStageDone(900)
         SetStage(900)
     EndIf
@@ -222,6 +311,10 @@ EndFunction
 
 Function Fragment_Stage_0901_Item_00()
     SetObjectiveDisplayed(901)
+    Actor playerRef = Game.GetPlayer()
+    If playerRef != None && playerRef.GetItemCount(W05_MQS_201P_HornwrightEstateLabKeycard) < 1
+        playerRef.AddItem(W05_MQS_201P_HornwrightEstateLabKeycard, 1, False)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0902_Item_00()
@@ -243,8 +336,12 @@ Function Fragment_Stage_0950_Item_00()
 EndFunction
 
 Function Fragment_Stage_0951_Item_00()
+    SetObjectiveCompleted(950)
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
+        If !IsStageDone(902) && playerRef.GetItemCount(W05_MQS_201P_MiscItem_VertibotPart) < 1
+            playerRef.AddItem(W05_MQS_201P_MiscItem_VertibotPart, 1, False)
+        EndIf
         playerRef.SetValue(W05_MQS_201P_PlayerFoundVertibotPart, 1.0)
     EndIf
     If IsStageDone(952) && IsStageDone(953) && !IsStageDone(975)
@@ -253,8 +350,13 @@ Function Fragment_Stage_0951_Item_00()
 EndFunction
 
 Function Fragment_Stage_0952_Item_00()
+    SetObjectiveCompleted(900)
+    SetObjectiveCompleted(901)
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
+        If playerRef.GetItemCount(W05_MQS_201P_MiscItem_EyebotPart) < 1
+            playerRef.AddItem(W05_MQS_201P_MiscItem_EyebotPart, 1, False)
+        EndIf
         playerRef.SetValue(W05_MQS_201P_PlayerFoundEyebotPart, 1.0)
     EndIf
     If IsStageDone(951) && IsStageDone(953) && !IsStageDone(975)
@@ -263,8 +365,12 @@ Function Fragment_Stage_0952_Item_00()
 EndFunction
 
 Function Fragment_Stage_0953_Item_00()
+    SetObjectiveCompleted(925)
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
+        If playerRef.GetItemCount(W05_MQS_201P_MiscItem_RobobrainPart) < 1
+            playerRef.AddItem(W05_MQS_201P_MiscItem_RobobrainPart, 1, False)
+        EndIf
         playerRef.SetValue(W05_MQS_201P_PlayerFoundRobobrainPart, 1.0)
     EndIf
     If IsStageDone(951) && IsStageDone(952) && !IsStageDone(975)
@@ -279,12 +385,23 @@ Function Fragment_Stage_0975_Item_00()
 EndFunction
 
 Function Fragment_Stage_1000_Item_00()
+    SetObjectiveCompleted(900)
+    SetObjectiveCompleted(901)
+    SetObjectiveCompleted(925)
+    SetObjectiveCompleted(950)
     SetObjectiveDisplayed(1000)
 EndFunction
 
 Function Fragment_Stage_1010_Item_00()
+    SetObjectiveCompleted(1000)
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
+        If W05_MQS_201P_EyebotPartPerk != None && playerRef.HasPerk(W05_MQS_201P_EyebotPartPerk)
+            playerRef.RemovePerk(W05_MQS_201P_EyebotPartPerk)
+        EndIf
+        If W05_MQS_201P_RobobrainPartPerk != None && playerRef.HasPerk(W05_MQS_201P_RobobrainPartPerk)
+            playerRef.RemovePerk(W05_MQS_201P_RobobrainPartPerk)
+        EndIf
         playerRef.RemoveItem(W05_MQS_201P_MiscItem_EyebotPart, 1, True)
         playerRef.RemoveItem(W05_MQS_201P_MiscItem_RobobrainPart, 1, True)
         playerRef.RemoveItem(W05_MQS_201P_MiscItem_VertibotPart, 1, True)
@@ -301,17 +418,21 @@ Function Fragment_Stage_1025_Item_00()
         While W05_MQS_201P_Scene4.IsPlaying() && !IsStageDone(1200)
             Utility.Wait(0.5)
         EndWhile
-        If IsStageDone(1050) && !IsStageDone(1200)
-            SetStage(1200)
-        EndIf
+    EndIf
+
+    ; Scene 4 is presentation. Its missing server callback must not strand the local route.
+    If !IsStageDone(1200)
+        SetStage(1200)
     EndIf
 EndFunction
 
 Function Fragment_Stage_1200_Item_00()
+    SetObjectiveCompleted(1000)
     SetObjectiveDisplayed(1200)
 EndFunction
 
 Function Fragment_Stage_1225_Item_00()
+    SetObjectiveCompleted(1200)
     If !IsStageDone(9000)
         SetStage(9000)
     EndIf
@@ -323,7 +444,44 @@ Function Fragment_Stage_9000_Item_00()
         playerRef.SetValue(W05_MQS_201P_QuestComplete, 1.0)
         playerRef.SetValue(W05_PennyIsInFoundation, 1.0)
     EndIf
+    ; FO76 account reputation and reward delivery are server-owned. Do not emulate them locally.
     If W05_MQS_202P_QuestStartKeyword != None
         W05_MQS_202P_QuestStartKeyword.SendStoryEvent(None, playerRef, playerRef)
     EndIf
+EndFunction
+
+Function Fragment_Stage_9999_Item_00()
+    Stop()
+EndFunction
+
+Function Fragment_Stage_10000_Item_00()
+    If W05_MQS_201P_Scene1 != None && W05_MQS_201P_Scene1.IsPlaying()
+        W05_MQS_201P_Scene1.Stop()
+    EndIf
+    If W05_MQS_201P_Scene2a != None && W05_MQS_201P_Scene2a.IsPlaying()
+        W05_MQS_201P_Scene2a.Stop()
+    EndIf
+    If W05_MQS_201P_Scene2b != None && W05_MQS_201P_Scene2b.IsPlaying()
+        W05_MQS_201P_Scene2b.Stop()
+    EndIf
+    If W05_MQS_201P_Scene3 != None && W05_MQS_201P_Scene3.IsPlaying()
+        W05_MQS_201P_Scene3.Stop()
+    EndIf
+    If W05_MQS_201P_Scene4 != None && W05_MQS_201P_Scene4.IsPlaying()
+        W05_MQS_201P_Scene4.Stop()
+    EndIf
+    If W05_MQS_201P_Scene_Safe_Room != None && W05_MQS_201P_Scene_Safe_Room.IsPlaying()
+        W05_MQS_201P_Scene_Safe_Room.Stop()
+    EndIf
+
+    Actor playerRef = Game.GetPlayer()
+    If playerRef != None
+        If W05_MQS_201P_EyebotPartPerk != None && playerRef.HasPerk(W05_MQS_201P_EyebotPartPerk)
+            playerRef.RemovePerk(W05_MQS_201P_EyebotPartPerk)
+        EndIf
+        If W05_MQS_201P_RobobrainPartPerk != None && playerRef.HasPerk(W05_MQS_201P_RobobrainPartPerk)
+            playerRef.RemovePerk(W05_MQS_201P_RobobrainPartPerk)
+        EndIf
+    EndIf
+    ; Bound DefaultQuestRemovePlayersScript owns quest-item cleanup after Stop().
 EndFunction

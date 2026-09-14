@@ -27,7 +27,7 @@ bones:
   "Bip01 L Forearm": "LArm_ForeArm1"
   "Bip01 L Hand": "LArm_Hand"
   "Bip01 L ForeTwist": "LArm_ForeArm2"
-  "Bip01 LUpArmTwistBone": "LArm_UpperArm2"
+  "Bip01 LUpArmTwistBone": "LArm_UpperTwist1"
 
   # --- Right Arm ---
   "Bip01 R Clavicle": "RArm_Collarbone"
@@ -35,19 +35,19 @@ bones:
   "Bip01 R Forearm": "RArm_ForeArm1"
   "Bip01 R Hand": "RArm_Hand"
   "Bip01 R ForeTwist": "RArm_ForeArm2"
-  "Bip01 RUpArmTwistBone": "RArm_UpperArm2"
+  "Bip01 RUpArmTwistBone": "RArm_UpperTwist1"
 
   # --- Left Leg ---
   "Bip01 L Thigh": "LLeg_Thigh"
   "Bip01 L Calf": "LLeg_Calf"
   "Bip01 L Foot": "LLeg_Foot"
-  "Bip01 L Toe0": "LLeg_Toe0"
+  "Bip01 L Toe0": "LLeg_Toe1"
 
   # --- Right Leg ---
   "Bip01 R Thigh": "RLeg_Thigh"
   "Bip01 R Calf": "RLeg_Calf"
   "Bip01 R Foot": "RLeg_Foot"
-  "Bip01 R Toe0": "RLeg_Toe0"
+  "Bip01 R Toe0": "RLeg_Toe1"
 
   # --- Left Fingers (index: Finger1, middle: Finger2, ring: Finger3, pinky: Finger4, thumb: Thumb→Finger5) ---
   # FO3: Finger1/11/12 (base/mid/tip)  →  FO4: Finger11/12/13 (base/mid/tip)

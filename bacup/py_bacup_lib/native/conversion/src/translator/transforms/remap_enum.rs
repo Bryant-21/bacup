@@ -1,15 +1,12 @@
-//! `remap_enum` transform — maps source integer enum values to target values.
-//!
-//! Python source: `translator.py` lines 1023-1052.
+//! `remap_enum` transform: maps source integer enum values to target values.
 //!
 //! Values in `[0..max_value]` pass through unchanged.
 //! Values outside that range are looked up in `mapping`; if absent, `default`
 //! is used and a warning is emitted.
 //!
-//! When the source value is a string (named enum label) the Python code
-//! resolves it via `_resolve_enum_string` which requires per-game schema
-//! context not yet available here. That branch is stubbed with a
-//! TODO — the int path is fully implemented.
+//! A string value that isn't an integer literal (a named enum label) passes
+//! through unchanged: resolving it needs per-game schema context that
+//! `TransformCtx` doesn't carry (see the TODO in `apply`).
 //!
 //! Config keys:
 //! - `max_value` (integer, default 0): highest value that passes through as-is.
@@ -42,7 +39,6 @@ impl Transform for RemapEnumTransform {
         let default = config.get("default").and_then(|v| v.as_i64()).unwrap_or(0);
 
         // Build the out-of-range mapping from config.
-        // Python: `{int(k): int(v) for k, v in transform.get("mapping", {}).items()}`
         let mapping: std::collections::HashMap<i64, i64> = config
             .get("mapping")
             .and_then(|v| v.as_object())
@@ -63,7 +59,6 @@ impl Transform for RemapEnumTransform {
             FieldValue::Uint(u) => *u as i64,
             FieldValue::Float(f) => *f as i64,
             FieldValue::String(sym) => {
-                // Python: try int(value), if that fails call _resolve_enum_string.
                 // For string values: first try parsing as an integer literal.
                 if let Some(s) = ctx.interner.resolve(*sym) {
                     if let Ok(n) = s.parse::<i64>() {
@@ -71,8 +66,7 @@ impl Transform for RemapEnumTransform {
                     } else {
                         // TODO: call EnumLabelIndex::resolve(enum_ref, s)
                         // once game-schema context is wired into TransformCtx.
-                        // For now, pass through unchanged (mirrors Python's `continue`
-                        // when _resolve_enum_string returns None).
+                        // Until then, pass through unchanged.
                         return Ok(());
                     }
                 } else {

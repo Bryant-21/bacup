@@ -1,7 +1,94 @@
 skip_records:
   - COLL
   - NAVI
-  - PACK
+  # Appearance, ragdoll, legacy script-record, and volumetric-light records
+  # are replaced by target-native actor/assets or the VMAD/PEX script route.
+  - CLDC
+  - HAIR
+  - RGDL
+  - SCPT
+  - VOLI
+
+record_routes:
+  compatible: [DUAL, EYES, FSTP, GLOB, GMST, IPDS, LENS, OTFT, PLYR, RFCT, TES4, VTYP]
+  target_projection:
+    - AACT
+    - ACTI
+    - ADDN
+    - ANIO
+    - ARTO
+    - ASPC
+    - ASTP
+    - AVIF
+    - BOOK
+    - BPTD
+    - CAMS
+    - CLAS
+    - CLFM
+    - CLMT
+    - CONT
+    - DOBJ
+    - DOOR
+    - ECZN
+    - ENCH
+    - EQUP
+    - FLOR
+    - FLST
+    - FSTS
+    - FURN
+    - GRAS
+    - HAZD
+    - HDPT
+    - IDLM
+    - IMAD
+    - IMGS
+    - INGR
+    - IPCT
+    - KEYM
+    - KYWD
+    - LCRT
+    - LCTN
+    - LGTM
+    - LIGH
+    - LSCR
+    - LTEX
+    - LVLI
+    - LVLN
+    - LVSP
+    - MATO
+    - MATT
+    - MESG
+    - MISC
+    - MOVT
+    - MSTT
+    - MUSC
+    - PACK
+    - PERK
+    - REGN
+    - RELA
+    - REVB
+    - SCOL
+    - SNCT
+    - SOUN
+    - SPGD
+    - STAT
+    - TACT
+    - TREE
+    - WATR
+  pair_hook: [DEBR, EFSH, REFR, SCRL, SHOU, SOPM, SPEL, TXST, WTHR]
+  topology_rebuild: [ACHR, CELL, LAND, NAVM, PARW, PBAR, PBEA, PCON, PFLA, PGRE, PHZD, PMIS, WRLD]
+
+APPA:
+  target_record_type: MISC
+
+PWAT:
+  target_record_type: REFR
+
+SLGM:
+  target_record_type: MISC
+
+WOOP:
+  target_record_type: MISC
 
 WEAP:
   fields:
@@ -356,7 +443,7 @@ MGEF:
     CTDA:
       type: translate_conditions
       source_game: skyrimse
-      source_esm: Skyrim_Merged.esm
+      source_esm: Skyrim.esm
       target_esm: Fallout4.esm
   defaults: {}
 
@@ -373,7 +460,7 @@ COBJ:
     CTDA:
       type: translate_conditions
       source_game: skyrimse
-      source_esm: Skyrim_Merged.esm
+      source_esm: Skyrim.esm
       target_esm: Fallout4.esm
     NAM1:
       type: wrap_in_list
@@ -430,33 +517,33 @@ FACT:
     CTDA:
       type: translate_conditions
       source_game: skyrimse
-      source_esm: Skyrim_Merged.esm
+      source_esm: Skyrim.esm
       target_esm: Fallout4.esm
 SNDR:
   transforms:
     CTDA:
       type: translate_conditions
       source_game: skyrimse
-      source_esm: Skyrim_Merged.esm
+      source_esm: Skyrim.esm
       target_esm: Fallout4.esm
 MUST:
   transforms:
     CTDA:
       type: translate_conditions
       source_game: skyrimse
-      source_esm: Skyrim_Merged.esm
+      source_esm: Skyrim.esm
       target_esm: Fallout4.esm
 IDLE:
   transforms:
     CTDA:
       type: translate_conditions
       source_game: skyrimse
-      source_esm: Skyrim_Merged.esm
+      source_esm: Skyrim.esm
       target_esm: Fallout4.esm
 CPTH:
   transforms:
     CTDA:
       type: translate_conditions
       source_game: skyrimse
-      source_esm: Skyrim_Merged.esm
+      source_esm: Skyrim.esm
       target_esm: Fallout4.esm

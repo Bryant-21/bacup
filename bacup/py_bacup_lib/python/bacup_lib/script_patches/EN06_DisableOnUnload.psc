@@ -1,0 +1,3 @@
+Event OnUnload()
+    DisableNoWait()
+EndEvent

@@ -26,36 +26,17 @@ def _fragment_member(stage: int) -> str:
 
 
 OBJECTIVE_CASES: dict[str, tuple[int, ...]] = {
-    "Fragments:Quests:QF_W05_MQS_Choice_00592500": (100, 9000),
+    "Fragments:Quests:QF_W05_MQS_Choice_00592500": (100, 9000, 9999),
     "Fragments:Quests:QF_W05_MQS_204P_0040C458": (
-        10, 15, 90, 100, 200, 250, 300, 360, 370, 390, 525, 550, 600, 700,
-        800, 1000, 9000,
+        10, 15, 90, 100, 200, 210, 250, 275, 300, 360, 370, 375, 380,
+        390, 400, 500, 525, 550, 600, 610, 615, 620, 625, 630, 635, 640,
+        645, 650, 655, 700, 800, 900, 1000, 1100, 9000, 10000,
     ),
 }
 
 NEGATIVE_CASES: dict[str, tuple[int, ...]] = {
-    "Fragments:Quests:QF_W05_MQS_Choice_00592500": (9999,),
-    "Fragments:Quests:QF_W05_MQS_204P_0040C458": (
-        210,
-        275,
-        375,
-        380,
-        400,
-        500,
-        610,
-        615,
-        620,
-        625,
-        630,
-        635,
-        640,
-        645,
-        650,
-        655,
-        900,
-        1100,
-        10000,
-    ),
+    "Fragments:Quests:QF_W05_MQS_Choice_00592500": (),
+    "Fragments:Quests:QF_W05_MQS_204P_0040C458": (),
 }
 
 EXPECTED_TOTALS = {

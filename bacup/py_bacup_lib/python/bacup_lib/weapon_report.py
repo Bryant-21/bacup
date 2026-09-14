@@ -107,27 +107,41 @@ def _form_key_variants(form_key: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(variants))
 
 
-def weapon_metadata_index(orchestrator) -> dict[str, dict[str, Any]]:
-    cached = getattr(orchestrator, "_weapon_metadata_index", None)
+def weapon_metadata_rows(orchestrator) -> tuple[dict[str, Any], ...]:
+    cached = getattr(orchestrator, "_weapon_metadata_rows", None)
     if cached is not None:
         return cached
     rust_run = getattr(orchestrator, "_rust_conversion_run", None)
     if rust_run is None:
-        orchestrator._weapon_metadata_index = {}
-        return {}
+        orchestrator._weapon_metadata_rows = ()
+        return ()
     form_keys = [
         str(getattr(node, "form_key", "") or "")
         for node in getattr(orchestrator.graph, "all_records", [])
         if orchestrator._record_type_signature(getattr(node, "record_type", "")) == "WEAP"
     ]
-    if not form_keys:
-        orchestrator._weapon_metadata_index = {}
-        return {}
     from bacup_lib.native_runtime import load_native_module
 
     rows = load_native_module().conversion_run_weapon_metadata(rust_run.id, form_keys)
+    ordered = tuple(
+        sorted(
+            (dict(row) for row in rows),
+            key=lambda row: (
+                str(row.get("source_form_key") or "").casefold(),
+                str(row.get("editor_id") or "").casefold(),
+            ),
+        )
+    )
+    orchestrator._weapon_metadata_rows = ordered
+    return ordered
+
+
+def weapon_metadata_index(orchestrator) -> dict[str, dict[str, Any]]:
+    cached = getattr(orchestrator, "_weapon_metadata_index", None)
+    if cached is not None:
+        return cached
     index: dict[str, dict[str, Any]] = {}
-    for row in rows:
+    for row in weapon_metadata_rows(orchestrator):
         for key in _form_key_variants(str(row.get("source_form_key") or "")):
             index[key] = row
         editor_id = str(row.get("editor_id") or "")

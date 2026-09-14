@@ -37,7 +37,7 @@ FAMILY_BA2_LABEL: dict[str, tuple[str, ...]] = {
     "Meshes":     ("Meshes", "MeshesExtra"),
     "Materials":  ("Materials",),
     "Textures":   ("Textures",),
-    "Terrain":    ("Terrain", "TerrainTextures"),
+    "Terrain":    ("Materials", "Textures"),
     "LOD":        ("LOD", "LODTextures"),
     "Animations": ("Animations",),
     "Scripts":    ("Misc",),

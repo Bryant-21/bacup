@@ -1,37 +1,10 @@
 //! Fixup: inject ConstructibleObject records that reference OMODs in the target.
-
 //!
-//! # What this does
-//! After translation, the target plugin contains OMOD (ObjectModifications)
-//! records but typically lacks their corresponding COBJ (ConstructibleObjects)
-//! workbench recipes. Without the COBJ records, the attachment mod categories
-//! are invisible at the in-game workbench.
-//!
-//! This fixup scans every COBJ record in the source plugin. For each COBJ that
-//! references at least one OMOD FormKey (via any `FieldValue::FormKey` in the
-//! record), and that has not already been translated into the target, the fixup:
-//!   1. Reads the COBJ from the source plugin.
-//!   2. Allocates a target FormKey and rewrites all cross-plugin FormKey
-//!      references via `FormKeyMapper`.
-//!   3. Writes the rewritten record into the target plugin via
-//!      `add_record_native`.
-//!
-//! # Guard
-//! When the conversion root is a creature type (NPC_/LVLN), creature sub-graphs
-//! never have OMOD/COBJ chains. Skip entirely.
-//!
-//! # FK matching strategy
-//! The source COBJ records reference *source* FormKeys for the OMODs. The
-//! target already has translated copies whose FormKeys differ. We build a
-//! reverse map (`target FK → source FK`) from `mapper.source_to_target`, then
-//! use the source FK set to match against source COBJ FK references. This
-//! avoids needing an external SQLite reverse-reference DB: the mapper already
-//! tracks every source→target allocation made during `translate_all`.
-//!
-//! # Components / cross-plugin refs
-//! COBJ Components (c_Silver, etc.) are handled naturally: `rewrite_record`
-//! remaps all `FieldValue::FormKey` references through the mapper, which
-//! vanilla-remaps them against the target DB.
+//! Translated OMODs arrive without their COBJ workbench recipes, which leaves their
+//! mod categories invisible at the workbench. Each source COBJ that references a
+//! translated OMOD (matched by reversing `mapper.source_to_target`) and is not yet
+//! in the target is rewritten through the mapper and added. Creature roots
+//! (NPC_/LVLN) are skipped: they never carry OMOD/COBJ chains.
 
 use rustc_hash::FxHashSet;
 

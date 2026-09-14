@@ -88,9 +88,23 @@ impl SourceEsm {
             return Err(SourceOpenError::Malformed("no TES4 header".into()));
         }
         let tes4_len = read_u32(data, 4)? as usize;
-        let mut offset = RECORD_HEADER_LEN + tes4_len;
+        let mut offset = RECORD_HEADER_LEN
+            .checked_add(tes4_len)
+            .filter(|end| *end <= data.len())
+            .ok_or_else(|| {
+                SourceOpenError::Malformed(format!(
+                    "TES4 payload length {tes4_len} exceeds file length {}",
+                    data.len()
+                ))
+            })?;
         while offset + RECORD_HEADER_LEN <= data.len() {
             let sig: [u8; 4] = data[offset..offset + 4].try_into().unwrap();
+            if !sig.iter().all(u8::is_ascii_graphic) {
+                return Err(SourceOpenError::Malformed(format!(
+                    "invalid record signature at offset {offset}: {:02X?}",
+                    sig
+                )));
+            }
             let size = read_u32(data, offset + 4)? as usize;
             if &sig == b"GRUP" {
                 // GRUP size includes its own 24-byte header; descend by simply
@@ -100,8 +114,28 @@ impl SourceEsm {
                         "GRUP size {size} < header at {offset}"
                     )));
                 }
+                if offset
+                    .checked_add(size)
+                    .is_none_or(|group_end| group_end > data.len())
+                {
+                    return Err(SourceOpenError::Malformed(format!(
+                        "GRUP at {offset} extends past file end: size={size}, file_len={}",
+                        data.len()
+                    )));
+                }
                 offset += RECORD_HEADER_LEN;
                 continue;
+            }
+            if offset
+                .checked_add(RECORD_HEADER_LEN)
+                .and_then(|payload_start| payload_start.checked_add(size))
+                .is_none_or(|record_end| record_end > data.len())
+            {
+                return Err(SourceOpenError::Malformed(format!(
+                    "record {} at {offset} extends past file end: data_len={size}, file_len={}",
+                    String::from_utf8_lossy(&sig),
+                    data.len()
+                )));
             }
             let flags = read_u32(data, offset + 8)?;
             let form_id = read_u32(data, offset + 12)?;
@@ -485,6 +519,33 @@ mod tests {
     fn open_rejects_non_plugin() {
         let f = write_temp_plugin(b"not a plugin at all............");
         assert!(SourceEsm::open(f.path()).is_err());
+    }
+
+    #[test]
+    fn open_rejects_twenty_byte_record_headers_without_panicking() {
+        let mut tes4_payload = Vec::new();
+        tes4_payload.extend_from_slice(&subrecord(b"HEDR", &[0; 12]));
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"TES4");
+        bytes.extend_from_slice(&(tes4_payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&tes4_payload);
+        bytes.extend_from_slice(&group(b"MISC", 0, &[record(b"MISC", 0x800, 0, &[0; 200])]));
+
+        let source = write_temp_plugin(&bytes);
+        let error = match SourceEsm::open(source.path()) {
+            Ok(_) => panic!("20-byte headers must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("invalid record signature at offset 42"),
+            "unexpected diagnostic: {error}"
+        );
     }
 
     /// Load fixture bytes into a real plugin handle WITHOUT a Python

@@ -69,6 +69,12 @@ impl<'a> TargetRecordNormalizer<'a> {
             target_record_def,
         );
         adapt_fo76_imgs_hdr_to_fo4_hnam(&mut record, self.source_record_def, target_record_def);
+        adapt_fo76_imgs_dof_to_fo4_dnam(
+            &mut record,
+            self.source_record_def,
+            target_record_def,
+            self.target_schema,
+        );
         normalize_fo76_imgs_lut_paths(
             &mut record,
             self.source_record_def,
@@ -82,6 +88,7 @@ impl<'a> TargetRecordNormalizer<'a> {
             self.interner,
         );
         strip_generated_additive_race_tint_tables(&mut record, self.interner);
+        drop_empty_leveled_item_override_name(&mut record, self.interner);
 
         let supported_sigs = target_record_def
             .subrecords
@@ -238,6 +245,18 @@ impl<'a> TargetRecordNormalizer<'a> {
                         &mut fields_by_sig,
                         &mut ordered,
                     );
+                } else if target_record_def.id == "ARMA" && scope_id == "biped_model" {
+                    self.emit_arma_biped_model_segment(segment, &mut fields_by_sig, &mut ordered);
+                } else if target_record_def.id == "LAND" && scope_id == "layers" {
+                    // LAND layers repeat a union of BTXT or ATXT+VTXT, so BTXT
+                    // cannot serve as the anchor for every row.
+                    self.emit_segment_body_in_source_order(
+                        segment,
+                        &mut fields_by_sig,
+                        &mut ordered,
+                        0,
+                        usize::MAX,
+                    );
                 } else if target_record_def.id == "REGN" && scope_id == "region_data_entries" {
                     self.emit_regn_region_data_entries_segment(
                         segment,
@@ -253,21 +272,15 @@ impl<'a> TargetRecordNormalizer<'a> {
                         &mut ordered,
                     );
                 } else if scope_id == "destructible" {
-                    // The destructible scope's first schema member is DEST (a
-                    // once-only health/count header). The default
-                    // emit_scoped_segment anchors every row on the first member,
-                    // so with a singleton DEST it emits exactly ONE row —
-                    // collapsing multi-stage destruction to stage 0 (one DSTD +
-                    // one trailing DMDL/DMDT/DSTF) and dropping stages 1..N,
-                    // including their Explosion refs. FO4 vehicles/movable
-                    // statics then never catch fire or explode. Emit every
-                    // destructible member in source order, which preserves each
-                    // DSTD…DSTF stage group. FO76 also allows multiple alternative
-                    // DMDL/DMDT model swaps inside one stage; FO4 accepts only one.
-                    // Keep the first canonical model row per stage without
-                    // collapsing distinct DSTD stages. (FO76-only
-                    // ENLT/ENLS/AUUV members are already filtered by
-                    // supported_sigs.)
+                    // DEST, the scope's first member, is a once-only header, and
+                    // emit_scoped_segment anchors rows on the first member, so it
+                    // would emit one row: stage 0 only, dropping stages 1..N and
+                    // their Explosion refs (FO4 vehicles and movable statics then
+                    // never catch fire or explode). Emit members in source order
+                    // to keep each DSTD…DSTF stage group. FO76 allows several
+                    // DMDL/DMDT model swaps per stage and FO4 only one, so keep the
+                    // first model row per stage. FO76-only ENLT/ENLS/AUUV are
+                    // already filtered by supported_sigs.
                     self.emit_destructible_segment(segment, &mut fields_by_sig, &mut ordered);
                 } else if is_condition_anchor_segment(segment) {
                     self.emit_original_range_scoped_segment(
@@ -330,7 +343,18 @@ impl<'a> TargetRecordNormalizer<'a> {
         if uses_legacy_gamebryo_patrol_layout(self.source_record_def, target_record_def) {
             synthesize_missing_patrol_placeholders(&mut record);
         }
-        drop_empty_imad_runtime_unsafe_subrecords(&mut record);
+        if let Some((signature, reason)) =
+            unsafe_fo4_loader_shape(&record, target_record_def, self.interner)
+        {
+            crate::drop_trace::trace(
+                "normalize.drop_record",
+                rec_sig.as_str(),
+                rec_local,
+                signature,
+                reason,
+            );
+            return TargetRecordNormalization::DropUnsupportedRecord;
+        }
         coalesce_scol_duplicate_static_groups(&mut record);
         normalize_translated_cont_data(&mut record, self.source_record_def);
         normalize_translated_npc_acbs(&mut record, self.source_record_def);
@@ -462,7 +486,6 @@ impl<'a> TargetRecordNormalizer<'a> {
         let mut morph_values = Vec::new();
         let mut late_metadata = Vec::new();
         let mut bone_scale_data = Vec::new();
-        let mut heads = Vec::new();
         let mut icons = Vec::new();
         let mut face_morph_names = Vec::new();
 
@@ -530,7 +553,12 @@ impl<'a> TargetRecordNormalizer<'a> {
                 b"MSID" | b"MSM0" | b"MSM1" => morph_values.push(normalized),
                 b"MLSI" | b"HNAM" | b"HLTX" | b"QSTI" => late_metadata.push(normalized),
                 b"BSMP" | b"BSMB" | b"BSMS" | b"BMMP" => bone_scale_data.push(normalized),
-                b"HEAD" => heads.push(normalized),
+                // Vanilla FO4 keeps head parts inside their gendered head-data
+                // section (`MNAM NAM0 HEAD.. AHCM..` then `NAM0 FNAM HEAD..
+                // AHCF..`). A single trailing bucket loses the male/female
+                // split that NPC head-part injection reads back off the race.
+                b"HEAD" if head_data_index >= 2 => female_head.push(normalized),
+                b"HEAD" => male_head.push(normalized),
                 b"ICON" => icons.push(normalized),
                 b"FMRI" | b"FMRN" => face_morph_names.push(normalized),
                 _ if head_data_index >= 2 => female_head.push(normalized),
@@ -546,7 +574,6 @@ impl<'a> TargetRecordNormalizer<'a> {
         ordered.extend(morph_values);
         ordered.extend(late_metadata);
         ordered.extend(bone_scale_data);
-        ordered.extend(heads);
         ordered.extend(icons);
         ordered.extend(face_morph_names);
     }
@@ -926,6 +953,46 @@ impl<'a> TargetRecordNormalizer<'a> {
         }
     }
 
+    fn emit_arma_biped_model_segment(
+        &self,
+        defs: &[SubrecordDef],
+        fields_by_sig: &mut HashMap<crate::ids::SubrecordSig, VecDeque<IndexedFieldEntry>>,
+        ordered: &mut Vec<FieldEntry>,
+    ) {
+        let mut entries = Vec::new();
+        let mut def_for_sig: HashMap<crate::ids::SubrecordSig, &SubrecordDef> = HashMap::new();
+        for target_subrecord_def in defs {
+            let Ok(sig) = crate::ids::SubrecordSig::from_str(&target_subrecord_def.id) else {
+                continue;
+            };
+            def_for_sig.entry(sig).or_insert(target_subrecord_def);
+            entries.extend(pop_all_in_original_range(fields_by_sig, sig, 0, usize::MAX));
+        }
+        entries.sort_by_key(|entry| entry.original_index);
+
+        let mut has_male_model = false;
+        let mut has_female_model = false;
+        for entry in entries {
+            let keep = match entry.entry.sig.as_str() {
+                "MOD2" => {
+                    has_male_model = true;
+                    has_female_model = false;
+                    true
+                }
+                "MOD3" => {
+                    has_female_model = true;
+                    true
+                }
+                "MO2T" | "MO2C" | "MO2S" | "MO2F" => has_male_model,
+                "MO3T" | "MO3C" | "MO3S" | "MO3F" => has_female_model,
+                _ => true,
+            };
+            if keep && let Some(target_subrecord_def) = def_for_sig.get(&entry.entry.sig).copied() {
+                self.push_normalized_entry(entry.entry, target_subrecord_def, ordered);
+            }
+        }
+    }
+
     fn emit_scoped_segment(
         &self,
         segment: &[SubrecordDef],
@@ -1087,21 +1154,16 @@ impl<'a> TargetRecordNormalizer<'a> {
 
     /// Emit the QUST `aliases` scope.
     ///
-    /// FO4's QUST alias scope is a sequence of variable-length alias structs
-    /// keyed by one of three anchor sigs: ALST (reference alias), ALLS (location
-    /// alias), or ALCS (collection alias). The flat schema segment lists all
-    /// three variants back to back, so many child sigs (ALID, FNAM, ALFA, KNAM,
-    /// CTDA, ...) appear in more than one variant.
+    /// FO4 alias rows start with one of three anchors: ALST (reference), ALLS
+    /// (location), or ALCS (collection). The flat schema segment lists all three
+    /// variants back to back, so child sigs (ALID, FNAM, ALFA, KNAM, CTDA, ...)
+    /// repeat across variants, and FO76's row and child order fails FO4's
+    /// forward-only xEdit cursor.
     ///
-    /// FO76 emits these alias structs in an order, and with intra-struct child
-    /// orders, that FO4's forward-only xEdit cursor rejects.
-    ///
-    /// This walks the source alias section anchor-by-anchor: each anchor starts
-    /// a new alias row that runs until the next anchor. Within a row the matching
-    /// variant template (the segment slice from this anchor up to the next
-    /// anchor def) drives child ordering; conditions (CTDA + trailing CIS1/CIS2)
-    /// are emitted in source order. Any source sig absent from the matched
-    /// variant template (FO76-only) is dropped.
+    /// Each source anchor starts a row that runs to the next anchor. The matching
+    /// variant template (segment slice from this anchor to the next anchor def)
+    /// orders the children; conditions (CTDA + trailing CIS1/CIS2) keep source
+    /// order; sigs absent from the template (FO76-only) are dropped.
     fn emit_qust_alias_segment(
         &self,
         segment: &[SubrecordDef],
@@ -1303,6 +1365,8 @@ impl<'a> TargetRecordNormalizer<'a> {
         let Ok(anchor_sig) = crate::ids::SubrecordSig::from_str(&anchor_def.id) else {
             return;
         };
+        let objective_sig =
+            crate::ids::SubrecordSig::from_str("QOBJ").expect("QOBJ is a valid subrecord sig");
 
         loop {
             let Some(anchor_index) = fields_by_sig
@@ -1312,11 +1376,12 @@ impl<'a> TargetRecordNormalizer<'a> {
             else {
                 break;
             };
-            let row_end = first_index_after(fields_by_sig, &[anchor_sig], anchor_index)
-                .into_iter()
-                .chain(first_qust_alias_anchor_after(fields_by_sig, anchor_index))
-                .min()
-                .unwrap_or(usize::MAX);
+            let row_end =
+                first_index_after(fields_by_sig, &[anchor_sig, objective_sig], anchor_index)
+                    .into_iter()
+                    .chain(first_qust_alias_anchor_after(fields_by_sig, anchor_index))
+                    .min()
+                    .unwrap_or(usize::MAX);
             let row_start = anchor_index.saturating_add(1);
             let Some(anchor_entry) = fields_by_sig
                 .get_mut(&anchor_sig)
@@ -1638,14 +1703,11 @@ impl<'a> TargetRecordNormalizer<'a> {
             .position(|def| matches!(def.id.as_str(), "CTDA" | "CTDT"))
             .unwrap_or(segment.len());
 
-        // The last anchor of a scoped condition group would otherwise sweep
-        // every trailing condition up to `usize::MAX` (see `row_end` below).
-        // For the `body_text` scope that swallows the menu-item conditions that
-        // live after the `ISIZ` count: the last body text steals every item's
-        // CTDA and the menu items convert with no conditions at all (their menu
-        // conditions "moved to the body"). Bound the `body_text` scope at the
-        // start of the menu-item region (ISIZ, or the first ITXT) so item
-        // conditions stay with their items.
+        // The last anchor of a scoped condition group would otherwise sweep every
+        // trailing condition up to `usize::MAX` (see `row_end` below). In
+        // `body_text` that steals the menu-item conditions after `ISIZ`, leaving
+        // the menu items with none. Bound `body_text` at the menu-item region
+        // (ISIZ, or the first ITXT).
         let scope_end_bound = if anchor_def.scope_id.as_deref() == Some("body_text") {
             ["ISIZ", "ITXT"]
                 .iter()
@@ -1942,6 +2004,13 @@ impl<'a> TargetRecordNormalizer<'a> {
             self.push_normalized_entry(anchor_entry.entry, anchor_def, ordered);
 
             for _ in 0..template_count {
+                let Some(row_end) = fields_by_sig
+                    .get(&obts_sig)
+                    .and_then(VecDeque::front)
+                    .map(|entry| entry.original_index)
+                else {
+                    break;
+                };
                 for target_subrecord_def in
                     segment.iter().skip(1).take_while(|def| def.id != "OBTS")
                 {
@@ -1949,8 +2018,19 @@ impl<'a> TargetRecordNormalizer<'a> {
                     else {
                         continue;
                     };
-                    if let Some(entry) = fields_by_sig.get_mut(&sig).and_then(VecDeque::pop_front) {
-                        self.push_normalized_entry(entry.entry, target_subrecord_def, ordered);
+                    if let Some(entries) = fields_by_sig.get_mut(&sig) {
+                        let belongs_to_row = entries
+                            .front()
+                            .is_some_and(|entry| entry.original_index < row_end);
+                        if belongs_to_row {
+                            if let Some(entry) = entries.pop_front() {
+                                self.push_normalized_entry(
+                                    entry.entry,
+                                    target_subrecord_def,
+                                    ordered,
+                                );
+                            }
+                        }
                     }
                 }
 
@@ -2171,6 +2251,39 @@ fn strip_generated_additive_race_tint_tables(
     strip_unsupported_race_tint_tables(record);
 }
 
+/// FO76 leveled items carry an `ONAM` override-name whose string id is 0, which
+/// `source_read` decodes to `""`. Carried through, the writer allocates a real
+/// (empty) localized string, so every item the list produces is renamed to
+/// nothing and never shows up in a container. FO4 spells "no override" as an
+/// absent `ONAM` — vanilla only ever writes one with a real name.
+fn drop_empty_leveled_item_override_name(record: &mut Record, interner: Option<&StringInterner>) {
+    if record.sig.0 != *b"LVLI" {
+        return;
+    }
+    let rec_local = record.form_key.local;
+    record.fields.retain(|entry| {
+        if entry.sig.0 != *b"ONAM" {
+            return true;
+        }
+        let FieldValue::String(value) = &entry.value else {
+            return true;
+        };
+        let is_empty = interner
+            .and_then(|interner| interner.resolve(*value))
+            .is_some_and(|name| name.is_empty());
+        if is_empty {
+            crate::drop_trace::trace(
+                "normalize.drop_field",
+                "LVLI",
+                rec_local,
+                "ONAM",
+                "empty override name would blank every item the list produces",
+            );
+        }
+        !is_empty
+    });
+}
+
 fn is_generated_additive_race_editor_id(editor_id: &str) -> bool {
     let editor_id = editor_id.trim_matches('\0').to_ascii_lowercase();
     editor_id.contains("raceadditive") || editor_id.contains("race_additive")
@@ -2385,18 +2498,269 @@ fn append_scol_data(target: &mut FieldValue, source: FieldValue) {
     }
 }
 
-fn drop_empty_imad_runtime_unsafe_subrecords(record: &mut Record) {
-    if record.sig.as_str() != "IMAD" {
-        return;
+fn unsafe_imad_runtime_array<'a>(
+    record: &Record,
+    target_record_def: &'a RecordDef,
+) -> Option<&'a str> {
+    if record.sig.as_str() != "IMAD" || target_record_def.id != "IMAD" {
+        return None;
     }
 
-    record
-        .fields
-        .retain(|entry| !is_empty_imad_runtime_unsafe_subrecord(entry));
+    target_record_def
+        .subrecords
+        .iter()
+        .filter(|definition| {
+            definition.required
+                && definition
+                    .codec
+                    .as_deref()
+                    .is_some_and(|codec| codec.starts_with("array_struct:"))
+        })
+        .find_map(|definition| {
+            let row_size = definition
+                .codec
+                .as_deref()
+                .and_then(array_struct_row_size)?;
+            let entries = record
+                .fields
+                .iter()
+                .filter(|entry| entry.sig.as_str() == definition.id);
+            let mut found = false;
+            for entry in entries {
+                found = true;
+                let safe = match &entry.value {
+                    FieldValue::Bytes(bytes) => !bytes.is_empty() && bytes.len() % row_size == 0,
+                    FieldValue::List(rows) => !rows.is_empty(),
+                    _ => false,
+                };
+                if !safe {
+                    return Some(definition.id.as_str());
+                }
+            }
+            (!found).then_some(definition.id.as_str())
+        })
 }
 
-fn is_empty_imad_runtime_unsafe_subrecord(entry: &FieldEntry) -> bool {
-    matches!(entry.sig.as_str(), "NAM5" | "NAM6") && is_empty_marker_entry(entry)
+fn imad_dnam_count_offset(signature: &str) -> Option<usize> {
+    let bytes = signature.as_bytes();
+    if bytes.len() == 4 && &bytes[1..] == b"IAD" {
+        return match bytes[0] {
+            0x00..=0x14 => Some(8 + usize::from(bytes[0]) * 8),
+            0x40..=0x54 => Some(12 + usize::from(bytes[0] - 0x40) * 8),
+            _ => None,
+        };
+    }
+    match signature {
+        "TNAM" => Some(176),
+        "BNAM" => Some(180),
+        "VNAM" => Some(184),
+        "RNAM" => Some(188),
+        "SNAM" => Some(192),
+        "UNAM" => Some(196),
+        "WNAM" => Some(212),
+        "XNAM" => Some(216),
+        "YNAM" => Some(220),
+        "NAM1" => Some(228),
+        "NAM2" => Some(232),
+        "NAM3" => Some(236),
+        "NAM4" => Some(240),
+        "NAM5" => Some(244),
+        "NAM6" => Some(248),
+        _ => None,
+    }
+}
+
+fn imad_dnam_count_field_name<'a>(
+    signature: &str,
+    definition: &'a SubrecordDef,
+) -> Option<&'a str> {
+    let bytes = signature.as_bytes();
+    if bytes.len() == 4 && &bytes[1..] == b"IAD" {
+        let index = match bytes[0] {
+            0x00..=0x14 => 2 + usize::from(bytes[0]) * 2,
+            0x40..=0x54 => 3 + usize::from(bytes[0] - 0x40) * 2,
+            _ => return None,
+        };
+        return definition.fields.get(index).map(|field| field.id.as_str());
+    }
+    let field_name = match signature {
+        "TNAM" => "tint_color",
+        "BNAM" => "blur_radius",
+        "VNAM" => "double_vision_strength",
+        "RNAM" => "radial_blur_strength",
+        "SNAM" => "radial_blur_ramp_up",
+        "UNAM" => "radial_blur_start",
+        "WNAM" => "dof_strength",
+        "XNAM" => "dof_distance",
+        "YNAM" => "dof_range",
+        "NAM1" => "radial_blur_ramp_down",
+        "NAM2" => "radial_blur_down_start",
+        "NAM3" => "fade_color",
+        "NAM4" => "motion_blur_strength",
+        "NAM5" => "vignette_radius",
+        "NAM6" => "vignette_strength",
+        _ => return None,
+    };
+    definition
+        .fields
+        .iter()
+        .find(|field| field.id == field_name)
+        .map(|field| field.id.as_str())
+}
+
+fn imad_dnam_array_count(
+    record: &Record,
+    target_record_def: &RecordDef,
+    signature: &str,
+    interner: Option<&StringInterner>,
+) -> Result<usize, ()> {
+    let definition = target_record_def.subrecord_def("DNAM").ok_or(())?;
+    let mut entries = record
+        .fields
+        .iter()
+        .filter(|entry| entry.sig.as_str() == "DNAM");
+    let entry = entries.next().ok_or(())?;
+    if entries.next().is_some() {
+        return Err(());
+    }
+    match &entry.value {
+        FieldValue::Bytes(bytes) => {
+            let offset = imad_dnam_count_offset(signature).ok_or(())?;
+            let value = bytes.get(offset..offset + 4).ok_or(())?;
+            Ok(u32::from_le_bytes(value.try_into().map_err(|_| ())?) as usize)
+        }
+        FieldValue::Struct(fields) => {
+            let interner = interner.ok_or(())?;
+            let field_name = imad_dnam_count_field_name(signature, definition).ok_or(())?;
+            let mut values = fields
+                .iter()
+                .filter(|(name, _)| interner.resolve(*name) == Some(field_name))
+                .map(|(_, value)| value);
+            let value = values.next().ok_or(())?;
+            if values.next().is_some() {
+                return Err(());
+            }
+            match value {
+                FieldValue::Uint(value) => usize::try_from(*value).map_err(|_| ()),
+                FieldValue::Int(value) if *value >= 0 => usize::try_from(*value).map_err(|_| ()),
+                FieldValue::Bytes(bytes) if bytes.len() == 4 => {
+                    Ok(u32::from_le_bytes(bytes.as_slice().try_into().map_err(|_| ())?) as usize)
+                }
+                _ => Err(()),
+            }
+        }
+        _ => Err(()),
+    }
+}
+
+fn imad_array_row_count(record: &Record, definition: &SubrecordDef) -> Result<usize, ()> {
+    let row_size = definition
+        .codec
+        .as_deref()
+        .and_then(array_struct_row_size)
+        .ok_or(())?;
+    record
+        .fields
+        .iter()
+        .filter(|entry| entry.sig.as_str() == definition.id)
+        .try_fold(0usize, |count, entry| match &entry.value {
+            FieldValue::Bytes(bytes) if bytes.len() % row_size == 0 => {
+                Ok(count + bytes.len() / row_size)
+            }
+            FieldValue::List(rows) => Ok(count + rows.len()),
+            _ => Err(()),
+        })
+}
+
+fn unsafe_imad_dnam_array_count<'a>(
+    record: &Record,
+    target_record_def: &'a RecordDef,
+    interner: Option<&StringInterner>,
+) -> Option<&'a str> {
+    if record.sig.as_str() != "IMAD" || target_record_def.id != "IMAD" {
+        return None;
+    }
+    target_record_def.subrecord_def("DNAM")?;
+    for definition in target_record_def.subrecords.iter().filter(|definition| {
+        definition
+            .codec
+            .as_deref()
+            .is_some_and(|codec| codec.starts_with("array_struct:"))
+            && imad_dnam_count_offset(&definition.id).is_some()
+    }) {
+        if !definition.required
+            && !record
+                .fields
+                .iter()
+                .any(|entry| entry.sig.as_str() == definition.id)
+        {
+            continue;
+        }
+        let Ok(expected) =
+            imad_dnam_array_count(record, target_record_def, &definition.id, interner)
+        else {
+            return Some(definition.id.as_str());
+        };
+        let Ok(actual) = imad_array_row_count(record, definition) else {
+            return Some(definition.id.as_str());
+        };
+        if expected != actual {
+            return Some(definition.id.as_str());
+        }
+    }
+    None
+}
+
+fn unsafe_fo4_loader_shape<'a>(
+    record: &Record,
+    target_record_def: &'a RecordDef,
+    interner: Option<&StringInterner>,
+) -> Option<(&'a str, &'static str)> {
+    if let Some(signature) = unsafe_imad_runtime_array(record, target_record_def) {
+        return Some((
+            signature,
+            "required FO4 IMAD runtime array is missing, empty, or has an invalid row stride",
+        ));
+    }
+    if let Some(signature) = unsafe_imad_dnam_array_count(record, target_record_def, interner) {
+        return Some((
+            signature,
+            "FO4 IMAD DNAM count is missing or does not match its runtime array row count",
+        ));
+    }
+
+    let (subrecord_sig, expected_size) = match target_record_def.id.as_str() {
+        "LGTM" => ("DALC", 32),
+        "MISC" => ("DATA", 8),
+        _ => return None,
+    };
+    let definition = target_record_def.subrecord_def(subrecord_sig)?;
+    if fixed_size_hint(None, definition) != Some(expected_size) {
+        return None;
+    }
+    let mut entries = record
+        .fields
+        .iter()
+        .filter(|entry| entry.sig.as_str() == subrecord_sig);
+    let Some(entry) = entries.next() else {
+        return definition.required.then_some((
+            definition.id.as_str(),
+            "required fixed-size FO4 loader subrecord is missing",
+        ));
+    };
+    let safe = match &entry.value {
+        FieldValue::Bytes(bytes) => bytes.len() == expected_size,
+        FieldValue::Struct(fields) => fields.len() == definition.fields.len(),
+        _ => false,
+    };
+    if safe && entries.next().is_none() {
+        None
+    } else {
+        Some((
+            definition.id.as_str(),
+            "fixed-size FO4 loader subrecord has an invalid target shape",
+        ))
+    }
 }
 
 fn drop_empty_optional_fixed_subrecord(entry: &FieldEntry, target_def: &SubrecordDef) -> bool {
@@ -2703,11 +3067,22 @@ fn first_qust_unscoped_condition_boundary(
 fn qust_story_manager_conditions_start(
     fields_by_sig: &HashMap<crate::ids::SubrecordSig, VecDeque<IndexedFieldEntry>>,
 ) -> usize {
-    crate::ids::SubrecordSig::from_str("NEXT")
+    let next = crate::ids::SubrecordSig::from_str("NEXT")
         .ok()
         .and_then(|sig| first_index_for_sig(fields_by_sig, sig))
-        .map(|index| index.saturating_add(1))
-        .unwrap_or(0)
+        .map(|index| index.saturating_add(1));
+    let first_condition = ["CTDA", "CTDT", "CIS1", "CIS2"]
+        .iter()
+        .filter_map(|sig| crate::ids::SubrecordSig::from_str(sig).ok())
+        .filter_map(|sig| first_index_for_sig(fields_by_sig, sig))
+        .min();
+
+    // The schema pass emits the first NEXT before entering this scoped segment.
+    // A condition before the remaining NEXT therefore still belongs here.
+    match (next, first_condition) {
+        (Some(start), Some(condition)) if start <= condition => start,
+        _ => 0,
+    }
 }
 
 fn first_qust_story_manager_conditions_boundary(
@@ -3217,6 +3592,86 @@ fn fo76_imgs_hdr_bytes_to_fo4_hnam(raw: &[u8]) -> Option<Vec<u8>> {
         fo76_scale_or_floor(read(7, sky_floor), sky_floor),
         read(8, 0.18),
     ]))
+}
+
+/// Widest depth-of-field settings FO4 itself ships: across all 293
+/// `Fallout4.esm` IMGS records, strength never exceeds 1.5 and range is never
+/// zero (the narrowest is 20). FO76 authors depth of field alongside a
+/// physically based camera — IMGS.XNAM aperture/shutter/ISO plus the YNAM
+/// exposure mode — that FO4 has no equivalent for, so its raw DNAM values are
+/// not on FO4's scale. A zero range is the damaging one: FO4 ramps the blur
+/// across `range` past `distance`, so zero snaps straight to full strength and
+/// smears everything beyond the focus plane into a tinted haze.
+const FO4_MAX_DOF_STRENGTH: f32 = 1.5;
+const FO4_MIN_DOF_RANGE: f32 = 3500.0;
+
+fn adapt_fo76_imgs_dof_to_fo4_dnam(
+    record: &mut Record,
+    source_record_def: Option<&RecordDef>,
+    target_record_def: &RecordDef,
+    target_schema: &AuthoringSchema,
+) {
+    if record.sig.as_str() != "IMGS"
+        || !is_fo76_imgs_record_def(source_record_def)
+        || target_record_def.id != "IMGS"
+    {
+        return;
+    }
+
+    let layout = target_schema.struct_field_layout_versioned(
+        "IMGS",
+        "DNAM",
+        Some(crate::fixups::remap_struct_internal_formids::FO4_TARGET_FORM_VERSION),
+    );
+    let offset_of = |field_id: &str| {
+        layout
+            .iter()
+            .find(|field| field.field_id == field_id && field.width == 4)
+            .map(|field| field.offset)
+    };
+    let (Some(strength_at), Some(distance_at), Some(range_at)) = (
+        offset_of("strength"),
+        offset_of("distance"),
+        offset_of("range"),
+    ) else {
+        return;
+    };
+
+    for field in &mut record.fields {
+        if field.sig.as_str() != "DNAM" {
+            continue;
+        }
+        let FieldValue::Bytes(bytes) = &mut field.value else {
+            continue;
+        };
+        let (Some(strength), Some(distance), Some(range)) = (
+            read_f32_at(bytes, strength_at),
+            read_f32_at(bytes, distance_at),
+            read_f32_at(bytes, range_at),
+        ) else {
+            continue;
+        };
+        if strength <= 0.0 && distance <= 0.0 {
+            continue;
+        }
+        write_f32_at(bytes, strength_at, strength.min(FO4_MAX_DOF_STRENGTH));
+        if range <= 0.0 {
+            write_f32_at(bytes, range_at, FO4_MIN_DOF_RANGE);
+        }
+    }
+}
+
+fn read_f32_at(bytes: &[u8], offset: usize) -> Option<f32> {
+    bytes
+        .get(offset..offset.checked_add(4)?)
+        .map(|slice| f32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+        .filter(|value| value.is_finite())
+}
+
+fn write_f32_at(bytes: &mut [u8], offset: usize, value: f32) {
+    if let Some(slice) = bytes.get_mut(offset..offset.saturating_add(4)) {
+        slice.copy_from_slice(&value.to_le_bytes());
+    }
 }
 
 fn decode_f32_prefix(bytes: &[u8]) -> Vec<f32> {
@@ -3959,6 +4414,21 @@ fn normalize_legacy_armor_core(
             value: FieldValue::Uint(u64::from(map_legacy_biped_slots(biped_flags))),
         });
     }
+    if kind == LegacyArmorRecordKind::Armor
+        && !record
+            .fields
+            .iter()
+            .any(|entry| entry.sig.as_str() == "RNAM")
+        && let Some(interner) = interner
+    {
+        record.fields.push(FieldEntry {
+            sig: crate::ids::SubrecordSig::from_str("RNAM").expect("RNAM is valid"),
+            value: FieldValue::FormKey(crate::ids::FormKey {
+                local: FO4_HUMAN_RACE_LOCAL,
+                plugin: interner.intern("Fallout4.esm"),
+            }),
+        });
+    }
 }
 
 fn normalize_legacy_armo(
@@ -4133,9 +4603,10 @@ fn legacy_biped_flags(value: &FieldValue, interner: Option<&StringInterner>) -> 
 }
 
 fn map_legacy_biped_slots(source: u32) -> u32 {
+    const FO4_LEGACY_UPPER_BODY_SLOTS: u32 =
+        (1 << 3) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10);
     const SLOT_MAP: &[(u32, u32)] = &[
         (1, 0),
-        (2, 6),
         (3, 4),
         (4, 5),
         (6, 30),
@@ -4144,9 +4615,16 @@ fn map_legacy_biped_slots(source: u32) -> u32 {
         (11, 17),
         (16, 19),
     ];
-    SLOT_MAP.iter().fold(0, |target, (source_bit, target_bit)| {
-        target | (((source >> source_bit) & 1) << target_bit)
-    })
+    let target = if source & (1 << 2) != 0 {
+        FO4_LEGACY_UPPER_BODY_SLOTS
+    } else {
+        0
+    };
+    SLOT_MAP
+        .iter()
+        .fold(target, |target, (source_bit, target_bit)| {
+            target | (((source >> source_bit) & 1) << target_bit)
+        })
 }
 
 fn relayout_legacy_armo_data(
@@ -5230,12 +5708,23 @@ mod tests {
         );
     }
 
+    /// `HEAD`, `FMRI` and `FMRN` are excluded because the generated FO4 RACE
+    /// schema declares them once near the end, while vanilla `Fallout4.esm`
+    /// (HumanRace, GhoulRace) carries them inside each gendered head-data
+    /// section (`MNAM NAM0 HEAD.. AHCM..` / `NAM0 FNAM HEAD.. AHCF..`). The
+    /// emitted order follows the real records, so the linear cursor cannot
+    /// model the schema.
+    ///
+    /// TODO: tools/schema_forge/probes/xedit_pas.py resolves xEdit's per-gender
+    /// `wbHeadPart`/`wbFaceMorphs` members. Once the FO4 schema is regenerated,
+    /// remove these three sigs from the exclusion list, or it hides real
+    /// ordering regressions.
     fn assert_race_outer_cursor_accepts(record: &Record) {
         let mut outer = record.clone();
         outer.fields.retain(|entry| {
             !matches!(
                 &entry.sig.0,
-                b"SAKD" | b"STKD" | b"SGNM" | b"SAPT" | b"SRAF" | b"FMRI" | b"FMRN"
+                b"SAKD" | b"STKD" | b"SGNM" | b"SAPT" | b"SRAF" | b"FMRI" | b"FMRN" | b"HEAD"
             )
         });
         assert_cursor_accepts(&outer);
@@ -5287,6 +5776,80 @@ mod tests {
     fn normalize_target_only(record: Record) -> TargetRecordNormalization {
         let target_schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         TargetRecordNormalizer::target_only(&target_schema).normalize(record)
+    }
+
+    #[test]
+    fn fo4_damage_rows_survive_repeated_normalization() {
+        let interner = StringInterner::new();
+        for sig in ["WEAP", "ARMO"] {
+            for count in 1..=3 {
+                let bytes = [0x0006_0a81_u32.to_le_bytes(), 52_u32.to_le_bytes()]
+                    .concat()
+                    .repeat(count);
+                let mut current = record(sig, vec![bytes_field("DAMA", bytes.clone())], &interner);
+                for _ in 0..2 {
+                    let TargetRecordNormalization::Keep(normalized) =
+                        normalize_target_only(current)
+                    else {
+                        panic!("{sig} must survive");
+                    };
+                    let dama = normalized
+                        .fields
+                        .iter()
+                        .find(|field| field.sig.as_str() == "DAMA")
+                        .unwrap();
+                    assert_eq!(
+                        dama.value,
+                        FieldValue::Bytes(SmallVec::from_vec(bytes.clone())),
+                        "{sig}, {count} rows"
+                    );
+                    current = normalized;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fo76_damage_rows_project_to_fo4_without_losing_damage_types() {
+        let interner = StringInterner::new();
+        let source_schema = AuthoringSchema::for_game("fo76").unwrap();
+        let target_schema = AuthoringSchema::for_game("fo4").unwrap();
+        for sig in ["WEAP", "ARMO"] {
+            for count in 1..=3 {
+                let mut source = Vec::new();
+                let mut expected = Vec::new();
+                for index in 0..count {
+                    let row = [
+                        (0x0006_0a81_u32 + index).to_le_bytes(),
+                        (52_u32 + index).to_le_bytes(),
+                    ]
+                    .concat();
+                    expected.extend_from_slice(&row);
+                    source.extend_from_slice(&row);
+                    source.extend_from_slice(&0x0080_f205_u32.to_le_bytes());
+                }
+                let normalizer = TargetRecordNormalizer {
+                    target_schema: &target_schema,
+                    source_record_def: source_schema.record_def(sig),
+                    interner: Some(&interner),
+                };
+                let input = record(sig, vec![bytes_field("DAMA", source)], &interner);
+                let TargetRecordNormalization::Keep(normalized) = normalizer.normalize(input)
+                else {
+                    panic!("{sig} must survive");
+                };
+                let dama = normalized
+                    .fields
+                    .iter()
+                    .find(|field| field.sig.as_str() == "DAMA")
+                    .unwrap();
+                assert_eq!(
+                    dama.value,
+                    FieldValue::Bytes(SmallVec::from_vec(expected)),
+                    "{sig}, {count} rows"
+                );
+            }
+        }
     }
 
     fn regn_rdat_bytes(type_id: u32) -> Vec<u8> {
@@ -5652,7 +6215,7 @@ mod tests {
             crate::translator::Translator::new(source, crate::translator::Game::Fo4).unwrap();
         translator
             .pre_translate(
-                &mut crate::translator::pair_hook::PairCtx { interner },
+                &mut crate::translator::pair_hook::PairCtx::new(interner),
                 &mut record,
             )
             .unwrap();
@@ -5662,7 +6225,7 @@ mod tests {
         };
         translator
             .post_translate(
-                &mut crate::translator::pair_hook::PairCtx { interner },
+                &mut crate::translator::pair_hook::PairCtx::new(interner),
                 &mut record,
             )
             .unwrap();
@@ -5679,7 +6242,7 @@ mod tests {
     #[test]
     fn normalizes_fnv_armo_core_layout_and_addon_list_marker() {
         let interner = StringInterner::new();
-        let addon_list = FormKey::parse("1649E0@FNV_FO3_Merged.esm", &interner).unwrap();
+        let addon_list = FormKey::parse("1649E0@FalloutNV.esm", &interner).unwrap();
         let mut dnam = vec![0_u8; 12];
         dnam[4..8].copy_from_slice(&15.0_f32.to_le_bytes());
         let armo = record(
@@ -5701,7 +6264,14 @@ mod tests {
         let armo = normalize_from_source_game(armo, "fnv", &interner);
 
         assert_target_armo_data(&armo, 250, 45.0, 100);
-        assert_eq!(raw_field_bytes(&armo, "BOD2"), 0x40_u32.to_le_bytes());
+        assert_eq!(raw_field_bytes(&armo, "BOD2"), 0x7C8_u32.to_le_bytes());
+        assert_eq!(
+            armo.fields
+                .iter()
+                .find(|field| field.sig.as_str() == "RNAM")
+                .and_then(|field| first_formkey_value(&field.value)),
+            Some(FormKey::parse("013746@Fallout4.esm", &interner).unwrap())
+        );
         assert!(
             !sigs(&armo)
                 .iter()
@@ -5738,9 +6308,101 @@ mod tests {
     }
 
     #[test]
+    fn fnv_upper_body_slot_expands_to_fo4_body_and_underarmor_slots() {
+        assert_eq!(map_legacy_biped_slots(1 << 2), 0x7C8);
+    }
+
+    #[test]
+    fn fnv_upper_body_armor_saves_with_human_race_and_fo4_body_slots() {
+        let interner = StringInterner::new();
+        let mut armo = record(
+            "ARMO",
+            vec![
+                bytes_field("BMDT", legacy_bmdt(1 << 2)),
+                formkey_field(
+                    "TNAM",
+                    FormKey::parse("13D3B5@FalloutNV.esm", &interner).unwrap(),
+                ),
+                bytes_field("DATA", legacy_armo_data(20, 100, 5.0)),
+                bytes_field("DNAM", vec![0; 12]),
+            ],
+            &interner,
+        );
+        armo = translate_legacy_record(armo, crate::translator::Game::Fnv, &interner);
+        armo = normalize_from_source_game(armo, "fnv", &interner);
+        armo.form_key = FormKey::parse("104C80@Output.esm", &interner).unwrap();
+
+        let handle =
+            esp_authoring_core::plugin_runtime::plugin_handle_new_native("Output.esm", Some("fo4"))
+                .unwrap();
+        esp_authoring_core::plugin_runtime::plugin_handle_add_master_native(
+            handle,
+            "Fallout4.esm",
+            None,
+        )
+        .unwrap();
+        {
+            let target_schema = AuthoringSchema::for_game("fo4").unwrap();
+            let mut store = esp_authoring_core::plugin_runtime::plugin_handle_store_ref()
+                .lock()
+                .unwrap();
+            let slot = store.get_mut(&handle).unwrap();
+            crate::target_write::add_record_in_slot(slot, armo, &target_schema, &interner).unwrap();
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("armor.esp");
+        esp_authoring_core::plugin_runtime::plugin_handle_save_no_py(
+            handle,
+            output.to_str().unwrap(),
+        )
+        .unwrap();
+        assert!(esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle));
+        let reopened = esp_authoring_core::plugin_runtime::plugin_handle_load_no_py(
+            output.to_str().unwrap(),
+            Some("fo4"),
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+        {
+            let store = esp_authoring_core::plugin_runtime::plugin_handle_store_ref()
+                .lock()
+                .unwrap();
+            let slot = store.get(&reopened).unwrap();
+            let record = parsed_record_by_sig(&slot.parsed.root_items, "ARMO").unwrap();
+            let biped = record
+                .subrecords
+                .iter()
+                .find(|subrecord| subrecord.signature.as_str() == "BOD2")
+                .unwrap();
+            let race = record
+                .subrecords
+                .iter()
+                .find(|subrecord| subrecord.signature.as_str() == "RNAM")
+                .unwrap();
+
+            assert!(
+                record
+                    .subrecords
+                    .iter()
+                    .all(|subrecord| subrecord.signature.as_str() != "TNAM"),
+                "FNV animation-sound template must not become FO4 TemplateArmor"
+            );
+            assert_eq!(
+                u32::from_le_bytes(biped.data[0..4].try_into().unwrap()),
+                0x7C8
+            );
+            assert_eq!(race.data.as_ref(), 0x0001_3746_u32.to_le_bytes());
+        }
+        assert!(esp_authoring_core::plugin_runtime::plugin_handle_close_native(reopened));
+    }
+
+    #[test]
     fn normalizes_fo3_armo_data_and_damage_rating() {
         let interner = StringInterner::new();
-        let addon_list = FormKey::parse("01D981@FNV_FO3_Merged.esm", &interner).unwrap();
+        let addon_list = FormKey::parse("01D981@FalloutNV.esm", &interner).unwrap();
         let mut dnam = Vec::new();
         dnam.extend_from_slice(&4000_i16.to_le_bytes());
         dnam.extend_from_slice(&0_u16.to_le_bytes());
@@ -5768,6 +6430,30 @@ mod tests {
         );
         assert!(!sigs(&armo).contains(&"DAMA"));
         assert!(!sigs(&armo).contains(&"ETYP"));
+    }
+
+    #[test]
+    fn preserves_female_only_arma_biped_model_rows() {
+        let interner = StringInterner::new();
+        let arma = record(
+            "ARMA",
+            vec![
+                bytes_field("MO2F", vec![2]),
+                string_field("MOD3", "Clothes\\Overseer\\OverseerOutfit.nif", &interner),
+                bytes_field("MO3T", vec![1, 2, 3, 4]),
+                bytes_field("MO3F", vec![1]),
+            ],
+            &interner,
+        );
+
+        let TargetRecordNormalization::Keep(arma) =
+            normalize_target_only_with_interner(arma, &interner)
+        else {
+            panic!("ARMA should be supported");
+        };
+
+        assert_eq!(sigs(&arma), vec!["MOD3", "MO3T", "MO3F"]);
+        assert_cursor_accepts(&arma);
     }
 
     #[test]
@@ -6056,6 +6742,63 @@ mod tests {
         assert_eq!(values[4], 16.0);
     }
 
+    /// Byte-exact DNAM of the shipped FO76 record
+    /// `DefaultImageSpace76_EV4_StormStolzManor` (787D66): strength 10.0,
+    /// distance 999.0, range 0.0, sky/blur radius 17000 ("Radius 7").
+    fn imgs_dnam_bytes(strength: f32, distance: f32, range: f32) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(24);
+        bytes.extend_from_slice(&strength.to_le_bytes());
+        bytes.extend_from_slice(&distance.to_le_bytes());
+        bytes.extend_from_slice(&range.to_le_bytes());
+        bytes.extend_from_slice(&[0, 0]);
+        bytes.extend_from_slice(&17000u16.to_le_bytes());
+        bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+        bytes
+    }
+
+    fn normalized_imgs_dnam(bytes: Vec<u8>) -> Vec<u8> {
+        let interner = StringInterner::new();
+        let record = record("IMGS", vec![bytes_field("DNAM", bytes)], &interner);
+
+        let TargetRecordNormalization::Keep(record) =
+            normalize_from_fo76_source(record, "IMGS", &interner)
+        else {
+            panic!("IMGS should be supported");
+        };
+
+        assert_eq!(sigs(&record), vec!["DNAM"]);
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("DNAM should stay raw bytes");
+        };
+        bytes.to_vec()
+    }
+
+    #[test]
+    fn clamps_fo76_imgs_depth_of_field_into_the_fo4_envelope() {
+        let out = normalized_imgs_dnam(imgs_dnam_bytes(10.0, 999.0, 0.0));
+
+        assert_eq!(out.len(), 24);
+        assert_eq!(decode_f32_prefix(&out[..12]), vec![1.5, 999.0, 3500.0]);
+        // Sky/blur radius and the vignette tail must survive untouched.
+        assert_eq!(u16::from_le_bytes([out[14], out[15]]), 17000);
+    }
+
+    #[test]
+    fn keeps_fo76_imgs_depth_of_field_already_inside_the_fo4_envelope() {
+        // DefaultImageSpace76_EV4_Wayward (58F397) — renders correctly as-is.
+        let bytes = imgs_dnam_bytes(0.1, 3000.0, 85000.0);
+
+        assert_eq!(normalized_imgs_dnam(bytes.clone()), bytes);
+    }
+
+    #[test]
+    fn leaves_fo76_imgs_depth_of_field_alone_when_disabled() {
+        let bytes = imgs_dnam_bytes(0.0, 0.0, 0.0);
+
+        assert_eq!(normalized_imgs_dnam(bytes.clone()), bytes);
+    }
+
     #[test]
     fn strips_fo76_imgs_lut_data_textures_prefix() {
         let interner = StringInterner::new();
@@ -6175,9 +6918,9 @@ mod tests {
     }
 
     #[test]
-    fn drops_empty_imad_runtime_unsafe_subrecords() {
+    fn rejects_empty_or_missing_imad_runtime_arrays() {
         let interner = StringInterner::new();
-        let record = record(
+        let malformed = record(
             "IMAD",
             vec![
                 bytes_field("EDID", b"ImageSpace\0".to_vec()),
@@ -6190,14 +6933,109 @@ mod tests {
             &interner,
         );
 
-        let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
-            panic!("IMAD should be supported");
-        };
+        assert!(matches!(
+            normalize_target_only(malformed),
+            TargetRecordNormalization::DropUnsupportedRecord
+        ));
 
-        let sigs = sigs(&record);
-        assert!(!sigs.contains(&"NAM5"));
-        assert!(!sigs.contains(&"NAM6"));
-        assert!(sigs.contains(&"NAM4"));
+        let mut typed_empty = record("IMAD", Vec::new(), &interner);
+        let target_schema = AuthoringSchema::for_game("fo4").unwrap();
+        let definition = target_schema.record_def("IMAD").unwrap();
+        for subrecord in definition.subrecords.iter().filter(|subrecord| {
+            subrecord.required
+                && subrecord
+                    .codec
+                    .as_deref()
+                    .is_some_and(|codec| codec.starts_with("array_struct:"))
+        }) {
+            typed_empty.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str(&subrecord.id).unwrap(),
+                value: if subrecord.id == "TNAM" {
+                    FieldValue::List(Vec::new())
+                } else {
+                    FieldValue::Bytes(vec![0; 16].into())
+                },
+            });
+        }
+        assert!(matches!(
+            normalize_target_only(typed_empty),
+            TargetRecordNormalization::DropUnsupportedRecord
+        ));
+    }
+
+    #[test]
+    fn rejects_imad_dnam_array_count_mismatch() {
+        let interner = StringInterner::new();
+        let target_schema = AuthoringSchema::for_game("fo4").unwrap();
+        let definition = target_schema.record_def("IMAD").unwrap();
+        let mut dnam = vec![0; 252];
+        for offset in (0..=0x14).map(|value| 8 + value * 8) {
+            dnam[offset..offset + 4].copy_from_slice(&2_u32.to_le_bytes());
+        }
+        for offset in (0..=0x14).map(|value| 12 + value * 8) {
+            dnam[offset..offset + 4].copy_from_slice(&2_u32.to_le_bytes());
+        }
+        for offset in [176, 188, 192, 196, 212, 216, 220, 228, 232, 236, 244, 248] {
+            dnam[offset..offset + 4].copy_from_slice(&2_u32.to_le_bytes());
+        }
+        dnam[244..248].copy_from_slice(&0_u32.to_le_bytes());
+
+        let mut fields = vec![bytes_field("DNAM", dnam.clone())];
+        for subrecord in definition.subrecords.iter().filter(|subrecord| {
+            subrecord.required
+                && subrecord
+                    .codec
+                    .as_deref()
+                    .is_some_and(|codec| codec.starts_with("array_struct:"))
+        }) {
+            let row_size = array_struct_row_size(subrecord.codec.as_deref().unwrap()).unwrap();
+            fields.push(bytes_field(&subrecord.id, vec![0; row_size * 2]));
+        }
+
+        assert!(matches!(
+            normalize_target_only(record("IMAD", fields.clone(), &interner)),
+            TargetRecordNormalization::DropUnsupportedRecord
+        ));
+
+        dnam[244..248].copy_from_slice(&2_u32.to_le_bytes());
+        fields[0] = bytes_field("DNAM", dnam);
+        assert!(matches!(
+            normalize_target_only(record("IMAD", fields, &interner)),
+            TargetRecordNormalization::Keep(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_fixed_size_lgtm_and_misc_source_layouts() {
+        let interner = StringInterner::new();
+        for (signature, subrecord, invalid_size, valid_size) in
+            [("LGTM", "DALC", 17, 32), ("MISC", "DATA", 4, 8)]
+        {
+            let invalid = record(
+                signature,
+                vec![bytes_field(subrecord, vec![0; invalid_size])],
+                &interner,
+            );
+            assert!(matches!(
+                normalize_target_only(invalid),
+                TargetRecordNormalization::DropUnsupportedRecord
+            ));
+
+            let valid = record(
+                signature,
+                vec![bytes_field(subrecord, vec![0; valid_size])],
+                &interner,
+            );
+            assert!(matches!(
+                normalize_target_only(valid),
+                TargetRecordNormalization::Keep(_)
+            ));
+        }
+
+        assert!(matches!(
+            normalize_target_only(record("MISC", Vec::new(), &interner)),
+            TargetRecordNormalization::Keep(_)
+        ));
     }
 
     #[test]
@@ -6403,11 +7241,9 @@ mod tests {
 
     #[test]
     fn last_body_text_does_not_absorb_menu_item_conditions() {
-        // Regression: a TERM whose LAST body text has zero conditions (a
-        // fallback "error" text) followed by menu items that DO have conditions.
-        // The last body-text anchor previously swept every trailing CTDA up to
-        // usize::MAX, moving all menu-item conditions onto the body text and
-        // leaving the items with none (the "conditions moved to the body" bug).
+        // A TERM whose last body text has no conditions (a fallback "error"
+        // text), followed by menu items that do. The last body-text anchor must
+        // not sweep the trailing menu-item CTDAs.
         let interner = StringInterner::new();
         let record = record(
             "TERM",
@@ -6966,6 +7802,61 @@ mod tests {
     }
 
     #[test]
+    fn wrld_cnam_formkey_lands_in_starfield_climate_slot_not_component_region() {
+        // WRLD.CNAM is duplicated in the Starfield schema: an earlier zstring
+        // under the `base_form_components` scope ("Animations Path") and a
+        // later unscoped `formid` def ("Climate"). A FormKey value — as
+        // pair_hooks/fo4_starfield/weather.rs installs in post_translate —
+        // must land at the later Climate position, not be stranded in the
+        // earlier scoped component region.
+        let interner = StringInterner::new();
+        let target_schema = AuthoringSchema::for_game("starfield").expect("starfield schema");
+        let record = record(
+            "WRLD",
+            vec![
+                bytes_field("EDID", b"TestWorld\0".to_vec()),
+                formkey_field(
+                    "CNAM",
+                    FormKey::parse("00015F@Starfield.esm", &interner).unwrap(),
+                ),
+                formkey_field(
+                    "NAM2",
+                    FormKey::parse("000005@Starfield.esm", &interner).unwrap(),
+                ),
+            ],
+            &interner,
+        );
+
+        let TargetRecordNormalization::Keep(record) =
+            TargetRecordNormalizer::target_only_with_interner(&target_schema, &interner)
+                .normalize(record)
+        else {
+            panic!("WRLD should be supported");
+        };
+
+        let sigs = sigs(&record);
+        let cnam_positions = sigs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, sig)| (*sig == "CNAM").then_some(index))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cnam_positions.len(),
+            1,
+            "CNAM must survive exactly once (not dropped, not duplicated): {sigs:?}"
+        );
+        let nam2_pos = sigs
+            .iter()
+            .position(|sig| *sig == "NAM2")
+            .expect("NAM2 (Water) should survive alongside CNAM");
+        assert!(
+            cnam_positions[0] < nam2_pos,
+            "CNAM (Climate) must land before NAM2 (Water) in the climate region, not be \
+             stranded in the earlier base_form_components region: {sigs:?}"
+        );
+    }
+
+    #[test]
     fn preserves_race_head_rows_and_alternating_face_morph_names() {
         let interner = StringInterner::new();
         let output = interner.intern("SeventySix.esm");
@@ -7019,8 +7910,8 @@ mod tests {
         assert_eq!(
             sigs(&record),
             vec![
-                "EDID", "NAM0", "MNAM", "NAM0", "FNAM", "PTOP", "NTOP", "MSID", "MSM0", "MSM1",
-                "MLSI", "HEAD", "HEAD", "FMRI", "FMRN", "FMRI", "FMRN",
+                "EDID", "NAM0", "MNAM", "HEAD", "NAM0", "FNAM", "HEAD", "PTOP", "NTOP", "MSID",
+                "MSM0", "MSM1", "MLSI", "FMRI", "FMRN", "FMRI", "FMRN",
             ]
         );
         assert_race_outer_cursor_accepts(&record);
@@ -7092,9 +7983,9 @@ mod tests {
         assert_eq!(
             sigs(&first),
             vec![
-                "EDID", "NAM0", "MNAM", "FTSM", "DFTM", "WMAP", "NAM0", "FNAM", "SGNM", "SAPT",
-                "SRAF", "PTOP", "NTOP", "MSID", "MSM0", "MSM1", "MLSI", "BSMP", "BSMB", "BSMS",
-                "BMMP", "BSMB", "BSMS", "HEAD", "HEAD", "FMRI", "FMRN",
+                "EDID", "NAM0", "MNAM", "HEAD", "FTSM", "DFTM", "WMAP", "NAM0", "FNAM", "HEAD",
+                "SGNM", "SAPT", "SRAF", "PTOP", "NTOP", "MSID", "MSM0", "MSM1", "MLSI", "BSMP",
+                "BSMB", "BSMS", "BMMP", "BSMB", "BSMS", "FMRI", "FMRN",
             ]
         );
         assert_eq!(second.fields, first.fields);
@@ -7425,8 +8316,8 @@ mod tests {
             sigs(&record),
             vec![
                 "EDID", "NAM1", "MNAM", "INDX", "FNAM", "INDX", "GNAM", "NAM3", "MNAM", "MODL",
-                "FNAM", "MODL", "NAM4", "CNAM", "NAM0", "MNAM", "SADD", "SAKD", "STKD", "SGNM",
-                "SAPT", "SRAF", "PTOP", "NTOP", "MSID", "MSM0", "MSM1", "MLSI", "HEAD",
+                "FNAM", "MODL", "NAM4", "CNAM", "NAM0", "MNAM", "HEAD", "SADD", "SAKD", "STKD",
+                "SGNM", "SAPT", "SRAF", "PTOP", "NTOP", "MSID", "MSM0", "MSM1", "MLSI",
             ]
         );
         assert_race_outer_cursor_accepts(&record);
@@ -7524,10 +8415,17 @@ mod tests {
                 panic!("reduced RACE should remain supported");
             };
 
-            let mut expected = vec![
-                "EDID", "NAM0", "SADD", "SAKD", "STKD", "SGNM", "SAPT", "SRAF",
-            ];
-            expected.extend(schema_late_sigs);
+            // HEAD belongs to the head-data section opened by `NAM0`, so it stays
+            // ahead of the appended subgraphs; the other late members follow them.
+            let in_head_section = boundary_sig == "HEAD";
+            let mut expected = vec!["EDID", "NAM0"];
+            if in_head_section {
+                expected.extend(schema_late_sigs.iter().copied());
+            }
+            expected.extend(["SADD", "SAKD", "STKD", "SGNM", "SAPT", "SRAF"]);
+            if !in_head_section {
+                expected.extend(schema_late_sigs.iter().copied());
+            }
             assert_eq!(sigs(&once), expected, "failed boundary {boundary_sig}");
             assert_eq!(twice.fields, once.fields, "failed boundary {boundary_sig}");
         }
@@ -7596,6 +8494,38 @@ mod tests {
         };
 
         assert_eq!(sigs(&record), vec!["EDID", "AIDT", "FULL", "DATA"]);
+    }
+
+    #[test]
+    fn npc_full_after_unnamed_object_template_remains_top_level() {
+        let interner = StringInterner::new();
+        let record = record(
+            "NPC_",
+            vec![
+                bytes_field("EDID", b"EncMoleMiner_Template_Tier07_Glowing\0".to_vec()),
+                bytes_field("OBTE", 1_u32.to_le_bytes().to_vec()),
+                bytes_field("OBTF", Vec::new()),
+                bytes_field("OBTS", vec![0; 36]),
+                bytes_field("STOP", Vec::new()),
+                bytes_field("CNAM", vec![0; 4]),
+                bytes_field("FULL", b"Glowing Mole Miner\0".to_vec()),
+                bytes_field("SHRT", b"Mole Miner\0".to_vec()),
+                bytes_field("DATA", vec![0]),
+            ],
+            &interner,
+        );
+
+        let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
+            panic!("NPC_ should be supported");
+        };
+
+        let sigs = sigs(&record);
+        assert_eq!(sigs.iter().filter(|sig| **sig == "FULL").count(), 1);
+        let stop_pos = sigs.iter().position(|sig| *sig == "STOP").unwrap();
+        let full_pos = sigs.iter().position(|sig| *sig == "FULL").unwrap();
+        let shrt_pos = sigs.iter().position(|sig| *sig == "SHRT").unwrap();
+        assert!(stop_pos < full_pos);
+        assert!(full_pos < shrt_pos);
     }
 
     #[test]
@@ -8025,6 +8955,63 @@ mod tests {
     }
 
     #[test]
+    fn translated_lvli_drops_empty_override_name() {
+        let interner = StringInterner::new();
+        let record = record(
+            "LVLI",
+            vec![
+                bytes_field(
+                    "EDID",
+                    b"LLI_Burn_Outfit_HwtSettler_BountyHunter\0".to_vec(),
+                ),
+                string_field("ONAM", "", &interner),
+            ],
+            &interner,
+        );
+
+        let TargetRecordNormalization::Keep(record) =
+            normalize_from_fo76_source(record, "LVLI", &interner)
+        else {
+            panic!("LVLI should be supported");
+        };
+        assert!(
+            !record
+                .fields
+                .iter()
+                .any(|field| field.sig.as_str() == "ONAM"),
+            "an empty override name would blank every item the list produces"
+        );
+    }
+
+    #[test]
+    fn translated_lvli_keeps_real_override_name() {
+        let interner = StringInterner::new();
+        let record = record(
+            "LVLI",
+            vec![
+                bytes_field("EDID", b"LLI_Armor_Raider\0".to_vec()),
+                string_field("ONAM", "Tessa's Fist", &interner),
+            ],
+            &interner,
+        );
+
+        let TargetRecordNormalization::Keep(record) =
+            normalize_from_fo76_source(record, "LVLI", &interner)
+        else {
+            panic!("LVLI should be supported");
+        };
+        let onam = record
+            .fields
+            .iter()
+            .find(|field| field.sig.as_str() == "ONAM")
+            .expect("a real override name should survive");
+        let FieldValue::String(value) = &onam.value else {
+            panic!("ONAM should stay a string");
+        };
+        assert_eq!(interner.resolve(*value), Some("Tessa's Fist"));
+    }
+
+    #[test]
     fn translated_w05_denizen_acbs_strips_essential_ghost_and_invulnerable() {
         let interner = StringInterner::new();
         let mut acbs = vec![0u8; 20];
@@ -8135,6 +9122,69 @@ mod tests {
             u16::from_le_bytes(bytes[14..16].try_into().unwrap()),
             0x1F28
         );
+    }
+
+    #[test]
+    fn preserves_legacy_land_layer_union_in_source_order() {
+        let interner = StringInterner::new();
+        let layer_header = |texture: u32, quadrant: u8, layer: i16| {
+            let mut bytes = Vec::with_capacity(8);
+            bytes.extend_from_slice(&texture.to_le_bytes());
+            bytes.push(quadrant);
+            bytes.push(0);
+            bytes.extend_from_slice(&layer.to_le_bytes());
+            bytes
+        };
+        let alpha_data = |position: u16, opacity: f32| {
+            let mut bytes = Vec::with_capacity(8);
+            bytes.extend_from_slice(&position.to_le_bytes());
+            bytes.extend_from_slice(&[0, 0]);
+            bytes.extend_from_slice(&opacity.to_le_bytes());
+            bytes
+        };
+        let record = record(
+            "LAND",
+            vec![
+                bytes_field("ATXT", layer_header(0x01F958, 0, 0)),
+                bytes_field("VTXT", alpha_data(1, 0.5)),
+                bytes_field("ATXT", layer_header(0x038A26, 0, 1)),
+                bytes_field("VTXT", alpha_data(2, 0.25)),
+                bytes_field("BTXT", layer_header(0x01F958, 1, -1)),
+                bytes_field("ATXT", layer_header(0x038A28, 1, 0)),
+                bytes_field("VTXT", alpha_data(3, 0.75)),
+                bytes_field("ATXT", layer_header(0x0357B8, 1, 1)),
+                bytes_field("VTXT", alpha_data(4, 1.0)),
+                bytes_field("BTXT", layer_header(0x01F958, 2, -1)),
+                bytes_field("ATXT", layer_header(0x038A26, 2, 0)),
+                bytes_field("VTXT", alpha_data(5, 0.125)),
+                bytes_field("ATXT", layer_header(0x063A8C, 3, 0)),
+                bytes_field("VTXT", alpha_data(6, 0.875)),
+            ],
+            &interner,
+        );
+
+        let TargetRecordNormalization::Keep(record) =
+            normalize_from_source_game_with_sig(record, "fnv", "LAND", &interner)
+        else {
+            panic!("LAND should be supported");
+        };
+
+        assert_eq!(
+            sigs(&record),
+            vec![
+                "ATXT", "VTXT", "ATXT", "VTXT", "BTXT", "ATXT", "VTXT", "ATXT", "VTXT", "BTXT",
+                "ATXT", "VTXT", "ATXT", "VTXT",
+            ]
+        );
+        let quadrants = record
+            .fields
+            .iter()
+            .filter_map(|field| match (&field.sig.0, &field.value) {
+                (b"BTXT" | b"ATXT", FieldValue::Bytes(bytes)) => Some(bytes[4]),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(quadrants, vec![0, 0, 1, 1, 1, 2, 2, 3]);
     }
 
     #[test]
@@ -8780,6 +9830,42 @@ mod tests {
     }
 
     #[test]
+    fn qust_stage_conditions_stop_at_following_objective() {
+        let interner = StringInterner::new();
+        let record = record(
+            "QUST",
+            vec![
+                bytes_field("EDID", b"Quest\0".to_vec()),
+                bytes_field("INDX", 100_u16.to_le_bytes().to_vec()),
+                bytes_field("QSDT", vec![0]),
+                ctda_field(58),
+                bytes_field("CIS2", b"::StageCondition\0".to_vec()),
+                bytes_field("NAM2", b"stage log\0".to_vec()),
+                bytes_field("QOBJ", 100_u16.to_le_bytes().to_vec()),
+                uint_field("FNAM", 0),
+                string_field("NNAM", "Objective", &interner),
+                bytes_field("QSTA", vec![0; 12]),
+                ctda_field(59),
+                bytes_field("CIS2", b"::ObjectiveCondition\0".to_vec()),
+                bytes_field("ANAM", 1_u32.to_le_bytes().to_vec()),
+            ],
+            &interner,
+        );
+
+        let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
+            panic!("QUST should be supported");
+        };
+
+        assert_eq!(
+            sigs(&record),
+            vec![
+                "EDID", "INDX", "QSDT", "CTDA", "CIS2", "NAM2", "QOBJ", "FNAM", "NNAM", "QSTA",
+                "CTDA", "CIS2", "ANAM",
+            ]
+        );
+    }
+
+    #[test]
     fn drops_qust_objective_conditions_without_target_rows() {
         let interner = StringInterner::new();
         let record = record(
@@ -9145,6 +10231,35 @@ mod tests {
                 "EDID", "CTDA", "CIS1", "NEXT", "INDX", "QSDT", "ANAM", "ALST", "ALID", "FNAM",
                 "CTDA", "CIS1", "ALED",
             ]
+        );
+    }
+
+    #[test]
+    fn preserves_qust_story_manager_conditions_after_emitting_next_marker() {
+        let interner = StringInterner::new();
+        let record = record(
+            "QUST",
+            vec![
+                bytes_field("EDID", b"StoryQuest\0".to_vec()),
+                none_field("NEXT"),
+                ctda_field(74),
+                ctda_field(576),
+                none_field("NEXT"),
+                none_field("NEXT"),
+                bytes_field("INDX", 10_u16.to_le_bytes().to_vec()),
+                bytes_field("QSDT", vec![0]),
+            ],
+            &interner,
+        );
+
+        let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
+            panic!("QUST should be supported");
+        };
+
+        assert_cursor_accepts(&record);
+        assert_eq!(
+            sigs(&record),
+            vec!["EDID", "NEXT", "CTDA", "CTDA", "INDX", "QSDT"]
         );
     }
 
@@ -10290,7 +11405,7 @@ mod tests {
         let interner = StringInterner::new();
         let target_schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let plugin_name = "LegacyWidths.esp";
-        let source_plugin = interner.intern("FNV_FO3_Merged.esm");
+        let source_plugin = interner.intern("FalloutNV.esm");
         let output_plugin = interner.intern(plugin_name);
         let source_refs =
             [0x0010_01, 0x0010_02, 0x0010_03, 0x0010_04, 0x0010_05].map(|local| FormKey {

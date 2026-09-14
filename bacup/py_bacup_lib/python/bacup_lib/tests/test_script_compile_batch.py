@@ -4,8 +4,26 @@ from __future__ import annotations
 import types
 from pathlib import Path
 
+from creation_lib.pex.corpus import bundled_corpus_root
+
 from bacup_lib.workflows import unified
 from bacup_lib.models import PluginPortOptions, PluginPortRequest
+
+
+def _fake_pex_corpus(target_data):
+    """Anchor-named .pex so the type universe resolves.
+
+    Contents are irrelevant here: these tests mock the compiler and assert only
+    on the import roots it is handed. Header fidelity is covered by
+    creation_lib.pex.tests.test_headers and the cache's own tests.
+    """
+    from pathlib import Path as _Path
+    scripts = _Path(target_data) / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    for anchor in ("ScriptObject", "Form", "ObjectReference"):
+        (scripts / f"{anchor}.pex").write_bytes(b"not a real pex")
+    return scripts
+
 
 
 def _runtime_with_selector(selector: str):
@@ -27,8 +45,9 @@ def test_selector_exe_batch_dispatches_to_batch(monkeypatch):
     runtime = _runtime_with_selector("exe-batch")
     calls = {"batch": 0, "perscript": 0}
 
-    def fake_batch(self, script_names, *, ctx, runner):
+    def fake_batch(self, script_names, *, ctx, runner, psc_paths=None):
         calls["batch"] += 1
+        assert psc_paths is None
         return [
             (n, unified._ScriptResolution(n, "compiled", Path(f"{n}.pex")))
             for n in script_names
@@ -52,9 +71,10 @@ def test_selector_native_dispatches_to_native(monkeypatch):
     runtime = _runtime_with_selector("native")
     calls = {"native": 0}
 
-    def fake_native(self, script_names, *, ctx, runner, workers):
+    def fake_native(self, script_names, *, ctx, runner, workers, psc_paths=None):
         calls["native"] += 1
         assert workers == 4
+        assert psc_paths is None
         return [
             (n, unified._ScriptResolution(n, "compiled", Path(f"{n}.pex")))
             for n in script_names
@@ -141,7 +161,7 @@ def test_batch_output_matches_perscript_semantically(tmp_path):
         assert decompile_pex(batch_pex) == decompile_pex(per_pex), f"{rel} semantics diverged"
 
 
-def _batch_orch(tmp_path, mod_path):
+def _batch_orch(tmp_path, mod_path, *, selector="exe-batch"):
     data_dir = tmp_path / "FO4" / "Data"
     (tmp_path / "FO4" / "Papyrus Compiler").mkdir(parents=True, exist_ok=True)
     (tmp_path / "FO4" / "Papyrus Compiler" / "PapyrusCompiler.exe").write_text("")
@@ -149,14 +169,14 @@ def _batch_orch(tmp_path, mod_path):
     req = PluginPortRequest(
         source_game="fo76", target_game="fo4", source_plugins=[],
         output_root=tmp_path, target_extracted_dir=None, target_data_dir=data_dir,
-        options=PluginPortOptions(papyrus_compiler="exe-batch"),
+        options=PluginPortOptions(papyrus_compiler=selector),
     )
     return unified._UnifiedRecordRuntime(req)
 
 
 def _native_orch(tmp_path, mod_path):
     data_dir = tmp_path / "FO4" / "Data"
-    (data_dir / "Scripts" / "Source" / "Base").mkdir(parents=True, exist_ok=True)
+    _fake_pex_corpus(data_dir)
     (mod_path / "Scripts" / "Source" / "User" / "B21").mkdir(parents=True, exist_ok=True)
     req = PluginPortRequest(
         source_game="fo76", target_game="fo4", source_plugins=[],
@@ -170,9 +190,7 @@ def test_native_compile_writes_pex(tmp_path, monkeypatch):
     mod_path = tmp_path / "mod"
     runtime = _native_orch(tmp_path, mod_path)
     user_root = mod_path / "Scripts" / "Source" / "User"
-    base_root = tmp_path / "FO4" / "Data" / "Scripts" / "Source" / "Base"
-    flags_path = base_root / "Institute_Papyrus_Flags.flg"
-    flags_path.write_text("flag data", encoding="utf-8")
+    _fake_pex_corpus(tmp_path / "FO4" / "Data")
     (user_root / "B21" / "Alpha.psc").write_text(
         "Scriptname B21:Alpha extends Quest\n",
         encoding="utf-8",
@@ -191,11 +209,12 @@ def test_native_compile_writes_pex(tmp_path, monkeypatch):
     assert out[0][1].status == "compiled"
     assert out[0][1].pex_path == expected_pex
     assert expected_pex.read_bytes() == b"PEX"
+    headers_root = tmp_path / "Scripts" / "GeneratedHeaders"
     assert calls == [{
         "source": "Scriptname B21:Alpha extends Quest\n",
-        "imports": [str(user_root), str(base_root)],
+        "imports": [str(user_root), str(headers_root), str(bundled_corpus_root("fo4"))],
         "game": "fo4",
-        "flags": str(flags_path),
+        "flags": str(headers_root / "Institute_Papyrus_Flags.flg"),
     }]
 
 
@@ -203,10 +222,7 @@ def test_native_compile_emits_compound_assignment_bytecode(tmp_path):
     mod_path = tmp_path / "mod"
     runtime = _native_orch(tmp_path, mod_path)
     user_root = mod_path / "Scripts" / "Source" / "User"
-    base_root = tmp_path / "FO4" / "Data" / "Scripts" / "Source" / "Base"
-    (base_root / "Institute_Papyrus_Flags.flg").write_text(
-        "flag data", encoding="utf-8"
-    )
+    _fake_pex_corpus(tmp_path / "FO4" / "Data")
     (user_root / "B21" / "Compound.psc").write_text(
         "Scriptname B21:Compound\nFunction F()\n  Int index = 0\n  index += 1\nEndFunction\n",
         encoding="utf-8",
@@ -239,10 +255,7 @@ def test_native_compile_uses_target_data_sources(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     target_data = tmp_path / "Fallout4" / "Data"
-    game_base = target_data / "Scripts" / "Source" / "Base"
-    game_base.mkdir(parents=True)
-    flags_path = game_base / "Institute_Papyrus_Flags.flg"
-    flags_path.write_text("flag data", encoding="utf-8")
+    _fake_pex_corpus(target_data)
     req = PluginPortRequest(
         source_game="fo76", target_game="fo4", source_plugins=[],
         output_root=tmp_path, target_extracted_dir=None,
@@ -259,9 +272,13 @@ def test_native_compile_uses_target_data_sources(tmp_path, monkeypatch):
     runner = types.SimpleNamespace(emit_log=lambda *a, **k: None)
     out = runtime._compile_decompiled_scripts_native_for_fo4(
         ["B21:Alpha"], ctx=types.SimpleNamespace(mod_path=str(mod_path)), runner=runner, workers=1)
+    headers_root = tmp_path / "Scripts" / "GeneratedHeaders"
     assert out[0][1].status == "compiled"
     assert calls == [
-        {"imports": [str(user_root), str(game_base)], "flags": str(flags_path)}
+        {
+            "imports": [str(user_root), str(headers_root), str(bundled_corpus_root("fo4"))],
+            "flags": str(headers_root / "Institute_Papyrus_Flags.flg"),
+        }
     ]
 
 
@@ -293,6 +310,47 @@ def test_native_compile_reports_diagnostics_and_removes_stale_pex(tmp_path, monk
     assert not stale_pex.is_file()
 
 
+def test_native_compile_rejects_stale_pex_when_unlink_fails(
+    tmp_path,
+    monkeypatch,
+):
+    mod_path = tmp_path / "mod"
+    runtime = _native_orch(tmp_path, mod_path)
+    user_root = mod_path / "Scripts" / "Source" / "User"
+    (user_root / "B21" / "Alpha.psc").write_text(
+        "Scriptname B21:Alpha extends Quest\n",
+        encoding="utf-8",
+    )
+    stale_pex = mod_path / "data" / "Scripts" / "B21" / "Alpha.pex"
+    stale_pex.parent.mkdir(parents=True, exist_ok=True)
+    stale_pex.write_bytes(b"stale")
+    original_unlink = Path.unlink
+
+    def fail_stale_unlink(path, *args, **kwargs):
+        if path == stale_pex:
+            raise PermissionError("locked")
+        return original_unlink(path, *args, **kwargs)
+
+    compile_calls = []
+    monkeypatch.setattr(Path, "unlink", fail_stale_unlink)
+    monkeypatch.setattr(
+        "creation_lib.pex.native_runtime.compile_psc",
+        lambda *_args, **_kwargs: compile_calls.append(True),
+    )
+
+    out = runtime._compile_decompiled_scripts_native_for_fo4(
+        ["B21:Alpha"],
+        ctx=types.SimpleNamespace(mod_path=str(mod_path)),
+        runner=types.SimpleNamespace(emit_log=lambda *_args: None),
+        workers=1,
+    )
+
+    assert out[0][1].status == "compile_failed"
+    assert "could not remove stale output" in out[0][1].message
+    assert compile_calls == []
+    assert stale_pex.read_bytes() == b"stale"
+
+
 def test_batch_reconstructs_compile_failed_when_no_pex(tmp_path, monkeypatch):
     import subprocess as sp
     import types
@@ -310,6 +368,44 @@ def test_batch_reconstructs_compile_failed_when_no_pex(tmp_path, monkeypatch):
         ["B21:Alpha"], ctx=types.SimpleNamespace(mod_path=str(mod_path)), runner=runner)
     assert out[0][1].status == "compile_failed"
     assert not stale_pex.is_file()
+
+
+def test_batch_rejects_stale_pex_when_unlink_fails(tmp_path, monkeypatch):
+    import subprocess as sp
+
+    mod_path = tmp_path / "mod"
+    runtime = _batch_orch(tmp_path, mod_path)
+    stale_pex = mod_path / "data" / "Scripts" / "B21" / "Alpha.pex"
+    stale_pex.parent.mkdir(parents=True, exist_ok=True)
+    stale_pex.write_bytes(b"stale")
+    original_unlink = Path.unlink
+
+    def fail_stale_unlink(path, *args, **kwargs):
+        if path == stale_pex:
+            raise PermissionError("locked")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_stale_unlink)
+    monkeypatch.setattr(
+        unified.subprocess,
+        "run",
+        lambda *args, **kwargs: sp.CompletedProcess(
+            args[0] if args else kwargs.get("args"),
+            0,
+            stdout="",
+            stderr="",
+        ),
+    )
+
+    out = runtime._compile_decompiled_scripts_batch_for_fo4(
+        ["B21:Alpha"],
+        ctx=types.SimpleNamespace(mod_path=str(mod_path)),
+        runner=types.SimpleNamespace(emit_log=lambda *_args: None),
+    )
+
+    assert out[0][1].status == "compile_failed"
+    assert "could not remove stale output" in out[0][1].message
+    assert stale_pex.read_bytes() == b"stale"
 
 
 def test_batch_reconstructs_compiled_when_pex_present(tmp_path, monkeypatch):
@@ -330,6 +426,76 @@ def test_batch_reconstructs_compiled_when_pex_present(tmp_path, monkeypatch):
         ["B21:Alpha"], ctx=types.SimpleNamespace(mod_path=str(mod_path)), runner=runner)
     assert out[0][1].status == "compiled"
     assert out[0][1].pex_path == expected_pex
+
+
+def test_perscript_compile_failure_does_not_accept_stale_pex(tmp_path, monkeypatch):
+    import subprocess as sp
+
+    mod_path = tmp_path / "mod"
+    runtime = _batch_orch(tmp_path, mod_path, selector="exe")
+    stale_pex = mod_path / "data" / "Scripts" / "B21" / "Alpha.pex"
+    stale_pex.parent.mkdir(parents=True, exist_ok=True)
+    stale_pex.write_bytes(b"stale")
+    monkeypatch.setattr(
+        unified.subprocess,
+        "run",
+        lambda *args, **kwargs: sp.CompletedProcess(
+            args[0] if args else kwargs.get("args"),
+            1,
+            stdout="compile failed",
+            stderr="",
+        ),
+    )
+
+    out = runtime._compile_decompiled_script_for_fo4(
+        "B21:Alpha",
+        tmp_path / "source.pex",
+        types.SimpleNamespace(mod_path=str(mod_path)),
+        types.SimpleNamespace(emit_log=lambda *_args: None),
+        cleanup_on_failure=False,
+    )
+
+    assert out.status == "compile_failed"
+    assert out.message == "compile failed"
+    assert not stale_pex.exists()
+
+
+def test_perscript_compile_rejects_stale_pex_when_unlink_fails(
+    tmp_path,
+    monkeypatch,
+):
+    mod_path = tmp_path / "mod"
+    runtime = _batch_orch(tmp_path, mod_path, selector="exe")
+    stale_pex = mod_path / "data" / "Scripts" / "B21" / "Alpha.pex"
+    stale_pex.parent.mkdir(parents=True, exist_ok=True)
+    stale_pex.write_bytes(b"stale")
+    original_unlink = Path.unlink
+
+    def fail_stale_unlink(path, *args, **kwargs):
+        if path == stale_pex:
+            raise PermissionError("locked")
+        return original_unlink(path, *args, **kwargs)
+
+    subprocess_calls = []
+    monkeypatch.setattr(Path, "unlink", fail_stale_unlink)
+    monkeypatch.setattr(
+        unified.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess_calls.append(True),
+    )
+
+    out = runtime._compile_decompiled_script_for_fo4(
+        "B21:Alpha",
+        tmp_path / "source.pex",
+        types.SimpleNamespace(mod_path=str(mod_path)),
+        types.SimpleNamespace(emit_log=lambda *_args: None),
+        cleanup_on_failure=False,
+    )
+
+    assert out.status == "compile_failed"
+    assert "could not remove stale output" in out.message
+    assert subprocess_calls == []
+    assert stale_pex.read_bytes() == b"stale"
 
 
 def test_batch_compiler_unavailable_when_exe_missing(tmp_path):

@@ -17,7 +17,8 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 const MAX_COALESCED_PIXELS: u64 = 32 * 1024 * 1024;
 
 struct GpuRequest {
-    images: Vec<(u32, u32, Vec<u8>)>,
+    queued_at: std::time::Instant,
+    images: Arc<directxtex_native::Rgba8MipChain>,
     srgb: bool,
     reply: Sender<GpuReply>,
 }
@@ -25,11 +26,14 @@ struct GpuRequest {
 enum GpuReply {
     Payloads(Vec<Vec<u8>>),
     /// GPU failed/unavailable — images returned so the caller CPU-encodes.
-    Bounce(Vec<(u32, u32, Vec<u8>)>),
+    Bounce(Arc<directxtex_native::Rgba8MipChain>),
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GpuServiceStats {
+    pub queue_ns: u64,
+    pub dispatch_ns: u64,
+    pub blocking_call_ns: u64,
     pub gpu_submissions: u64,
     pub gpu_dispatch_batches: u64,
     pub cpu_encodes: u64,
@@ -39,6 +43,9 @@ pub struct GpuServiceStats {
 
 #[derive(Default)]
 struct Counters {
+    queue_ns: AtomicU64,
+    dispatch_ns: AtomicU64,
+    blocking_call_ns: AtomicU64,
     gpu_submissions: AtomicU64,
     gpu_dispatch_batches: AtomicU64,
     cpu_encodes: AtomicU64,
@@ -107,6 +114,17 @@ impl GpuService {
         srgb: bool,
         min_pixels: u32,
     ) -> Result<Vec<Vec<u8>>, String> {
+        self.encode_bc7_shared(Arc::new(images), srgb, min_pixels)
+    }
+
+    pub fn encode_bc7_shared(
+        &self,
+        images: Arc<directxtex_native::Rgba8MipChain>,
+        srgb: bool,
+        min_pixels: u32,
+    ) -> Result<Vec<Vec<u8>>, String> {
+        let _timer =
+            directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Encode);
         if images.is_empty() {
             return Ok(Vec::new());
         }
@@ -117,25 +135,33 @@ impl GpuService {
         }
         let (reply_tx, reply_rx) = bounded(1);
         let request = GpuRequest {
+            queued_at: std::time::Instant::now(),
             images,
             srgb,
             reply: reply_tx,
         };
         match self.tx.as_ref().expect("checked above").try_send(request) {
-            Ok(()) => match reply_rx.recv() {
-                Ok(GpuReply::Payloads(payloads)) => {
-                    self.counters
-                        .gpu_submissions
-                        .fetch_add(1, Ordering::Relaxed);
-                    Ok(payloads)
+            Ok(()) => {
+                let wait = directxtex_native::profiling::Timer::new(
+                    directxtex_native::profiling::Stage::GpuWait,
+                );
+                let reply = reply_rx.recv();
+                drop(wait);
+                match reply {
+                    Ok(GpuReply::Payloads(payloads)) => {
+                        self.counters
+                            .gpu_submissions
+                            .fetch_add(1, Ordering::Relaxed);
+                        Ok(payloads)
+                    }
+                    Ok(GpuReply::Bounce(images)) => {
+                        self.counters.gpu_failures.fetch_add(1, Ordering::Relaxed);
+                        self.counters.cpu_encodes.fetch_add(1, Ordering::Relaxed);
+                        cpu_encode_chain(&images, srgb)
+                    }
+                    Err(_) => Err("gpu service thread terminated".to_string()),
                 }
-                Ok(GpuReply::Bounce(images)) => {
-                    self.counters.gpu_failures.fetch_add(1, Ordering::Relaxed);
-                    self.counters.cpu_encodes.fetch_add(1, Ordering::Relaxed);
-                    cpu_encode_chain(&images, srgb)
-                }
-                Err(_) => Err("gpu service thread terminated".to_string()),
-            },
+            }
             Err(crossbeam_channel::TrySendError::Full(request)) => {
                 self.counters
                     .overflow_to_cpu
@@ -161,6 +187,9 @@ impl GpuService {
 
     pub fn stats(&self) -> GpuServiceStats {
         GpuServiceStats {
+            queue_ns: self.counters.queue_ns.load(Ordering::Relaxed),
+            dispatch_ns: self.counters.dispatch_ns.load(Ordering::Relaxed),
+            blocking_call_ns: self.counters.blocking_call_ns.load(Ordering::Relaxed),
             gpu_submissions: self.counters.gpu_submissions.load(Ordering::Relaxed),
             gpu_dispatch_batches: self.counters.gpu_dispatch_batches.load(Ordering::Relaxed),
             cpu_encodes: self.counters.cpu_encodes.load(Ordering::Relaxed),
@@ -226,6 +255,13 @@ fn process_batch(batch: Vec<GpuRequest>, gpu_dead: &mut bool, counters: &Counter
     if batch.is_empty() {
         return;
     }
+    let dequeued = std::time::Instant::now();
+    for request in &batch {
+        counters.queue_ns.fetch_add(
+            dequeued.duration_since(request.queued_at).as_nanos() as u64,
+            Ordering::Relaxed,
+        );
+    }
     if *gpu_dead {
         for req in batch {
             let _ = req.reply.send(GpuReply::Bounce(req.images));
@@ -242,7 +278,16 @@ fn process_batch(batch: Vec<GpuRequest>, gpu_dead: &mut bool, counters: &Counter
         .map(|(w, h, _)| u64::from(*w) * u64::from(*h))
         .sum();
     let started = std::time::Instant::now();
-    match directxtex_native::compress_bc7_gpu_batch(&refs, srgb) {
+    let (result, timings) = directxtex_native::profiling::capture(|| {
+        directxtex_native::compress_bc7_gpu_batch(&refs, srgb)
+    });
+    counters
+        .dispatch_ns
+        .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    counters
+        .blocking_call_ns
+        .fetch_add(timings.gpu_wait_ns, Ordering::Relaxed);
+    match result {
         Ok(mut payloads) => {
             counters
                 .gpu_dispatch_batches
@@ -296,7 +341,11 @@ mod tests {
     #[test]
     fn cpu_only_service_encodes_without_gpu() {
         let svc = GpuService::start_cpu_only();
-        let out = svc.encode_bc7(chain(1), false, 512 * 512).unwrap();
+        let (out, timings) = directxtex_native::profiling::capture(|| {
+            svc.encode_bc7(chain(1), false, 512 * 512).unwrap()
+        });
+        assert!(timings.encode_ns > 0);
+        assert_eq!(timings.gpu_wait_ns, 0);
         assert_eq!(out.len(), 4);
         assert_eq!(out[0].len(), 4 * 16); // 8x8 BC7 = 4 blocks
         assert_eq!(svc.stats().cpu_encodes, 1);
@@ -329,7 +378,11 @@ mod tests {
             }
         };
         let svc = GpuService::start(4);
-        let via_service = svc.encode_bc7(imgs, false, 0).unwrap(); // min_pixels 0 -> GPU path
+        let (via_service, timings) =
+            directxtex_native::profiling::capture(|| svc.encode_bc7(imgs, false, 0).unwrap());
+        assert!(timings.gpu_wait_ns > 0);
+        assert!(svc.stats().queue_ns > 0);
+        assert!(svc.stats().dispatch_ns >= svc.stats().blocking_call_ns);
         assert_eq!(via_service, direct);
         assert_eq!(svc.stats().gpu_submissions, 1);
         svc.shutdown();

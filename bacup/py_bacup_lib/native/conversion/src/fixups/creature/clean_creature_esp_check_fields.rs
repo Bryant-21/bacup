@@ -1,52 +1,21 @@
 //! Fixup: strip or normalise FO76 fields that produce FO4 ESP checker errors.
 //!
-
+//! Creature conversions only (root sig NPC_ or LVLN). Per record type:
 //!
-//! # What this does
-//! For creature conversions (root sig NPC_ or LVLN), iterates every record in
-//! the target plugin and applies per-record-type normalisations.  The branches
-//! ported at the schema-decoded `Record` / `FieldValue` level are:
-//!
-//! - **All records**: sync `KSIZ` to actual `KWDA` row count.
-//! - **LVLN / LVLC**: ensure `LVLD` (Chance None) is present, mask `LVLF` to the
-//!   FO4 3-bit range, drop FO76-only list subrecords, drop `LVLO`/`LVLE`
-//!   entries with null `Reference`, sync `LLCT` to the surviving entry count.
-//! - **LVLI**: drop `LVLO`/`LVLE` entries with null `Reference`, sync `LLCT`.
-//! - **SNDR**: remove subrecords `HNAM`, `INAM`, `PNAM`, `QNAM`.
+//! - **All records**: sync `KSIZ` to the `KWDA` row count.
+//! - **LVLN / LVLC**: ensure `LVLD` (Chance None), mask `LVLF` to the FO4 3-bit
+//!   range, drop FO76-only list subrecords and null-`Reference` `LVLO`/`LVLE`
+//!   entries, sync `LLCT`.
+//! - **LVLI**: drop null-`Reference` `LVLO`/`LVLE` entries, sync `LLCT`.
+//! - **SNDR**: remove `HNAM`, `INAM`, `PNAM`, `QNAM`.
 //! - **MGEF**: remove `VMAD` and `CTDA`.
-//! - **ALCH / ENCH / SPEL**: remove `CTDA`; remove `EFIT` when no `EFID`
-//!   precedes (Python keys on `BaseEffect`, which is the YAML name for `EFID`).
+//! - **ALCH / ENCH / SPEL**: remove `CTDA`; remove `EFIT` with no preceding `EFID`.
 //! - **QUST**: remove `VMAD`, `CTDA`, and `FNAM` payloads larger than 8 bytes.
 //!
-//! # Branches deferred to typed-struct decode
-//! The Python YAML-canonical view exposes per-field semantics that the current
-//! Rust pipeline does not surface for `struct:...` codecs (these decode to
-//! `FieldValue::Bytes`).  Following the rationale in
-//! `fix_creature_npc_records.rs`, the following branches are documented but
-//! not ported:
-//!
-//! - **STAG non-SNDR `Sound` stripping** — already covered by the standalone
-//!   `fix_stag_sound_refs` fixup, which runs as part of the standard registry.
-//! - **NPC_ `Unused` field removal** — `Unused` is the YAML name for an
-//!   unnamed struct field; no FO4 NPC_ subrecord has the sig "Unused".
-//! - **WEAP raw-hex `Data` → structured FO4 default** — Python keys on the
-//!   `raw_hex` marker that only appears in the YAML view when the translator
-//!   failed to decode the struct.  The Rust pipeline always emits DNAM as
-//!   `FieldValue::Bytes`, so there is no signal to distinguish "raw-hex from a
-//!   failed decode" from a normal decode.  Deferred to typed-struct decode.
-//! - **QUST `QuestDialogueConditions` / alias scrubbing / `NextAliasID` reset**
-//!   — these are YAML field names (`ReferenceAliasID`, `CollectionAliasID`,
-//!   `ALID`, `ALED`, …) that don't map 1:1 to FO4 subrecord sigs.
-//! - **KYWD record-flag 0x10 strip / global FO76 0x10 flag strip** —
-//!   `RecordFlags::from_bits_truncate` already drops unknown bits on
-//!   `source_read`, so the FO76 0x10 flag never survives into the Rust
-//!   `Record`.  No-op in the current pipeline.
-//!
-//! # Reference type lookup
-//! Python looks up the record type for a referenced FormKey via
-//! `fk_to_type` (built from the conversion graph) and a SQLite fallback.
-//! The Rust pipeline has no graph view here; the relevant lookups are
-//! confined to STAG branches that already live in `fix_stag_sound_refs.rs`.
+//! STAG non-SNDR sounds are handled by `fix_stag_sound_refs`, and the FO76 0x10
+//! record flag never survives `RecordFlags::from_bits_truncate`. WEAP raw-hex
+//! DNAM and QUST alias scrubbing would need a typed decode of `struct:` codecs,
+//! which arrive as `FieldValue::Bytes`.
 
 use crate::fixups::prune_orphaned_records::is_creature_root_sig;
 use crate::fixups::{Fixup, FixupConfig, FixupContext, FixupError, FixupReport};
@@ -334,12 +303,8 @@ fn sync_ksiz_to_kwda(record: &mut Record) -> bool {
 // Branch: LVLN/LVLC LVLD presence
 // ---------------------------------------------------------------------------
 
-/// Ensure `LVLD` (Chance None) is present.  Adds a zero-valued LVLD if absent.
-///
-/// In the decoded view, LVLD's codec is `uint8` → `FieldValue::Uint(0)`.
-/// We treat "missing" as the only case to add; an already-present LVLD
-/// (even Uint(0)) is left alone — equivalent to Python's behaviour where a
-/// numeric LVLD short-circuits the `raw_hex` check.
+/// Add a zero `LVLD` (Chance None, `uint8`) when absent; an existing LVLD is
+/// left alone.
 fn ensure_lvld_present(record: &mut Record) -> bool {
     let Some(lvld_sig) = sig("LVLD") else {
         return false;
@@ -397,12 +362,8 @@ fn mask_lvlf_to_fo4_bits(record: &mut Record) -> bool {
 // Branch: drop LVLO/LVLE entries with null Reference
 // ---------------------------------------------------------------------------
 
-/// Remove every `LVLO`/`LVLE` subrecord whose `Reference` field is a null
-/// FormKey (`local == 0`) or is missing/non-FormKey.  Returns the count of
-/// entries removed.
-///
-/// Drop-only on null: a leveled entry is removed only when its reference FK is
-/// empty (no master-existence check).
+/// Remove `LVLO`/`LVLE` entries whose `Reference` is null, missing, or not a
+/// FormKey (no master-existence check). Returns the number removed.
 fn drop_null_leveled_entries(record: &mut Record, reference_sym: Sym) -> u32 {
     let mut removed: u32 = 0;
     let mut kept: smallvec::SmallVec<[FieldEntry; 8]> = smallvec::SmallVec::new();

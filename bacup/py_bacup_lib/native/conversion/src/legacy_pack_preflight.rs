@@ -7,9 +7,8 @@ use crate::record::Record;
 use crate::sym::StringInterner;
 use crate::translator::pair_hooks::fnv_pack::{
     AUDITED_FNV_PACK_COUNT, AUDITED_FO3_PACK_COUNT, AUDITED_LEGACY_PACK_COUNT,
-    LegacyPackClassificationStatus, LegacyPackCorpusReport, LegacyPackLoweringBlocker,
-    LegacyPackRejectionReason, LegacyPackSourceFamily, LegacyPackType, classify_legacy_pack,
-    legacy_pack_type_hint,
+    LegacyPackClassificationStatus, LegacyPackCorpusReport, LegacyPackRejectionReason,
+    LegacyPackSourceFamily, LegacyPackType, classify_legacy_pack, legacy_pack_type_hint,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,14 +262,10 @@ impl LegacyPackPreflightAccumulator {
                     .by_type
                     .entry(inventory.package_type_code)
                     .or_default() += 1;
-                for blocker in &inventory.support.lowering_blockers {
-                    let code = lowering_blocker_code(blocker);
-                    self.increment(code);
-                    blockers.push(code.to_string());
-                }
-                if inventory.support.lowering_supported {
-                    blockers.clear();
-                }
+                // Structurally valid legacy packages lower either through an
+                // exact family recipe or the deterministic current-location
+                // travel fallback. The package hook records any semantic
+                // degradation on the emitted record.
             }
             LegacyPackClassificationStatus::Rejected => {
                 self.classified.rejected_records += 1;
@@ -462,24 +457,6 @@ fn resolved_editor_id(record: &Record, interner: &StringInterner) -> Option<Stri
         .map(str::to_owned)
 }
 
-fn lowering_blocker_code(blocker: &LegacyPackLoweringBlocker) -> &'static str {
-    match blocker {
-        LegacyPackLoweringBlocker::NoVerifiedFo4ProcedureBlueprint { .. } => {
-            "no_verified_fo4_procedure_blueprint"
-        }
-        LegacyPackLoweringBlocker::LegacyConditionsRequireSemanticLowering => {
-            "legacy_conditions_require_semantic_lowering"
-        }
-        LegacyPackLoweringBlocker::LegacyEventScriptsRequirePort => {
-            "legacy_event_scripts_require_port"
-        }
-        LegacyPackLoweringBlocker::EncodedReferencesRequireMapper => {
-            "encoded_references_require_mapper"
-        }
-        LegacyPackLoweringBlocker::ScriptAccountingMismatch { .. } => "script_accounting_mismatch",
-    }
-}
-
 fn rejection_code(rejection: &LegacyPackRejectionReason) -> &'static str {
     match rejection {
         LegacyPackRejectionReason::UnresolvedRecordIdentity { .. } => "unresolved_record_identity",
@@ -543,8 +520,8 @@ mod tests {
     #[test]
     fn origin_keys_are_case_insensitive_and_require_plugin_identity() {
         assert_eq!(
-            normalized_form_key("000800@FNV_FO3_Merged.esm"),
-            Some(("fnv_fo3_merged.esm".to_string(), 0x800))
+            normalized_form_key("000800@FalloutNV.esm"),
+            Some(("falloutnv.esm".to_string(), 0x800))
         );
         assert_eq!(normalized_form_key("000800"), None);
         assert_eq!(normalized_form_key("not-hex@Merged.esm"), None);
@@ -599,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_pack_exclusion_waives_only_semantic_lowering() {
+    fn structurally_valid_packages_do_not_need_the_legacy_exclusion_fence() {
         let interner = StringInterner::new();
         let origins = vec![origin(0x800, 0x100)];
         let counts = LegacyPackExpectedCounts { fnv: 1, fo3: 0 };
@@ -613,7 +590,10 @@ mod tests {
             false,
         );
         default_gate.observe_decoded(&pack(&interner, 0x800), &interner);
-        assert!(default_gate.finish().is_blocked());
+        let default_report = default_gate.finish();
+        assert!(!default_report.is_blocked());
+        assert!(default_report.blocked_records.is_empty());
+        assert_eq!(default_report.classified.accepted_records, 1);
 
         let mut excluded_gate = LegacyPackPreflightAccumulator::new(
             &origins,

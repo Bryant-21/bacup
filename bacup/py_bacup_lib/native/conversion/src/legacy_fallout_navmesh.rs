@@ -20,6 +20,7 @@ const FO4_PATHING_DOOR_CRC_HASH: u32 = 0xE48B_73F3;
 pub(crate) struct LegacyFalloutNavmeshBatch {
     pub converted: HashMap<u32, Vec<u8>>,
     pub failures: HashMap<u32, String>,
+    pub diagnostics: HashMap<u32, Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -53,22 +54,40 @@ pub(crate) fn prepare_legacy_fallout_navmeshes(
         }
     }
 
+    let mut batch = lower_assembled_legacy_navmeshes(&assembled);
+    batch.failures.extend(failures);
+    Ok(batch)
+}
+
+fn lower_assembled_legacy_navmeshes(assembled: &[(u32, Vec<u8>)]) -> LegacyFalloutNavmeshBatch {
     let entries = assembled
         .iter()
         .map(|(form_id, bytes)| (*form_id, bytes.as_slice()))
         .collect::<Vec<_>>();
     let converted = esp_authoring_core::nvnm::convert_skyrim_nvnm_set_to_fo4_lossy(&entries);
     let mut converted_by_form_id = HashMap::with_capacity(converted.converted.len());
+    let mut failures = HashMap::new();
+    let mut diagnostics = HashMap::new();
     for row in converted.converted {
+        if row.report.edge_links_dropped > 0 {
+            diagnostics
+                .entry(row.form_id)
+                .or_insert_with(Vec::new)
+                .push(format!(
+                    "legacy NAVM {:08X} dropped {} invalid or nonreciprocal NVEX link(s)",
+                    row.form_id, row.report.edge_links_dropped
+                ));
+        }
         converted_by_form_id.insert(row.form_id, row.bytes);
     }
     for failure in converted.failures {
         failures.insert(failure.form_id, failure.error.to_string());
     }
-    Ok(LegacyFalloutNavmeshBatch {
+    LegacyFalloutNavmeshBatch {
         converted: converted_by_form_id,
         failures,
-    })
+        diagnostics,
+    }
 }
 
 fn build_cell_parent_index(items: &[ParsedItem]) -> HashMap<u32, LegacyNavmeshParent> {
@@ -400,6 +419,71 @@ mod tests {
         }
     }
 
+    fn reciprocal_legacy_record(
+        form_id: u32,
+        linked_form_id: u32,
+        external_slot: usize,
+        vertices: [[f32; 3]; 3],
+    ) -> ParsedRecord {
+        let mut record = legacy_record(3);
+        record.form_id = form_id;
+        record
+            .subrecords
+            .retain(|subrecord| !matches!(subrecord.signature.as_str(), "NVCA" | "NVDP" | "NVGD"));
+
+        let data = record
+            .subrecords
+            .iter_mut()
+            .find(|subrecord| subrecord.signature.as_str() == "DATA")
+            .expect("DATA");
+        let mut data_bytes = data.data.to_vec();
+        data_bytes[16..24].fill(0);
+        data.data = Bytes::from(data_bytes);
+
+        let vertex_data = record
+            .subrecords
+            .iter_mut()
+            .find(|subrecord| subrecord.signature.as_str() == "NVVX")
+            .expect("NVVX");
+        let mut vertex_bytes = Vec::new();
+        for vertex in vertices {
+            for component in vertex {
+                vertex_bytes.extend_from_slice(&component.to_le_bytes());
+            }
+        }
+        vertex_data.data = Bytes::from(vertex_bytes);
+
+        let triangle_data = record
+            .subrecords
+            .iter_mut()
+            .find(|subrecord| subrecord.signature.as_str() == "NVTR")
+            .expect("NVTR");
+        let mut triangle = Vec::new();
+        for vertex in [0_u16, 1, 2] {
+            triangle.extend_from_slice(&vertex.to_le_bytes());
+        }
+        for slot in 0..3 {
+            triangle.extend_from_slice(
+                &(if slot == external_slot { 0_i16 } else { -1_i16 }).to_le_bytes(),
+            );
+        }
+        triangle.extend_from_slice(&(0x0800_u16 | (1 << external_slot)).to_le_bytes());
+        triangle.extend_from_slice(&0_u16.to_le_bytes());
+        triangle_data.data = Bytes::from(triangle);
+
+        let edge_data = record
+            .subrecords
+            .iter_mut()
+            .find(|subrecord| subrecord.signature.as_str() == "NVEX")
+            .expect("NVEX");
+        let mut edge = Vec::new();
+        edge.extend_from_slice(&0_u32.to_le_bytes());
+        edge.extend_from_slice(&linked_form_id.to_le_bytes());
+        edge.extend_from_slice(&0_i16.to_le_bytes());
+        edge_data.data = Bytes::from(edge);
+        record
+    }
+
     #[test]
     fn assembles_all_legacy_rows_into_parseable_fo4_nvnm() {
         let parents = HashMap::from([(0x000801, LegacyNavmeshParent::Interior { cell: 0x000801 })]);
@@ -447,6 +531,106 @@ mod tests {
         expected.extend_from_slice(&FO4_PATHING_DOOR_CRC_HASH.to_le_bytes());
         expected.extend_from_slice(&0x0012_3456_u32.to_le_bytes());
         assert_eq!(target, expected);
+    }
+
+    #[test]
+    fn reciprocal_legacy_links_survive_v15_lowering() {
+        let parents = HashMap::from([(
+            0x000801,
+            LegacyNavmeshParent::Exterior {
+                world: 0x000821,
+                x: 0,
+                y: 0,
+            },
+        )]);
+        let a = reciprocal_legacy_record(
+            0x000921,
+            0x000922,
+            2,
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        );
+        let b = reciprocal_legacy_record(
+            0x000922,
+            0x000921,
+            1,
+            [[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        );
+        let a_bytes = assemble_legacy_navmesh(&a, &parents).expect("assemble A");
+        let b_bytes = assemble_legacy_navmesh(&b, &parents).expect("assemble B");
+
+        let converted = esp_authoring_core::nvnm::convert_skyrim_nvnm_set_to_fo4_lossy(&[
+            (a.form_id, a_bytes.as_slice()),
+            (b.form_id, b_bytes.as_slice()),
+        ]);
+
+        assert!(converted.failures.is_empty());
+        assert_eq!(converted.converted[0].report.edge_links_resolved, 1);
+        assert_eq!(converted.converted[1].report.edge_links_resolved, 1);
+        let target_a = parse_nvnm(&converted.converted[0].bytes).expect("parse A");
+        let target_b = parse_nvnm(&converted.converted[1].bytes).expect("parse B");
+        assert_eq!(target_a.edge_links.len(), 1);
+        assert_eq!(target_b.edge_links.len(), 1);
+        assert_eq!(&target_a.edge_links[0].row[4..8], &b.form_id.to_le_bytes());
+        assert_eq!(&target_b.edge_links[0].row[4..8], &a.form_id.to_le_bytes());
+        assert_eq!(target_a.edge_links[0].row[10], 1);
+        assert_eq!(target_b.edge_links[0].row[10], 2);
+    }
+
+    #[test]
+    fn invalid_legacy_edge_index_drops_only_unproven_links_with_diagnostics() {
+        let parents = HashMap::from([(
+            0x000801,
+            LegacyNavmeshParent::Exterior {
+                world: 0x000821,
+                x: 0,
+                y: 0,
+            },
+        )]);
+        let mut a = reciprocal_legacy_record(
+            0x000921,
+            0x000922,
+            2,
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        );
+        let b = reciprocal_legacy_record(
+            0x000922,
+            0x000921,
+            1,
+            [[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        );
+        let triangle = a
+            .subrecords
+            .iter_mut()
+            .find(|subrecord| subrecord.signature.as_str() == "NVTR")
+            .expect("NVTR");
+        let mut triangle_bytes = triangle.data.to_vec();
+        triangle_bytes[10..12].copy_from_slice(&1_i16.to_le_bytes());
+        triangle.data = Bytes::from(triangle_bytes);
+        let assembled = vec![
+            (
+                a.form_id,
+                assemble_legacy_navmesh(&a, &parents).expect("assemble A"),
+            ),
+            (
+                b.form_id,
+                assemble_legacy_navmesh(&b, &parents).expect("assemble B"),
+            ),
+        ];
+
+        let lowered = lower_assembled_legacy_navmeshes(&assembled);
+
+        assert!(lowered.failures.is_empty());
+        for form_id in [a.form_id, b.form_id] {
+            let target = parse_nvnm(&lowered.converted[&form_id]).expect("parse FO4 NVNM");
+            assert!(target.edge_links.is_empty());
+            assert_eq!(target.triangles[0].flags & 0x0007, 0);
+            assert_eq!(
+                lowered.diagnostics[&form_id],
+                [format!(
+                    "legacy NAVM {form_id:08X} dropped 1 invalid or nonreciprocal NVEX link(s)"
+                )]
+            );
+        }
     }
 
     #[test]

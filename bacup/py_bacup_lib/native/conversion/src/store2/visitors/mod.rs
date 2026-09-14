@@ -15,6 +15,8 @@ pub mod prune_faction_relations;
 pub mod remap_struct_internal_formids;
 pub mod repair_scen_htid_sound_refs;
 pub mod strip_atx_cobj_conditions;
+pub mod strip_crafting_recipe_filters;
+pub mod strip_dead_workshop_conditions;
 pub mod strip_invalid_quest_condition_params;
 pub mod synthesize_weap_data_blocks;
 

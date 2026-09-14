@@ -23,6 +23,7 @@ def test_first_standalone_variants_match_creator_skus():
         "materials",
         "esp_editor",
         "world_viewer",
+        "playstation_converter",
     )
 
 
@@ -44,6 +45,8 @@ def test_variant_registry_defines_titles_and_defaults():
     assert full.include_ai_panel is True
     assert full.include_index_settings is True
     assert full.extraction_only_settings is False
+    assert full.include_status_bar is False
+    assert nif.include_status_bar is False
 
 def test_create_workspaces_filters_to_requested_ids():
     workspaces = create_workspaces(workspace_ids=("materials", "bsa_viewer"))
@@ -79,6 +82,7 @@ def test_release_asset_names_use_variant_exe_names():
     assert names["bsa_viewer"] == "ModBox21-BSAViewer-2.4.6.zip"
     assert names["esp_editor"] == "ModBox21-ESPEditor-2.4.6.zip"
     assert names["world_viewer"] == "ModBox21-WorldViewer-2.4.6.zip"
+    assert names["playstation_converter"] == "PlayStation Converter-2.4.6.zip"
 
 
 def test_variant_id_can_be_inferred_from_frozen_exe_name():
@@ -86,6 +90,7 @@ def test_variant_id_can_be_inferred_from_frozen_exe_name():
     assert variant_id_from_exe_name("ModBox21-NIF") == "nif"
     assert variant_id_from_exe_name("modbox21-espeditor") == "esp_editor"
     assert variant_id_from_exe_name("modbox21-worldviewer") == "world_viewer"
+    assert variant_id_from_exe_name("playstation converter") == "playstation_converter"
     assert variant_id_from_exe_name("UnknownTool") is None
 
 
@@ -130,8 +135,8 @@ def test_nif_first_run_auto_detects_paths_and_skips_setup(monkeypatch, tmp_path)
     def fake_validate(game_id, path):
         return game_id == "fnv" and path == "C:/Games/Fallout New Vegas"
 
-    monkeypatch.setattr("ui.toolkit.path_detector.detect_game_path", fake_detect)
-    monkeypatch.setattr("ui.toolkit.path_detector.validate_game_path", fake_validate)
+    monkeypatch.setattr("creation_lib.core.path_detector.detect_game_path", fake_detect)
+    monkeypatch.setattr("creation_lib.core.path_detector.validate_game_path", fake_validate)
 
     assert _prepare_first_run_settings(settings, get_variant("nif")) is True
 
@@ -174,4 +179,5 @@ def test_all_variants_have_placeholder_icon_paths():
         "materials": "resource/icons/modbox21-materials.ico",
         "esp_editor": "resource/icons/modbox21-esp-editor.ico",
         "world_viewer": "resource/icon.ico",
+        "playstation_converter": "resource/icon.ico",
     }

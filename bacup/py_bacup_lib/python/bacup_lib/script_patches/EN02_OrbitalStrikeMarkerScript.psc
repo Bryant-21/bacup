@@ -1,5 +1,3 @@
-Int remainingDelayCount
-
 Event OnLoad()
     remainingDelayCount = fireDelayCount
     If remainingDelayCount <= 0 || fireDelay <= 0.0

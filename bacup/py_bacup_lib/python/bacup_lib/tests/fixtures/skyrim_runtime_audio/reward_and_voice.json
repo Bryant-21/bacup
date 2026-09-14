@@ -1,0 +1,192 @@
+{
+  "music": [
+    {
+      "source_music_form_id": "0007F810",
+      "source_track_form_id": "0002482C",
+      "source_path": "Music/Reward/MUS_Reward_01.xwm",
+      "target_path": "Music/Skyrim/Reward/MUS_Reward_01.xwm"
+    },
+    {
+      "source_music_form_id": "0007F810",
+      "source_track_form_id": "0007AE08",
+      "source_path": "Music/Reward/MUS_Reward_02.xwm",
+      "target_path": "Music/Skyrim/Reward/MUS_Reward_02.xwm"
+    },
+    {
+      "source_music_form_id": "0007F810",
+      "source_track_form_id": "0007AE0A",
+      "source_path": "Music/Reward/MUS_Reward_03.xwm",
+      "target_path": "Music/Skyrim/Reward/MUS_Reward_03.xwm"
+    },
+    {
+      "source_music_form_id": "0007F810",
+      "source_track_form_id": "0007AE09",
+      "source_path": "Music/Reward/MUS_Reward_04.xwm",
+      "target_path": "Music/Skyrim/Reward/MUS_Reward_04.xwm"
+    }
+  ],
+  "voice": [
+    {
+      "source_info_form_id": "000F1B29",
+      "response_number": 1,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01o_000f1b29_1.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000800_1.fuz"
+    },
+    {
+      "source_info_form_id": "000C041A",
+      "response_number": 1,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01r_000c041a_1.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000801_1.fuz"
+    },
+    {
+      "source_info_form_id": "000C04FD",
+      "response_number": 1,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01s_000c04fd_1.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000802_1.fuz"
+    },
+    {
+      "source_info_form_id": "000C04FD",
+      "response_number": 2,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01s_000c04fd_2.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000802_2.fuz"
+    },
+    {
+      "source_info_form_id": "000C04FD",
+      "response_number": 3,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01s_000c04fd_3.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000802_3.fuz"
+    },
+    {
+      "source_info_form_id": "000C04FD",
+      "response_number": 4,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01s_000c04fd_4.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000802_4.fuz"
+    },
+    {
+      "source_info_form_id": "000C0506",
+      "response_number": 1,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01s_000c0506_1.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000803_1.fuz"
+    },
+    {
+      "source_info_form_id": "000C0506",
+      "response_number": 2,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01s_000c0506_2.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000803_2.fuz"
+    },
+    {
+      "source_info_form_id": "000C0506",
+      "response_number": 3,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01s_000c0506_3.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000803_3.fuz"
+    },
+    {
+      "source_info_form_id": "000C0502",
+      "response_number": 1,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01s_000c0502_1.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000804_1.fuz"
+    },
+    {
+      "source_info_form_id": "000C0502",
+      "response_number": 2,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01s_000c0502_2.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000804_2.fuz"
+    },
+    {
+      "source_info_form_id": "000C0502",
+      "response_number": 3,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01s_000c0502_3.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000804_3.fuz"
+    },
+    {
+      "source_info_form_id": "000C0503",
+      "response_number": 1,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrappjzargo01s_000c0503_1.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000805_1.fuz"
+    },
+    {
+      "source_info_form_id": "00096200",
+      "response_number": 1,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrjzargospell0_00096200_1.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000806_1.fuz"
+    },
+    {
+      "source_info_form_id": "00096200",
+      "response_number": 2,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrjzargospell0_00096200_2.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000806_2.fuz"
+    },
+    {
+      "source_info_form_id": "00096200",
+      "response_number": 3,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrjzargospell0_00096200_3.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000806_3.fuz"
+    },
+    {
+      "source_info_form_id": "00096200",
+      "response_number": 4,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrjzargospell0_00096200_4.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000806_4.fuz"
+    },
+    {
+      "source_info_form_id": "000958B2",
+      "response_number": 1,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrjzargospell0_000958b2_1.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000807_1.fuz"
+    },
+    {
+      "source_info_form_id": "000958B2",
+      "response_number": 2,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrjzargospell0_000958b2_2.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000807_2.fuz"
+    },
+    {
+      "source_info_form_id": "000958B2",
+      "response_number": 3,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrjzargospell0_000958b2_3.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000807_3.fuz"
+    },
+    {
+      "source_info_form_id": "000967E2",
+      "response_number": 1,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrjzargospell0_000967e2_1.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000808_1.fuz"
+    },
+    {
+      "source_info_form_id": "000967E2",
+      "response_number": 2,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrjzargospell0_000967e2_2.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000808_2.fuz"
+    },
+    {
+      "source_info_form_id": "000967E2",
+      "response_number": 3,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrjzargospell0_000967e2_3.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000808_3.fuz"
+    },
+    {
+      "source_info_form_id": "000967E2",
+      "response_number": 4,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzar_mgrjzargospell0_000967e2_4.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000808_4.fuz"
+    },
+    {
+      "source_info_form_id": "000958B1",
+      "response_number": 1,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzargo01__000958b1_1.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/00000809_1.fuz"
+    },
+    {
+      "source_info_form_id": "000C041B",
+      "response_number": 1,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzargo01__000c041b_1.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/0000080A_1.fuz"
+    },
+    {
+      "source_info_form_id": "000C041C",
+      "response_number": 1,
+      "source_path": "sound/voice/skyrim.esm/malekhajiit/mgrappjzargo01__000c041c_1.fuz",
+      "target_path": "Sound/Voice/Skyrim.esm/MaleKhajiit/0000080B_1.fuz"
+    }
+  ]
+}

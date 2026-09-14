@@ -1,22 +1,14 @@
 //! Fixup: flatten OMOD includes when MODL is present (FO76 → FO4 only).
 //!
-//! In vanilla FO4, OMODs are one of two shapes:
-//!   * Leaf attachments — have MODL (own attachment model), no includes.
-//!   * Aggregators — have includes (references to other OMODs that contribute
-//!     property rows), no MODL.
+//! Vanilla FO4 OMODs are either leaf attachments (MODL, no includes) or
+//! aggregators (includes, no MODL). FO76 allows `MODL + includes`, where a leaf
+//! pulls base stats from a parent aggregator (`_PARENT_mod_WEAPON_GENERIC_*`).
+//! The FO4 CK logs "Object mod 'X' (FORMID) is tagged with a model. Removing
+//! invalid data." and strips the includes, dropping every inherited property.
 //!
-//! FO76 allows the hybrid `MODL + includes` pattern, where a leaf OMOD pulls
-//! base stats from a parent aggregator (typically `_PARENT_mod_WEAPON_GENERIC_*`).
-//! When FO4 Creation Kit loads such a record, it logs
-//!     "Object mod 'X' (FORMID) is tagged with a model. Removing invalid data."
-//! and strips the includes — silently dropping every inherited property.
-//!
-//! This fixup eliminates the hybrid shape: for each target OMOD that has both
-//! MODL and `include_count > 0`, it walks the include chain, appends the
-//! included OMODs' DATA properties (recursively, with cycle detection) to this
-//! OMOD's own properties array, then zeroes out the includes section. The
-//! resulting record matches the vanilla FO4 leaf-OMOD shape; orphaned
-//! `_PARENT_*` OMODs are removed by `PruneOrphanedRecordsFixup`.
+//! For each OMOD with MODL and `include_count > 0`, the included OMODs' DATA
+//! properties are appended recursively (cycle-safe) and the includes zeroed.
+//! Orphaned `_PARENT_*` OMODs are then removed by `PruneOrphanedRecordsFixup`.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 

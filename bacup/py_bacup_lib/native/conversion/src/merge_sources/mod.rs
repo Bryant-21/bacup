@@ -18,6 +18,22 @@ mod graft;
 mod repoint;
 mod sanitize;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LegacyRuntimeOriginRow {
+    pub signature: String,
+    pub merged_form_key: String,
+    pub source_game: String,
+    pub source_plugin: String,
+    pub source_form_key: String,
+    pub contributing_plugin: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_parent_form_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_parent_form_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_group_type: Option<i32>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MergeOptions {
     pub primary_paths: Vec<PathBuf>,
@@ -27,6 +43,8 @@ pub struct MergeOptions {
     pub game: String,
     #[serde(default)]
     pub source_strings_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub conversion_workers: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -75,6 +93,7 @@ pub struct MergeReport {
     pub dangling: Vec<String>,
     pub by_signature: BTreeMap<String, SigCounts>,
     pub pack_origins: Vec<LegacyPackOriginRow>,
+    pub runtime_origins: Vec<LegacyRuntimeOriginRow>,
     pub pack_accounting: LegacyPackMergeAccounting,
 }
 
@@ -92,6 +111,8 @@ pub enum MergeError {
     CountMismatch { expected: u64, actual: u64 },
     #[error("PACK provenance mismatch: expected {expected}, got {actual}")]
     PackProvenanceMismatch { expected: usize, actual: usize },
+    #[error("quest-runtime provenance mismatch: expected {expected}, got {actual}")]
+    RuntimeProvenanceMismatch { expected: usize, actual: usize },
     #[error("PACK accounting does not conserve raw source records")]
     PackAccountingMismatch,
 }
@@ -273,6 +294,7 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
                 &mut primary.used_ids,
             );
             let grafted_pack_origins = grafted.pack_origins;
+            let grafted_runtime_origins = grafted.runtime_origins;
             let mut stats = repoint::RepointStats::default();
             graft::graft_lineage(
                 &mut primary.tree,
@@ -296,6 +318,22 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
                     origin.form_id_remapped |= merged_form_id != grafted_form_id;
                     primary.pack_origins.insert(merged_form_id, origin);
                 }
+            }
+            for (grafted_form_id, mut origin) in grafted_runtime_origins {
+                if classification.dropped.contains(&grafted_form_id) {
+                    continue;
+                }
+                let Some(&merged_form_id) = classification.remap.get(&grafted_form_id) else {
+                    continue;
+                };
+                if let Some(parent_form_id) = origin.merged_parent_form_id {
+                    origin.merged_parent_form_id = classification
+                        .remap
+                        .get(&parent_form_id)
+                        .copied()
+                        .or(Some(parent_form_id));
+                }
+                primary.runtime_origins.insert(merged_form_id, origin);
             }
             let grafted_record_ids = classification
                 .remap
@@ -365,6 +403,40 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
             })
             .collect::<Vec<_>>();
         pack_origins.sort_by(|left, right| left.merged_form_key.cmp(&right.merged_form_key));
+        let final_runtime_ids = collect_runtime_record_ids(&primary.tree);
+        primary
+            .runtime_origins
+            .retain(|form_id, _| final_runtime_ids.contains(form_id));
+        if primary.runtime_origins.len() != final_runtime_ids.len() {
+            return Err(MergeError::RuntimeProvenanceMismatch {
+                expected: final_runtime_ids.len(),
+                actual: primary.runtime_origins.len(),
+            });
+        }
+        let mut runtime_origins = primary
+            .runtime_origins
+            .iter()
+            .map(|(&merged_form_id, origin)| LegacyRuntimeOriginRow {
+                signature: origin.signature.to_string(),
+                merged_form_key: format!("{merged_form_id:06X}@{output_name}"),
+                source_game: origin.source_game.clone(),
+                source_plugin: origin.source_plugin.clone(),
+                source_form_key: format!("{:08X}@{}", origin.source_form_id, origin.source_plugin),
+                contributing_plugin: origin.contributing_plugin.clone(),
+                source_parent_form_key: origin.source_parent.as_ref().map(|parent| {
+                    format!("{:08X}@{}", parent.source_form_id, parent.source_plugin)
+                }),
+                merged_parent_form_key: origin
+                    .merged_parent_form_id
+                    .map(|parent_form_id| format!("{parent_form_id:06X}@{output_name}")),
+                child_group_type: origin.child_group_type,
+            })
+            .collect::<Vec<_>>();
+        runtime_origins.sort_by(|left, right| {
+            left.merged_form_key
+                .cmp(&right.merged_form_key)
+                .then_with(|| left.signature.cmp(&right.signature))
+        });
         let report = MergeReport {
             primary_records,
             grafted_records,
@@ -390,6 +462,7 @@ pub fn run(opts: &MergeOptions) -> Result<MergeReport, MergeError> {
                 .map(|(signature, counts)| (signature.to_string(), counts))
                 .collect(),
             pack_origins,
+            runtime_origins,
             pack_accounting,
         };
 
@@ -532,6 +605,17 @@ fn collect_record_ids_of_sig_into(items: &[ParsedItem], signature: &str, ids: &m
     }
 }
 
+fn collect_runtime_record_ids(items: &[ParsedItem]) -> HashSet<u32> {
+    const RUNTIME_SIGNATURES: [&str; 12] = [
+        "QUST", "DIAL", "INFO", "SCPT", "PACK", "SCEN", "ACHR", "ACRE", "REFR", "ACTI", "NPC_",
+        "CREA",
+    ];
+    RUNTIME_SIGNATURES
+        .into_iter()
+        .flat_map(|signature| collect_record_ids_of_sig(items, signature))
+        .collect()
+}
+
 #[cfg(test)]
 mod test_util;
 
@@ -634,7 +718,7 @@ mod tests {
                 rec("FACT", 0x1300, "FO3Fact"),
             ],
         );
-        let output = tmp.path().join("FNV_FO3_Merged.esm");
+        let output = tmp.path().join("FalloutNV.esm");
         let report_path = tmp.path().join("merge_report.json");
         let report = run(&MergeOptions {
             primary_paths: vec![primary],
@@ -643,6 +727,7 @@ mod tests {
             report_path: Some(report_path.clone()),
             game: "fnv".to_string(),
             source_strings_dir: None,
+            conversion_workers: Some(2),
         })
         .unwrap();
         assert_eq!(report.primary_records, 2);
@@ -694,7 +779,7 @@ mod tests {
             "fo3",
             vec![rec("PACK", 0x001300, "WinningPackageOverride")],
         );
-        let output = tmp.path().join("FNV_FO3_Merged.esm");
+        let output = tmp.path().join("FalloutNV.esm");
         let report_path = tmp.path().join("merge_report.json");
 
         let report = run(&MergeOptions {
@@ -704,6 +789,7 @@ mod tests {
             report_path: Some(report_path.clone()),
             game: "fnv".to_string(),
             source_strings_dir: None,
+            conversion_workers: Some(2),
         })
         .unwrap();
 
@@ -711,13 +797,13 @@ mod tests {
             report.pack_origins,
             vec![
                 LegacyPackOriginRow {
-                    merged_form_key: "001200@FNV_FO3_Merged.esm".to_string(),
+                    merged_form_key: "001200@FalloutNV.esm".to_string(),
                     source_game: "fnv".to_string(),
                     source_plugin: "DeadMoney.esm".to_string(),
                     source_form_key: "00001200@DeadMoney.esm".to_string(),
                 },
                 LegacyPackOriginRow {
-                    merged_form_key: "001300@FNV_FO3_Merged.esm".to_string(),
+                    merged_form_key: "001300@FalloutNV.esm".to_string(),
                     source_game: "fo3".to_string(),
                     source_plugin: "Fallout3.esm".to_string(),
                     source_form_key: "00001300@Fallout3.esm".to_string(),
@@ -784,7 +870,7 @@ mod tests {
             "fo3",
             vec![grafted_voice, grafted_npc],
         );
-        let output = tmp.path().join("FNV_FO3_Merged.esm");
+        let output = tmp.path().join("FalloutNV.esm");
 
         run(&MergeOptions {
             primary_paths: vec![primary],
@@ -793,6 +879,7 @@ mod tests {
             report_path: None,
             game: "fnv".to_string(),
             source_strings_dir: None,
+            conversion_workers: Some(2),
         })
         .unwrap();
 
@@ -863,6 +950,7 @@ mod tests {
             report_path: None,
             game: "fnv".to_string(),
             source_strings_dir: None,
+            conversion_workers: Some(2),
         })
         .unwrap();
 
@@ -912,7 +1000,7 @@ mod tests {
             semantic_type: None,
         });
         let grafted = write_test_plugin(tmp.path(), "Grafted.esm", "fo3", vec![navm, refr]);
-        let output = tmp.path().join("FNV_FO3_Merged.esm");
+        let output = tmp.path().join("FalloutNV.esm");
 
         let report = run(&MergeOptions {
             primary_paths: vec![primary],
@@ -921,6 +1009,7 @@ mod tests {
             report_path: None,
             game: "fnv".to_string(),
             source_strings_dir: None,
+            conversion_workers: Some(2),
         })
         .unwrap();
         assert_eq!(report.sanitized_occurrences, 2);
@@ -989,7 +1078,7 @@ mod tests {
                 ],
             })],
         );
-        let output = tmp.path().join("FNV_FO3_Merged.esm");
+        let output = tmp.path().join("FalloutNV.esm");
         let report = run(&MergeOptions {
             primary_paths: vec![primary],
             grafted_paths: vec![grafted],
@@ -997,6 +1086,7 @@ mod tests {
             report_path: None,
             game: "fnv".to_string(),
             source_strings_dir: None,
+            conversion_workers: Some(2),
         })
         .unwrap();
         assert_eq!(report.deduped, 1);
@@ -1010,6 +1100,263 @@ mod tests {
         assert_eq!(dialogues.len(), 1);
         assert_eq!(infos.len(), 2);
         plugin_handle_close_native(handle);
+    }
+
+    #[test]
+    fn runtime_origin_manifest_tracks_remapped_quest_children_deterministically() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tail = Bytes::from(vec![0; 4]);
+        let primary = write_test_plugin_items(
+            tmp.path(),
+            "FalloutNV.esm",
+            "fnv",
+            Vec::new(),
+            vec![ParsedItem::Group(ParsedGroup {
+                label: *b"QUST",
+                group_type: 0,
+                tail: tail.clone(),
+                children: vec![
+                    ParsedItem::Record(rec("QUST", 0x2000, "NvQuest")),
+                    ParsedItem::Group(ParsedGroup {
+                        label: 0x2000_u32.to_le_bytes(),
+                        group_type: 10,
+                        tail: tail.clone(),
+                        children: vec![
+                            ParsedItem::Record(rec("DIAL", 0x2001, "NvTopic")),
+                            ParsedItem::Group(ParsedGroup {
+                                label: 0x2001_u32.to_le_bytes(),
+                                group_type: 7,
+                                tail: tail.clone(),
+                                children: vec![ParsedItem::Record(rec("INFO", 0x2002, ""))],
+                            }),
+                        ],
+                    }),
+                ],
+            })],
+        );
+        let grafted = write_test_plugin_items(
+            tmp.path(),
+            "Fallout3.esm",
+            "fo3",
+            Vec::new(),
+            vec![ParsedItem::Group(ParsedGroup {
+                label: *b"QUST",
+                group_type: 0,
+                tail: tail.clone(),
+                children: vec![
+                    ParsedItem::Record(rec("QUST", 0x2000, "Fo3Quest")),
+                    ParsedItem::Group(ParsedGroup {
+                        label: 0x2000_u32.to_le_bytes(),
+                        group_type: 10,
+                        tail,
+                        children: vec![
+                            ParsedItem::Record(rec("DIAL", 0x2001, "Fo3Topic")),
+                            ParsedItem::Group(ParsedGroup {
+                                label: 0x2001_u32.to_le_bytes(),
+                                group_type: 7,
+                                tail: Bytes::from(vec![0; 4]),
+                                children: vec![ParsedItem::Record(rec("INFO", 0x2002, ""))],
+                            }),
+                            ParsedItem::Record(rec("SCEN", 0x2003, "Fo3Scene")),
+                        ],
+                    }),
+                ],
+            })],
+        );
+        let first = run(&MergeOptions {
+            primary_paths: vec![primary.clone()],
+            grafted_paths: vec![grafted.clone()],
+            output_path: tmp.path().join("first").join("Merged.esm"),
+            report_path: Some(tmp.path().join("first").join("report.json")),
+            game: "fnv".to_string(),
+            source_strings_dir: None,
+            conversion_workers: Some(2),
+        })
+        .unwrap();
+        let second = run(&MergeOptions {
+            primary_paths: vec![primary],
+            grafted_paths: vec![grafted],
+            output_path: tmp.path().join("second").join("Merged.esm"),
+            report_path: None,
+            game: "fnv".to_string(),
+            source_strings_dir: None,
+            conversion_workers: Some(2),
+        })
+        .unwrap();
+
+        assert_eq!(first.runtime_origins, second.runtime_origins);
+        assert_eq!(first.runtime_origins.len(), 7);
+        assert!(
+            first
+                .runtime_origins
+                .windows(2)
+                .all(|rows| rows[0].merged_form_key <= rows[1].merged_form_key)
+        );
+        let fo3_quest = first
+            .runtime_origins
+            .iter()
+            .find(|row| row.signature == "QUST" && row.source_plugin == "Fallout3.esm")
+            .unwrap();
+        assert_ne!(fo3_quest.merged_form_key, "002000@Merged.esm");
+        let fo3_dial = first
+            .runtime_origins
+            .iter()
+            .find(|row| row.signature == "DIAL" && row.source_plugin == "Fallout3.esm")
+            .unwrap();
+        assert_eq!(fo3_dial.child_group_type, Some(10));
+        assert_eq!(
+            fo3_dial.source_parent_form_key.as_deref(),
+            Some("00002000@Fallout3.esm")
+        );
+        assert_eq!(
+            fo3_dial.merged_parent_form_key.as_deref(),
+            Some(fo3_quest.merged_form_key.as_str())
+        );
+        let fo3_info = first
+            .runtime_origins
+            .iter()
+            .find(|row| row.signature == "INFO" && row.source_plugin == "Fallout3.esm")
+            .unwrap();
+        assert_eq!(fo3_info.child_group_type, Some(7));
+        assert_eq!(
+            fo3_info.merged_parent_form_key.as_deref(),
+            Some(fo3_dial.merged_form_key.as_str())
+        );
+        let serialized: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(tmp.path().join("first").join("report.json")).unwrap(),
+        )
+        .unwrap();
+        let roundtrip: Vec<LegacyRuntimeOriginRow> =
+            serde_json::from_value(serialized["runtime_origins"].clone()).unwrap();
+        assert_eq!(roundtrip, first.runtime_origins);
+    }
+
+    #[test]
+    fn duplicate_quest_container_grafts_child_dialogues() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tail = Bytes::from(vec![0; 4]);
+        let primary = write_test_plugin_items(
+            tmp.path(),
+            "Primary.esm",
+            "fnv",
+            Vec::new(),
+            vec![ParsedItem::Group(ParsedGroup {
+                label: *b"QUST",
+                group_type: 0,
+                tail: tail.clone(),
+                children: vec![
+                    ParsedItem::Record(rec("QUST", 0x3000, "SharedQuest")),
+                    ParsedItem::Group(ParsedGroup {
+                        label: 0x3000_u32.to_le_bytes(),
+                        group_type: 10,
+                        tail: tail.clone(),
+                        children: vec![ParsedItem::Record(rec("DIAL", 0x3001, "PrimaryTopic"))],
+                    }),
+                ],
+            })],
+        );
+        let grafted = write_test_plugin_items(
+            tmp.path(),
+            "Grafted.esm",
+            "fo3",
+            Vec::new(),
+            vec![ParsedItem::Group(ParsedGroup {
+                label: *b"QUST",
+                group_type: 0,
+                tail: tail.clone(),
+                children: vec![
+                    ParsedItem::Record(rec("QUST", 0x8800, "SharedQuest")),
+                    ParsedItem::Group(ParsedGroup {
+                        label: 0x8800_u32.to_le_bytes(),
+                        group_type: 10,
+                        tail,
+                        children: vec![ParsedItem::Record(rec("DIAL", 0x8801, "GraftedTopic"))],
+                    }),
+                ],
+            })],
+        );
+        let output = tmp.path().join("Merged.esm");
+        let report = run(&MergeOptions {
+            primary_paths: vec![primary],
+            grafted_paths: vec![grafted],
+            output_path: output.clone(),
+            report_path: None,
+            game: "fnv".to_string(),
+            source_strings_dir: None,
+            conversion_workers: Some(2),
+        })
+        .unwrap();
+        assert_eq!(report.deduped, 1);
+        assert_eq!(
+            report
+                .runtime_origins
+                .iter()
+                .filter(|row| row.signature == "QUST")
+                .count(),
+            1
+        );
+
+        let handle = load_no_py(output.to_str().unwrap(), Some("fnv")).unwrap();
+        let (plugin, _) = clone_plugin_handle_state_no_py(handle).unwrap();
+        let mut dialogues = Vec::new();
+        collect_signature(&plugin.root_items, "DIAL", &mut dialogues);
+        assert_eq!(dialogues.len(), 2);
+        plugin_handle_close_native(handle);
+    }
+
+    #[test]
+    fn runtime_origin_canonicalizes_master_owned_override_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = write_test_plugin(
+            tmp.path(),
+            "FalloutNV.esm",
+            "fnv",
+            vec![rec("PACK", 0x001200, "CanonicalPackage")],
+        );
+        let contributor = write_test_plugin_with_masters(
+            tmp.path(),
+            "DeadMoney.esm",
+            "fnv",
+            vec!["FalloutNV.esm".to_string()],
+            vec![rec("PACK", 0x0000_1200, "CanonicalPackageOverride")],
+        );
+        let first = run(&MergeOptions {
+            primary_paths: vec![primary.clone(), contributor.clone()],
+            grafted_paths: Vec::new(),
+            output_path: tmp.path().join("first").join("Merged.esm"),
+            report_path: None,
+            game: "fnv".to_string(),
+            source_strings_dir: None,
+            conversion_workers: Some(2),
+        })
+        .unwrap();
+        let second = run(&MergeOptions {
+            primary_paths: vec![primary, contributor],
+            grafted_paths: Vec::new(),
+            output_path: tmp.path().join("second").join("Merged.esm"),
+            report_path: None,
+            game: "fnv".to_string(),
+            source_strings_dir: None,
+            conversion_workers: Some(2),
+        })
+        .unwrap();
+
+        assert_eq!(first.runtime_origins, second.runtime_origins);
+        assert_eq!(first.runtime_origins.len(), 1);
+        assert_eq!(
+            first.runtime_origins[0],
+            LegacyRuntimeOriginRow {
+                signature: "PACK".to_string(),
+                merged_form_key: "001200@Merged.esm".to_string(),
+                source_game: "fnv".to_string(),
+                source_plugin: "FalloutNV.esm".to_string(),
+                source_form_key: "00001200@FalloutNV.esm".to_string(),
+                contributing_plugin: "DeadMoney.esm".to_string(),
+                source_parent_form_key: None,
+                merged_parent_form_key: None,
+                child_group_type: None,
+            }
+        );
     }
 
     #[test]
@@ -1195,7 +1542,7 @@ mod tests {
                 ),
             })],
         );
-        let output = tmp.path().join("FNV_FO3_Merged.esm");
+        let output = tmp.path().join("FalloutNV.esm");
 
         run(&MergeOptions {
             primary_paths: vec![primary],
@@ -1204,6 +1551,7 @@ mod tests {
             report_path: None,
             game: "fnv".to_string(),
             source_strings_dir: None,
+            conversion_workers: Some(2),
         })
         .unwrap();
 
@@ -1244,10 +1592,11 @@ mod tests {
         let error = run(&MergeOptions {
             primary_paths: vec![primary],
             grafted_paths: vec![grafted],
-            output_path: tmp.path().join("FNV_FO3_Merged.esm"),
+            output_path: tmp.path().join("FalloutNV.esm"),
             report_path: Some(report_path.clone()),
             game: "fnv".to_string(),
             source_strings_dir: None,
+            conversion_workers: Some(2),
         })
         .unwrap_err();
         assert!(matches!(error, MergeError::Dangling(1)));
@@ -1272,10 +1621,11 @@ mod tests {
         let error = run(&MergeOptions {
             primary_paths: vec![primary],
             grafted_paths: vec![grafted],
-            output_path: tmp.path().join("FNV_FO3_Merged.esm"),
+            output_path: tmp.path().join("FalloutNV.esm"),
             report_path: Some(report_path.clone()),
             game: "fnv".to_string(),
             source_strings_dir: None,
+            conversion_workers: Some(2),
         })
         .unwrap_err();
         assert!(matches!(error, MergeError::Dangling(1)));
@@ -1302,7 +1652,7 @@ mod tests {
             semantic_type: None,
         });
         let grafted = write_test_plugin(tmp.path(), "Grafted.esm", "fo3", vec![actor]);
-        let output = tmp.path().join("FNV_FO3_Merged.esm");
+        let output = tmp.path().join("FalloutNV.esm");
         let report_path = tmp.path().join("merge_report.json");
         let report = run(&MergeOptions {
             primary_paths: vec![primary],
@@ -1311,6 +1661,7 @@ mod tests {
             report_path: Some(report_path.clone()),
             game: "fnv".to_string(),
             source_strings_dir: None,
+            conversion_workers: Some(2),
         })
         .unwrap();
         assert_eq!(report.sanitized_occurrences, 1);
@@ -1371,9 +1722,9 @@ mod tests {
             Vec::new(),
             &HashSet::new(),
             "skyrimse",
-            "Skyrim_Merged.esm",
+            "Skyrim.esm",
         );
 
-        assert_eq!(plugin.plugin_name, "Skyrim_Merged.esm");
+        assert_eq!(plugin.plugin_name, "Skyrim.esm");
     }
 }

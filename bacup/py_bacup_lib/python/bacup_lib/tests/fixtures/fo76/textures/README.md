@@ -1,7 +1,7 @@
 # FO76 Test Fixtures
 
-Fixtures for the FO76 -> FO4 conversion test suite. Total budget: keep this
-tree under ~200 KB; current footprint is well below that.
+Fixtures for the FO76 -> FO4 conversion test suite. Keep this tree under
+~200 KB.
 
 ## Layout
 
@@ -43,15 +43,13 @@ format), so byte offset 128 (start of pixel data) for `color_d.dds` is
 | `sample_v22.bgsm` | `Data/SeventySix - Materials.ba2 :: materials/actors/alien/alien_body.bgsm` | 22 |
 | `sample_v22.bgem` | `Data/SeventySix - Materials.ba2 :: materials/actors/alien/alien_glass.bgem` | 22 |
 
-Both are public Bethesda Fallout 76 base game assets and were chosen because
-they are the smallest exemplars of the v22 (>= v20) header layout that the
-new BGSM/BGEM FO76 version extensions need to parse. Sizes: BGSM = 352 B,
-BGEM = 290 B.
+Both are Fallout 76 base game assets, chosen as the smallest exemplars of the
+v22 (>= v20) header layout that the FO76 BGSM/BGEM version extensions parse.
+Sizes: BGSM = 352 B, BGEM = 290 B.
 
-## CDB fixture (deferred)
+## CDB fixture
 
-`cdb/` is empty pending Task 9 (MaterialsCDB reader). No CDB file ships in
-the standalone Fallout 76 install at `Data/`, the `extracted/fo76/` mirror,
-or the upstream `refs/fo76texconv` / `refs/fo76utils-main` test trees, so
-the CDB fixture will be bootstrapped by the parser implementation in Task 9
-(see plan Task 9 Step 2).
+`cdb/` is empty. No CDB file ships in the standalone Fallout 76 install at
+`Data/`, the `extracted/fo76/` mirror, or the upstream `refs/fo76texconv` /
+`refs/fo76utils-main` test trees, so a CDB fixture has to be produced by a
+MaterialsCDB reader.

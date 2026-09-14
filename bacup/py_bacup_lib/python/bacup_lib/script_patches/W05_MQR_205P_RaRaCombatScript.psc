@@ -1,5 +1,3 @@
-; TODO
-
 Event OnCombatStateChanged(Actor akTarget, int aeCombatState)
     Actor raRaRef = GetActorReference()
     If raRaRef == None

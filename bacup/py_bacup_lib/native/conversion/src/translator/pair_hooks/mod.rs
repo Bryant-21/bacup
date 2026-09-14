@@ -1,3 +1,4 @@
+pub(crate) mod fnv_conditions;
 pub(crate) mod fnv_creature_race;
 pub mod fnv_fo4;
 pub(crate) mod fnv_magic_effects;
@@ -5,7 +6,9 @@ pub(crate) mod fnv_mgef;
 pub mod fnv_pack;
 pub(crate) mod fnv_perk;
 pub mod fnv_wrld;
-mod fo4_layouts;
+pub(crate) mod fo4_layouts;
+pub mod fo4_starfield;
 pub mod fo76_fo4;
 mod model_paths;
 pub mod skyrimse_fo4;
+pub mod starfield_fo4;

@@ -1,9 +1,11 @@
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from bacup_lib import regen_pipeline
-from bacup_lib.regen_pipeline import RegenPaths
+from bacup_lib import PhaseSelection, regen_pipeline
+from bacup_lib.regen_pipeline import RegenOptions, RegenPaths
 
 
 def _paths(tmp_path: Path, *, deploy_data_dir: Path | None = None) -> RegenPaths:
@@ -255,6 +257,7 @@ def test_deploy_output_mods_reuses_built_outputs_without_validation(monkeypatch,
             {
                 "game": "fo4",
                 "game_data_dir": game_data_dir,
+                "plugin_base_name": "SeventySix",
                 "skip_build": True,
                 "skip_pack": True,
                 "skip_papyrus_compile": True,
@@ -266,6 +269,204 @@ def test_deploy_output_mods_reuses_built_outputs_without_validation(monkeypatch,
             },
         )
     ]
+
+
+def test_deploy_output_mods_can_use_loose_deployer(monkeypatch, tmp_path):
+    project_root = tmp_path
+    (project_root / "mods" / "SeventySix").mkdir(parents=True)
+    game_data_dir = tmp_path / "MO2" / "mods" / "SeventySix"
+    calls: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(
+        "creation_lib.build.loose_deploy.deploy_loose_assets",
+        lambda mod_name, **kwargs: calls.append((mod_name, kwargs)),
+    )
+
+    regen_pipeline._deploy_output_mods(
+        "SeventySix",
+        plugin_names=["SeventySix.esm"],
+        project_root=project_root,
+        game_data_dir=game_data_dir,
+        resource_dir=tmp_path / "resource",
+        deploy_archives=False,
+        deploy_loose=True,
+    )
+
+    assert calls == [
+        (
+            "SeventySix",
+            {
+                "game": "fo4",
+                "game_data_dir": game_data_dir,
+                "skip_build": True,
+                "skip_papyrus_compile": True,
+                "skip_validation": True,
+                "project_root": project_root,
+            },
+        )
+    ]
+
+
+def test_deploy_post_steps_loose_removes_old_archives(monkeypatch, tmp_path):
+    deploy_dir = tmp_path / "MO2" / "mods" / "SeventySix"
+    deploy_dir.mkdir(parents=True)
+    stale_archive = deploy_dir / "SeventySix - Main.ba2"
+    stale_archive.write_bytes(b"stale")
+    calls: dict[str, object] = {}
+
+    def fake_deploy_output_mods(_output_root_name, **kwargs):
+        calls.update(kwargs)
+
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_deploy_output_mods",
+        fake_deploy_output_mods,
+    )
+
+    regen_pipeline._deploy_post_steps(
+        _paths(tmp_path, deploy_data_dir=deploy_dir),
+        ["SeventySix.esm"],
+        _Timing(),
+        update_runtime_ini=False,
+        deploy_loose=True,
+    )
+
+    assert not stale_archive.exists()
+    assert calls["game_data_dir"] == deploy_dir
+    assert calls["deploy_archives"] is False
+    assert calls["deploy_loose"] is True
+
+
+def test_tracked_loose_deployment_is_removed_before_format_switch(tmp_path):
+    deploy_dir = tmp_path / "MO2" / "mods" / "SeventySix"
+    loose_file = deploy_dir / "Meshes" / "Actors" / "test.nif"
+    loose_file.parent.mkdir(parents=True)
+    loose_file.write_bytes(b"loose")
+    manifest = regen_pipeline._deployed_loose_manifest_path(
+        deploy_dir,
+        "SeventySix",
+    )
+    manifest.write_text(
+        json.dumps({"files": [{"rel": "Meshes/Actors/test.nif"}]}),
+        encoding="utf-8",
+    )
+
+    removed = regen_pipeline._remove_tracked_loose_deployment(
+        deploy_dir,
+        "SeventySix",
+    )
+
+    assert removed == ["Meshes/Actors/test.nif"]
+    assert not loose_file.exists()
+    assert not manifest.exists()
+
+
+def test_deploy_existing_repacks_using_selected_archive_layout(monkeypatch, tmp_path):
+    paths = _paths(tmp_path, deploy_data_dir=tmp_path / "MO2" / "SeventySix")
+    paths.output_root.mkdir(parents=True)
+    (paths.output_root / "SeventySix.esm").write_bytes(b"esm")
+    options = RegenOptions(
+        deploy=True,
+        ba2_mode="packed",
+        archive_max_bytes=(1 << 63) - 1,
+        direct_deploy_archives=True,
+        update_runtime_ini=True,
+    )
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_pack_existing_output",
+        lambda paths_arg, options_arg, **_kwargs: calls.update(
+            paths=paths_arg,
+            options=options_arg,
+        )
+        or True,
+    )
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_deploy_post_steps",
+        lambda _paths, _names, _timing, **kwargs: calls.update(deploy=kwargs),
+    )
+
+    result = regen_pipeline.deploy_existing(paths, options=options)
+
+    assert result.deployed is True
+    assert calls["paths"] is paths
+    assert calls["options"] is options
+    assert calls["deploy"]["archives_already_deployed"] is True
+    assert calls["deploy"]["update_runtime_ini"] is True
+    assert calls["deploy"]["register_runtime_archives"] is False
+
+
+def test_full_regen_loose_mode_skips_ba2_and_deploys_loose(monkeypatch, tmp_path):
+    paths = _paths(tmp_path, deploy_data_dir=tmp_path / "MO2" / "SeventySix")
+    paths.source_data_dir.mkdir(parents=True)
+    (paths.source_data_dir / "SeventySix.esm").write_bytes(b"source")
+    captures: dict[str, object] = {}
+
+    monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
+    monkeypatch.setattr(regen_pipeline, "_snapshot_land_cache", lambda *_a, **_k: True)
+    monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "bacup_lib.target_assets.ensure_target_asset_catalog",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_check_run_invariants",
+        lambda *_a, **kwargs: captures.update(skip_pack=kwargs["skip_pack"])
+        or ([], []),
+    )
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_deploy_post_steps",
+        lambda *_a, **kwargs: captures.update(deploy_kwargs=kwargs),
+    )
+
+    import bacup_lib.models as models
+    import bacup_lib.workflows.unified as unified
+
+    monkeypatch.setattr(models, "write_coverage_report", lambda *_a, **_k: None)
+
+    def fake_run_unified(_request, _runner, **kwargs):
+        captures["enable_ba2"] = kwargs["enable_ba2"]
+        captures["archive_output_dir"] = kwargs["archive_output_dir"]
+        paths.output_root.mkdir(parents=True, exist_ok=True)
+        (paths.output_root / "SeventySix.esm").write_bytes(b"converted")
+        return SimpleNamespace(
+            run_result=SimpleNamespace(
+                decisions=[],
+                translated_counts={},
+                skipped_counts={},
+                failed_nifs=[],
+                failed_textures=[],
+                failed_bgsms=[],
+                btos_failed=0,
+                btos_total=0,
+            )
+        )
+
+    monkeypatch.setattr(unified, "run_unified", fake_run_unified)
+
+    result = regen_pipeline.run_full_regen(
+        paths,
+        RegenOptions(
+            deploy=True,
+            deploy_loose=True,
+            direct_deploy_archives=False,
+            lod_mode="none",
+            deep_invariants=True,
+        ),
+        phases=PhaseSelection(lod_mode="none"),
+        runner=SimpleNamespace(emit_log=lambda *_a, **_k: None),
+    )
+
+    assert result.exit_code == 0
+    assert captures["enable_ba2"] is False
+    assert captures["archive_output_dir"] is None
+    assert captures["skip_pack"] is True
+    assert captures["deploy_kwargs"]["deploy_loose"] is True
 
 
 def test_deploy_output_mods_plugin_only_skips_loose_payload(monkeypatch, tmp_path):
@@ -298,7 +499,7 @@ def test_deploy_output_mods_supports_distinct_mod_and_plugin_names(
     project_root = tmp_path
     mod_dir = project_root / "mods" / "CustomMojave"
     mod_dir.mkdir(parents=True)
-    plugin_path = mod_dir / "FNV_FO3_Merged.esm"
+    plugin_path = mod_dir / "FalloutNV.esm"
     plugin_path.write_bytes(b"merged")
     game_data_dir = tmp_path / "Fallout4" / "Data"
 
@@ -312,13 +513,13 @@ def test_deploy_output_mods_supports_distinct_mod_and_plugin_names(
 
     regen_pipeline._deploy_output_mods(
         "CustomMojave",
-        plugin_names=["FNV_FO3_Merged.esm"],
+        plugin_names=["FalloutNV.esm"],
         project_root=project_root,
         game_data_dir=game_data_dir,
         resource_dir=tmp_path / "resource",
     )
 
-    assert (game_data_dir / "FNV_FO3_Merged.esm").read_bytes() == b"merged"
+    assert (game_data_dir / "FalloutNV.esm").read_bytes() == b"merged"
     assert not (game_data_dir / "CustomMojave.esm").exists()
     assert not (mod_dir / "CustomMojave.esm").exists()
 
@@ -328,7 +529,7 @@ def test_distinct_plugin_deploy_cleans_temporary_alias_on_failure(
 ):
     mod_dir = tmp_path / "mods" / "MojaveCapital"
     mod_dir.mkdir(parents=True)
-    (mod_dir / "FNV_FO3_Merged.esm").write_bytes(b"merged")
+    (mod_dir / "FalloutNV.esm").write_bytes(b"merged")
 
     monkeypatch.setattr(
         "creation_lib.build.deployer.deploy_mod",
@@ -338,7 +539,7 @@ def test_distinct_plugin_deploy_cleans_temporary_alias_on_failure(
     with pytest.raises(RuntimeError, match="deploy failed"):
         regen_pipeline._deploy_output_mods(
             "MojaveCapital",
-            plugin_names=["FNV_FO3_Merged.esm"],
+            plugin_names=["FalloutNV.esm"],
             project_root=tmp_path,
             game_data_dir=tmp_path / "Fallout4" / "Data",
             resource_dir=tmp_path / "resource",
@@ -347,9 +548,12 @@ def test_distinct_plugin_deploy_cleans_temporary_alias_on_failure(
     assert not (mod_dir / "MojaveCapital.esm").exists()
 
 
-def test_deploy_post_steps_uses_explicit_mod_name_for_mod_and_archives(
+def test_deploy_post_steps_names_archives_after_the_plugin_not_the_mod(
     monkeypatch, tmp_path
 ):
+    """The game mounts "<PluginStem> - Main.ba2" by PLUGIN name, so archive
+    lookup must follow the plugin even when the mod folder is named otherwise
+    (mods/CustomMojave shipping FalloutNV.esm)."""
     paths = _paths(tmp_path, deploy_data_dir=tmp_path / "MO2" / "CustomMojave")
     paths.output_root = tmp_path / "mods" / "CustomMojave"
     paths.mod_name = "CustomMojave"
@@ -371,12 +575,12 @@ def test_deploy_post_steps_uses_explicit_mod_name_for_mod_and_archives(
 
     regen_pipeline._deploy_post_steps(
         paths,
-        ["FNV_FO3_Merged.esm"],
+        ["FalloutNV.esm"],
         _Timing(),
         update_runtime_ini=False,
     )
 
     assert captured == {
         "output_root_name": "CustomMojave",
-        "archive_plugin_names": ["CustomMojave.esm"],
+        "archive_plugin_names": ["FalloutNV.esm"],
     }

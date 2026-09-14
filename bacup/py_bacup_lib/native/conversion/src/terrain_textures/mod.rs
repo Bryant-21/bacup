@@ -14,11 +14,57 @@ pub mod grass_walk;
 pub mod ltex_walk;
 pub mod manifest;
 pub mod nif_refs;
+pub mod starfield_records;
 
 pub use options::{Options, RecordOutputMode, Report, TimingEntry};
 
 const PROJECTED_CELL_IMPORT_BATCH_SIZE: usize = 1024;
 
+#[derive(Debug, Default)]
+struct TerrainTargetSinkProfile {
+    yaml_parse_elapsed: Duration,
+    batch_prepare_elapsed: Duration,
+    target_insert_elapsed: Duration,
+    payloads_parsed: u64,
+    yaml_bytes_parsed: u64,
+    header_batch_flushes: u64,
+    projected_batch_flushes: u64,
+    header_values_prepared: u64,
+    projected_values_prepared: u64,
+    target_insert_calls: u64,
+    structured_cell_payloads_received: u64,
+}
+
+struct TerrainTargetImportState {
+    target_cell_editor_ids: HashSet<String>,
+    terrain_record_remaps: TerrainRecordRemaps,
+    terrain_header_batch: Vec<AuthoringRecordPayload>,
+    projected_cell_batch: Vec<AuthoringRecordValuePayload>,
+    profile: TerrainTargetSinkProfile,
+    records_imported: u32,
+}
+
+impl TerrainTargetImportState {
+    fn flush(&mut self, target_handle_id: u64) -> Result<(), String> {
+        let imported = import_terrain_header_batch(
+            target_handle_id,
+            &mut self.terrain_header_batch,
+            &mut self.terrain_record_remaps,
+            &mut self.profile,
+        )?;
+        self.records_imported = self.records_imported.saturating_add(imported);
+        let imported = import_projected_structured_cell_batch(
+            target_handle_id,
+            &mut self.projected_cell_batch,
+            &mut self.target_cell_editor_ids,
+            &mut self.profile,
+        )?;
+        self.records_imported = self.records_imported.saturating_add(imported);
+        Ok(())
+    }
+}
+
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -29,6 +75,8 @@ use crate::terrain_textures::grass_walk::{
 };
 use crate::terrain_textures::ltex_walk::{build_bundle, normalize_esp_form_key};
 use crate::terrain_textures::manifest::TextureManifest;
+use crate::terrain_textures::starfield_records::biome_ground_covers_for_ltexes;
+use terrain_native::authoring_emit::{AuthoringRecordPayload, AuthoringRecordValuePayload};
 
 use pyo3::prelude::*;
 use std::time::{Duration, Instant};
@@ -37,8 +85,8 @@ const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(2);
 
 /// PyO3 entry. Takes options as a JSON string, returns a JSON string report.
 /// Two-pass FO76 BTD: pass 1 collects required_ltex_form_ids (emit_textures=false);
-/// build_manifest populates texture_manifest.json; pass 2 re-runs with the manifest
-/// so terrain_native emits TXST/LTEX/GRAS YAML records.
+/// build_manifest populates texture_manifest.json; pass 2 reuses the decoded BTD
+/// with the manifest so terrain_native emits TXST/LTEX/GRAS records.
 #[pyfunction(name = "conversion_terrain_with_textures")]
 pub fn py_terrain_with_textures(py: Python<'_>, options_json: &str) -> PyResult<String> {
     let options_json = options_json.to_owned();
@@ -83,13 +131,14 @@ pub fn run_with_progress(
 ) -> Result<Report, String> {
     use std::path::PathBuf;
     use terrain_native::authoring_emit::{
-        AuthoringEmitError, AuthoringRecordPayload, ConvertOptions, TerrainRecordOutput,
-        collect_required_texture_usages_lightweight_for_options, convert_btd,
-        convert_btd_with_record_sink,
+        AuthoringEmitError, ConvertOptions, PreparedTerrainTextureScan, TerrainRecordOutput,
+        convert_prepared_btd, convert_prepared_btd_with_structured_cell_sink,
+        prepare_terrain_texture_scan,
     };
 
     let total_started = Instant::now();
     let mut timings = Vec::new();
+    let mut operation_counts = BTreeMap::new();
     let source_game = normalize_source_game(&opts.source_game)?;
 
     let to_convert_options = |emit_textures: bool, manifest_path: &str| ConvertOptions {
@@ -164,9 +213,22 @@ pub fn run_with_progress(
     // Pass 1 only needs the BTD texture index. Do not build the full height grid here.
     progress("[terrain_tex] scanning BTD texture usage".to_owned());
     let required_ltex_started = Instant::now();
-    let required_usages =
-        collect_required_texture_usages_lightweight_for_options(to_convert_options(false, ""))
-            .map_err(|e| format!("first-pass terrain texture scan: {e}"))?;
+    let PreparedTerrainTextureScan {
+        profile: required_profile,
+        source: prepared_source,
+    } = prepare_terrain_texture_scan(to_convert_options(false, ""))
+        .map_err(|e| format!("first-pass terrain texture scan: {e}"))?;
+    append_profile_timings(
+        &mut timings,
+        "collect_required_ltex",
+        &required_profile.timings,
+    );
+    extend_prefixed_counts(
+        &mut operation_counts,
+        "collect_required_ltex",
+        required_profile.operation_counts,
+    );
+    let required_usages = required_profile.usages;
     let required_ltex: BTreeSet<&str> = required_usages
         .iter()
         .map(|usage| usage.ltex_form_key.as_str())
@@ -243,11 +305,13 @@ pub fn run_with_progress(
         String::new()
     };
     let mut records_imported = 0u32;
+    let mut target_sink_profile = TerrainTargetSinkProfile::default();
     progress("[terrain] emitting and importing LAND/CELL records".to_owned());
     let pass2_started = Instant::now();
     let pass2 = match opts.record_output_mode {
         RecordOutputMode::AuthoringDir => {
-            let pass2_output = convert_btd(
+            let pass2_output = convert_prepared_btd(
+                prepared_source,
                 to_convert_options(opts.emit_textures, &manifest_path_str),
                 TerrainRecordOutput::WriteAuthoringFiles,
             )
@@ -259,59 +323,67 @@ pub fn run_with_progress(
             let target_handle_id = opts.target_handle_id.ok_or_else(|| {
                 "target_handle_id is required when record_output_mode=target_handle".to_owned()
             })?;
-            let mut target_cell_editor_ids =
-                target_cell_editor_id_collision_set(&opts, &source_game);
-            let mut terrain_record_remaps = TerrainRecordRemaps::new(&opts);
-            let mut projected_cell_batch: Vec<AuthoringRecordPayload> =
-                Vec::with_capacity(PROJECTED_CELL_IMPORT_BATCH_SIZE);
+            let state = RefCell::new(TerrainTargetImportState {
+                target_cell_editor_ids: target_cell_editor_id_collision_set(&opts, &source_game),
+                terrain_record_remaps: TerrainRecordRemaps::new(&opts),
+                terrain_header_batch: Vec::new(),
+                projected_cell_batch: Vec::with_capacity(PROJECTED_CELL_IMPORT_BATCH_SIZE),
+                profile: TerrainTargetSinkProfile::default(),
+                records_imported: 0,
+            });
             let report = {
                 let mut record_sink =
                     |record: AuthoringRecordPayload| -> Result<(), AuthoringEmitError> {
                         if is_projected_cell_record(&record) {
-                            projected_cell_batch.push(record);
-                            if projected_cell_batch.len() >= PROJECTED_CELL_IMPORT_BATCH_SIZE {
-                                let imported = import_projected_cell_batch(
-                                    target_handle_id,
-                                    &mut projected_cell_batch,
-                                    &mut target_cell_editor_ids,
-                                )
-                                .map_err(AuthoringEmitError::Message)?;
-                                records_imported = records_imported.saturating_add(imported);
-                                progress(format!(
-                                    "[terrain] imported {records_imported} terrain record(s) so far"
-                                ));
+                            return Err(AuthoringEmitError::Message(
+                                "structured terrain sink received projected CELL as YAML"
+                                    .to_owned(),
+                            ));
+                        }
+                        state.borrow_mut().terrain_header_batch.push(record);
+                        Ok(())
+                    };
+                let mut structured_cell_sink =
+                    |record: AuthoringRecordValuePayload| -> Result<(), AuthoringEmitError> {
+                        let imported = {
+                            let mut state = state.borrow_mut();
+                            state.profile.structured_cell_payloads_received = state
+                                .profile
+                                .structured_cell_payloads_received
+                                .saturating_add(1);
+                            state.projected_cell_batch.push(record);
+                            if state.projected_cell_batch.len() >= PROJECTED_CELL_IMPORT_BATCH_SIZE
+                            {
+                                state
+                                    .flush(target_handle_id)
+                                    .map_err(AuthoringEmitError::Message)?;
+                                Some(state.records_imported)
+                            } else {
+                                None
                             }
-                        } else {
-                            let imported = import_projected_cell_batch(
-                                target_handle_id,
-                                &mut projected_cell_batch,
-                                &mut target_cell_editor_ids,
-                            )
-                            .map_err(AuthoringEmitError::Message)?;
-                            records_imported = records_imported.saturating_add(imported);
-                            let imported = import_terrain_record(
-                                target_handle_id,
-                                &record,
-                                &mut target_cell_editor_ids,
-                                &mut terrain_record_remaps,
-                            )
-                            .map_err(AuthoringEmitError::Message)?;
-                            records_imported = records_imported.saturating_add(imported);
+                        };
+                        if let Some(records_imported) = imported {
+                            progress(format!(
+                                "[terrain] imported {records_imported} terrain record(s) so far"
+                            ));
                         }
                         Ok(())
                     };
-                convert_btd_with_record_sink(
+                convert_prepared_btd_with_structured_cell_sink(
+                    prepared_source,
                     to_convert_options(opts.emit_textures, &manifest_path_str),
                     &mut record_sink,
+                    &mut structured_cell_sink,
                 )
             }
             .map_err(|e| format!("second-pass terrain: {e}"))?;
-            let imported = import_projected_cell_batch(
-                target_handle_id,
-                &mut projected_cell_batch,
-                &mut target_cell_editor_ids,
-            )?;
-            records_imported = records_imported.saturating_add(imported);
+            state.borrow_mut().flush(target_handle_id)?;
+            let state = state.into_inner();
+            records_imported = state.records_imported;
+            target_sink_profile = state.profile;
+            progress(format!(
+                "[terrain] imported {records_imported} terrain record(s)"
+            ));
             serde_json::to_value(&report).map_err(|e| format!("second-pass report value: {e}"))?
         }
     };
@@ -323,6 +395,8 @@ pub fn run_with_progress(
             .unwrap_or(0)
     ));
     append_terrain_timings(&mut timings, &pass2);
+    append_pass2_operation_counts(&mut operation_counts, &pass2);
+    append_target_sink_profile(&mut timings, &mut operation_counts, &target_sink_profile);
     push_timing(&mut timings, "emit_and_import_land", pass2_started);
 
     // Job 2: write downgraded BGSM files for LTEX-material entries.
@@ -502,6 +576,7 @@ pub fn run_with_progress(
         .get("layers_recovered")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
+    report.operation_counts = operation_counts;
     report.timings = timings;
     if let Some(ref manifest) = opt_manifest {
         report.terrain_texture_jobs = manifest
@@ -538,11 +613,95 @@ fn write_source_water_manifest(opts: &Options, source_game: &str) -> Result<(), 
 }
 
 fn push_timing(timings: &mut Vec<TimingEntry>, name: &str, started: Instant) {
-    let elapsed = started.elapsed().as_secs_f64();
+    push_elapsed_timing(timings, name, started.elapsed());
+}
+
+fn push_elapsed_timing(timings: &mut Vec<TimingEntry>, name: &str, elapsed: Duration) {
+    let elapsed_seconds = elapsed.as_secs_f64();
     timings.push(TimingEntry {
         name: name.to_owned(),
-        elapsed_seconds: (elapsed * 1_000_000.0).round() / 1_000_000.0,
+        elapsed_seconds: (elapsed_seconds * 1_000_000.0).round() / 1_000_000.0,
     });
+}
+
+fn append_profile_timings(
+    timings: &mut Vec<TimingEntry>,
+    prefix: &str,
+    entries: &[terrain_native::authoring_emit::TimingEntry],
+) {
+    timings.extend(entries.iter().map(|entry| TimingEntry {
+        name: format!("{prefix}.{}", entry.name),
+        elapsed_seconds: entry.elapsed_seconds,
+    }));
+}
+
+fn extend_prefixed_counts(
+    counts: &mut BTreeMap<String, u64>,
+    prefix: &str,
+    entries: BTreeMap<String, u64>,
+) {
+    counts.extend(
+        entries
+            .into_iter()
+            .map(|(name, count)| (format!("{prefix}.{name}"), count)),
+    );
+}
+
+fn append_pass2_operation_counts(counts: &mut BTreeMap<String, u64>, pass2: &serde_json::Value) {
+    let Some(entries) = pass2
+        .get("operation_counts")
+        .and_then(|value| value.as_object())
+    else {
+        return;
+    };
+    counts.extend(entries.iter().filter_map(|(name, value)| {
+        value
+            .as_u64()
+            .map(|count| (format!("terrain_native.{name}"), count))
+    }));
+}
+
+fn append_target_sink_profile(
+    timings: &mut Vec<TimingEntry>,
+    counts: &mut BTreeMap<String, u64>,
+    profile: &TerrainTargetSinkProfile,
+) {
+    if profile.payloads_parsed == 0 && profile.structured_cell_payloads_received == 0 {
+        return;
+    }
+    push_elapsed_timing(
+        timings,
+        "emit_and_import_land.target_sink.yaml_parse_exclusive",
+        profile.yaml_parse_elapsed,
+    );
+    push_elapsed_timing(
+        timings,
+        "emit_and_import_land.target_sink.batch_prepare_excluding_parse",
+        profile.batch_prepare_elapsed,
+    );
+    push_elapsed_timing(
+        timings,
+        "emit_and_import_land.target_sink.target_insert_exclusive",
+        profile.target_insert_elapsed,
+    );
+    for (name, count) in [
+        ("payloads_parsed", profile.payloads_parsed),
+        ("yaml_bytes_parsed", profile.yaml_bytes_parsed),
+        ("header_batch_flushes", profile.header_batch_flushes),
+        ("projected_batch_flushes", profile.projected_batch_flushes),
+        ("header_values_prepared", profile.header_values_prepared),
+        (
+            "projected_values_prepared",
+            profile.projected_values_prepared,
+        ),
+        ("target_insert_calls", profile.target_insert_calls),
+        (
+            "structured_cell_payloads_received",
+            profile.structured_cell_payloads_received,
+        ),
+    ] {
+        counts.insert(format!("target_sink.{name}"), count);
+    }
 }
 
 fn append_terrain_timings(timings: &mut Vec<TimingEntry>, pass2: &serde_json::Value) {
@@ -587,6 +746,7 @@ fn write_timing_report(debug_dir: &Path, worldspace: &str, report: &Report) -> R
         "grass_materials_converted": report.grass_materials_converted,
         "dropped_texture_layers": report.dropped_texture_layers,
         "records_imported": report.records_imported,
+        "operation_counts": report.operation_counts,
         "timings": report.timings,
     });
     let json = serde_json::to_string_pretty(&payload)
@@ -612,56 +772,136 @@ fn write_timing_report(debug_dir: &Path, worldspace: &str, report: &Report) -> R
     Ok(())
 }
 
-fn import_terrain_record(
-    target_handle_id: u64,
-    record: &terrain_native::authoring_emit::AuthoringRecordPayload,
-    target_cell_editor_ids: &mut HashSet<String>,
-    terrain_record_remaps: &mut TerrainRecordRemaps,
-) -> Result<u32, String> {
-    let mut value = terrain_record_value(record)?;
-    terrain_record_remaps.rewrite_references(&mut value);
-    if terrain_record_remaps.skip_or_track(record, &value) {
-        return Ok(0);
-    }
-    if record.signature == "CELL" && value.get("Landscape").is_some() {
-        rename_projected_cell_editor_id_collision(&mut value, target_cell_editor_ids);
-        esp_authoring_core::plugin_runtime::plugin_handle_replace_projected_cell_authoring_record_value(
-            target_handle_id,
-            &value,
-            &record.relative_path,
-        )
-        .map(|form_keys| form_keys.len() as u32)
-        .map_err(|e| format!("terrain record {} import failed: {e}", record.relative_path))
-    } else {
-        esp_authoring_core::plugin_runtime::plugin_handle_replace_authoring_record_value(
-            target_handle_id,
-            &value,
-        )
-        .map(|_| 1)
-        .map_err(|e| format!("terrain record {} import failed: {e}", record.relative_path))
-    }
-}
-
-fn import_projected_cell_batch(
+fn import_terrain_header_batch(
     target_handle_id: u64,
     records: &mut Vec<terrain_native::authoring_emit::AuthoringRecordPayload>,
-    target_cell_editor_ids: &mut HashSet<String>,
+    terrain_record_remaps: &mut TerrainRecordRemaps,
+    profile: &mut TerrainTargetSinkProfile,
 ) -> Result<u32, String> {
     if records.is_empty() {
         return Ok(0);
     }
+
+    profile.header_batch_flushes = profile.header_batch_flushes.saturating_add(1);
+    profile.payloads_parsed = profile.payloads_parsed.saturating_add(records.len() as u64);
+    profile.yaml_bytes_parsed = profile.yaml_bytes_parsed.saturating_add(
+        records
+            .iter()
+            .map(|record| record.yaml.len() as u64)
+            .sum::<u64>(),
+    );
+    let yaml_parse_started = Instant::now();
+    let parsed = records
+        .drain(..)
+        .map(|record| terrain_record_value(&record).map(|value| (record, value)))
+        .collect::<Result<Vec<_>, _>>()?;
+    profile.yaml_parse_elapsed += yaml_parse_started.elapsed();
+
+    let batch_prepare_started = Instant::now();
+    let mut values = Vec::with_capacity(parsed.len());
+    for (record, mut value) in parsed {
+        terrain_record_remaps.rewrite_references(&mut value);
+        if !terrain_record_remaps.skip_or_track(&record, &value) {
+            values.push(value);
+        }
+    }
+    profile.batch_prepare_elapsed += batch_prepare_started.elapsed();
+    profile.header_values_prepared = profile
+        .header_values_prepared
+        .saturating_add(values.len() as u64);
+
+    let target_insert_started = Instant::now();
+    profile.target_insert_calls = profile.target_insert_calls.saturating_add(1);
+    let result = esp_authoring_core::plugin_runtime::plugin_handle_replace_authoring_record_values(
+        target_handle_id,
+        &values,
+    )
+    .map(|form_keys| form_keys.len() as u32)
+    .map_err(|e| format!("terrain header batch import failed: {e}"));
+    profile.target_insert_elapsed += target_insert_started.elapsed();
+    result
+}
+
+fn import_projected_structured_cell_batch(
+    target_handle_id: u64,
+    records: &mut Vec<AuthoringRecordValuePayload>,
+    target_cell_editor_ids: &mut HashSet<String>,
+    profile: &mut TerrainTargetSinkProfile,
+) -> Result<u32, String> {
+    if records.is_empty() {
+        return Ok(0);
+    }
+    profile.projected_batch_flushes = profile.projected_batch_flushes.saturating_add(1);
+    let batch_prepare_started = Instant::now();
     let mut values = Vec::with_capacity(records.len());
     for record in records.drain(..) {
-        let mut value = terrain_record_value(&record)?;
+        let mut value = record.value;
         rename_projected_cell_editor_id_collision(&mut value, target_cell_editor_ids);
         values.push((value, record.relative_path));
     }
-    esp_authoring_core::plugin_runtime::plugin_handle_replace_projected_cell_authoring_record_values_at_locations(
+    profile.batch_prepare_elapsed += batch_prepare_started.elapsed();
+    profile.projected_values_prepared = profile
+        .projected_values_prepared
+        .saturating_add(values.len() as u64);
+
+    let target_insert_started = Instant::now();
+    profile.target_insert_calls = profile.target_insert_calls.saturating_add(1);
+    let result = esp_authoring_core::plugin_runtime::plugin_handle_replace_projected_cell_authoring_record_values_at_locations(
         target_handle_id,
         values,
     )
     .map(|imported| imported as u32)
-    .map_err(|e| format!("terrain projected CELL batch import failed: {e}"))
+    .map_err(|e| format!("terrain projected CELL batch import failed: {e}"));
+    profile.target_insert_elapsed += target_insert_started.elapsed();
+    result
+}
+
+#[cfg(test)]
+fn import_projected_legacy_cell_batch(
+    target_handle_id: u64,
+    records: &mut Vec<AuthoringRecordPayload>,
+    target_cell_editor_ids: &mut HashSet<String>,
+    profile: &mut TerrainTargetSinkProfile,
+) -> Result<u32, String> {
+    if records.is_empty() {
+        return Ok(0);
+    }
+    profile.projected_batch_flushes = profile.projected_batch_flushes.saturating_add(1);
+    profile.payloads_parsed = profile.payloads_parsed.saturating_add(records.len() as u64);
+    profile.yaml_bytes_parsed = profile.yaml_bytes_parsed.saturating_add(
+        records
+            .iter()
+            .map(|record| record.yaml.len() as u64)
+            .sum::<u64>(),
+    );
+    let yaml_parse_started = Instant::now();
+    let parsed = records
+        .drain(..)
+        .map(|record| terrain_record_value(&record).map(|value| (record, value)))
+        .collect::<Result<Vec<_>, _>>()?;
+    profile.yaml_parse_elapsed += yaml_parse_started.elapsed();
+
+    let batch_prepare_started = Instant::now();
+    let mut values = Vec::with_capacity(parsed.len());
+    for (record, mut value) in parsed {
+        rename_projected_cell_editor_id_collision(&mut value, target_cell_editor_ids);
+        values.push((value, record.relative_path));
+    }
+    profile.batch_prepare_elapsed += batch_prepare_started.elapsed();
+    profile.projected_values_prepared = profile
+        .projected_values_prepared
+        .saturating_add(values.len() as u64);
+
+    let target_insert_started = Instant::now();
+    profile.target_insert_calls = profile.target_insert_calls.saturating_add(1);
+    let result = esp_authoring_core::plugin_runtime::plugin_handle_replace_projected_cell_authoring_record_values_at_locations(
+        target_handle_id,
+        values,
+    )
+    .map(|imported| imported as u32)
+    .map_err(|e| format!("terrain projected CELL batch import failed: {e}"));
+    profile.target_insert_elapsed += target_insert_started.elapsed();
+    result
 }
 
 fn terrain_record_value(
@@ -991,9 +1231,9 @@ fn normalize_source_game(source_game: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
-/// Build the FO76→FO4 terrain texture manifest in two steps:
+/// Build the BTD-source→FO4 terrain texture manifest in two steps:
 /// 1. For each LTEX form_key, call `build_bundle` (TXST or BGSM branch).
-/// 2. Attach any direct LTEX grass and BTD/GCVR grass to the same standard LTEX.
+/// 2. Attach direct LTEX grass and BTD/BIOM→GCVR grass to the standard LTEX.
 /// Writes the manifest as pretty-printed JSON to `manifest_output_path`.
 /// Returns the in-memory manifest so callers can mutate it (e.g. populating
 /// grass.assets) before re-serializing.
@@ -1010,13 +1250,27 @@ pub fn build_manifest(
     manifest_output_path: &Path,
 ) -> Result<TextureManifest, String> {
     let resolver = Ba2Resolver::open_with_extracted_dir(fo76_data_dir, source_extracted_dir)?;
+    // Starfield LTEX materials (`.mat`) resolve through the CDB rather than a
+    // standalone parseable BGSM/BGEM file; see ltex_walk::mat_branch.
+    let materials_cdb_path =
+        source_extracted_dir.map(|dir| dir.join("materials").join("materialsbeta.cdb"));
     let mut usages_by_ltex: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for usage in required_texture_usages {
-        let ground_cover_form_keys = usages_by_ltex
-            .entry(usage.ltex_form_key.clone())
-            .or_default();
+        let ltex_form_key = normalize_esp_form_key(&usage.ltex_form_key).into_owned();
+        let ground_cover_form_keys = usages_by_ltex.entry(ltex_form_key).or_default();
         if let Some(gcvr_form_key) = usage.ground_cover_form_key.clone() {
-            ground_cover_form_keys.insert(gcvr_form_key);
+            ground_cover_form_keys.insert(normalize_esp_form_key(&gcvr_form_key).into_owned());
+        }
+    }
+    if normalized_game_option(source_game) == "starfield" {
+        let required_ltexes = usages_by_ltex.keys().cloned().collect::<BTreeSet<_>>();
+        for (ltex_form_key, ground_cover_form_keys) in
+            biome_ground_covers_for_ltexes(handle_id, &required_ltexes)?
+        {
+            usages_by_ltex
+                .entry(ltex_form_key)
+                .or_default()
+                .extend(ground_cover_form_keys);
         }
     }
     let mut textures = Vec::with_capacity(usages_by_ltex.len());
@@ -1029,6 +1283,8 @@ pub fn build_manifest(
             &resolver,
             extraction_root,
             output_prefix_root,
+            source_game,
+            materials_cdb_path.as_deref(),
         )?;
         bundle.source_gcvr_form_key = None;
         bundle.source_gcvr_editor_id = None;
@@ -1092,6 +1348,209 @@ fn gcvr_supports_ltex(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn instrumentation_helpers_preserve_names_and_counts() {
+        let pass2 = json!({
+            "operation_counts": {
+                "global_blend.expected_global_vertices": 1089,
+                "write_cells.cell_yaml_documents": 1
+            }
+        });
+        let mut counts = BTreeMap::new();
+        append_pass2_operation_counts(&mut counts, &pass2);
+        assert_eq!(
+            counts.get("terrain_native.global_blend.expected_global_vertices"),
+            Some(&1089)
+        );
+        assert_eq!(
+            counts.get("terrain_native.write_cells.cell_yaml_documents"),
+            Some(&1)
+        );
+
+        let profile = TerrainTargetSinkProfile {
+            yaml_parse_elapsed: Duration::from_millis(2),
+            batch_prepare_elapsed: Duration::from_millis(3),
+            target_insert_elapsed: Duration::from_millis(5),
+            payloads_parsed: 4,
+            yaml_bytes_parsed: 4096,
+            header_batch_flushes: 1,
+            projected_batch_flushes: 2,
+            header_values_prepared: 2,
+            projected_values_prepared: 2,
+            target_insert_calls: 3,
+            structured_cell_payloads_received: 2,
+        };
+        let mut timings = Vec::new();
+        append_target_sink_profile(&mut timings, &mut counts, &profile);
+        assert_eq!(
+            timings
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "emit_and_import_land.target_sink.yaml_parse_exclusive",
+                "emit_and_import_land.target_sink.batch_prepare_excluding_parse",
+                "emit_and_import_land.target_sink.target_insert_exclusive",
+            ]
+        );
+        assert_eq!(counts.get("target_sink.payloads_parsed"), Some(&4));
+        assert_eq!(counts.get("target_sink.target_insert_calls"), Some(&3));
+        assert_eq!(
+            counts.get("target_sink.structured_cell_payloads_received"),
+            Some(&2)
+        );
+    }
+
+    #[test]
+    fn structured_target_flush_matches_legacy_yaml_plugin_bytes() {
+        let plugin_name = "B21_Test.esp";
+        let world_path = "records/WRLD/B21_World - 000800_B21_Test.esp/RecordData.yaml";
+        let cell_path =
+            "records/WRLD/B21_World - 000800_B21_Test.esp/0, 0/0, 0/0, 0/RecordData.yaml";
+        let headers = vec![
+            AuthoringRecordPayload {
+                signature: "WRLD".to_owned(),
+                relative_path: world_path.to_owned(),
+                yaml: "signature: WRLD\nform_id: \"000800:B21_Test.esp\"\nform_version: 131\nversion2: 1\neid: B21_World\nsubrecords:\n  - signature: EDID\n    data_hex: \"4232315F576F726C6400\"\n  - signature: NAMA\n    data_hex: \"0000803F\"\n  - signature: DATA\n    data_hex: \"00\"\n  - signature: NAM0\n    data_hex: \"0000000000000000\"\n  - signature: NAM9\n    data_hex: \"0000804500008045\"\n".to_owned(),
+            },
+            AuthoringRecordPayload {
+                signature: "TXST".to_owned(),
+                relative_path: "records/TXST/B21_TextureSet.yaml".to_owned(),
+                yaml: "form_id: \"000901:B21_Test.esp\"\nform_version: 131\nversion2: 1\neid: B21_TextureSet\nfields: []\n".to_owned(),
+            },
+            AuthoringRecordPayload {
+                signature: "LTEX".to_owned(),
+                relative_path: "records/LTEX/B21_LandTexture.yaml".to_owned(),
+                yaml: "form_id: \"000902:B21_Test.esp\"\nform_version: 131\nversion2: 1\neid: B21_LandTexture\nfields:\n- TextureSet:\n    reference:\n      plugin: B21_Test.esp\n      object_id: \"000900\"\n- HavokData:\n    Friction: 30\n    Restitution: 30\n- TextureSpecularExponent: 30\n".to_owned(),
+            },
+        ];
+        let legacy_cell = AuthoringRecordPayload {
+            signature: "CELL".to_owned(),
+            relative_path: cell_path.to_owned(),
+            yaml: "signature: CELL\nform_id: \"000803:B21_Test.esp\"\nform_version: 131\nversion2: 1\neid: B21_Cell\nsubrecords:\n  - signature: EDID\n    data_hex: \"4232315F43656C6C00\"\n  - signature: DATA\n    data_hex: \"0200\"\n  - signature: XCLC\n    data_hex: \"000000000000000000000000\"\n  - signature: XCLW\n    data_hex: \"FFFF7F7F\"\nLandscape:\n  signature: LAND\n  form_id: \"000804:B21_Test.esp\"\n  form_version: 131\n  version2: 1\n  fields:\n    - Flags: 29\n    - VertexNormals:\n        raw_hex: \"007F80FF\"\n    - VertexHeightMap:\n        raw_hex: \"FF00A55A\"\n    - BTXT:\n        Texture:\n          reference:\n            plugin: B21_Test.esp\n            object_id: \"000902\"\n        Quadrant: 0\n        UnknownByte3: 2\n        Layer: -1\n    - ATXT:\n        Texture:\n          reference:\n            plugin: B21_Test.esp\n            object_id: \"000902\"\n        Quadrant: 0\n        UnknownByte3: 0\n        Layer: 0\n    - AlphaLayerData:\n        raw_hex: \"0000FF7F0000803F\"\n".to_owned(),
+        };
+        let structured_cell_value: serde_json::Value =
+            serde_saphyr::from_str(&legacy_cell.yaml).expect("legacy CELL fixture parses");
+        let structured_cell = AuthoringRecordValuePayload {
+            signature: "CELL".to_owned(),
+            relative_path: cell_path.to_owned(),
+            value: structured_cell_value,
+        };
+
+        let mut opts = minimal_options();
+        opts.source_game = "fo76".to_owned();
+        opts.target_game = "fo4".to_owned();
+        opts.plugin_name = plugin_name.to_owned();
+        opts.target_cell_editor_ids = vec!["B21_Cell".to_owned()];
+        let remapped_texture = FormReference::new(plugin_name, 0x000901);
+
+        let legacy_handle =
+            esp_authoring_core::plugin_runtime::plugin_handle_new_no_py(plugin_name, Some("fo4"));
+        let mut legacy_remaps = TerrainRecordRemaps::new(&opts);
+        legacy_remaps
+            .remaps_by_object_id
+            .insert(0x000900, remapped_texture.clone());
+        let mut legacy_headers = headers.clone();
+        let mut legacy_profile = TerrainTargetSinkProfile::default();
+        let mut legacy_imported = import_terrain_header_batch(
+            legacy_handle,
+            &mut legacy_headers,
+            &mut legacy_remaps,
+            &mut legacy_profile,
+        )
+        .expect("legacy header import");
+        let mut legacy_cells = vec![legacy_cell];
+        legacy_imported = legacy_imported.saturating_add(
+            import_projected_legacy_cell_batch(
+                legacy_handle,
+                &mut legacy_cells,
+                &mut target_cell_editor_id_collision_set(&opts, "fo76"),
+                &mut legacy_profile,
+            )
+            .expect("legacy projected CELL import"),
+        );
+
+        let structured_handle =
+            esp_authoring_core::plugin_runtime::plugin_handle_new_no_py(plugin_name, Some("fo4"));
+        let mut structured_remaps = TerrainRecordRemaps::new(&opts);
+        structured_remaps
+            .remaps_by_object_id
+            .insert(0x000900, remapped_texture);
+        let structured_state = RefCell::new(TerrainTargetImportState {
+            target_cell_editor_ids: target_cell_editor_id_collision_set(&opts, "fo76"),
+            terrain_record_remaps: structured_remaps,
+            terrain_header_batch: headers,
+            projected_cell_batch: Vec::new(),
+            profile: TerrainTargetSinkProfile::default(),
+            records_imported: 0,
+        });
+        {
+            let mut state = structured_state.borrow_mut();
+            state.profile.structured_cell_payloads_received = 1;
+            state.projected_cell_batch.push(structured_cell);
+            state
+                .flush(structured_handle)
+                .expect("structured target flush");
+        }
+        let structured_state = structured_state.into_inner();
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let legacy_path = temp.path().join("legacy.esp");
+        let structured_path = temp.path().join("structured.esp");
+        esp_authoring_core::plugin_runtime::plugin_handle_save_no_py(
+            legacy_handle,
+            legacy_path.to_str().expect("legacy path"),
+        )
+        .expect("save legacy plugin");
+        esp_authoring_core::plugin_runtime::plugin_handle_save_no_py(
+            structured_handle,
+            structured_path.to_str().expect("structured path"),
+        )
+        .expect("save structured plugin");
+        let legacy_bytes = fs::read(&legacy_path).expect("legacy plugin bytes");
+        let structured_bytes = fs::read(&structured_path).expect("structured plugin bytes");
+        assert_eq!(legacy_bytes, structured_bytes);
+        assert!(
+            structured_bytes
+                .windows(b"B21_Cellfo76".len())
+                .any(|window| window == b"B21_Cellfo76")
+        );
+        assert!(
+            structured_bytes
+                .windows(8)
+                .any(|window| window == [0x00, 0x00, 0xFF, 0x7F, 0x00, 0x00, 0x80, 0x3F])
+        );
+
+        assert_eq!(legacy_imported, structured_state.records_imported);
+        assert_eq!(legacy_imported, 5);
+        assert_eq!(legacy_profile.header_batch_flushes, 1);
+        assert_eq!(structured_state.profile.header_batch_flushes, 1);
+        assert_eq!(legacy_profile.projected_batch_flushes, 1);
+        assert_eq!(structured_state.profile.projected_batch_flushes, 1);
+        assert_eq!(
+            legacy_profile.header_values_prepared,
+            structured_state.profile.header_values_prepared
+        );
+        assert_eq!(
+            legacy_profile.projected_values_prepared,
+            structured_state.profile.projected_values_prepared
+        );
+        assert_eq!(
+            legacy_profile.target_insert_calls,
+            structured_state.profile.target_insert_calls
+        );
+        assert_eq!(legacy_profile.payloads_parsed, 4);
+        assert_eq!(structured_state.profile.payloads_parsed, 3);
+        assert_eq!(
+            structured_state.profile.structured_cell_payloads_received,
+            1
+        );
+        assert!(legacy_profile.yaml_bytes_parsed > structured_state.profile.yaml_bytes_parsed);
+
+        assert!(esp_authoring_core::plugin_runtime::plugin_handle_close_native(legacy_handle));
+        assert!(esp_authoring_core::plugin_runtime::plugin_handle_close_native(structured_handle));
+    }
 
     #[test]
     fn fo76_fo4_projected_cell_editor_id_collision_gets_suffix() {

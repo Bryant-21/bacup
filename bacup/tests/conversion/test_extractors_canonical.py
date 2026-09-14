@@ -1,4 +1,4 @@
-"""Tests for post-M7 asset extractor metadata."""
+"""Tests for asset extractor metadata."""
 from __future__ import annotations
 
 from bacup_lib.record import extractors

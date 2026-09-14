@@ -1,66 +1,51 @@
 //! Fixup: fix FO76-specific issues in creature Race records.
 //!
+//! For creature conversions (root sig NPC_ or LVLN), each RACE gets:
+//!
+//! - `ATKD.attack_flags`: strip FO76-only bits, keep the FO4 attack-mode flags.
+//! - `ATKD.attack_angle`: Backward 180°, Left -90°, Right 90° for directional
+//!   attack events whose angle is 0.
+//! - `ActorTypeAnimal` for `ActorTypeCreature` races that lost it, and
+//!   `RagdollOnDeath` for races that borrow another creature's behavior project
+//!   and have no death clip.
+//! - `VNAM`: keep the FO4-valid high equipment flags, strip unsupported low bits.
+//! - Floater MiddleHand and AltAttackSlot1 emissions routed through
+//!   `ProjectileNode`.
+//! - Male/Female `ANAM` skeleton and behavior `MODL` rows: the source creature
+//!   row replaces target-game fallback rows, so native stacks (Sheepsquatch
+//!   ranged/quill attacks) don't collapse to the Deathclaw fallback. A lone
+//!   unbounded `.hkx` project row gets the FO4 `FNAM` boundary.
+//! - 43 all-zero `PHWT` rows when `PHTN` exists without weights, as FO4 fan
+//!   ports carry.
+//! - A race with no movement defaults links its unique `<Actor>_Default_MT`
+//!   (humanoid-shaped races such as Scorched too); flying and floating races
+//!   also get `FLMV`.
+//! - Target-keyword-only subgraph blocks are stripped. Core blocks with the base
+//!   `Actors\<Creature>\Animations` path stay but lose their STKD gate, and
+//!   AmbushBehavior furniture branches stay. Snallygaster's mobility keywords
+//!   are normalized to the FO4 fan-port shape.
+//! - Adjacent duplicate subgraph blocks collapse.
+//! - Role-0 (MT) blocks get the creature's `Animations\H2H` path.
+//! - `RACE.DATA` acceleration/deceleration is raised to FO4's floor.
+//!
+//! Shared `MTBehavior`, `MeleeBehavior`, and normalized gun subgraphs stay on
+//! FO4's canonical Character behavior contracts.
 
-//!
-//! # What this does
-//! For creature conversions (root sig NPC_ or LVLN), scans every RACE record in
-//! the target plugin and applies:
-//!
-//! 1a. Strip confirmed FO76-only bits from `ATKD.attack_flags` while preserving
-//!     the FO4 attack-mode flags.
-//! 1b. (No-op in binary form.) FO4 `ATKD` has no `Unknown` field; the
-//!     post-translation record only carries the FO4 11-field layout.
-//! 1c. Inject `ATKD.attack_angle` for directional attack events
-//!     (Backward=180°, Left=-90°, Right=90°) when the angle is currently 0.
-//!     ATKE (Attack Event zstring) precedes or follows its paired ATKD within
-//!     a single attacks group (Python pairs ATKD-then-ATKE within `fields`).
-//! 1d. Add the FO4 `ActorTypeAnimal` keyword to creature races that already
-//!     carry `ActorTypeCreature` but lost the animal class during conversion.
-//! 1e. Preserve the FO4-valid high `VNAM` equipment flag mask on creature
-//!     races while still stripping unsupported low bits.
-//!
-//! 2.  Fix Male/Female `ANAM` (skeletal model) and behavior `MODL` pairs by
-//!     copying the source creature row over target-game fallback rows. This keeps
-//!     native behavior stacks such as Sheepsquatch's ranged/quill attacks intact
-//!     instead of collapsing them to the fan-port Deathclaw fallback. A primary
-//!     behavior-project row also receives the FO4 `FNAM` boundary when FO76 only
-//!     supplied one unbounded `.hkx` row.
-//!
-//! 3.  Synthesize FO4 phoneme target weight rows (`PHWT`) when a creature RACE
-//!     has `PHTN` phoneme names but no weight table. FO4 fan ports consistently
-//!     carry 43 all-zero `PHWT` rows before movement/subgraph data.
-//!
-//! 3a. Link a race with no movement defaults to its unique converted
-//!     `<Actor>_Default_MT` record. Floating and flying races also populate `FLMV`.
-//!
-//! 4.  Strip subgraph-data blocks (delimited by SGNM) that contain an STKD
-//!     (Target Keywords) subrecord when they are invalid target-keyword-only
-//!     branches. Core creature blocks that carry the base
-//!     `Actors\<Creature>\Animations` path are retained, but their STKD gate is
-//!     stripped so FO4 can enter the base graph context. Shared AmbushBehavior
-//!     furniture branches with actor animation paths are preserved. The filter
-//!     ends each block at `SRAF`, so a following graph's leading keyword is not
-//!     mistaken for part of the previous block.
-//!     Snallygaster's remaining subgraph mobility keywords are then normalized
-//!     to the known-good FO4 fan-port shape.
-//!
-//! 5.  (No-op in binary form.) FO4 `PRPS` codec is `array_struct:I,f` — there
-//!     is no CurveTable variant to flatten at the binary level.
-//!
-//! 6.  Collapse adjacent duplicate SGNM (BehaviourGraph) entries by detecting
-//!     when two consecutive subgraph blocks share the same graph path and
-//!     keeping only the first.
-
-use crate::fixups::creature::creature_predicate::record_has_actor_type_creature;
+use crate::fixups::creature::creature_predicate::{
+    record_has_actor_type_creature, record_is_armed_humanoid,
+};
 use crate::fixups::creature::fix_creature_weapons_and_records::apply_race as fix_equipment_flags;
 use crate::fixups::creature::{
     creature_internal_fixup_applies, race_internal_fixup_applies_to_record,
 };
+use crate::fixups::face::build_additive_race_record::parse_canonical_subgraphs;
+use crate::fixups::remap_struct_internal_formids::FO4_TARGET_FORM_VERSION;
 use crate::fixups::{Fixup, FixupConfig, FixupContext, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::full_plugin::FixupScope;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
 use crate::record::{FieldEntry, FieldValue, Record};
+use crate::schema::AuthoringSchema;
 use crate::session::{EditOutcome, PluginSession};
 use crate::sym::{StringInterner, Sym};
 use rustc_hash::FxHashMap;
@@ -93,6 +78,25 @@ const ATKD_FO76_ONLY_BITS: u32 = 0x40 | 0x100 | 0x200 | 0x400;
 
 /// FO4 `ActorTypeAnimal` keyword local FormID (`013798:Fallout4.esm`).
 const ACTOR_TYPE_ANIMAL_LOW24: u32 = 0x00_013798;
+
+/// FO4 `RagdollOnDeath` keyword local FormID (`24A03C:Fallout4.esm`).
+const RAGDOLL_ON_DEATH_LOW24: u32 = 0x00_24A03C;
+
+/// Races that must ragdoll straight from death instead of playing a borrowed
+/// death clip, keyed by `race_actor_key`.
+///
+/// Vanilla FO4 grants `RagdollOnDeath` to exactly one race out of 84 —
+/// `DLC04_RadAntRace` — and nothing in the corpus reads the keyword, so it is
+/// an engine flag rather than a condition gate. FO4 ships no ant death
+/// animation: the ant runs `Actors\RadRoach\RadRoachProject.hkx`, whose
+/// `death1..3` clips are roach animations. Without the keyword the ant plays a
+/// roach death on an ant skeleton, which reads in game as a stall before the
+/// body drops. Keep this list as narrow as vanilla's.
+const RAGDOLL_ON_DEATH_ACTOR_KEYS: &[&str] = &["radant"];
+
+const MIDDLE_HAND_EQUIP_SLOT_LOW24: u32 = 0x01_A02F;
+const ALT_ATTACK_SLOT_1_LOW24: u32 = 0x13_6255;
+const FLOATER_PROJECTILE_NODE: &str = "ProjectileNode";
 
 /// FO4's `RACE.DATA` bit for actors that use the native flight controller.
 const RACE_FLAG_FLIES: u32 = 0x0000_0080;
@@ -174,7 +178,11 @@ impl Fixup for FixCreatureRaceRecordsFixup {
             .target_schema
             .as_deref()
             .ok_or_else(|| FixupError::Other("missing target schema in fixup config".into()))?;
+        // Read the donor once, before the per-record walk takes the session.
+        let power_armor_subgraphs =
+            fo4_power_armor_subgraph_entries(session, target_schema, mapper, config);
         let interner = mapper.interner;
+        let source_behaviors = crate::fo76_behaviors::enabled(session, config);
         let movement_types = build_default_movement_type_index(session, target_schema, interner)?;
         let mut dropped = 0u32;
         let mut warnings = Vec::new();
@@ -183,23 +191,66 @@ impl Fixup for FixCreatureRaceRecordsFixup {
             mapper,
             |view, _snapshot, fk| match view.record_decoded(fk, target_schema, interner) {
                 Ok(mut record) => {
-                    // Per-record gate (whole-plugin only): skip confirmed
-                    // humanoid (ActorTypeNPC) races so the FO76-creature ATKD /
-                    // skeletal / behavior / subgraph fixes never touch
-                    // HumanRace-family records and generated additive races.
-                    // Robots / segmented-creature races (which lack
-                    // ActorTypeCreature but are NOT humanoids) still get fixed.
-                    // On a creature-graph walk this is a no-op (every race in
-                    // scope is creature-relevant).
+                    let weapon_subgraphs_normalized = if source_behaviors {
+                        0
+                    } else {
+                        normalize_fo76_weapon_subgraphs(&mut record, interner)
+                    };
+                    let movement_linked = link_missing_default_movement_types(
+                        &mut record,
+                        &movement_types,
+                        interner,
+                        target_schema,
+                    );
+                    // Schema-driven (needs byte offsets at FV-131), so it runs
+                    // here rather than inside `apply_to_record`, and applies to
+                    // every race — the FO4 movement floor is not creature-only.
+                    let rates_raised =
+                        raise_movement_rates_to_fo4_floor(&mut record, target_schema) > 0;
+                    // Whole-plugin gate: the FO76-creature ATKD/skeletal/behavior/
+                    // subgraph fixes skip ActorTypeNPC humanoid and generated
+                    // additive races. No-op on a creature-graph walk.
                     if !race_internal_fixup_applies_to_record(&record, config, interner) {
-                        return None;
+                        // The humanoid gate keeps the FO76 creature fixes off
+                        // HumanRace-family records, but an EXPLICIT project override still
+                        // has to reach them — Scorched carry `ActorTypeNPC` and are exactly
+                        // such a record. Only the override table is consulted here; the
+                        // subgraph inference stays creature-only.
+                        let override_project =
+                            creature_project_path_override(&record, interner).map(str::to_string);
+                        if weapon_subgraphs_normalized > 0 || movement_linked || rates_raised {
+                            return Some(RaceRecordEdit::Replace {
+                                record,
+                                dropped: 0,
+                                inferred_project_path: override_project,
+                            });
+                        }
+                        return override_project.map(|inferred_project_path| {
+                            RaceRecordEdit::PatchRawBehaviorProject {
+                                inferred_project_path,
+                            }
+                        });
                     }
                     let inferred_project_path =
                         infer_creature_project_path_from_subgraphs(&record, interner);
-                    let outcome = apply_to_record(&mut record, interner);
-                    let movement_linked =
-                        link_missing_default_movement_types(&mut record, &movement_types, interner);
-                    if outcome.changed() || movement_linked {
+                    let outcome = apply_to_record_with_source_behaviors(
+                        &mut record,
+                        interner,
+                        source_behaviors,
+                    );
+                    // After `apply_to_record`, so the STKD-block stripper cannot eat the
+                    // donor rows — FO4's power-armor blocks carry 189 STKD rows.
+                    let power_armor_seeded = power_armor_subgraphs
+                        .as_deref()
+                        .map(|entries| {
+                            seed_power_armor_locomotion_subgraphs(&mut record, entries, interner)
+                        })
+                        .unwrap_or(false);
+                    if weapon_subgraphs_normalized > 0
+                        || outcome.changed()
+                        || movement_linked
+                        || power_armor_seeded
+                    {
                         Some(RaceRecordEdit::Replace {
                             record,
                             dropped: outcome.dropped,
@@ -225,7 +276,7 @@ impl Fixup for FixCreatureRaceRecordsFixup {
                 } => {
                     let record_fk = record.form_key;
                     session
-                        .replace_record(record, target_schema, mapper.interner)
+                        .replace_record_contents(record, target_schema, mapper.interner)
                         .map_err(|e| FixupError::HandleError(e.to_string()))?;
                     if let Some(inferred_project_path) = inferred_project_path.as_deref() {
                         let _ = patch_raw_behavior_project_modls(
@@ -332,6 +383,7 @@ fn link_missing_default_movement_types(
     record: &mut Record,
     movement_types: &DefaultMovementTypeIndex,
     interner: &StringInterner,
+    target_schema: &AuthoringSchema,
 ) -> bool {
     let Some(actor_key) = race_actor_key(record, interner) else {
         return false;
@@ -347,7 +399,7 @@ fn link_missing_default_movement_types(
     };
     let has_default = record.fields.iter().any(|entry| entry.sig == wkmv_sig);
     let has_fly = record.fields.iter().any(|entry| entry.sig == flvm_sig);
-    let needs_fly = candidate.has_float_height || race_has_fly_flag(record, interner);
+    let needs_fly = candidate.has_float_height || race_has_fly_flag(record, target_schema);
     if has_default && (has_fly || !needs_fly) {
         return false;
     }
@@ -389,30 +441,86 @@ fn link_missing_default_movement_types(
     true
 }
 
-fn race_has_fly_flag(record: &Record, interner: &StringInterner) -> bool {
+/// Byte offset of a `RACE.DATA` field at FO4's target form version.
+///
+/// `source_read` emits `struct:` subrecords as raw bytes. The layout is
+/// version-gated (200 bytes at FV-131 vs a 216-byte maximal layout), so a
+/// version-less lookup skews every field past the first gate.
+fn race_data_field_offset(target_schema: &AuthoringSchema, field_id: &str) -> Option<usize> {
+    target_schema
+        .struct_field_layout_versioned("RACE", "DATA", Some(FO4_TARGET_FORM_VERSION))
+        .into_iter()
+        .find(|field| field.field_id == field_id && field.width == 4)
+        .map(|field| field.offset)
+}
+
+fn race_has_fly_flag(record: &Record, target_schema: &AuthoringSchema) -> bool {
     let Ok(data_sig) = SubrecordSig::from_str("DATA") else {
         return false;
     };
-    let flags = interner.intern("flags");
+    let Some(offset) = race_data_field_offset(target_schema, "flags") else {
+        return false;
+    };
     record.fields.iter().any(|entry| {
         if entry.sig != data_sig {
             return false;
         }
-        let FieldValue::Struct(fields) = &entry.value else {
+        let FieldValue::Bytes(bytes) = &entry.value else {
             return false;
         };
-        fields.iter().any(|(name, value)| {
-            *name == flags
-                && match value {
-                    FieldValue::Uint(bits) => *bits & u64::from(RACE_FLAG_FLIES) != 0,
-                    FieldValue::Int(bits) => *bits & i64::from(RACE_FLAG_FLIES) != 0,
-                    FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
-                        u32::from_le_bytes(bytes[..4].try_into().unwrap()) & RACE_FLAG_FLIES != 0
-                    }
-                    _ => false,
-                }
-        })
+        bytes
+            .get(offset..offset + 4)
+            .and_then(|slot| <[u8; 4]>::try_from(slot).ok())
+            .is_some_and(|slot| u32::from_le_bytes(slot) & RACE_FLAG_FLIES != 0)
     })
+}
+
+/// FO4's lowest authored `RACE.DATA` acceleration/deceleration rate.
+///
+/// Across all 107 FO4 + DLC races the minimum is `0.1` (`DLC04_CaveCricketRace`)
+/// and the base-game minimum is `0.2`. `ScorchedRace` and `WendigoRace` chase
+/// correctly in game at `0.2`, and a scorchbeast probe worked at `0.5`.
+const FO4_MIN_MOVEMENT_RATE: f32 = 0.2;
+
+/// Raise implausibly low FO76 movement rates to FO4's authored floor.
+///
+/// FO76 moved some creatures with server-side AI, so their `RACE.DATA`
+/// acceleration/deceleration is inert (`ScorchBeastRace` ships `0.01`). FO4's
+/// controller uses these fields, so such an actor turns to track its target but
+/// never builds enough speed to walk. This is a floor, not a rescale: 131 of 134
+/// converted races already sit in FO4's range. An explicit `0.0` reads as
+/// deliberate "no acceleration" and is left alone.
+fn raise_movement_rates_to_fo4_floor(record: &mut Record, target_schema: &AuthoringSchema) -> u32 {
+    let Ok(data_sig) = SubrecordSig::from_str("DATA") else {
+        return 0;
+    };
+    let offsets: Vec<usize> = ["acceleration_rate", "deceleration_rate"]
+        .into_iter()
+        .filter_map(|field_id| race_data_field_offset(target_schema, field_id))
+        .collect();
+    if offsets.is_empty() {
+        return 0;
+    }
+    let mut raised = 0;
+    for entry in record.fields.iter_mut() {
+        if entry.sig != data_sig {
+            continue;
+        }
+        let FieldValue::Bytes(bytes) = &mut entry.value else {
+            continue;
+        };
+        for &offset in &offsets {
+            let Some(slot) = bytes.get_mut(offset..offset + 4) else {
+                continue;
+            };
+            let rate = f32::from_le_bytes(<[u8; 4]>::try_from(&*slot).unwrap());
+            if rate > 0.0 && rate < FO4_MIN_MOVEMENT_RATE {
+                slot.copy_from_slice(&FO4_MIN_MOVEMENT_RATE.to_le_bytes());
+                raised += 1;
+            }
+        }
+    }
+    raised
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +533,7 @@ pub struct RaceFixOutcome {
     pub atkd_flags_stripped: u32,
     pub atkd_angles_injected: u32,
     pub actor_type_animal_added: bool,
+    pub ragdoll_on_death_added: bool,
     pub phoneme_weights_synthesized: u32,
     pub fallback_skeleton_promoted: bool,
     pub female_anam_fixed: bool,
@@ -432,11 +541,13 @@ pub struct RaceFixOutcome {
     pub fallback_runtime_bindings_fixed: bool,
     pub female_behavior_fixed: bool,
     pub equipment_flags_fixed: bool,
+    pub floater_projectile_nodes_fixed: u32,
     pub subgraph_blocks_dropped: u32,
     pub subgraph_target_keywords_stripped: u32,
     pub subgraph_paths_normalized: u32,
     pub subgraph_keywords_normalized: u32,
     pub duplicate_graphs_collapsed: u32,
+    pub locomotion_h2h_paths_added: u32,
     pub dropped: u32,
 }
 
@@ -445,6 +556,7 @@ impl RaceFixOutcome {
         self.atkd_flags_stripped > 0
             || self.atkd_angles_injected > 0
             || self.actor_type_animal_added
+            || self.ragdoll_on_death_added
             || self.phoneme_weights_synthesized > 0
             || self.fallback_skeleton_promoted
             || self.female_anam_fixed
@@ -452,23 +564,35 @@ impl RaceFixOutcome {
             || self.fallback_runtime_bindings_fixed
             || self.female_behavior_fixed
             || self.equipment_flags_fixed
+            || self.floater_projectile_nodes_fixed > 0
             || self.subgraph_blocks_dropped > 0
             || self.subgraph_target_keywords_stripped > 0
             || self.subgraph_paths_normalized > 0
             || self.subgraph_keywords_normalized > 0
             || self.duplicate_graphs_collapsed > 0
+            || self.locomotion_h2h_paths_added > 0
     }
 }
 
 /// Apply every creature-race fix to `record`. Returns a per-fix outcome
 /// summary; callers consult `outcome.changed()` to know whether to write back.
 pub fn apply_to_record(record: &mut Record, interner: &StringInterner) -> RaceFixOutcome {
+    apply_to_record_with_source_behaviors(record, interner, false)
+}
+
+fn apply_to_record_with_source_behaviors(
+    record: &mut Record,
+    interner: &StringInterner,
+    source_behaviors: bool,
+) -> RaceFixOutcome {
     let mut outcome = RaceFixOutcome::default();
 
     fix_attack_data_flags(record, &mut outcome);
     fix_directional_attack_angles(record, interner, &mut outcome);
     outcome.actor_type_animal_added = append_actor_type_animal_keyword(record, interner);
+    outcome.ragdoll_on_death_added = append_ragdoll_on_death_keyword(record, interner);
     outcome.equipment_flags_fixed = fix_equipment_flags(record, 0);
+    fix_floater_projectile_equip_nodes(record, interner, &mut outcome);
     synthesize_missing_phoneme_weights(record, &mut outcome);
     let promoted_fallback = promote_sheepsquatch_deathclaw_skeletal_model(record, interner);
     outcome.fallback_skeleton_promoted = promoted_fallback;
@@ -488,9 +612,156 @@ pub fn apply_to_record(record: &mut Record, interner: &StringInterner) -> RaceFi
     normalize_ambushhole_subgraph_paths(record, interner, &mut outcome);
     normalize_snallygaster_subgraph_keywords(record, interner, &mut outcome);
     collapse_adjacent_duplicate_subgraphs(record, interner, &mut outcome);
+    // After the block-level strips/collapses, so it never adds a path to a
+    // block that is about to be dropped.
+    if !source_behaviors {
+        add_h2h_path_to_locomotion_blocks(record, interner, &mut outcome);
+    }
 
     outcome.dropped = outcome.subgraph_blocks_dropped + outcome.duplicate_graphs_collapsed;
     outcome
+}
+
+fn fix_floater_projectile_equip_nodes(
+    record: &mut Record,
+    interner: &StringInterner,
+    outcome: &mut RaceFixOutcome,
+) {
+    if race_actor_key(record, interner).as_deref() != Some("floater") {
+        return;
+    }
+    let (Ok(qnam_sig), Ok(znam_sig)) = (
+        SubrecordSig::from_str("QNAM"),
+        SubrecordSig::from_str("ZNAM"),
+    ) else {
+        return;
+    };
+    let projectile_node = interner.intern(FLOATER_PROJECTILE_NODE);
+    let mut repair_next_node = false;
+    for entry in &mut record.fields {
+        if entry.sig == qnam_sig {
+            repair_next_node = field_formid_low24(&entry.value).is_some_and(|local| {
+                matches!(
+                    local,
+                    MIDDLE_HAND_EQUIP_SLOT_LOW24 | ALT_ATTACK_SLOT_1_LOW24
+                )
+            });
+            continue;
+        }
+        if entry.sig != znam_sig {
+            continue;
+        }
+        if repair_next_node {
+            let changed = match &mut entry.value {
+                FieldValue::String(current) if *current != projectile_node => {
+                    *current = projectile_node;
+                    true
+                }
+                FieldValue::Bytes(bytes) if bytes.as_slice() != b"ProjectileNode\0" => {
+                    bytes.clear();
+                    bytes.extend_from_slice(b"ProjectileNode\0");
+                    true
+                }
+                _ => false,
+            };
+            outcome.floater_projectile_nodes_fixed += u32::from(changed);
+        }
+        repair_next_node = false;
+    }
+}
+
+fn field_formid_low24(value: &FieldValue) -> Option<u32> {
+    match value {
+        FieldValue::FormKey(fk) => Some(fk.local & 0x00FF_FFFF),
+        FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
+            Some(u32::from_le_bytes(bytes[..4].try_into().ok()?) & 0x00FF_FFFF)
+        }
+        FieldValue::Int(value) => Some((*value as u32) & 0x00FF_FFFF),
+        FieldValue::Uint(value) => Some((*value as u32) & 0x00FF_FFFF),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FO76 GunBehavior → FO4 WeaponBehavior subgraph contract
+// ---------------------------------------------------------------------------
+
+const ACTOR_MOBILITY_INJURED_RIGHT_LOW24: u32 = 0x030B00;
+const ACTOR_MOBILITY_INJURED_LEFT_LOW24: u32 = 0x030B01;
+
+/// Replace FO76 third-person gun-mode graphs with the FO4 weapon-mode
+/// equivalents in FO4's canonical shared Character behavior set.
+///
+/// Returns the number of `SGNM` rows changed.
+pub fn normalize_fo76_weapon_subgraphs(record: &mut Record, interner: &StringInterner) -> u32 {
+    let blocks = parse_canonical_subgraphs(record);
+    let sgnm_count = record
+        .fields
+        .iter()
+        .filter(|entry| entry.sig.as_str() == "SGNM")
+        .count();
+    if blocks.len() != sgnm_count {
+        return 0;
+    }
+
+    let replacements: Vec<Option<String>> = blocks
+        .iter()
+        .map(|block| {
+            let path = interner.resolve(block.behaviour_graph)?;
+            fo4_weapon_subgraph_path(path, &block.subgraph_keywords)
+        })
+        .collect();
+
+    let mut block_index = 0usize;
+    let mut changed = 0u32;
+    for entry in &mut record.fields {
+        if entry.sig.as_str() != "SGNM" {
+            continue;
+        }
+        if let Some(replacement) = replacements.get(block_index).and_then(Option::as_deref) {
+            entry.value = FieldValue::String(interner.intern(replacement));
+            changed += 1;
+        }
+        block_index += 1;
+    }
+    changed
+}
+
+fn fo4_weapon_subgraph_path(path: &str, subgraph_keywords: &[FormKey]) -> Option<String> {
+    let normalized = path.replace('/', "\\");
+    let lowered = normalized.to_ascii_lowercase();
+    if lowered.contains("\\_1stperson\\") {
+        return None;
+    }
+    let (_, filename) = normalized.rsplit_once('\\')?;
+    let target_filename = match filename.to_ascii_lowercase().as_str() {
+        "gunbehavior.hkx"
+        | "biggunwrappingbehavior.hkx"
+        | "shouldermountedgunwrappingbehavior.hkx"
+        | "boslauncherwrappingbehavior.hkx"
+        | "binocularbehavior.hkx"
+        | "binocularinjuredwrappingbehavior.hkx" => "WeaponBehavior.hkx",
+        "nohandikgunwrappingbehavior.hkx" => "NoHandIKWeaponWrappingBehavior.hkx",
+        "nohandikrelaxedgunwrappingbehavior.hkx" => "NoHandIKRelaxedWeaponWrappingBehavior.hkx",
+        "chargeupwrappinggunbehavior.hkx" => "ChargeUpWrappingWeaponBehavior.hkx",
+        "leginjuredgunwrappingbehavior.hkx" => {
+            let injured_right = subgraph_keywords
+                .iter()
+                .any(|keyword| keyword.local & 0x00FF_FFFF == ACTOR_MOBILITY_INJURED_RIGHT_LOW24);
+            let injured_left = subgraph_keywords
+                .iter()
+                .any(|keyword| keyword.local & 0x00FF_FFFF == ACTOR_MOBILITY_INJURED_LEFT_LOW24);
+            match (injured_right, injured_left) {
+                (true, true) => "BothArmInjuredWeaponWrappingBehavior.hkx",
+                (true, false) => "RightArmInjuredWeaponWrappingBehavior.hkx",
+                (false, true) => "LeftArmInjuredWeaponWrappingBehavior.hkx",
+                (false, false) => "WeaponBehavior.hkx",
+            }
+        }
+        _ => return None,
+    };
+
+    Some(format!("Actors\\Character\\Behaviors\\{target_filename}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -534,10 +805,8 @@ fn fix_attack_data_flags(record: &mut Record, outcome: &mut RaceFixOutcome) {
 // Fix 1c — inject AttackAngle for directional attack events
 // ---------------------------------------------------------------------------
 //
-// ATKD and ATKE share `scope_id='attacks'`. Within a single attack group
-// the ATKD appears first followed by the ATKE. Scan `fields` in order, remember
-// the most-recent ATKD, then when ATKE is hit, update that ATKD's attack_angle
-// if it is still 0.
+// ATKD precedes its ATKE within an attack group (`scope_id='attacks'`); each
+// ATKE sets the most recent ATKD's attack_angle if it is still 0.
 
 fn fix_directional_attack_angles(
     record: &mut Record,
@@ -596,8 +865,8 @@ fn extract_zstring(value: &FieldValue, interner: &StringInterner) -> Option<Stri
     }
 }
 
-/// Set the ATKD `attack_angle` field if it is currently 0 (matching the
-/// Python "no AttackAngle present" guard). Returns `true` when written.
+/// Set the ATKD `attack_angle` field if it is currently 0. Returns `true` when
+/// written.
 fn try_set_attack_angle(entry: &mut FieldEntry, angle: f32) -> bool {
     let FieldValue::Bytes(ref mut data) = entry.value else {
         return false;
@@ -627,9 +896,40 @@ fn try_set_attack_angle(entry: &mut FieldEntry, angle: f32) -> bool {
 // ---------------------------------------------------------------------------
 
 fn append_actor_type_animal_keyword(record: &mut Record, interner: &StringInterner) -> bool {
-    if !record_has_actor_type_creature(record)
-        || record_has_keyword_low24(record, ACTOR_TYPE_ANIMAL_LOW24)
-    {
+    // FO76 hands `ActorTypeCreature` to mole miners, super mutants and Zetans as
+    // readily as to beasts, but `ActorTypeAnimal` drives Animal Friend targeting
+    // — vanilla FO4 grants it to exactly ten races, every one a real animal
+    // (brahmin, cat, dog, gorilla, molerat, radstag, yao guai, ...) and never to
+    // anything humanoid.
+    if record_is_armed_humanoid(record) {
+        return false;
+    }
+    if !record_has_actor_type_creature(record) {
+        return false;
+    }
+
+    append_fallout4_keyword(record, interner, ACTOR_TYPE_ANIMAL_LOW24)
+}
+
+// ---------------------------------------------------------------------------
+// Fix 1d2 — force ragdoll death on races that borrow another creature's graph
+// ---------------------------------------------------------------------------
+
+fn append_ragdoll_on_death_keyword(record: &mut Record, interner: &StringInterner) -> bool {
+    let Some(actor_key) = race_actor_key(record, interner) else {
+        return false;
+    };
+    if !RAGDOLL_ON_DEATH_ACTOR_KEYS.contains(&actor_key.as_str()) {
+        return false;
+    }
+
+    append_fallout4_keyword(record, interner, RAGDOLL_ON_DEATH_LOW24)
+}
+
+/// Append `low24` as a `Fallout4.esm` keyword to `record`'s KWDA and resync
+/// KSIZ. No-op when the keyword is already present or the record has no KWDA.
+fn append_fallout4_keyword(record: &mut Record, interner: &StringInterner, low24: u32) -> bool {
+    if record_has_keyword_low24(record, low24) {
         return false;
     }
 
@@ -642,22 +942,22 @@ fn append_actor_type_animal_keyword(record: &mut Record, interner: &StringIntern
         return false;
     };
 
-    let animal_fk = FormKey {
-        local: ACTOR_TYPE_ANIMAL_LOW24,
+    let keyword_fk = FormKey {
+        local: low24,
         plugin: interner.intern(FALLOUT4_ESM),
     };
 
     let kwda_value = &mut record.fields[kwda_idx].value;
     match kwda_value {
         FieldValue::Bytes(data) => {
-            data.extend_from_slice(&ACTOR_TYPE_ANIMAL_LOW24.to_le_bytes());
+            data.extend_from_slice(&low24.to_le_bytes());
         }
         FieldValue::List(items) => {
-            items.push(FieldValue::FormKey(animal_fk));
+            items.push(FieldValue::FormKey(keyword_fk));
         }
         FieldValue::FormKey(_) => {
             let existing = std::mem::replace(kwda_value, FieldValue::None);
-            *kwda_value = FieldValue::List(vec![existing, FieldValue::FormKey(animal_fk)]);
+            *kwda_value = FieldValue::List(vec![existing, FieldValue::FormKey(keyword_fk)]);
         }
         _ => return false,
     }
@@ -897,7 +1197,19 @@ fn normalize_runtime_path(path: &str) -> String {
 }
 
 const DEATHCLAW_BEHAVIOR_PROJECT: &str = "Actors\\Deathclaw\\DeathclawProject.hkx";
+/// The project `XPD_JerseyDevilRace` runs on, spelled as FO76 spells it — no `Project`
+/// suffix. Also the retarget target for the Lesser Devil; see
+/// `creature_project_path_override`.
+const JERSEY_DEVIL_BEHAVIOR_PROJECT: &str = "Actors\\JerseyDevil\\JerseyDevil.hkx";
 const CAT_PET_BEHAVIOR_PROJECT: &str = "Actors\\Cat_Pet\\Cat_PetProject.hkx";
+/// FO4's own human behavior project, spelled exactly as vanilla `HumanRace` spells it.
+/// The retarget target for an FO76 humanoid whose converted project chain does not drive
+/// FO4's human rig correctly.
+const HUMAN_BEHAVIOR_PROJECT: &str = "actors\\Character\\RaiderProject.hkx";
+const POWER_ARMOR_BEHAVIOR_PROJECT: &str = "Actors\\PowerArmor\\PowerArmorProject.hkx";
+/// FO4's own `PowerArmorRace`, rendered `OBJID:Plugin`. Donor for the locomotion subgraph
+/// blocks a converted race needs once it falls back to FO4's power-armor chain.
+const FO4_POWER_ARMOR_RACE: &str = "01D31E:Fallout4.esm";
 const DEATHCLAW_BEHAVIOR_GRAPH: &str = "Actors\\Deathclaw\\Behaviors\\DeathclawEverything.hkx";
 const DEATHCLAW_DEFAULT_MOVT_LOCAL: u32 = 0x01E1EE;
 const DEATHCLAW_UNARMED_WEAPON_LOCAL: u32 = 0x0C2C2A;
@@ -1471,6 +1783,15 @@ fn is_behavior_project_fallback_for_inferred(path: &str, inferred_project_path: 
     if normalize_runtime_path(path) == normalize_runtime_path(inferred_project_path) {
         return false;
     }
+    // A retarget onto FO4's shared human project is an authored override rather than an
+    // inference from the creature's own subgraphs, so the actor-dir rules below cannot
+    // apply — `actor_dir_from_behavior_project_path` deliberately refuses `Character`,
+    // which would otherwise reject the override's own target.
+    if normalize_runtime_path(inferred_project_path)
+        == normalize_runtime_path(HUMAN_BEHAVIOR_PROJECT)
+    {
+        return is_behavior_project_path(path);
+    }
     let Some(actor_dir) = actor_dir_from_behavior_project_path(path) else {
         return false;
     };
@@ -1591,10 +1912,121 @@ fn creature_project_path_override(
     if editor_id.eq_ignore_ascii_case("CatPetRace") {
         return Some(CAT_PET_BEHAVIOR_PROJECT);
     }
+    // The Lesser Devil has no behavior chain of its own (`Actors\LesserDevil` holds only
+    // `characterassets`; mesh, materials and animations live under `Actors\JerseyDevil`),
+    // so it inherits subgraph blocks from `XPD_JerseyDevilRace` via `SubgraphTemplateRace`
+    // and needs that race's project. FO76's male behavior row says so. The female row
+    // names the Deathclaw project, whose rig shares 5 of the Lesser Devil's 125 bone
+    // names, so every clip binds to nothing and the actor holds bind pose. The Jersey
+    // Devil rig shares all 125.
     if editor_id.eq_ignore_ascii_case("XPD_LesserDevilRace") {
-        return Some(DEATHCLAW_BEHAVIOR_PROJECT);
+        return Some(JERSEY_DEVIL_BEHAVIOR_PROJECT);
+    }
+    // Scorched animate on FO4's human rig, but the converted ScorchedProject chain aims
+    // the weapon ~90 degrees up (cause unisolated). FO4's human project fixes the aim and
+    // keeps the Scorched skeletal model, and so the jaw. This works only because the
+    // Scorched rig has all 128 FO4 Character bone names. Do NOT extend it to
+    // MoleMinerRace: that rig shares just 5 (Root, COM, WEAPON), so human clips would
+    // bind to nothing.
+    if editor_id.eq_ignore_ascii_case("ScorchedRace") {
+        return Some(HUMAN_BEHAVIOR_PROJECT);
     }
     None
+}
+
+/// FO4's `PowerArmorRace` subgraph rows, in record order, read out of the target masters.
+///
+/// Returns `None` when the masters are unavailable or the donor carries no `SGNM`, so a
+/// missing donor degrades to "leave the race alone" rather than emitting empty blocks.
+fn fo4_power_armor_subgraph_entries(
+    session: &mut PluginSession,
+    target_schema: &AuthoringSchema,
+    mapper: &mut FormKeyMapper,
+    config: &FixupConfig,
+) -> Option<Vec<FieldEntry>> {
+    let (hex, plugin) = FO4_POWER_ARMOR_RACE.rsplit_once(':')?;
+    let donor_fk = FormKey {
+        local: u32::from_str_radix(hex, 16).ok()?,
+        plugin: mapper.interner.intern(plugin),
+    };
+    let donor =
+        crate::fixups::face::generate_additive_races::load_target_race_template_from_masters(
+            session,
+            target_schema,
+            mapper,
+            config,
+            donor_fk,
+        )?;
+    let sgnm_sig = SubrecordSig::from_str("SGNM").ok()?;
+    let entries: Vec<FieldEntry> = donor
+        .fields
+        .iter()
+        .filter(|entry| is_subgraph_data_sig(entry.sig))
+        .cloned()
+        .collect();
+    entries
+        .iter()
+        .any(|entry| entry.sig == sgnm_sig)
+        .then_some(entries)
+}
+
+/// Give a converted race FO4's power-armor locomotion when nothing else will.
+///
+/// FO76 keeps base locomotion in the actor's project -> character -> root chain, so its
+/// RACEs author subgraph blocks only for extras (`ZetanInvaderRace` has two). FO4 keeps it
+/// in RACE subgraph blocks (`PowerArmorRace` has 127, including `MTBehavior`). A converted
+/// race on `Actors\PowerArmor\PowerArmorProject.hkx` resolves to FO4's chain, finds no
+/// locomotion, and T-poses in place; head-tracking still works because it is engine-side.
+///
+/// Donor rows go first so the race's own blocks stay last and most specific. They are
+/// copied verbatim to keep the `SAKD`/`STKD`-before-`SGNM` grouping and the opaque `SRAF`
+/// bytes. Races that inherit blocks through `SubgraphTemplateRace` are left alone.
+fn seed_power_armor_locomotion_subgraphs(
+    record: &mut Record,
+    donor_entries: &[FieldEntry],
+    interner: &StringInterner,
+) -> bool {
+    if has_subgraph_template_race(record) {
+        return false;
+    }
+    let (Ok(modl_sig), Ok(sgnm_sig)) = (
+        SubrecordSig::from_str("MODL"),
+        SubrecordSig::from_str("SGNM"),
+    ) else {
+        return false;
+    };
+    let on_power_armor = record.fields.iter().any(|entry| {
+        entry.sig == modl_sig
+            && path_from_field_value(&entry.value, interner)
+                .map(|path| {
+                    normalize_runtime_path(&path)
+                        == normalize_runtime_path(POWER_ARMOR_BEHAVIOR_PROJECT)
+                })
+                .unwrap_or(false)
+    });
+    if !on_power_armor {
+        return false;
+    }
+    let can_locomote = record.fields.iter().any(|entry| {
+        entry.sig == sgnm_sig
+            && extract_zstring(&entry.value, interner)
+                .map(|path| path.to_ascii_lowercase().contains("mtbehavior"))
+                .unwrap_or(false)
+    });
+    if can_locomote {
+        return false;
+    }
+    // Without an existing block there is no defensible place to put these rows, and RACE
+    // subrecord order is load-bearing — so decline rather than guess an insertion point.
+    let Some(at) = record
+        .fields
+        .iter()
+        .position(|entry| is_subgraph_data_sig(entry.sig))
+    else {
+        return false;
+    };
+    record.fields.insert_many(at, donor_entries.iter().cloned());
+    true
 }
 
 fn has_subgraph_template_race(record: &Record) -> bool {
@@ -1770,6 +2202,17 @@ fn actor_dir_from_behavior_project_path(path: &str) -> Option<&str> {
         return None;
     }
     Some(segments[1])
+}
+
+/// Whether `path` is shaped like any `Actors\<dir>\<file>.hkx` behavior project, including
+/// the shared `Character` / `Shared` dirs that `actor_dir_from_behavior_project_path`
+/// refuses to report a creature actor dir for. Requiring the `.hkx` tail is what keeps
+/// this off the sibling `MODL` subrecords holding `.nif` skeletons and `.egt` body models.
+fn is_behavior_project_path(path: &str) -> bool {
+    let segments = path_segments(path);
+    segments.len() == 3
+        && segments[0].eq_ignore_ascii_case("Actors")
+        && segments[2].to_ascii_lowercase().ends_with(".hkx")
 }
 
 fn actor_dir_from_skeletal_model_path(path: &str) -> Option<&str> {
@@ -2619,6 +3062,172 @@ fn collapse_adjacent_duplicate_subgraphs(
     outcome.duplicate_graphs_collapsed += dropped;
 }
 
+// ---------------------------------------------------------------------------
+// Fix 7 — give role-0 (locomotion) subgraph blocks the creature's H2H path
+// ---------------------------------------------------------------------------
+//
+// FO4's shared MTBehavior takes unarmed locomotion clips from the creature's
+// `H2H` folder, so FO4 role-0 blocks list it (`SuperMutantRace`:
+// `…\Animations\MT\Neutral`, `…\Animations\H2H`, `…\Animations\Shared`). FO76
+// races do not (`MoleMinerRace`: `…\Animations\MT`, `…\Animations\Shared`), so
+// an unarmed converted creature head-tracks and attacks at contact range but
+// never moves. Armed variants use their weapon-role paths. Converted Scorched
+// already lists `Actors\Scorched\Animations\H2H` in role 0 and chases fine.
+
+/// `SRAF` is `struct:H,H` — role then perspective. Role 0 is MT (locomotion).
+const SRAF_ROLE_MT: u16 = 0;
+
+fn add_h2h_path_to_locomotion_blocks(
+    record: &mut Record,
+    interner: &StringInterner,
+    outcome: &mut RaceFixOutcome,
+) {
+    let (Ok(sgnm_sig), Ok(sapt_sig)) = (
+        SubrecordSig::from_str("SGNM"),
+        SubrecordSig::from_str("SAPT"),
+    ) else {
+        return;
+    };
+
+    // Only ever reuse a path this race already declares. That proves the
+    // creature actually ships an H2H folder without consulting the filesystem,
+    // and it cannot invent one for a race that has none.
+    let Some(h2h) = record
+        .fields
+        .iter()
+        .find_map(|entry| subgraph_path_sym(entry, sapt_sig, interner, path_leaf_is_h2h))
+    else {
+        return;
+    };
+
+    let locomotion: Vec<SubgraphBlockSpan> =
+        identify_subgraph_blocks_through_sraf(record, sgnm_sig)
+            .into_iter()
+            .filter(|block| subgraph_block_is_locomotion(record, block))
+            .collect();
+
+    // If the race already wires H2H into locomotion anywhere, it is a shape
+    // FO4 understands — leave every block alone rather than second-guessing
+    // per-block variants (Scorched's injured-on-ground block deliberately
+    // has no H2H row).
+    let already_wired = locomotion.iter().any(|block| {
+        block_path_syms(record, block, sapt_sig).any(|sym| sym_paths_equal(sym, h2h, interner))
+    });
+    if already_wired {
+        return;
+    }
+
+    let mut insertions: Vec<usize> = Vec::new();
+    for block in &locomotion {
+        let paths: Vec<(usize, Sym)> = block_path_entries(record, block, sapt_sig).collect();
+        let Some(&(last_index, last_sym)) = paths.last() else {
+            continue;
+        };
+        // FO4 orders the list `MT…`, `H2H`, `Shared`, so land before a trailing
+        // Shared row; otherwise append after the last path.
+        let before_shared = interner
+            .resolve(last_sym)
+            .is_some_and(|path| path_leaf_is(path, "Shared"));
+        insertions.push(if before_shared {
+            last_index
+        } else {
+            last_index + 1
+        });
+    }
+
+    // Descending, so indices computed above stay valid as we splice.
+    insertions.sort_unstable();
+    for at in insertions.iter().rev() {
+        record.fields.insert(
+            *at,
+            FieldEntry {
+                sig: sapt_sig,
+                value: FieldValue::String(h2h),
+            },
+        );
+        outcome.locomotion_h2h_paths_added += 1;
+    }
+}
+
+/// A block with no `SRAF`, or one whose role half is 0, is a locomotion block.
+/// FO4's own role-0 blocks carry an all-zero SRAF.
+fn subgraph_block_is_locomotion(record: &Record, block: &SubgraphBlockSpan) -> bool {
+    let Ok(sraf_sig) = SubrecordSig::from_str("SRAF") else {
+        return false;
+    };
+    let Some(entries) = record.fields.get(block.start..block.end) else {
+        return false;
+    };
+    match entries.iter().find(|entry| entry.sig == sraf_sig) {
+        Some(entry) => match &entry.value {
+            FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
+                u16::from_le_bytes([bytes[0], bytes[1]]) == SRAF_ROLE_MT
+            }
+            _ => true,
+        },
+        None => true,
+    }
+}
+
+fn block_path_entries<'a>(
+    record: &'a Record,
+    block: &SubgraphBlockSpan,
+    sapt_sig: SubrecordSig,
+) -> impl Iterator<Item = (usize, Sym)> + 'a {
+    let start = block.start;
+    record
+        .fields
+        .get(start..block.end)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .filter_map(move |(offset, entry)| match (&entry.sig, &entry.value) {
+            (sig, FieldValue::String(sym)) if *sig == sapt_sig => Some((start + offset, *sym)),
+            _ => None,
+        })
+}
+
+fn block_path_syms<'a>(
+    record: &'a Record,
+    block: &SubgraphBlockSpan,
+    sapt_sig: SubrecordSig,
+) -> impl Iterator<Item = Sym> + 'a {
+    block_path_entries(record, block, sapt_sig).map(|(_, sym)| sym)
+}
+
+fn subgraph_path_sym(
+    entry: &FieldEntry,
+    sapt_sig: SubrecordSig,
+    interner: &StringInterner,
+    predicate: fn(&str) -> bool,
+) -> Option<Sym> {
+    if entry.sig != sapt_sig {
+        return None;
+    }
+    let FieldValue::String(sym) = entry.value else {
+        return None;
+    };
+    predicate(interner.resolve(sym)?).then_some(sym)
+}
+
+fn sym_paths_equal(left: Sym, right: Sym, interner: &StringInterner) -> bool {
+    left == right
+        || matches!(
+            (interner.resolve(left), interner.resolve(right)),
+            (Some(a), Some(b)) if a.eq_ignore_ascii_case(b)
+        )
+}
+
+fn path_leaf_is(path: &str, leaf: &str) -> bool {
+    path.rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|last| last.eq_ignore_ascii_case(leaf))
+}
+
+fn path_leaf_is_h2h(path: &str) -> bool {
+    path_leaf_is(path, "H2H")
+}
+
 fn subgraph_block_key(
     record: &Record,
     block: &SubgraphBlockSpan,
@@ -2670,7 +3279,8 @@ fn normalize_path_key(path: &str) -> String {
 mod tests {
     use super::*;
     use crate::fixups::creature::creature_predicate::{
-        ACTOR_TYPE_CREATURE_LOW24, ACTOR_TYPE_NPC_LOW24,
+        ACTOR_TYPE_CREATURE_LOW24, ACTOR_TYPE_HUMANLIKE_LOW24, ACTOR_TYPE_NPC_LOW24,
+        ACTOR_TYPE_SUPER_MUTANT_LOW24,
     };
     use crate::fixups::{FixupConfig, FixupContext, FixupRegistry};
     use crate::formkey_mapper::{FormKeyMapper, MapperOptions};
@@ -2860,6 +3470,23 @@ mod tests {
         }
     }
 
+    fn parsed_scorched_default_movement() -> ParsedRecord {
+        ParsedRecord {
+            signature: SmolStr::new("MOVT"),
+            form_id: 0x0000_0201,
+            flags: 0,
+            version_control: 0,
+            form_version: Some(131),
+            version2: None,
+            subrecords: vec![
+                parsed_zstring_subrecord("EDID", "Scorched_Default_MT"),
+                parsed_zstring_subrecord("MNAM", "ScorchedDefault"),
+            ],
+            raw_payload: None,
+            parse_error: None,
+        }
+    }
+
     fn parsed_race_with_equipment_flags(
         form_id: u32,
         editor_id: &str,
@@ -2983,6 +3610,89 @@ mod tests {
         assert_eq!(u32::from_le_bytes(ksiz.try_into().unwrap()), 2);
     }
 
+    /// Vanilla `DLC04_RadAntRace` carries `RagdollOnDeath`; the converted race
+    /// lost it, so ants played a borrowed roach death clip before dropping.
+    #[test]
+    fn adds_ragdoll_on_death_to_rad_ant_race() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x112BEC, "Output.esp", &mut interner);
+        record.eid = Some(interner.intern("RadAntRace"));
+        push_field(&mut record, "KSIZ", FieldValue::Bytes(u32_bytes(1)));
+        push_field(
+            &mut record,
+            "KWDA",
+            FieldValue::Bytes(formid_bytes(&[0x00_013795])),
+        );
+
+        let outcome = apply_to_record(&mut record, &interner);
+        assert!(outcome.ragdoll_on_death_added);
+
+        let kwda = first_bytes(&record, "KWDA");
+        let observed: Vec<u32> = kwda
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        assert!(observed.contains(&RAGDOLL_ON_DEATH_LOW24));
+
+        let ksiz = first_bytes(&record, "KSIZ");
+        assert_eq!(
+            u32::from_le_bytes(ksiz.try_into().unwrap()),
+            observed.len() as u32
+        );
+    }
+
+    /// The keyword is on 1 of 84 vanilla FO4 races. Every other creature owns
+    /// its death clips, so seeding it broadly would change deaths that work.
+    #[test]
+    fn does_not_add_ragdoll_on_death_to_other_creature_races() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &mut interner);
+        record.eid = Some(interner.intern("MothmanRace"));
+        push_field(&mut record, "KSIZ", FieldValue::Bytes(u32_bytes(1)));
+        push_field(
+            &mut record,
+            "KWDA",
+            FieldValue::Bytes(formid_bytes(&[0x00_013795])),
+        );
+
+        let outcome = apply_to_record(&mut record, &interner);
+        assert!(!outcome.ragdoll_on_death_added);
+
+        let kwda = first_bytes(&record, "KWDA");
+        let observed: Vec<u32> = kwda
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        assert!(!observed.contains(&RAGDOLL_ON_DEATH_LOW24));
+    }
+
+    /// Re-running the fixup over already-fixed output must not duplicate.
+    #[test]
+    fn does_not_duplicate_existing_ragdoll_on_death_keyword() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x112BEC, "Output.esp", &mut interner);
+        record.eid = Some(interner.intern("RadAntRace"));
+        push_field(&mut record, "KSIZ", FieldValue::Bytes(u32_bytes(2)));
+        push_field(
+            &mut record,
+            "KWDA",
+            FieldValue::Bytes(formid_bytes(&[0x00_013795, RAGDOLL_ON_DEATH_LOW24])),
+        );
+
+        let outcome = apply_to_record(&mut record, &interner);
+        assert!(!outcome.ragdoll_on_death_added);
+
+        let kwda = first_bytes(&record, "KWDA");
+        let occurrences = kwda
+            .chunks_exact(4)
+            .filter(|chunk| {
+                u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+                    == RAGDOLL_ON_DEATH_LOW24
+            })
+            .count();
+        assert_eq!(occurrences, 1);
+    }
+
     #[test]
     fn does_not_add_actor_type_animal_to_non_creature_race() {
         let mut interner = StringInterner::new();
@@ -2997,6 +3707,90 @@ mod tests {
         let outcome = apply_to_record(&mut record, &interner);
         assert!(!outcome.actor_type_animal_added);
         assert_eq!(first_bytes(&record, "KWDA").len(), 4);
+    }
+
+    /// FO76 tags mole miners `ActorTypeCreature`, but `ActorTypeAnimal` drives
+    /// Animal Friend targeting and vanilla FO4 never grants it to a humanoid.
+    #[test]
+    fn does_not_add_actor_type_animal_to_armed_humanoid_race() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x012E6B, "Output.esp", &mut interner);
+        push_field(&mut record, "KSIZ", FieldValue::Bytes(u32_bytes(2)));
+        push_field(
+            &mut record,
+            "KWDA",
+            FieldValue::Bytes(formid_bytes(&[
+                ACTOR_TYPE_CREATURE_LOW24,
+                ACTOR_TYPE_HUMANLIKE_LOW24,
+            ])),
+        );
+
+        let outcome = apply_to_record(&mut record, &interner);
+        assert!(!outcome.actor_type_animal_added);
+        assert_eq!(first_bytes(&record, "KWDA").len(), 8, "no keyword appended");
+    }
+
+    /// A super mutant reaches the same exemption via `ActorTypeSuperMutant`.
+    #[test]
+    fn does_not_add_actor_type_animal_to_super_mutant_race() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x5C4F6E, "Output.esp", &mut interner);
+        push_field(&mut record, "KSIZ", FieldValue::Bytes(u32_bytes(2)));
+        push_field(
+            &mut record,
+            "KWDA",
+            FieldValue::Bytes(formid_bytes(&[
+                ACTOR_TYPE_CREATURE_LOW24,
+                ACTOR_TYPE_SUPER_MUTANT_LOW24,
+            ])),
+        );
+
+        let outcome = apply_to_record(&mut record, &interner);
+        assert!(!outcome.actor_type_animal_added);
+        assert_eq!(first_bytes(&record, "KWDA").len(), 8);
+    }
+
+    #[test]
+    fn floater_routes_ranged_equip_slots_to_projectile_node() {
+        let interner = StringInterner::new();
+        let mut record = make_race(0x55F6FA, "Output.esp", &interner);
+        record.eid = Some(interner.intern("FloaterRace"));
+        for (slot, node) in [
+            (MIDDLE_HAND_EQUIP_SLOT_LOW24, "Head"),
+            (ALT_ATTACK_SLOT_1_LOW24, "Head"),
+            (0x13_6256, "Eye"),
+        ] {
+            push_field(
+                &mut record,
+                "QNAM",
+                FieldValue::FormKey(FormKey {
+                    local: slot,
+                    plugin: interner.intern("Fallout4.esm"),
+                }),
+            );
+            push_field(
+                &mut record,
+                "ZNAM",
+                FieldValue::String(interner.intern(node)),
+            );
+        }
+
+        let outcome = apply_to_record(&mut record, &interner);
+        assert_eq!(outcome.floater_projectile_nodes_fixed, 2);
+        let nodes: Vec<&str> = record
+            .fields
+            .iter()
+            .filter(|entry| entry.sig == SubrecordSig::from_str("ZNAM").unwrap())
+            .filter_map(|entry| match entry.value {
+                FieldValue::String(value) => interner.resolve(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(nodes, vec!["ProjectileNode", "ProjectileNode", "Eye"]);
+
+        let outcome = apply_to_record(&mut record, &interner);
+        assert_eq!(outcome.floater_projectile_nodes_fixed, 0);
+        assert!(!outcome.changed());
     }
 
     #[test]
@@ -3241,7 +4035,9 @@ mod tests {
             panic!("expected VNAM bytes");
         };
         let actual = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        assert_eq!(actual, 1 | 512 | 8192 | 16384 | 0xF8FF_8000);
+        // H2H (1) and one_hand_sword (2) both go: this race has no humanoid
+        // marker, so it gets FO4's body-fighting-creature profile.
+        assert_eq!(actual, 512 | 8192 | 16384 | 0xF8FF_8000);
     }
 
     #[test]
@@ -3481,7 +4277,8 @@ mod tests {
         assert!(link_missing_default_movement_types(
             &mut record,
             &movement_types,
-            &interner
+            &interner,
+            &fo4_schema()
         ));
         assert_eq!(sigs(&record), vec!["WKMV", "FLMV", "SGNM"]);
         assert!(matches!(
@@ -3495,7 +4292,8 @@ mod tests {
         assert!(!link_missing_default_movement_types(
             &mut record,
             &movement_types,
-            &interner
+            &interner,
+            &fo4_schema()
         ));
     }
 
@@ -3507,10 +4305,11 @@ mod tests {
         push_field(
             &mut record,
             "DATA",
-            FieldValue::Struct(vec![(
-                interner.intern("flags"),
-                FieldValue::Uint(u64::from(RACE_FLAG_FLIES)),
-            )]),
+            FieldValue::Bytes(
+                race_data_bytes(&fo4_schema(), 1.0, 1.0, RACE_FLAG_FLIES)
+                    .into_iter()
+                    .collect(),
+            ),
         );
         let movement_fk = FormKey {
             local: 0x2C041B,
@@ -3536,7 +4335,8 @@ mod tests {
         assert!(link_missing_default_movement_types(
             &mut record,
             &movement_types,
-            &interner
+            &interner,
+            &fo4_schema()
         ));
         assert_eq!(sigs(&record), vec!["DATA", "WKMV", "FLMV", "SGNM"]);
         assert!(matches!(
@@ -3546,8 +4346,194 @@ mod tests {
         assert!(!link_missing_default_movement_types(
             &mut record,
             &movement_types,
-            &interner
+            &interner,
+            &fo4_schema()
         ));
+    }
+
+    // -- Fix 8: FO4 floor on RACE.DATA movement rates -----------------------
+
+    /// `RACE.DATA` reaches a fixup as raw `FieldValue::Bytes` (`struct:` codecs
+    /// are never decoded into a `Struct`), so these build the real byte blob and
+    /// resolve offsets from the real FO4 schema at FV-131. Hand-built `Struct`
+    /// fixtures pass against code that cannot work in production.
+    fn fo4_schema() -> std::sync::Arc<AuthoringSchema> {
+        AuthoringSchema::for_game("fo4").expect("fo4 schema")
+    }
+
+    fn race_data_bytes(schema: &AuthoringSchema, accel: f32, decel: f32, flags: u32) -> Vec<u8> {
+        let layout =
+            schema.struct_field_layout_versioned("RACE", "DATA", Some(FO4_TARGET_FORM_VERSION));
+        let len = layout
+            .iter()
+            .map(|f| f.offset + f.width)
+            .max()
+            .expect("RACE.DATA layout");
+        let mut bytes = vec![0u8; len];
+        for (id, value) in [
+            ("acceleration_rate", accel.to_le_bytes()),
+            ("deceleration_rate", decel.to_le_bytes()),
+            ("flags", flags.to_le_bytes()),
+        ] {
+            let offset = race_data_field_offset(schema, id).expect(id);
+            bytes[offset..offset + 4].copy_from_slice(&value);
+        }
+        bytes
+    }
+
+    fn race_with_data(
+        schema: &AuthoringSchema,
+        accel: f32,
+        decel: f32,
+        flags: u32,
+    ) -> (Record, StringInterner) {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &mut interner);
+        record.eid = Some(interner.intern("ScorchBeastRace"));
+        let bytes = race_data_bytes(schema, accel, decel, flags);
+        push_field(
+            &mut record,
+            "DATA",
+            FieldValue::Bytes(bytes.into_iter().collect()),
+        );
+        (record, interner)
+    }
+
+    fn rates_of(record: &Record, schema: &AuthoringSchema) -> Vec<f32> {
+        let data_sig = SubrecordSig::from_str("DATA").unwrap();
+        let entry = record
+            .fields
+            .iter()
+            .find(|e| e.sig == data_sig)
+            .expect("DATA");
+        let FieldValue::Bytes(bytes) = &entry.value else {
+            panic!("DATA must stay Bytes");
+        };
+        ["acceleration_rate", "deceleration_rate"]
+            .into_iter()
+            .map(|id| {
+                let off = race_data_field_offset(schema, id).unwrap();
+                f32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
+            })
+            .collect()
+    }
+
+    /// The FV-131 layout must actually differ from the maximal one; if this ever
+    /// stops holding, a version-less lookup would silently "work" in tests.
+    #[test]
+    fn race_data_offsets_resolve_at_fo4_form_version() {
+        let schema = fo4_schema();
+        for id in ["flags", "acceleration_rate", "deceleration_rate"] {
+            assert!(
+                race_data_field_offset(&schema, id).is_some(),
+                "{id} must resolve at FV-{FO4_TARGET_FORM_VERSION}"
+            );
+        }
+        // Pinned to the offsets read out of the SHIPPED converted
+        // ScorchBeastRace blob (200 bytes at FV-131): flags 0xC3128D98 @32,
+        // accel/decel 0.01 @36/@40. A probe patching exactly @36/@40 made
+        // scorchbeasts move in-game, so these are ground-truth, not derived
+        // from the same lookup the tests exercise.
+        assert_eq!(race_data_field_offset(&schema, "flags"), Some(32));
+        assert_eq!(
+            race_data_field_offset(&schema, "acceleration_rate"),
+            Some(36)
+        );
+        assert_eq!(
+            race_data_field_offset(&schema, "deceleration_rate"),
+            Some(40)
+        );
+    }
+
+    #[test]
+    fn raises_scorchbeast_movement_rates_to_fo4_floor() {
+        let schema = fo4_schema();
+        let (mut record, _interner) = race_with_data(&schema, 0.01, 0.01, RACE_FLAG_FLIES);
+        assert_eq!(raise_movement_rates_to_fo4_floor(&mut record, &schema), 2);
+        assert_eq!(rates_of(&record, &schema), vec![0.2, 0.2]);
+    }
+
+    /// FO4's own `DLC04_CaveCricketRace` ships `0.1`, so in-range values stand.
+    #[test]
+    fn leaves_in_range_movement_rates_untouched() {
+        let schema = fo4_schema();
+        for (accel, decel) in [(0.2_f32, 0.2_f32), (0.25, 1.0), (3.0, 1.0)] {
+            let (mut record, _interner) = race_with_data(&schema, accel, decel, 0);
+            assert_eq!(
+                raise_movement_rates_to_fo4_floor(&mut record, &schema),
+                0,
+                "{accel}/{decel} should not be raised"
+            );
+            assert_eq!(rates_of(&record, &schema), vec![accel, decel]);
+        }
+    }
+
+    /// An explicit zero reads as deliberate authoring, not an out-of-range value.
+    #[test]
+    fn leaves_explicit_zero_movement_rates_alone() {
+        let schema = fo4_schema();
+        let (mut record, _interner) = race_with_data(&schema, 0.0, 0.0, 0);
+        assert_eq!(raise_movement_rates_to_fo4_floor(&mut record, &schema), 0);
+        assert_eq!(rates_of(&record, &schema), vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn raising_movement_rates_is_idempotent() {
+        let schema = fo4_schema();
+        let (mut record, _interner) = race_with_data(&schema, 0.01, 0.01, 0);
+        assert_eq!(raise_movement_rates_to_fo4_floor(&mut record, &schema), 2);
+        assert_eq!(raise_movement_rates_to_fo4_floor(&mut record, &schema), 0);
+        assert_eq!(rates_of(&record, &schema), vec![0.2, 0.2]);
+    }
+
+    /// Raising rates must not disturb neighbouring fields — `flags` sits next to
+    /// them in the same blob and drives the fly-slot decision.
+    #[test]
+    fn raising_movement_rates_preserves_the_rest_of_the_blob() {
+        let schema = fo4_schema();
+        let (mut record, _interner) = race_with_data(&schema, 0.01, 0.01, RACE_FLAG_FLIES);
+        let data_sig = SubrecordSig::from_str("DATA").unwrap();
+        let before = match &record
+            .fields
+            .iter()
+            .find(|e| e.sig == data_sig)
+            .unwrap()
+            .value
+        {
+            FieldValue::Bytes(b) => b.to_vec(),
+            _ => unreachable!(),
+        };
+        raise_movement_rates_to_fo4_floor(&mut record, &schema);
+        let after = match &record
+            .fields
+            .iter()
+            .find(|e| e.sig == data_sig)
+            .unwrap()
+            .value
+        {
+            FieldValue::Bytes(b) => b.to_vec(),
+            _ => unreachable!(),
+        };
+        assert_eq!(before.len(), after.len(), "blob length must not change");
+        let accel = race_data_field_offset(&schema, "acceleration_rate").unwrap();
+        let differing: Vec<usize> = (0..before.len())
+            .filter(|&i| before[i] != after[i])
+            .collect();
+        assert!(
+            differing.iter().all(|&i| (accel..accel + 8).contains(&i)),
+            "only the two rate floats may change, got {differing:?}"
+        );
+        assert!(race_has_fly_flag(&record, &schema), "Flies must survive");
+    }
+
+    /// The production shape for the fly gate: `flags` inside the raw DATA blob.
+    #[test]
+    fn detects_fly_flag_in_raw_data_bytes() {
+        let schema = fo4_schema();
+        let (flying, _a) = race_with_data(&schema, 1.0, 1.0, RACE_FLAG_FLIES);
+        let (walking, _b) = race_with_data(&schema, 1.0, 1.0, 0x0000_0100);
+        assert!(race_has_fly_flag(&flying, &schema));
+        assert!(!race_has_fly_flag(&walking, &schema));
     }
 
     #[test]
@@ -3572,7 +4558,8 @@ mod tests {
         assert!(!link_missing_default_movement_types(
             &mut record,
             &movement_types,
-            &interner
+            &interner,
+            &fo4_schema()
         ));
         assert_eq!(sigs(&record), vec!["WKMV"]);
     }
@@ -3588,7 +4575,8 @@ mod tests {
         assert!(!link_missing_default_movement_types(
             &mut record,
             &movement_types,
-            &interner
+            &interner,
+            &fo4_schema()
         ));
         assert!(record.fields.is_empty());
     }
@@ -3783,22 +4771,227 @@ mod tests {
     }
 
     #[test]
-    fn rewrites_only_lesser_devil_project_to_deathclaw_donor() {
+    fn retargets_scorched_project_to_fo4_human_project() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &mut interner);
+        record.eid = Some(interner.intern("ScorchedRace"));
+
+        assert_eq!(
+            creature_project_path_override(&record, &interner),
+            Some(HUMAN_BEHAVIOR_PROJECT)
+        );
+    }
+
+    #[test]
+    fn mole_miners_are_not_retargeted_at_the_fo4_human_project() {
+        // Their rig shares 5 of FO4 Character's 128 bone names, so the human clips would
+        // bind to nothing — see `creature_project_path_override`.
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &mut interner);
+        record.eid = Some(interner.intern("MoleMinerRace"));
+
+        assert_eq!(creature_project_path_override(&record, &interner), None);
+    }
+
+    #[test]
+    fn patches_raw_scorched_project_across_actor_directories() {
+        // The human project lives under `Actors\Character`, which
+        // `actor_dir_from_behavior_project_path` refuses to report an actor dir for — so
+        // this only passes because the override short-circuits that rule.
+        let mut bytes = b"Actors\\Scorched\\ScorchedProject.hkx\0".to_vec();
+
+        assert!(patch_behavior_project_modl_bytes(
+            &mut bytes,
+            HUMAN_BEHAVIOR_PROJECT
+        ));
+        assert_eq!(bytes, b"actors\\Character\\RaiderProject.hkx\0".to_vec());
+    }
+
+    #[test]
+    fn human_project_retarget_leaves_skeleton_and_body_models_alone() {
+        // The retarget patches every MODL in the record, and a RACE carries skeletal
+        // models and body models under the same signature.
+        for path in [
+            "Actors\\Scorched\\CharacterAssets\\skeleton.nif",
+            "Actors\\Character\\UpperBodyHumanMale.egt",
+        ] {
+            let mut bytes = path.as_bytes().to_vec();
+            bytes.push(0);
+            let before = bytes.clone();
+
+            assert!(
+                !patch_behavior_project_modl_bytes(&mut bytes, HUMAN_BEHAVIOR_PROJECT),
+                "{path} must not be treated as a behavior project"
+            );
+            assert_eq!(bytes, before);
+        }
+    }
+
+    /// A race on FO4's power-armor project with one non-locomotion block of its own.
+    fn power_armor_race_without_locomotion(interner: &StringInterner) -> Record {
+        let mut record = make_race(0x000100, "Output.esp", interner);
+        record.eid = Some(interner.intern("ZetanInvaderRace"));
+        push_field(
+            &mut record,
+            "MODL",
+            FieldValue::String(interner.intern(POWER_ARMOR_BEHAVIOR_PROJECT)),
+        );
+        push_field(
+            &mut record,
+            "STKD",
+            FieldValue::FormKey(FormKey {
+                local: 0x00_1234,
+                plugin: interner.intern("Output.esp"),
+            }),
+        );
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(
+                interner.intern("Actors\\Character\\Behaviors\\SingleAnimFurniture.hkx"),
+            ),
+        );
+        record
+    }
+
+    fn locomotion_donor(interner: &StringInterner) -> Vec<FieldEntry> {
+        vec![
+            FieldEntry {
+                sig: SubrecordSig::from_str("SGNM").unwrap(),
+                value: FieldValue::String(
+                    interner.intern("Actors\\Character\\Behaviors\\MTBehavior.hkx"),
+                ),
+            },
+            FieldEntry {
+                sig: SubrecordSig::from_str("SAPT").unwrap(),
+                value: FieldValue::String(interner.intern("Actors\\PowerArmor\\Animations\\MT")),
+            },
+        ]
+    }
+
+    fn behaviour_graphs(record: &Record, interner: &StringInterner) -> Vec<String> {
+        record
+            .fields
+            .iter()
+            .filter(|e| e.sig.as_str() == "SGNM")
+            .filter_map(|e| extract_zstring(&e.value, interner))
+            .collect()
+    }
+
+    #[test]
+    fn seeds_power_armor_locomotion_when_the_race_has_none() {
+        let interner = StringInterner::new();
+        let mut record = power_armor_race_without_locomotion(&interner);
+        let donor = locomotion_donor(&interner);
+
+        assert!(seed_power_armor_locomotion_subgraphs(
+            &mut record,
+            &donor,
+            &interner
+        ));
+
+        let graphs = behaviour_graphs(&record, &interner);
+        assert_eq!(graphs.len(), 2);
+        assert!(graphs[0].contains("MTBehavior"), "donor rows go in first");
+        assert!(
+            graphs[1].contains("SingleAnimFurniture"),
+            "the race's own block stays last and most specific"
+        );
+        // The race's own keyword row must still precede its own SGNM, since STKD gates the
+        // block that FOLLOWS it.
+        let sigs: Vec<&str> = record.fields.iter().map(|e| e.sig.as_str()).collect();
+        let own_stkd = sigs.iter().position(|s| *s == "STKD").unwrap();
+        assert!(own_stkd > sigs.iter().position(|s| *s == "SGNM").unwrap());
+        assert!(own_stkd < sigs.iter().rposition(|s| *s == "SGNM").unwrap());
+    }
+
+    #[test]
+    fn leaves_a_race_that_can_already_locomote_alone() {
+        let interner = StringInterner::new();
+        let mut record = power_armor_race_without_locomotion(&interner);
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(interner.intern("Actors\\Character\\Behaviors\\MTBehavior.hkx")),
+        );
+        let before = record.fields.len();
+
+        assert!(!seed_power_armor_locomotion_subgraphs(
+            &mut record,
+            &locomotion_donor(&interner),
+            &interner
+        ));
+        assert_eq!(record.fields.len(), before);
+    }
+
+    #[test]
+    fn leaves_a_race_with_a_subgraph_template_alone() {
+        // Inheriting blocks through SubgraphTemplateRace is FO4's other supported
+        // arrangement — the converted humanoid races all use it.
+        let interner = StringInterner::new();
+        let mut record = power_armor_race_without_locomotion(&interner);
+        push_field(
+            &mut record,
+            "SRAC",
+            FieldValue::FormKey(FormKey {
+                local: 0x01_D31E,
+                plugin: interner.intern("Fallout4.esm"),
+            }),
+        );
+        let before = record.fields.len();
+
+        assert!(!seed_power_armor_locomotion_subgraphs(
+            &mut record,
+            &locomotion_donor(&interner),
+            &interner
+        ));
+        assert_eq!(record.fields.len(), before);
+    }
+
+    #[test]
+    fn leaves_races_on_their_own_behavior_project_alone() {
+        let interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &interner);
+        push_field(
+            &mut record,
+            "MODL",
+            FieldValue::String(interner.intern("Actors\\Snallygaster\\SnallygasterProject.hkx")),
+        );
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(interner.intern("Actors\\Snallygaster\\Behaviors\\Root.hkx")),
+        );
+        let before = record.fields.len();
+
+        assert!(!seed_power_armor_locomotion_subgraphs(
+            &mut record,
+            &locomotion_donor(&interner),
+            &interner
+        ));
+        assert_eq!(record.fields.len(), before);
+    }
+
+    #[test]
+    fn rewrites_only_lesser_devil_project_to_jersey_devil_donor() {
         let mut interner = StringInterner::new();
         let mut record = make_race(0x000100, "Output.esp", &mut interner);
         record.eid = Some(interner.intern("XPD_LesserDevilRace"));
         let modl = interner.intern("MODL");
         let fnam = interner.intern("FNAM");
-        let stale_project = interner.intern("Actors\\LesserDevil\\LesserDevilProject.hkx");
+        // The gendered pair as FO76 authors it: the male row already names the project the
+        // race actually runs on, the female row is the Deathclaw dead weight.
+        let male_project = interner.intern(JERSEY_DEVIL_BEHAVIOR_PROJECT);
+        let female_project = interner.intern(DEATHCLAW_BEHAVIOR_PROJECT);
         push_field(
             &mut record,
             "DATA",
             FieldValue::List(vec![
                 FieldValue::Struct(vec![
-                    (modl, FieldValue::String(stale_project)),
+                    (modl, FieldValue::String(male_project)),
                     (fnam, FieldValue::Bool(true)),
                 ]),
-                FieldValue::Struct(vec![(modl, FieldValue::String(stale_project))]),
+                FieldValue::Struct(vec![(modl, FieldValue::String(female_project))]),
             ]),
         );
         let output_plugin = interner.intern("Output.esp");
@@ -3831,7 +5024,7 @@ mod tests {
         for item in items {
             assert_eq!(
                 interner.resolve(bodydata_modl_sym(item, modl)),
-                Some(DEATHCLAW_BEHAVIOR_PROJECT)
+                Some(JERSEY_DEVIL_BEHAVIOR_PROJECT)
             );
         }
         assert_eq!(record.fields[1].value, FieldValue::FormKey(movement));
@@ -4236,6 +5429,232 @@ mod tests {
             panic!("expected female ModelFileName bytes");
         };
         assert_eq!(bytes, &male_bhv);
+    }
+
+    #[test]
+    fn shared_character_subgraphs_remain_canonical_for_creature_races() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &mut interner);
+        push_field(
+            &mut record,
+            "ANAM",
+            FieldValue::String(interner.intern("Actors\\MoleMiner\\CharacterAssets\\skeleton.nif")),
+        );
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(interner.intern("Actors\\Character\\Behaviors\\MTBehavior.hkx")),
+        );
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(interner.intern("Actors\\Character\\Behaviors\\MeleeBehavior.hkx")),
+        );
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(interner.intern("Actors\\Character\\Behaviors\\GunBehavior.hkx")),
+        );
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(interner.intern("Actors\\Shared\\Behaviors\\AmbushBehavior.hkx")),
+        );
+
+        let outcome = apply_to_record(&mut record, &interner);
+
+        assert!(!outcome.changed());
+        let paths: Vec<&str> = record
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.as_str() == "SGNM")
+            .filter_map(|entry| match entry.value {
+                FieldValue::String(sym) => interner.resolve(sym),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                "Actors\\Character\\Behaviors\\MTBehavior.hkx",
+                "Actors\\Character\\Behaviors\\MeleeBehavior.hkx",
+                "Actors\\Character\\Behaviors\\GunBehavior.hkx",
+                "Actors\\Shared\\Behaviors\\AmbushBehavior.hkx",
+            ]
+        );
+    }
+
+    #[test]
+    fn fo76_gun_subgraphs_normalize_to_canonical_fo4_weapon_graphs() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &mut interner);
+        let fallout4 = interner.intern("Fallout4.esm");
+        let right_injured = FormKey {
+            local: 0x030B00,
+            plugin: fallout4,
+        };
+        let left_injured = FormKey {
+            local: 0x030B01,
+            plugin: fallout4,
+        };
+
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(interner.intern("Actors\\Character\\Behaviors\\GunBehavior.hkx")),
+        );
+        push_field(
+            &mut record,
+            "SRAF",
+            FieldValue::Bytes(smallvec::SmallVec::new()),
+        );
+        push_field(&mut record, "SAKD", FieldValue::FormKey(right_injured));
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(
+                interner.intern("Actors\\Character\\Behaviors\\LegInjuredGunWrappingBehavior.hkx"),
+            ),
+        );
+        push_field(
+            &mut record,
+            "SRAF",
+            FieldValue::Bytes(smallvec::SmallVec::new()),
+        );
+        push_field(&mut record, "SAKD", FieldValue::FormKey(left_injured));
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(
+                interner.intern("Actors\\Character\\Behaviors\\LegInjuredGunWrappingBehavior.hkx"),
+            ),
+        );
+        push_field(
+            &mut record,
+            "SRAF",
+            FieldValue::Bytes(smallvec::SmallVec::new()),
+        );
+        push_field(&mut record, "SAKD", FieldValue::FormKey(right_injured));
+        push_field(&mut record, "SAKD", FieldValue::FormKey(left_injured));
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(
+                interner.intern("Actors\\Character\\Behaviors\\LegInjuredGunWrappingBehavior.hkx"),
+            ),
+        );
+        push_field(
+            &mut record,
+            "SRAF",
+            FieldValue::Bytes(smallvec::SmallVec::new()),
+        );
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(
+                interner.intern("Actors\\Character\\Behaviors\\NoHandIKGunWrappingBehavior.hkx"),
+            ),
+        );
+        push_field(
+            &mut record,
+            "SRAF",
+            FieldValue::Bytes(smallvec::SmallVec::new()),
+        );
+
+        let changed = normalize_fo76_weapon_subgraphs(&mut record, &interner);
+
+        assert_eq!(changed, 5);
+        let paths: Vec<&str> = record
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.as_str() == "SGNM")
+            .filter_map(|entry| match entry.value {
+                FieldValue::String(sym) => interner.resolve(sym),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                "Actors\\Character\\Behaviors\\WeaponBehavior.hkx",
+                "Actors\\Character\\Behaviors\\RightArmInjuredWeaponWrappingBehavior.hkx",
+                "Actors\\Character\\Behaviors\\LeftArmInjuredWeaponWrappingBehavior.hkx",
+                "Actors\\Character\\Behaviors\\BothArmInjuredWeaponWrappingBehavior.hkx",
+                "Actors\\Character\\Behaviors\\NoHandIKWeaponWrappingBehavior.hkx",
+            ]
+        );
+        assert_eq!(
+            normalize_fo76_weapon_subgraphs(&mut record, &interner),
+            0,
+            "normalization must be idempotent"
+        );
+    }
+
+    #[test]
+    fn first_person_gun_subgraphs_keep_the_fo4_gun_graph() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &mut interner);
+        let third_person = interner.intern("Actors\\Character\\Behaviors\\GunBehavior.hkx");
+        let first_person =
+            interner.intern("Actors\\Character\\_1stPerson\\Behaviors\\GunBehavior.hkx");
+        push_field(&mut record, "SGNM", FieldValue::String(third_person));
+        push_field(
+            &mut record,
+            "SRAF",
+            FieldValue::Bytes(smallvec::SmallVec::new()),
+        );
+        push_field(&mut record, "SGNM", FieldValue::String(first_person));
+        push_field(
+            &mut record,
+            "SRAF",
+            FieldValue::Bytes(smallvec::SmallVec::from_slice(&[1, 0, 1, 0])),
+        );
+
+        let changed = normalize_fo76_weapon_subgraphs(&mut record, &interner);
+
+        assert_eq!(changed, 1);
+        let paths: Vec<&str> = record
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.as_str() == "SGNM")
+            .filter_map(|entry| match entry.value {
+                FieldValue::String(sym) => interner.resolve(sym),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                "Actors\\Character\\Behaviors\\WeaponBehavior.hkx",
+                "Actors\\Character\\_1stPerson\\Behaviors\\GunBehavior.hkx",
+            ]
+        );
+    }
+
+    #[test]
+    fn local_gun_subgraph_normalizes_without_a_local_weapon_copy() {
+        let mut interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &mut interner);
+        push_field(
+            &mut record,
+            "SGNM",
+            FieldValue::String(interner.intern("Actors\\MoleMiner\\Behaviors\\GunBehavior.hkx")),
+        );
+
+        let changed = normalize_fo76_weapon_subgraphs(&mut record, &interner);
+
+        assert_eq!(changed, 1);
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .find(|entry| entry.sig.as_str() == "SGNM")
+                .and_then(|entry| match entry.value {
+                    FieldValue::String(sym) => interner.resolve(sym),
+                    _ => None,
+                }),
+            Some("Actors\\Character\\Behaviors\\WeaponBehavior.hkx")
+        );
     }
 
     #[test]
@@ -5090,6 +6509,75 @@ mod tests {
     }
 
     #[test]
+    fn registry_links_owned_movement_for_humanoid_converted_race() {
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        let plugin_name = "FixScorchedRaceMovementTest.esp";
+        let target_handle =
+            plugin_handle_new_native(plugin_name, Some("fo4")).expect("test plugin handle");
+        let source_flags: u32 = 1 | 2 | 512 | 8192 | 16384 | 0xF8FF_8000;
+        insert_parsed_record(
+            target_handle,
+            parsed_race_with_equipment_flags(
+                0x0000_0100,
+                "ScorchedRace",
+                ACTOR_TYPE_NPC_LOW24,
+                source_flags,
+            ),
+        )
+        .expect("seed humanoid RACE");
+        insert_parsed_record(target_handle, parsed_scorched_default_movement()).expect("seed MOVT");
+
+        let interner = StringInterner::new();
+        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &interner);
+        let config = FixupConfig {
+            is_whole_plugin: true,
+            target_schema: Some(schema.clone()),
+            ..Default::default()
+        };
+        let mut session = open_session(target_handle, None).expect("open session");
+        let mut registry = FixupRegistry::new();
+        registry.register(Box::new(FixCreatureRaceRecordsFixup));
+        let reports = registry
+            .run_all_in_session(&mut session, &mut mapper, &config)
+            .expect("run whole-plugin creature RACE fixup");
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].1.records_changed, 1);
+
+        let repaired = session
+            .record_decoded(
+                &FormKey {
+                    local: 0x000100,
+                    plugin: interner.intern(plugin_name),
+                },
+                schema.as_ref(),
+                &interner,
+            )
+            .expect("decode repaired RACE");
+        let movement_fk = FormKey {
+            local: 0x000201,
+            plugin: interner.intern(plugin_name),
+        };
+        assert!(repaired.fields.iter().any(|entry| {
+            entry.sig.as_str() == "WKMV"
+                && matches!(entry.value, FieldValue::FormKey(fk) if fk == movement_fk)
+        }));
+        assert!(repaired.fields.iter().any(|entry| {
+            if entry.sig.as_str() != "VNAM" {
+                return false;
+            }
+            match &entry.value {
+                FieldValue::Uint(value) => *value as u32 == source_flags,
+                FieldValue::Bytes(data) if data.len() >= 4 => {
+                    u32::from_le_bytes(data[..4].try_into().unwrap()) == source_flags
+                }
+                _ => false,
+            }
+        }));
+        drop(session);
+        assert!(plugin_handle_close_native(target_handle));
+    }
+
+    #[test]
     fn registry_whole_plugin_preserves_h2h_only_on_creature_races() {
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let plugin_name = "FixCreatureRaceEquipmentFlagsTest.esp";
@@ -5174,7 +6662,12 @@ mod tests {
             };
 
             let creature_flags = read_equipment_flags(0x0000_0100);
-            assert_ne!(creature_flags & 1, 0, "creature H2H must survive");
+            assert_eq!(
+                creature_flags & 1,
+                0,
+                "body-fighting creature must NOT keep H2H: 0/22 vanilla FO4 \
+                 creature races set it, and it blocks melee initiation"
+            );
             assert_eq!(
                 creature_flags & 2,
                 0,
@@ -5248,5 +6741,213 @@ mod tests {
                 .iter()
                 .any(|path| path.eq_ignore_ascii_case("Actors\\Molerat\\MoleratProject.hkx"))
         );
+    }
+
+    // -- Fix 7: role-0 locomotion blocks need the creature's H2H path --------
+
+    /// `SRAF` is `struct:H,H` — role, perspective.
+    fn sraf(role: u16) -> FieldValue {
+        let mut data: smallvec::SmallVec<[u8; 32]> = smallvec::SmallVec::new();
+        data.extend_from_slice(&role.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        FieldValue::Bytes(data)
+    }
+
+    fn push_subgraph_block(
+        record: &mut Record,
+        interner: &StringInterner,
+        graph: &str,
+        paths: &[&str],
+        role: u16,
+    ) {
+        push_field(record, "SGNM", FieldValue::String(interner.intern(graph)));
+        for path in paths {
+            push_field(record, "SAPT", FieldValue::String(interner.intern(path)));
+        }
+        push_field(record, "SRAF", sraf(role));
+    }
+
+    fn subgraph_paths(record: &Record, interner: &StringInterner) -> Vec<String> {
+        let sapt = SubrecordSig::from_str("SAPT").unwrap();
+        record
+            .fields
+            .iter()
+            .filter(|entry| entry.sig == sapt)
+            .filter_map(|entry| match entry.value {
+                FieldValue::String(sym) => interner.resolve(sym).map(str::to_string),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// MoleMiner's shape: locomotion lists only `MT`/`Shared`, and H2H exists
+    /// but is reachable only from the weapon-role melee block.
+    fn mole_miner_shaped_race(interner: &StringInterner) -> Record {
+        let mut record = make_race(0x012E6B, "Output.esm", interner);
+        push_subgraph_block(
+            &mut record,
+            interner,
+            "Actors\\Character\\Behaviors\\MTBehavior.hkx",
+            &[
+                "Actors\\MoleMiner\\Animations\\MT",
+                "Actors\\MoleMiner\\Animations\\Shared",
+            ],
+            0,
+        );
+        push_subgraph_block(
+            &mut record,
+            interner,
+            "Actors\\Character\\Behaviors\\MeleeBehavior.hkx",
+            &[
+                "Actors\\MoleMiner\\Animations\\H2H",
+                "Actors\\MoleMiner\\Animations\\Shared",
+            ],
+            1,
+        );
+        record
+    }
+
+    #[test]
+    fn locomotion_block_gains_the_creature_h2h_path_before_shared() {
+        let interner = StringInterner::new();
+        let mut record = mole_miner_shaped_race(&interner);
+
+        let mut outcome = RaceFixOutcome::default();
+        add_h2h_path_to_locomotion_blocks(&mut record, &interner, &mut outcome);
+
+        assert_eq!(outcome.locomotion_h2h_paths_added, 1);
+        assert!(outcome.changed());
+        // FO4 orders the role-0 list MT…, H2H, Shared. The weapon-role melee
+        // block must be untouched.
+        assert_eq!(
+            subgraph_paths(&record, &interner),
+            vec![
+                "Actors\\MoleMiner\\Animations\\MT".to_string(),
+                "Actors\\MoleMiner\\Animations\\H2H".to_string(),
+                "Actors\\MoleMiner\\Animations\\Shared".to_string(),
+                "Actors\\MoleMiner\\Animations\\H2H".to_string(),
+                "Actors\\MoleMiner\\Animations\\Shared".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn source_behaviors_keep_the_mole_miner_locomotion_paths() {
+        let interner = StringInterner::new();
+        let mut record = mole_miner_shaped_race(&interner);
+        let paths = subgraph_paths(&record, &interner);
+        let outcome = apply_to_record_with_source_behaviors(&mut record, &interner, true);
+        assert_eq!(outcome.locomotion_h2h_paths_added, 0);
+        assert_eq!(subgraph_paths(&record, &interner), paths);
+    }
+
+    #[test]
+    fn every_locomotion_block_is_repaired_not_just_the_first() {
+        let interner = StringInterner::new();
+        let mut record = mole_miner_shaped_race(&interner);
+        // MoleMiner's second role-0 block: the TreasureHunter variant.
+        push_subgraph_block(
+            &mut record,
+            &interner,
+            "Actors\\Character\\Behaviors\\MTBehavior.hkx",
+            &[
+                "Actors\\MoleMiner\\Animations\\TreasureHunter",
+                "Actors\\MoleMiner\\Animations\\MT",
+                "Actors\\MoleMiner\\Animations\\Shared",
+            ],
+            0,
+        );
+
+        let mut outcome = RaceFixOutcome::default();
+        add_h2h_path_to_locomotion_blocks(&mut record, &interner, &mut outcome);
+
+        assert_eq!(outcome.locomotion_h2h_paths_added, 2);
+        let paths = subgraph_paths(&record, &interner);
+        assert_eq!(
+            &paths[paths.len() - 4..],
+            &[
+                "Actors\\MoleMiner\\Animations\\TreasureHunter".to_string(),
+                "Actors\\MoleMiner\\Animations\\MT".to_string(),
+                "Actors\\MoleMiner\\Animations\\H2H".to_string(),
+                "Actors\\MoleMiner\\Animations\\Shared".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn races_that_already_wire_h2h_into_locomotion_are_left_alone() {
+        // Converted Scorched: H2H already leads the role-0 block, and its
+        // injured-on-ground role-0 variant deliberately carries none. Adding a
+        // row to that variant would regress a creature that already chases.
+        let interner = StringInterner::new();
+        let mut record = make_race(0x10CA5F, "Output.esm", &interner);
+        push_subgraph_block(
+            &mut record,
+            &interner,
+            "Actors\\Character\\Behaviors\\MTBehavior.hkx",
+            &[
+                "Actors\\Scorched\\Animations\\H2H",
+                "Actors\\Character\\Animations\\MT\\Neutral",
+            ],
+            0,
+        );
+        push_subgraph_block(
+            &mut record,
+            &interner,
+            "Actors\\Character\\Behaviors\\MTBehavior.hkx",
+            &[
+                "Actors\\Character\\Animations\\MT\\Injured\\OnGround",
+                "Actors\\Character\\Animations\\MT\\Neutral",
+            ],
+            0,
+        );
+        let before = subgraph_paths(&record, &interner);
+
+        let mut outcome = RaceFixOutcome::default();
+        add_h2h_path_to_locomotion_blocks(&mut record, &interner, &mut outcome);
+
+        assert_eq!(outcome.locomotion_h2h_paths_added, 0);
+        assert_eq!(subgraph_paths(&record, &interner), before);
+    }
+
+    #[test]
+    fn a_race_that_ships_no_h2h_folder_gains_nothing() {
+        // The path is only ever reused from one the race already declares, so a
+        // creature without an H2H folder cannot be given a dangling row.
+        let interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esm", &interner);
+        push_subgraph_block(
+            &mut record,
+            &interner,
+            "Actors\\Character\\Behaviors\\MTBehavior.hkx",
+            &[
+                "Actors\\Mirelurk\\Animations\\MT",
+                "Actors\\Mirelurk\\Animations\\Shared",
+            ],
+            0,
+        );
+        let before = subgraph_paths(&record, &interner);
+
+        let mut outcome = RaceFixOutcome::default();
+        add_h2h_path_to_locomotion_blocks(&mut record, &interner, &mut outcome);
+
+        assert_eq!(outcome.locomotion_h2h_paths_added, 0);
+        assert_eq!(subgraph_paths(&record, &interner), before);
+    }
+
+    #[test]
+    fn repair_is_idempotent_across_repeated_runs() {
+        let interner = StringInterner::new();
+        let mut record = mole_miner_shaped_race(&interner);
+
+        let mut first = RaceFixOutcome::default();
+        add_h2h_path_to_locomotion_blocks(&mut record, &interner, &mut first);
+        let after_first = subgraph_paths(&record, &interner);
+
+        let mut second = RaceFixOutcome::default();
+        add_h2h_path_to_locomotion_blocks(&mut record, &interner, &mut second);
+
+        assert_eq!(second.locomotion_h2h_paths_added, 0);
+        assert_eq!(subgraph_paths(&record, &interner), after_first);
     }
 }

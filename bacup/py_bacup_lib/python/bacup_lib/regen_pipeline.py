@@ -35,6 +35,11 @@ class RegenPaths:
     output_root: Path
     target_extracted_dir: Path | None = None
     mod_name: str = "SeventySix"
+    # Base name for generated BA2s. The game mounts "<PluginStem> - Main.ba2"
+    # and "<PluginStem> - Textures.ba2" by PLUGIN name, so this must track the
+    # output plugin, not the mod folder. Only fnvfo3:fo4 has them differ
+    # (mods/FNV_FO3 -> FalloutNV.esm); unset falls back to mod_name.
+    archive_base_name: str = ""
     # Tool-binary resource dir (texconv, etc.). Frozen builds must pass the
     # bundled location (get_resource_dir()); None falls back to
     # <project_root>/resource, correct for dev/CLI runs.
@@ -57,6 +62,13 @@ class RegenPaths:
     # Ordered loose-asset fallbacks after source_extracted_dir. These are for
     # grafted plugin inputs, not terrain, whose source remains primary.
     additional_source_asset_roots: tuple[Path, ...] = ()
+    # Explicit roots containing already-converted Skyrim quest voice/LIP/SEQ
+    # artifacts. Empty keeps voiced quest components blocked.
+    skyrim_quest_runtime_converted_asset_roots: tuple[Path, ...] = ()
+
+    @property
+    def archive_name(self) -> str:
+        return self.archive_base_name or self.mod_name
 
 
 @dataclass
@@ -64,15 +76,25 @@ class RegenOptions:
     deploy: bool = True
     ba2_mode: str = "packed"  # "packed" | "expanded"
     archive_max_bytes: int = 16 * 1024**3
+    ba2_compression_level: int | None = None
+    deploy_loose: bool = False
     workers: int | None = None
     asset_workers: int | None = None
+    serialize_tracks: bool = True
     lod_mode: str = (
         "hybrid-atlas"  # "convert" | "generate" | "hybrid" | "hybrid-atlas" | "none"
     )
     pbr_carry: bool = False
     texture_landscape_mip_flooding: bool = False
+    # fo4:starfield only (see PluginPortOptions/TerrainOptions).
+    placeholder_audio: bool = False
+    terrain_extent_cells: int | None = None
     re_use_land: bool = False
     write_land_cache: bool = True
+    # Records/plugin-only run: every asset phase off, no BA2 pack. Pairs with
+    # re_use_land to keep terrain-owned records (FO4 worldspace cells are
+    # synthesized by terrain, so without the cache they are simply absent).
+    records_only: bool = False
     include_interior: bool = True
     carry_interior_previs: bool = False
     # Experimental post-asset precombine generation (default off). Reconciled onto
@@ -97,6 +119,9 @@ class RegenOptions:
     # Upgrade generation: regenerate only the families changed between the
     # deployed and target versions; reuse the rest from the live deployment.
     upgrade: bool = False
+    # UI upgrade mode: reconstruct output_root/data from the deployed BA2s,
+    # then pack and deploy the complete mod instead of swapping archive families.
+    hydrate_upgrade_from_deployed: bool = False
     mod_version: str | None = None  # stamped into SNAM; target for upgrades
     upgrade_from: str | None = None  # override; else read deployed ESM SNAM
     upgrade_manifest_path: Path | None = None
@@ -117,12 +142,14 @@ import json  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
 import shutil  # noqa: E402
-import subprocess  # noqa: E402
-import sys  # noqa: E402
 import tempfile  # noqa: E402
 import time  # noqa: E402
 
 LOG = logging.getLogger("regen")
+
+
+def _should_register_runtime_archives(options: RegenOptions) -> bool:
+    return options.ba2_mode == "expanded" and not options.deploy_loose
 
 
 def _remove_object_lod_overlay(path: Path) -> None:
@@ -342,19 +369,6 @@ _WARNING_ONLY_INVARIANT_PREFIXES = ("BGSM with bCastShadows=False:",)
 _APPALACHIA_CELL_CHECK_BOUNDS = (-32768, -32768, 32767, 32767)
 
 
-_FO4_CK_MAX_SUBRECORD_LENGTHS = {
-    ("FURN", "WBDT"): 2,
-    ("TERM", "WBDT"): 2,
-    ("MOVT", "SPED"): 112,
-}
-
-
-_FO4_CK_ROW_PROJECTIONS = {
-    ("ARMO", "DAMA"): (12, 8),
-    ("WEAP", "DAMA"): (12, 8),
-}
-
-
 def _write_conversion_reports(
     timing_report,
     memory_report,
@@ -391,6 +405,18 @@ def _write_conversion_reports(
         )
     else:
         LOG.info("memory report written: %s", memory_markdown_path)
+
+
+def _record_pipeline_span(timing_report, name: str, started: float, *, parent: str, **fields) -> None:
+    """Record a regen-driver wall span with explicit nesting metadata."""
+    timing_report.record(
+        name,
+        time.perf_counter() - started,
+        scope="detail",
+        parent=parent,
+        offset_seconds=round(started - timing_report.started_at, 6),
+        **fields,
+    )
 
 
 def _ini_section_bounds(
@@ -769,15 +795,13 @@ def _register_runtime_archive_ini_entries(
 ) -> list[str]:
     """Register deployed BA2s in the *game-runtime* [Archive] lists.
 
-    FO4 only auto-loads `<Plugin> - Main/Textures/Voices*.ba2`; any other
-    generated archive names must be listed here, split by archive format:
-    texture (DX10) -> sResourceIndexFileList, animations -> SResourceArchiveList2,
-    everything else (GNRL) -> SResourceArchiveList.
+    FO4 auto-loads only `<Plugin> - Main/Textures/Voices*.ba2`; other archive names
+    go in the list for their format: texture (DX10) -> sResourceIndexFileList,
+    animations -> SResourceArchiveList2, everything else (GNRL) -> SResourceArchiveList.
 
-    Targets Fallout4Custom.ini, whose [Archive] lists REPLACE (not merge with)
-    Fallout4.ini's, so every touched key is seeded with the base-game values from
-    Fallout4.ini before our archives are appended — otherwise vanilla content would
-    drop out. Idempotent: only missing entries are added; returns the names added.
+    Fallout4Custom.ini's [Archive] lists REPLACE Fallout4.ini's, so each touched key
+    is seeded with the Fallout4.ini values first or vanilla content drops out.
+    Idempotent: only missing entries are added; returns the names added.
     """
     grouped = _group_fo4_archive_ini_entries(archive_names)
     if not grouped:
@@ -1058,6 +1082,10 @@ def _build_options(
     anim_text_data_native: bool = False,
     validate_collision: bool = False,
     pair_id: str | None = None,
+    fnv_quest_slice: bool = False,
+    mvp_melee_only: bool = False,
+    placeholder_audio: bool = False,
+    terrain_extent_cells: int | None = None,
 ):
     from bacup_lib import PhaseSelection
     from bacup_lib.models import PluginPortOptions, TerrainOptions
@@ -1070,21 +1098,21 @@ def _build_options(
     )
     terrain.lod_mode = ps.lod_mode
     terrain.emit_btd4 = emit_btd4
+    terrain.extent_cells = terrain_extent_cells
     # Legacy skip_* params still force-off when passed; the PhaseSelection is the
-    # primary source. convert_npc_faces is intentionally hardcoded False on BOTH
-    # paths (the "npc-faces trap": PhaseSelection defaults it True but the
-    # whole-plugin FO76->FO4 run never converts faces; sourcing it would change
-    # output and break parity).
+    # primary source. Face conversion remains disabled for FO76 parity and is
+    # enabled only for pairs that supply audited face-bake resources.
     placed = ps.convert_placed_records and not skip_placed_records
     animations = ps.convert_animations and not skip_animations
     # convert_btos (FO76 .bto -> FO4 .bto) must NOT run in generate/hybrid/hybrid-atlas/none mode:
     # lodgen produces fresh FO4 LODs there, and also converting the FO76 LODs
     # double-processes them (a malformed converted .bto null-derefs on load).
     lod = ps.convert_lod and convert_lod and ps.lod_mode == "convert"
-    # Hybrid FO76 worlds without source BTO tiles fall back to record LOD, so
-    # they need the same MNAM/proxy synthesis as generate mode.
+    # Skyrim/FNV hybrid modes consume record LOD and need FO4 MNAM synthesis.
+    # FO76 hybrid modes consume source BTO tiles and must not synthesize them.
     synthesize_object_lod = ps.lod_mode == "generate" or (
-        pair_id in {None, DEFAULT_PAIR_ID} and ps.lod_mode in {"hybrid", "hybrid-atlas"}
+        pair_id in {"fnvfo3:fo4", "skyrimse:fo4"}
+        and ps.lod_mode in {"hybrid", "hybrid-atlas"}
     )
 
     if records_only:
@@ -1120,12 +1148,16 @@ def _build_options(
             convert_precombined_nifs=convert_precombined_nifs,
             disable_nif_collision_memo=disable_nif_collision_memo,
             papyrus_compiler=papyrus_compiler,
+            fnv_quest_slice=fnv_quest_slice,
+            mvp_melee_only=mvp_melee_only,
+            placeholder_audio=placeholder_audio,
         )
 
     return PluginPortOptions(
         translate_records=ps.translate_records,
         convert_placed_records=placed,
-        convert_npc_faces=False,
+        convert_npc_faces=ps.convert_npc_faces
+        and pair_id in {"fnvfo3:fo4", "skyrimse:fo4"},
         convert_terrain=ps.convert_terrain,
         reuse_terrain_navmesh=reuse_terrain_navmesh,
         terrain_graft_esm=terrain_graft_esm,
@@ -1137,9 +1169,7 @@ def _build_options(
         convert_havok=ps.convert_havok,
         synthesize_drivers=ps.synthesize_drivers,
         convert_animations=animations,
-        generate_anim_text_data=(
-            generate_anim_text_data and ps.generate_anim_text_data
-        ),
+        generate_anim_text_data=generate_anim_text_data,
         anim_text_data_native=anim_text_data_native,
         validate_collision=validate_collision,
         convert_scripts=ps.convert_scripts,
@@ -1159,22 +1189,49 @@ def _build_options(
         convert_precombined_nifs=convert_precombined_nifs,
         disable_nif_collision_memo=disable_nif_collision_memo,
         papyrus_compiler=papyrus_compiler,
+        fnv_quest_slice=fnv_quest_slice,
+        mvp_melee_only=mvp_melee_only,
         generate_precombines=ps.generate_precombines,
+        placeholder_audio=placeholder_audio,
     )
 
 
 def _remove_world_lod_outputs(output_dir: Path, world: str, runner_log) -> None:
     removed: list[Path] = []
-    for terrain_root in (
-        output_dir / "Meshes" / "Terrain",
-        output_dir / "Textures" / "Terrain",
-    ):
-        if not terrain_root.is_dir():
-            continue
-        for candidate in terrain_root.iterdir():
+    mesh_terrain_root = output_dir / "Meshes" / "Terrain"
+    if mesh_terrain_root.is_dir():
+        for candidate in mesh_terrain_root.iterdir():
             if candidate.is_dir() and candidate.name.casefold() == world.casefold():
                 shutil.rmtree(candidate)
                 removed.append(candidate)
+
+    texture_terrain_root = output_dir / "Textures" / "Terrain"
+    if texture_terrain_root.is_dir():
+        from creation_lib.build.archive_plan import classify_archive_family
+
+        for world_dir in texture_terrain_root.iterdir():
+            if not world_dir.is_dir() or world_dir.name.casefold() != world.casefold():
+                continue
+            for candidate in tuple(world_dir.rglob("*")):
+                if not candidate.is_file():
+                    continue
+                relative_path = candidate.relative_to(output_dir).as_posix()
+                if classify_archive_family(relative_path) == "LOD":
+                    candidate.unlink()
+                    removed.append(candidate)
+            for candidate in sorted(
+                (path for path in world_dir.rglob("*") if path.is_dir()),
+                key=lambda path: len(path.parts),
+                reverse=True,
+            ):
+                try:
+                    candidate.rmdir()
+                except OSError:
+                    pass
+            try:
+                world_dir.rmdir()
+            except OSError:
+                pass
 
     lodsettings_root = output_dir / "LODSettings"
     lodsettings_name = f"{world}.lod".casefold()
@@ -1204,16 +1261,13 @@ def _run_generate_lod(
 ) -> None:
     """Call the native lodgen wrapper for each worldspace and write into mod_root.
 
-    The worldspace + every record lodgen reads (WRLD/CELL/LAND/REFR + base MNAM)
-    come EXCLUSIVELY from ``working_esm`` (our freshly-built output ESM, which alone
-    carries the synthesized DistantLOD/MNAM object LOD depends on). lodgen never
-    discovers the plugin from the asset dirs, so a stale deployed copy in the live
-    FO4 game install can't shadow it.
+    Every record lodgen reads (WRLD/CELL/LAND/REFR + base MNAM) comes only from
+    ``working_esm``, the freshly built output that carries the synthesized
+    DistantLOD/MNAM object LOD needs. lodgen never discovers the plugin from the
+    asset dirs, so a stale deployed copy can't shadow it.
 
-    LOD asset meshes/textures resolve from ``output_dir`` (our converted output)
-    first, then ``asset_dirs`` (the extracted FO4 directory when available;
-    otherwise official FO4 BA2 files). Archive members are decoded in memory on
-    demand.
+    Meshes/textures resolve from the converted output first, then ``asset_dirs``
+    (the extracted FO4 dir, else official BA2s decoded in memory).
     """
     from creation_lib.lod.native_runtime import generate_lod
 
@@ -1327,12 +1381,10 @@ def _run_generate_lod(
             )
         for warning in result.warnings:
             runner_log("WARN", f"lodgen {world}: {warning}")
-        # Remove atlas-map/cache intermediates (e.g. APPALACHIA.Objects.txt and
-        # APPALACHIA.Objects.meta.json) that lodgen writes alongside atlas DDS.
-        # The UV data is already baked into BTO meshes, so these files must not
-        # ship under Textures/ where DX10 BA2 packing expects texture payloads.
-        # Resolve the Objects/ dir case-insensitively so the cleanup works
-        # regardless of on-disk casing produced by the native lodgen tool.
+        # Remove lodgen's atlas-map intermediates (e.g. APPALACHIA.Objects.txt,
+        # APPALACHIA.Objects.meta.json). Their UV data is baked into the BTOs, and
+        # DX10 BA2 packing expects only textures under Textures/. lodgen's Objects/
+        # casing varies, so it is matched case-insensitively.
         obj_dir: Path | None = None
         terrain_root = output_dir / "Textures" / "Terrain"
         # Walk two levels: Terrain/<world_case>/Objects/
@@ -1492,7 +1544,9 @@ def _prepare_lod_generation_settings(
     settings_pair_id = settings.pop("_pair_id", None)
     configured_worldspaces = list(settings.get("global", {}).get("worldspaces", []))
     use_configured_profile_worldspaces = (
-        settings_pair_id == pair_id and bool(configured_worldspaces)
+        is_fo76_pair
+        and settings_pair_id == pair_id
+        and bool(configured_worldspaces)
     )
     discover_worldspaces = (
         lod_worldspaces is None and not use_configured_profile_worldspaces
@@ -1684,7 +1738,7 @@ def _pack_existing_output(
     from bacup_lib.workflows.unified import finalize_sinks_for_mod
 
     archive_output_dir = None
-    if options.deploy and options.direct_deploy_archives:
+    if options.deploy and options.direct_deploy_archives and not options.deploy_loose:
         archive_output_dir = paths.deploy_data_dir or paths.target_data_dir
 
     native = load_native_module()
@@ -1702,7 +1756,7 @@ def _pack_existing_output(
         finalize_sinks_for_mod(
             sink_id,
             paths.output_root,
-            mod_name=paths.output_root.name,
+            mod_name=paths.archive_name,
             archive_max_bytes=options.archive_max_bytes,
             reconcile_workers=resolved_workers,
             direct_pack_all=True,
@@ -1717,11 +1771,6 @@ def _pack_existing_output(
         except Exception:
             pass
     return archive_output_dir is not None
-
-
-def _sanitize_existing_outputs(output_root: Path, plugin_names: list[str]) -> None:
-    _sanitize_fo4_ck_payloads_for_outputs(output_root, plugin_names)
-    _sanitize_fo4_ck_materials_for_outputs(output_root, plugin_names)
 
 
 def _check_run_invariants(
@@ -1752,8 +1801,24 @@ def _check_run_invariants(
             failures.append(f"missing yaml in {mod_dir}")
         if not (mod_dir / f"{Path(plugin_name).stem}.esm").is_file():
             failures.append(f"missing output plugin in {mod_dir}")
-        if not records_only and not skip_pack and not any(mod_dir.glob("*.ba2")):
-            failures.append(f"missing BA2 archive in {mod_dir}")
+        if not records_only:
+            archives = sorted(mod_dir.glob("*.ba2"))
+            if not archives and not skip_pack:
+                failures.append(f"missing BA2 archive in {mod_dir}")
+            # The game mounts BA2s by plugin name only. A mismatch means every
+            # converted asset is invisible in-game, and that surfaces as a
+            # null-model CTD in the first BGSStaticCollection::Build3D rather
+            # than a missing-mesh warning — so fail instead of shipping it.
+            # Checked even when this run skipped packing: a workspace carrying
+            # legacy mod-named archives deploys just as broken.
+            expected = f"{Path(plugin_name).stem} - ".casefold()
+            for archive in archives:
+                if not archive.name.casefold().startswith(expected):
+                    failures.append(
+                        f"BA2 name does not match output plugin {plugin_name}: "
+                        f"{archive.name} (expected "
+                        f"'{Path(plugin_name).stem} - <label>.ba2')"
+                    )
         plugin_path = mod_dir / f"{Path(plugin_name).stem}.esm"
 
         tasks = [
@@ -1943,6 +2008,39 @@ def _effective_resource_dir(paths: "RegenPaths") -> Path:
     return paths.output_root.parent.parent / "resource"
 
 
+def _remove_mod_named_archives(
+    output_root_name: str,
+    plugin_stem: str,
+    output_root: Path,
+    game_data_dir: Path,
+) -> None:
+    """Delete BA2s left over from when archives were named after the mod folder.
+
+    The game mounts archives by plugin name, so "FNV_FO3 - Main.ba2" beside
+    FalloutNV.esm was never loaded — the whole converted asset set was invisible
+    and the first SCOL to build crashed on a null model handle. Archives are now
+    named after the plugin; sweep the old names so a migrated workspace does not
+    keep ~7 GB of inert files that no discovery path can find.
+    """
+    from creation_lib.build.archive_plan import discover_mod_archives
+
+    if output_root_name == plugin_stem:
+        return
+    output_root = Path(output_root)
+    # Only sweep once a correctly named set exists to replace them. A
+    # deploy-only run over a workspace that still holds just the legacy
+    # archives has nothing else to ship, and deleting them there would throw
+    # away the packed assets instead of renaming them.
+    if not discover_mod_archives(output_root, plugin_stem):
+        return
+    for directory in (output_root, Path(game_data_dir)):
+        if not directory.is_dir():
+            continue
+        for stale in discover_mod_archives(directory, output_root_name):
+            stale.unlink()
+            LOG.info("removed legacy mod-named archive: %s", stale)
+
+
 def _deploy_output_mods(
     output_root_name: str,
     *,
@@ -1952,29 +2050,52 @@ def _deploy_output_mods(
     resource_dir: Path,
     deploy_archives: bool = True,
     plugin_only: bool = False,
+    deploy_loose: bool = False,
 ) -> None:
-    from creation_lib.build.deployer import deploy_mod
+    if deploy_loose:
+        from creation_lib.build.loose_deploy import deploy_loose_assets
+    else:
+        from creation_lib.build.deployer import deploy_mod
 
     for plugin_name in plugin_names:
         plugin_stem = Path(plugin_name).stem
+        if not deploy_loose:
+            _remove_mod_named_archives(
+                output_root_name,
+                plugin_stem,
+                project_root / "mods" / output_root_name,
+                game_data_dir,
+            )
         with _expose_plugin_mod_dir(
             output_root_name,
             plugin_name,
             project_root=project_root,
         ) as (mod_name, exposed_project_root):
-            deploy_mod(
-                mod_name,
-                game="fo4",
-                game_data_dir=game_data_dir,
-                skip_build=True,
-                skip_pack=True,
-                skip_papyrus_compile=True,
-                esp_only=plugin_only,
-                skip_validation=True,
-                project_root=exposed_project_root,
-                resource_dir=resource_dir,
-                deploy_archives=deploy_archives,
-            )
+            if deploy_loose:
+                deploy_loose_assets(
+                    mod_name,
+                    game="fo4",
+                    game_data_dir=game_data_dir,
+                    skip_build=True,
+                    skip_papyrus_compile=True,
+                    skip_validation=True,
+                    project_root=exposed_project_root,
+                )
+            else:
+                deploy_mod(
+                    mod_name,
+                    game="fo4",
+                    game_data_dir=game_data_dir,
+                    plugin_base_name=plugin_stem,
+                    skip_build=True,
+                    skip_pack=True,
+                    skip_papyrus_compile=True,
+                    esp_only=plugin_only,
+                    skip_validation=True,
+                    project_root=exposed_project_root,
+                    resource_dir=resource_dir,
+                    deploy_archives=deploy_archives,
+                )
         if output_root_name != plugin_stem:
             suffix = Path(plugin_name).suffix
             deployed_alias = game_data_dir / f"{output_root_name}{suffix}"
@@ -2003,6 +2124,224 @@ def _deployed_archive_names(
             )
         )
     return _unique_archive_names(archive_names)
+
+
+_UPGRADE_LOOSE_DATA_ROOTS = (
+    "Interface",
+    "LODSettings",
+    "Materials",
+    "Meshes",
+    "Music",
+    "Scripts",
+    "Sound",
+    "Textures",
+)
+
+
+def _missing_upgrade_loose_data_roots(workspace_data: Path) -> tuple[str, ...]:
+    if not workspace_data.is_dir():
+        return _UPGRADE_LOOSE_DATA_ROOTS
+    present = {
+        child.name.casefold()
+        for child in workspace_data.iterdir()
+        if child.is_dir()
+    }
+    return tuple(
+        root for root in _UPGRADE_LOOSE_DATA_ROOTS if root.casefold() not in present
+    )
+
+
+def _hydrate_upgrade_workspace_from_deployed(
+    paths: RegenPaths,
+    plugin_names: list[str],
+    *,
+    runner,
+    workers: int,
+) -> int:
+    from creation_lib.build.archive_plan import discover_mod_archives
+
+    output_root = Path(paths.output_root)
+    deploy_data_dir = Path(paths.deploy_data_dir or paths.target_data_dir)
+    resolved_output = output_root.resolve()
+    protected_paths = {
+        Path(paths.source_data_dir).resolve(),
+        Path(paths.source_extracted_dir).resolve(),
+        Path(paths.target_data_dir).resolve(),
+        deploy_data_dir.resolve(),
+    }
+    if any(
+        resolved_output == protected
+        or resolved_output in protected.parents
+        or protected in resolved_output.parents
+        for protected in protected_paths
+    ):
+        raise ValueError(
+            f"refusing to hydrate upgrade workspace inside a protected path: {output_root}"
+        )
+
+    workspace_data = output_root / "data"
+    if workspace_data.is_symlink():
+        raise ValueError(
+            f"refusing to reuse symlinked upgrade workspace: {workspace_data}"
+        )
+    missing_roots = _missing_upgrade_loose_data_roots(workspace_data)
+    if not missing_roots:
+        emit_runner_status(runner, "Reusing existing loose-asset workspace")
+        runner.emit_log(
+            "INFO",
+            "upgrade: reusing existing loose assets; all 8 required data roots "
+            "are present",
+        )
+        for archive_path in discover_mod_archives(
+            output_root,
+            paths.mod_name,
+            extensions=(".ba2",),
+        ):
+            archive_path.unlink()
+        return 0
+
+    runner.emit_log(
+        "INFO",
+        "upgrade: local loose assets are incomplete "
+        f"(missing: {', '.join(missing_roots)}); extracting deployed BA2s",
+    )
+    archive_paths = [
+        deploy_data_dir / name
+        for name in _deployed_archive_names(deploy_data_dir, plugin_names)
+    ]
+    if not archive_paths:
+        raise FileNotFoundError(
+            f"upgrade requires deployed BA2 archives for {paths.mod_name} in "
+            f"{deploy_data_dir}; run a full conversion instead"
+        )
+
+    from creation_lib.ba2 import native_runtime
+
+    output_root.parent.mkdir(parents=True, exist_ok=True)
+    emit_runner_status(runner, "Extracting deployed BA2s into the BACUP workspace")
+    runner.emit_log(
+        "INFO",
+        f"upgrade: extracting {len(archive_paths)} deployed BA2 archive(s) "
+        f"into {output_root / 'data'}",
+    )
+
+    extracted_files = 0
+    with tempfile.TemporaryDirectory(
+        prefix=f".{output_root.name}-upgrade-",
+        dir=output_root.parent,
+    ) as staging_dir:
+        staged_data = Path(staging_dir) / "data"
+        staged_data.mkdir()
+
+        for archive_index, archive_path in enumerate(archive_paths, start=1):
+            emit_runner_status(
+                runner,
+                f"Extracting deployed archive {archive_index}/{len(archive_paths)}: "
+                f"{archive_path.name}",
+            )
+
+            def on_progress(event: dict) -> bool:
+                if runner.is_cancelled():
+                    return False
+                emit_runner_status(
+                    runner,
+                    f"Extracting {event.get('archive', archive_path.name)}: "
+                    f"{event.get('completed', 0)}/{event.get('total', 0)}",
+                )
+                return True
+
+            count = native_runtime.extract_archive(
+                str(archive_path),
+                str(staged_data),
+                format="ba2",
+                workers=max(1, workers),
+                progress=on_progress,
+            )
+            extracted_files += int(count or 0)
+
+        if workspace_data.is_symlink():
+            raise ValueError(
+                f"refusing to replace symlinked upgrade workspace: {workspace_data}"
+            )
+        if workspace_data.exists():
+            if not workspace_data.is_dir():
+                raise NotADirectoryError(
+                    f"upgrade workspace data path is not a directory: {workspace_data}"
+                )
+            shutil.rmtree(workspace_data)
+        output_root.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staged_data), str(workspace_data))
+
+    for archive_path in discover_mod_archives(
+        output_root,
+        paths.mod_name,
+        extensions=(".ba2",),
+    ):
+        archive_path.unlink()
+
+    runner.emit_log(
+        "INFO",
+        f"upgrade: restored {extracted_files} asset file(s) from deployed BA2s",
+    )
+    return extracted_files
+
+
+def _deployed_loose_manifest_path(deploy_data_dir: Path, mod_name: str) -> Path:
+    return deploy_data_dir / f".bacup-loose-{mod_name}.json"
+
+
+def _remove_tracked_loose_deployment(
+    deploy_data_dir: Path,
+    mod_name: str,
+) -> list[str]:
+    manifest_path = _deployed_loose_manifest_path(deploy_data_dir, mod_name)
+    if not manifest_path.is_file():
+        return []
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest_path.unlink(missing_ok=True)
+        return []
+
+    removed: list[str] = []
+    touched_dirs: set[Path] = set()
+    for entry in manifest.get("files", []):
+        relative = Path(str(entry.get("rel", "")).replace("\\", "/"))
+        if (
+            not relative.parts
+            or relative.is_absolute()
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            continue
+        deployed = deploy_data_dir.joinpath(*relative.parts)
+        if deployed.is_file():
+            deployed.unlink()
+            removed.append(relative.as_posix())
+            touched_dirs.add(deployed.parent)
+    for directory in sorted(touched_dirs, key=lambda path: len(path.parts), reverse=True):
+        while directory != deploy_data_dir:
+            try:
+                directory.rmdir()
+            except OSError:
+                break
+            directory = directory.parent
+    manifest_path.unlink(missing_ok=True)
+    return removed
+
+
+def _save_deployed_loose_manifest(
+    output_root: Path,
+    deploy_data_dir: Path,
+    mod_name: str,
+) -> None:
+    from creation_lib.build.loose_deploy import MANIFEST_NAME
+
+    source = output_root / MANIFEST_NAME
+    if source.is_file():
+        shutil.copy2(
+            source,
+            _deployed_loose_manifest_path(deploy_data_dir, mod_name),
+        )
 
 
 def _output_archive_names(
@@ -2120,21 +2459,23 @@ def _preserve_anim_text_data_from_archives(
 def _archives_for_labels(
     archive_names: list[str], labels: tuple[str, ...]
 ) -> list[str]:
-    """Filter archive file names to those whose BA2 label matches one of
-    `labels` by prefix: label == P or label == f"{P}{n}" for an integer n.
-    This is a prefix match, not equality, so "Meshes" catches its numeric
-    shards (Meshes1, Meshes2) without also catching "MeshesExtra" — a
-    distinct family the caller must pass explicitly when it should swap too.
+    """Filter archive file names to those whose BA2 label is P or f"{P}{n}" for a P
+    in `labels` and integer n. "Meshes" catches its shards (Meshes1, Meshes2) but not
+    "MeshesExtra", a separate family the caller must pass explicitly.
+
+    The base name is read from each archive: names are collected per plugin, and
+    only fo76:fo4 shares the output plugin name with OUTPUT_MOD_NAME.
     """
     from creation_lib.build.archive_plan import _is_generated_archive_name
 
-    prefix = f"{OUTPUT_MOD_NAME} - "
     matched: list[str] = []
     for name in archive_names:
         path = Path(name)
-        if not path.name.startswith(prefix) or not _is_generated_archive_name(
-            path, prefix
-        ):
+        base, separator, _ = path.stem.partition(" - ")
+        if not separator:
+            continue
+        prefix = f"{base} - "
+        if not _is_generated_archive_name(path, prefix):
             continue
         label = path.stem[len(prefix) :]
         if label.endswith("_xbox"):
@@ -2154,17 +2495,9 @@ def _swap_deploy_archives(
     plugin_names: list[str],
     swap_labels: tuple[str, ...],
 ) -> None:
-    """Delete the deployed BA2 shards for `swap_labels` and replace them with
-    the freshly packed archives carrying the same labels. Every other
-    deployed archive is left untouched. The caller (the upgrade resolver)
-    passes the full expanded label set for a family (e.g. Meshes +
-    MeshesExtra) so a swap sweeps all of that family's shards.
+    """Replace deployed BA2 shards for `swap_labels` with the fresh ones; others are untouched.
 
-    `.btd4` needs no handling here: it deploys loose under `Terrain/` and the
-    unconditional loose-dir deploy in `deploy_mod` (run right after this by
-    `_deploy_output_mods`) already mirrors `output_root/Terrain/` -> deployed
-    `Terrain/` whenever it's populated, and is a no-op otherwise — matching
-    "regen copies fresh, reuse leaves the deployed file alone" for free.
+    `.btd4` terrain deploys loose via `deploy_mod`, so it needs no handling here.
     """
     deployed = _deployed_archive_names(deploy_data_dir, plugin_names)
     stale_paths = [
@@ -2247,161 +2580,6 @@ def _undeploy_output_mod_files(plugin_stem: str, game_data_dir: Path) -> list[st
                 removed.append(f"Strings/{strings_file.name}")
 
     return removed
-
-
-def _sanitize_fo4_ck_payloads_worker(plugin_path: Path) -> tuple[int, Path | None]:
-    from creation_lib.esp.native_runtime import (
-        plugin_handle_call,
-        plugin_handle_close,
-        plugin_handle_load,
-    )
-
-    changed_subrecords = 0
-    strings_dir = plugin_path.parent / "Strings"
-    handle = plugin_handle_load(
-        str(plugin_path),
-        game="fo4",
-        strings_dir=str(strings_dir),
-        language="en",
-    )
-    saved_path: Path | None = None
-    try:
-        max_lengths = [
-            (record_sig, subrecord_sig, int(max_len))
-            for (
-                record_sig,
-                subrecord_sig,
-            ), max_len in _FO4_CK_MAX_SUBRECORD_LENGTHS.items()
-        ]
-        row_projections = [
-            (record_sig, subrecord_sig, int(source_len), int(target_len))
-            for (record_sig, subrecord_sig), (
-                source_len,
-                target_len,
-            ) in _FO4_CK_ROW_PROJECTIONS.items()
-        ]
-        changed_subrecords = int(
-            plugin_handle_call(
-                handle,
-                "sanitize_subrecord_payloads",
-                max_lengths,
-                row_projections,
-            )
-        )
-        if changed_subrecords:
-            saved_path = plugin_path.with_name(f".{plugin_path.stem}.ckfix.tmp.esm")
-            saved_path.unlink(missing_ok=True)
-            plugin_handle_call(handle, "save", str(saved_path))
-            # The save derives localized-strings filenames from the temp stem;
-            # drop the orphaned Strings/<temp stem>_<lang>.* tables it emits.
-            if strings_dir.is_dir():
-                for orphan in strings_dir.glob(f"{saved_path.stem}_*"):
-                    orphan.unlink(missing_ok=True)
-    finally:
-        plugin_handle_close(handle)
-    return changed_subrecords, saved_path
-
-
-def _run_fo4_ck_sanitizer_worker(plugin_path: Path) -> tuple[int, Path | None]:
-    worker = """
-import importlib.util
-import json
-import sys
-from pathlib import Path
-
-script_path = Path(sys.argv[1])
-plugin_path = Path(sys.argv[2])
-sys.path.insert(0, str(script_path.parent))
-spec = importlib.util.spec_from_file_location("regen_ck_sanitizer_worker", script_path)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-changed, saved_path = module._sanitize_fo4_ck_payloads_worker(plugin_path)
-print(json.dumps({"changed": changed, "saved_path": str(saved_path) if saved_path else None}))
-"""
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            worker,
-            str(Path(__file__).resolve()),
-            str(plugin_path.resolve()),
-        ],
-        cwd=str(Path(__file__).resolve().parent.parent),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            "FO4 CK sanitizer worker failed"
-            f"\nstdout:\n{result.stdout}"
-            f"\nstderr:\n{result.stderr}"
-        )
-    lines = [line for line in result.stdout.splitlines() if line.strip()]
-    if not lines:
-        raise RuntimeError("FO4 CK sanitizer worker did not report a result")
-    payload = json.loads(lines[-1])
-    saved_path = payload.get("saved_path")
-    return int(payload["changed"]), Path(saved_path) if saved_path else None
-
-
-def _sanitize_fo4_ck_payloads(plugin_path: Path) -> int:
-    from creation_lib.esp.plugin import replace_plugin_with_localized_sidecars
-
-    if getattr(sys, "frozen", False):
-        # Frozen builds have no standalone Python at sys.executable, so the
-        # subprocess sanitizer worker can't run -- do it in-process instead.
-        changed_subrecords, saved_path = _sanitize_fo4_ck_payloads_worker(plugin_path)
-    else:
-        changed_subrecords, saved_path = _run_fo4_ck_sanitizer_worker(plugin_path)
-    if saved_path is not None:
-        replace_plugin_with_localized_sidecars(saved_path, plugin_path)
-        saved_path.unlink(missing_ok=True)
-    return changed_subrecords
-
-
-def _sanitize_fo4_ck_payloads_for_outputs(
-    output_root: Path,
-    plugin_names: list[str],
-) -> None:
-    for plugin_name in plugin_names:
-        plugin_stem = Path(plugin_name).stem
-        plugin_path = output_root / f"{plugin_stem}.esm"
-        if not plugin_path.is_file():
-            continue
-        changed = _sanitize_fo4_ck_payloads(plugin_path)
-        if changed:
-            LOG.info(
-                "FO4 CK sanitizer updated %s subrecords in %s", changed, plugin_path
-            )
-
-
-def _sanitize_fo4_ck_materials_for_outputs(
-    output_root: Path,
-    plugin_names: list[str],
-) -> int:
-    from bacup_lib.workflows.asset_phases import apply_material_overrides
-    from creation_lib.material_tools.bgsm_bin import read_bgsm
-
-    bgsm_paths: list[Path] = []
-    for plugin_name in plugin_names:
-        plugin_stem = Path(plugin_name).stem
-        materials_root = output_root / "data" / "Materials"
-        if not materials_root.is_dir():
-            continue
-        for path in materials_root.rglob("*.bgsm"):
-            with path.open("rb") as handle:
-                try:
-                    cast_shadows = read_bgsm(handle).CastShadows
-                except Exception:
-                    continue
-            if not cast_shadows:
-                bgsm_paths.append(path)
-
-    if bgsm_paths:
-        apply_material_overrides(bgsm_paths, {"bCastShadows": True})
-    return len(bgsm_paths)
 
 
 def _resolve_source_plugins(
@@ -2597,7 +2775,12 @@ def _snapshot_land_cache_from_run(
     tmp = cache_plugin.with_suffix(cache_plugin.suffix + ".tmp")
     tmp.unlink(missing_ok=True)
     try:
-        run.save_target(str(tmp), emit_authoring_yaml=False, run_nvnm_validator=False)
+        run.save_target(
+            str(tmp),
+            emit_authoring_yaml=False,
+            run_nvnm_validator=False,
+            preserve_target_identity=True,
+        )
         os.replace(tmp, cache_plugin)
     except Exception:
         tmp.unlink(missing_ok=True)
@@ -2687,9 +2870,11 @@ def _deploy_post_steps(
     *,
     archives_already_deployed: bool = False,
     update_runtime_ini: bool = True,
+    register_runtime_archives: bool = True,
     swap_labels: tuple[str, ...] | None = None,
+    deploy_loose: bool = False,
 ) -> None:
-    """Deploy generated output and register runtime archive INI entries.
+    """Deploy generated output and reconcile runtime archive INI entries.
 
     `swap_labels=None` is the current full deploy (unchanged behavior): every
     freshly packed archive replaces the deployed set. Non-None restricts the
@@ -2709,8 +2894,26 @@ def _deploy_post_steps(
         runtime_ini_target = paths.target_custom_ini_path
     else:
         runtime_ini_target = None
-    archive_plugin_names = [f"{paths.mod_name}.esm"]
-    if swap_labels is not None:
+    # BA2s are named after the output plugin, not the mod folder — that is the
+    # name the game mounts them by. Only fnvfo3:fo4 has the two differ, so for
+    # every other pair this is the same list it always was.
+    archive_plugin_names = list(plugin_names)
+    removed_loose_files = _remove_tracked_loose_deployment(
+        deploy_data_dir,
+        paths.mod_name,
+    )
+    if removed_loose_files:
+        LOG.info(
+            "removed %s stale loose deployment file(s)",
+            len(removed_loose_files),
+        )
+    if deploy_loose:
+        for archive_name in _deployed_archive_names(
+            deploy_data_dir,
+            archive_plugin_names,
+        ):
+            (deploy_data_dir / archive_name).unlink(missing_ok=True)
+    elif swap_labels is not None:
         _swap_deploy_archives(
             paths.output_root,
             deploy_data_dir,
@@ -2718,9 +2921,15 @@ def _deploy_post_steps(
             swap_labels,
         )
     deploy_output_kwargs = {
-        "deploy_archives": not archives_already_deployed and swap_labels is None,
+        "deploy_archives": (
+            not deploy_loose
+            and not archives_already_deployed
+            and swap_labels is None
+        ),
     }
-    if swap_labels is not None:
+    if deploy_loose:
+        deploy_output_kwargs["deploy_loose"] = True
+    if swap_labels is not None and not deploy_loose:
         deploy_output_kwargs["plugin_only"] = True
     _deploy_output_mods(
         paths.mod_name,
@@ -2730,6 +2939,12 @@ def _deploy_post_steps(
         resource_dir=_effective_resource_dir(paths),
         **deploy_output_kwargs,
     )
+    if deploy_loose:
+        _save_deployed_loose_manifest(
+            paths.output_root,
+            deploy_data_dir,
+            paths.mod_name,
+        )
     # Expanded builds fold Main files into Misc. A Scripts-only upgrade replaces
     # Misc, so keep the preserved worldspace descriptor available independently.
     deployed_lod_settings = _deploy_lod_settings(paths.output_root, deploy_data_dir)
@@ -2739,6 +2954,8 @@ def _deploy_post_steps(
         deploy_data_dir,
         archive_plugin_names,
     )
+    if not register_runtime_archives:
+        archive_entries = []
     if runtime_ini_target is None:
         timing_report.record(
             "deploy",
@@ -2876,6 +3093,9 @@ def _undeploy_main(
         plugin_names=plugin_names,
         project_root=output_root.parent.parent,
         game_data_dir=game_data_dir,
+    )
+    removed_files.extend(
+        _remove_tracked_loose_deployment(game_data_dir, paths.mod_name)
     )
     if not undeploys_virtual_data:
         removed_ini_entries = _remove_fo4_archive_ini_entries(
@@ -3086,6 +3306,49 @@ def _clean_forced_regen_output(paths: "RegenPaths", runner) -> None:
         shutil.rmtree(output_root)
 
 
+def _clean_scripts_output(paths: "RegenPaths", runner) -> None:
+    """Drop the workspace's compiled PEX and decompiled/patched PSC before an
+    upgrade recompiles them.
+
+    The compile step pre-deletes .pex only for this run's script set, so when the
+    set shrinks or renames, a prior version's orphans get repacked and bind against
+    the rebuilt ESM's VMAD, silently doing nothing. Called only when the upgrade
+    plan regenerates scripts, so nothing reusable is lost.
+    """
+    output_root = Path(paths.output_root)
+    resolved_output = output_root.resolve()
+    protected_paths = {
+        Path(paths.source_data_dir).resolve(),
+        Path(paths.source_extracted_dir).resolve(),
+        Path(paths.target_data_dir).resolve(),
+    }
+    if paths.deploy_data_dir is not None:
+        protected_paths.add(Path(paths.deploy_data_dir).resolve())
+    if any(
+        resolved_output == protected
+        or resolved_output in protected.parents
+        or protected in resolved_output.parents
+        for protected in protected_paths
+    ):
+        raise ValueError(f"refusing to clean protected conversion path: {output_root}")
+
+    removed: list[str] = []
+    for relative in (("data", "Scripts"), ("Scripts", "Source", "User")):
+        target = output_root.joinpath(*relative)
+        if target.is_symlink():
+            raise ValueError(f"refusing to clean symlinked script path: {target}")
+        if target.is_dir():
+            shutil.rmtree(target)
+            removed.append("/".join(relative))
+    if removed:
+        emit_runner_status(runner, "Clearing previous script output")
+        runner.emit_log(
+            "INFO",
+            f"upgrade: cleared stale script output ({', '.join(removed)}) "
+            "before recompiling",
+        )
+
+
 def _resolve_stamp_version(options: "RegenOptions") -> str | None:
     """Version to stamp into TES4 SNAM: an explicit ``mod_version``, else the
     manifest's ``current`` when a manifest is configured. ``None`` otherwise --
@@ -3108,6 +3371,7 @@ def _run_merge_stage(
     grafted_paths: tuple[Path, ...],
     work_dir: Path,
     source_strings_dir: Path | None = None,
+    conversion_workers: int | None = None,
 ) -> tuple[Path, dict]:
     from bacup_lib.native_runtime import load_native_module
 
@@ -3127,6 +3391,7 @@ def _run_merge_stage(
                 if source_strings_dir is not None and source_strings_dir.is_dir()
                 else None
             ),
+            "conversion_workers": _invariant_worker_count(conversion_workers),
         }
     )
     return output_path, report
@@ -3193,6 +3458,7 @@ def run_scripts_only(
         paths.target_asset_catalog_path,
         workers=resolved_workers,
         log=lambda message: runner.emit_log("INFO", message),
+        runner=runner,
     )
     target_asset_store = build_target_asset_store(
         target_data_dir=paths.target_data_dir,
@@ -3227,10 +3493,14 @@ def run_scripts_only(
         source_plugins=[],
         output_root=output_root.parent,
         output_mod_name=paths.mod_name,
+        archive_base_name=paths.archive_name,
         target_extracted_dir=paths.target_extracted_dir,
         target_data_dir=paths.target_data_dir,
         source_data_dir=source_root,
         additional_source_asset_roots=paths.additional_source_asset_roots,
+        skyrim_quest_runtime_converted_asset_roots=(
+            paths.skyrim_quest_runtime_converted_asset_roots
+        ),
         target_asset_catalog_path=target_catalog_path,
         target_asset_cache_dir=paths.target_asset_cache_dir,
         target_master_paths=[],
@@ -3325,7 +3595,7 @@ def run_full_regen(
                 f"additional source asset root not found: {asset_root}"
             )
     resolved_workers = options.workers or _effective_conversion_workers(None)
-    os.environ.setdefault("RAYON_NUM_THREADS", str(resolved_workers))
+    os.environ["RAYON_NUM_THREADS"] = str(resolved_workers)
 
     upgrade_plan = _resolve_upgrade_plan(paths, options, pair)
     if isinstance(upgrade_plan, _UpgradeNoOp):
@@ -3348,6 +3618,7 @@ def run_full_regen(
     verified_merged_plugin: Path | None = None
     merge_report: dict = {}
     pack_origins: tuple[LegacyPackOriginRow, ...] = ()
+    runtime_origins: tuple[dict[str, object], ...] = ()
     pack_raw_source_counts: LegacyPackExpectedCounts | None = None
     pack_expected_counts: LegacyPackExpectedCounts | None = None
     pack_provenance_required = False
@@ -3379,11 +3650,20 @@ def run_full_regen(
                 grafted_paths=paths.merge_grafted_plugin_paths,
                 work_dir=Path(merge_workspace.name) / "merge",
                 source_strings_dir=Path(paths.source_extracted_dir) / "Strings",
+                conversion_workers=resolved_workers,
             )
             pack_origins = tuple(
                 LegacyPackOriginRow(**row)
                 for row in merge_report.get("pack_origins", ())
             )
+            raw_runtime_origins = merge_report.get("runtime_origins")
+            if not isinstance(raw_runtime_origins, list) or not all(
+                isinstance(row, dict) for row in raw_runtime_origins
+            ):
+                raise RuntimeError(
+                    "FNV/FO3 merge report is missing runtime record provenance"
+                )
+            runtime_origins = tuple(dict(row) for row in raw_runtime_origins)
             pack_accounting = merge_report.get("pack_accounting")
             if not isinstance(pack_accounting, dict):
                 raise RuntimeError("FNV/FO3 merge report is missing PACK accounting")
@@ -3404,6 +3684,7 @@ def run_full_regen(
                 source_plugins=[verified_merged_plugin],
                 output_root=output_root.parent,
                 output_mod_name=paths.mod_name,
+                archive_base_name=paths.archive_name,
                 source_data_dir=paths.source_extracted_dir,
                 options=preflight_options,
                 diagnostics_root=diagnostics_root,
@@ -3426,6 +3707,27 @@ def run_full_regen(
     output_root.mkdir(parents=True, exist_ok=True)
     diagnostics_root.mkdir(parents=True, exist_ok=True)
 
+    if (
+        isinstance(upgrade_plan, UpgradePlan)
+        and options.hydrate_upgrade_from_deployed
+    ):
+        _hydrate_upgrade_workspace_from_deployed(
+            paths,
+            [pair.output_plugin_name],
+            runner=runner,
+            workers=resolved_workers,
+        )
+
+    # After hydration: it repopulates the workspace from the deployed archives,
+    # so a pre-hydration clean would be undone. force_regen already wiped the
+    # whole output root.
+    if (
+        isinstance(upgrade_plan, UpgradePlan)
+        and upgrade_plan.phases.convert_scripts
+        and not upgrade_plan.force_regen
+    ):
+        _clean_scripts_output(paths, runner)
+
     # The FO4 target-asset catalog is a derived index of the official BA2s
     # (always installed), not a shipped artifact. Build it on demand so the
     # multi-GB extracted FO4 dir is never required for a run.
@@ -3437,6 +3739,7 @@ def run_full_regen(
         paths.target_asset_catalog_path,
         workers=resolved_workers,
         log=lambda message: runner.emit_log("INFO", message),
+        runner=runner,
     )
 
     stamp_version = _resolve_stamp_version(options)
@@ -3447,6 +3750,7 @@ def run_full_regen(
     swap_labels: tuple[str, ...] | None = None
     if isinstance(upgrade_plan, UpgradePlan):
         phases = upgrade_plan.phases
+        explicit_anim_text_data = options.generate_anim_text_data
         reuse_terrain = not upgrade_plan.regen_terrain and not upgrade_plan.full_build
         deployed_esm = (
             paths.deploy_data_dir or paths.target_data_dir
@@ -3463,12 +3767,24 @@ def run_full_regen(
             options,
             re_use_land=reuse_terrain,
             lod_mode=effective_lod_mode,
-            generate_anim_text_data=phases.generate_anim_text_data,
+            generate_anim_text_data=(
+                explicit_anim_text_data or phases.generate_anim_text_data
+            ),
         )
-        swap_labels = None if upgrade_plan.full_build else upgrade_plan.swap_labels
+        phases.generate_anim_text_data = options.generate_anim_text_data
+        swap_labels = (
+            None
+            if upgrade_plan.full_build or options.hydrate_upgrade_from_deployed
+            else upgrade_plan.swap_labels
+        )
+        if explicit_anim_text_data and swap_labels is not None:
+            swap_labels = tuple(
+                sorted({*swap_labels, "Meshes", "MeshesExtra"})
+            )
         # NIF-only upgrades replace Meshes shards without regenerating AnimTextData.
         if (
             not upgrade_plan.full_build
+            and not options.hydrate_upgrade_from_deployed
             and phases.convert_nifs
             and not phases.generate_anim_text_data
         ):
@@ -3553,11 +3869,13 @@ def run_full_regen(
         generate_anim_text_data=options.generate_anim_text_data,
         anim_text_data_native=options.anim_text_data_native,
         validate_collision=options.validate_collision,
+        placeholder_audio=options.placeholder_audio,
+        terrain_extent_cells=options.terrain_extent_cells,
     )
     if build_option_overrides:
         build_kwargs.update(build_option_overrides)
     port_options = _build_options(
-        False, resolved_workers, options.records_limit, **build_kwargs
+        options.records_only, resolved_workers, options.records_limit, **build_kwargs
     )
     port_options.include_interior = options.include_interior
     port_options.carry_interior_previs = options.carry_interior_previs
@@ -3586,6 +3904,7 @@ def run_full_regen(
             grafted_paths=paths.merge_grafted_plugin_paths,
             work_dir=diagnostics_root / "merge",
             source_strings_dir=Path(paths.source_extracted_dir) / "Strings",
+            conversion_workers=resolved_workers,
         )
         source_plugins = [merged_plugin]
         plugin_names = [merged_plugin.name]
@@ -3594,16 +3913,32 @@ def run_full_regen(
         pack_raw_source_counts = None
         pack_expected_counts = None
         pack_provenance_required = False
+    from bacup_lib.legacy_music import discover_legacy_music_tracks
+
+    legacy_music_tracks = tuple(
+        discover_legacy_music_tracks(
+            source_game=pair.source_game,
+            target_game=pair.target_game,
+            output_plugin_name=pair.output_plugin_name,
+            primary_roots=(paths.source_data_dir, paths.source_extracted_dir),
+            additional_roots=paths.additional_source_asset_roots,
+        )
+    )
     request = PluginPortRequest(
         source_game=pair.source_game,
         target_game=pair.target_game,
         source_plugins=source_plugins,
         output_root=output_root.parent,
         output_mod_name=paths.mod_name,
+        archive_base_name=paths.archive_name,
         target_extracted_dir=paths.target_extracted_dir,
         target_data_dir=paths.target_data_dir,
         source_data_dir=paths.source_extracted_dir,
         additional_source_asset_roots=paths.additional_source_asset_roots,
+        skyrim_quest_runtime_converted_asset_roots=(
+            paths.skyrim_quest_runtime_converted_asset_roots
+        ),
+        legacy_music_tracks=legacy_music_tracks,
         target_asset_catalog_path=paths.target_asset_catalog_path,
         target_asset_cache_dir=paths.target_asset_cache_dir,
         target_master_paths=(
@@ -3618,6 +3953,7 @@ def run_full_regen(
         legacy_pack_provenance_required=pack_provenance_required,
     )
     setattr(request, "timing_report", timing_report)
+    setattr(request, "legacy_runtime_origins", runtime_origins)
     if stamp_version is not None:
         # Read in unified.py's build_esp phase and stamped into the target
         # plugin's TES4 SNAM in-memory before serialization (avoids a
@@ -3730,9 +4066,22 @@ def run_full_regen(
     # _deploy_post_steps can delete-then-copy the changed families from there;
     # direct-pack-to-deploy would leave the swap source empty. Full-build and
     # non-upgrade runs keep the direct-pack behavior.
-    if options.deploy and options.direct_deploy_archives and swap_labels is None:
+    if (
+        options.deploy
+        and options.direct_deploy_archives
+        and not options.deploy_loose
+        and swap_labels is None
+        and not options.hydrate_upgrade_from_deployed
+    ):
         archive_output_dir = paths.deploy_data_dir or paths.target_data_dir
     try:
+        unified_started = time.perf_counter()
+        _record_pipeline_span(
+            timing_report,
+            "regen_prepare",
+            started,
+            parent="run_full_regen",
+        )
         memory_stage = (
             memory_report.scoped_stage("pipeline:unified", plugins=plugin_names)
             if memory_report is not None
@@ -3743,21 +4092,40 @@ def run_full_regen(
                 unified_result = run_unified(
                     request,
                     runner,
-                    enable_ba2=options.deploy,
+                    enable_ba2=(
+                        options.deploy
+                        and not options.deploy_loose
+                        and not options.records_only
+                    ),
                     archive_max_bytes=options.archive_max_bytes,
+                    ba2_compression_level=options.ba2_compression_level,
                     expanded_archives=(options.ba2_mode == "expanded"),
                     archive_output_dir=archive_output_dir,
                     fo4_ba2_target=options.fo4_ba2_target,
                     archive_labels=swap_labels,
                     max_asset_failures=options.max_asset_failures,
-                    serialize_tracks=True,
+                serialize_tracks=options.serialize_tracks,
                     asset_conversion_workers=options.asset_workers or resolved_workers,
                     lod_hook=lod_hook,
                     land_cache_hook=land_cache_hook,
                     record_preflight_complete=legacy_pack_preflight_complete,
                 )
         result = unified_result.run_result
+        _record_pipeline_span(
+            timing_report,
+            "regen_unified_envelope",
+            unified_started,
+            parent="run_full_regen",
+            status="succeeded",
+        )
     except Exception:
+        _record_pipeline_span(
+            timing_report,
+            "regen_unified_envelope",
+            unified_started,
+            parent="run_full_regen",
+            status="failed",
+        )
         _write_conversion_reports(
             timing_report,
             memory_report,
@@ -3766,15 +4134,7 @@ def run_full_regen(
         )
         raise
 
-    sanitizer_started = time.perf_counter()
-    emit_runner_status(runner, "Sanitizing generated plugin files")
-    runner.emit_log("INFO", "postflight: sanitizing generated plugin outputs")
-    _sanitize_existing_outputs(output_root, plugin_names)
-    runner.emit_log(
-        "INFO",
-        "postflight: plugin sanitization complete "
-        f"elapsed={time.perf_counter() - sanitizer_started:.1f}s",
-    )
+    coverage_started = time.perf_counter()
     emit_runner_status(runner, "Writing conversion coverage report")
     write_coverage_report(
         diagnostics_root / "conversion_report.md",
@@ -3784,8 +4144,15 @@ def run_full_regen(
         failed_nifs=result.failed_nifs,
         failed_textures=result.failed_textures,
         failed_bgsms=result.failed_bgsms,
+        asset_summary=unified_result.summary,
     )
-    if _bto_failure_count(result, port_options, False):
+    _record_pipeline_span(
+        timing_report,
+        "regen_coverage_report",
+        coverage_started,
+        parent="post_unified",
+    )
+    if _bto_failure_count(result, port_options, options.records_only):
         failures.append(
             f"BTO conversion failed: {getattr(result, 'btos_failed', 0)}/"
             f"{getattr(result, 'btos_total', 0)} terrain BTO(s)"
@@ -3793,18 +4160,29 @@ def run_full_regen(
 
     if not failures:
         if options.deep_invariants:
+            invariants_started = time.perf_counter()
             emit_runner_status(runner, "Verifying generated mod output")
             runner.emit_log("INFO", "postflight: running deep output invariants")
             f, w = _check_run_invariants(
                 output_root,
-                False,
+                options.records_only,
                 plugin_names,
                 invariant_workers=_invariant_worker_count(resolved_workers),
                 deep_invariants=True,
-                skip_pack=bool(archive_output_dir) or not options.deploy,
+                skip_pack=(
+                    bool(archive_output_dir)
+                    or not options.deploy
+                    or options.deploy_loose
+                ),
             )
             failures.extend(f)
             warnings.extend(w)
+            _record_pipeline_span(
+                timing_report,
+                "regen_deep_invariants",
+                invariants_started,
+                parent="post_unified",
+            )
         else:
             runner.emit_log("INFO", "postflight: deep output invariants disabled")
 
@@ -3813,8 +4191,10 @@ def run_full_regen(
         if (
             options.write_land_cache
             and not options.re_use_land
+            and not options.records_only
             and not land_cache_snapshotted
         ):
+            land_cache_started = time.perf_counter()
             emit_runner_status(runner, "Saving terrain reuse cache")
             land_cache_snapshotted = _snapshot_land_cache(
                 output_root,
@@ -3822,7 +4202,15 @@ def run_full_regen(
                 data_dir=paths.source_data_dir,
                 extracted_dir=paths.source_extracted_dir,
             )
+            _record_pipeline_span(
+                timing_report,
+                "regen_land_cache_bookkeeping",
+                land_cache_started,
+                parent="post_unified",
+                snapshotted=land_cache_snapshotted,
+            )
         if options.deploy:
+            deploy_started = time.perf_counter()
             deploy_stage = (
                 memory_report.scoped_stage("pipeline:deploy", plugins=plugin_names)
                 if memory_report is not None
@@ -3832,9 +4220,24 @@ def run_full_regen(
                 archives_already_deployed=bool(archive_output_dir),
                 update_runtime_ini=options.update_runtime_ini,
             )
-            if swap_labels is not None:
+            if not _should_register_runtime_archives(options):
+                deploy_kwargs["register_runtime_archives"] = False
+            if options.deploy_loose:
+                deploy_kwargs["deploy_loose"] = True
+            if swap_labels is not None and not options.deploy_loose:
                 deploy_kwargs["swap_labels"] = swap_labels
-            emit_runner_status(runner, "Deploying converted mod and updating archive settings")
+            emit_runner_status(
+                runner,
+                (
+                    "Deploying converted mod as loose files"
+                    if options.deploy_loose
+                    else (
+                        "Deploying converted mod and removing stale archive settings"
+                        if not _should_register_runtime_archives(options)
+                        else "Deploying converted mod and updating archive settings"
+                    )
+                ),
+            )
             with deploy_stage:
                 _deploy_post_steps(
                     paths,
@@ -3843,6 +4246,12 @@ def run_full_regen(
                     **deploy_kwargs,
                 )
             deployed = True
+            _record_pipeline_span(
+                timing_report,
+                "regen_deploy",
+                deploy_started,
+                parent="post_unified",
+            )
 
     elapsed = time.perf_counter() - started
     emit_runner_status(runner, "Writing conversion reports")
@@ -3894,10 +4303,14 @@ def _build_existing_post_driver(
         source_plugins=[source_plugin],
         output_root=paths.output_root.parent,
         output_mod_name=paths.mod_name,
+        archive_base_name=paths.archive_name,
         target_extracted_dir=paths.target_extracted_dir,
         target_data_dir=paths.target_data_dir,
         source_data_dir=paths.source_extracted_dir,
         additional_source_asset_roots=paths.additional_source_asset_roots,
+        skyrim_quest_runtime_converted_asset_roots=(
+            paths.skyrim_quest_runtime_converted_asset_roots
+        ),
         target_asset_catalog_path=paths.target_asset_catalog_path,
         target_asset_cache_dir=paths.target_asset_cache_dir,
         options=post_options,
@@ -4028,10 +4441,10 @@ def _run_existing_post_phases(
                 ),
             )
 
-        emit_runner_status(runner, "Sanitizing generated plugin files")
-        _sanitize_existing_outputs(output_root, plugin_names)
-
-        if start_phase in {"modt", "offsets", "animtext", "lodgen", "pack"}:
+        if (
+            start_phase in {"modt", "offsets", "animtext", "lodgen", "pack"}
+            and not options.deploy_loose
+        ):
             pack_result = {"archives_already_deployed": False}
 
             def pack_body() -> None:
@@ -4057,13 +4470,21 @@ def _run_existing_post_phases(
                 plugin_names,
                 invariant_workers=_invariant_worker_count(resolved_workers),
                 deep_invariants=True,
-                skip_pack=archives_already_deployed,
+                skip_pack=archives_already_deployed or options.deploy_loose,
             )
             failures.extend(invariant_failures)
             warnings.extend(invariant_warnings)
 
         deployed = False
         if not failures and options.deploy:
+            deploy_kwargs = {
+                "archives_already_deployed": archives_already_deployed,
+                "update_runtime_ini": options.update_runtime_ini,
+            }
+            if not _should_register_runtime_archives(options):
+                deploy_kwargs["register_runtime_archives"] = False
+            if options.deploy_loose:
+                deploy_kwargs["deploy_loose"] = True
             _run_runner_phase(
                 runner,
                 92,
@@ -4072,8 +4493,7 @@ def _run_existing_post_phases(
                     paths,
                     plugin_names,
                     tr,
-                    archives_already_deployed=archives_already_deployed,
-                    update_runtime_ini=options.update_runtime_ini,
+                    **deploy_kwargs,
                 ),
             )
             deployed = True
@@ -4203,7 +4623,7 @@ def run_resume_from_phase(
         return deploy_existing(
             paths,
             plugin_names=plugin_names,
-            update_runtime_ini=options.update_runtime_ini,
+            options=options,
             timing_report=timing_report,
         )
 
@@ -4225,6 +4645,7 @@ def deploy_existing(
     *,
     plugin_names: list[str] | None = None,
     update_runtime_ini: bool = True,
+    options: RegenOptions | None = None,
     timing_report=None,
 ) -> RegenResult:
     """Deploy an already-generated conversion output without running conversion."""
@@ -4246,14 +4667,29 @@ def deploy_existing(
             ],
         )
 
-    output_archives = _output_archive_names(paths.output_root, names)
-    _deploy_post_steps(
-        paths,
-        names,
-        tr,
-        archives_already_deployed=not bool(output_archives),
-        update_runtime_ini=update_runtime_ini,
-    )
+    deploy_loose = bool(options and options.deploy_loose)
+    register_runtime_archives = True
+    if options is not None:
+        update_runtime_ini = options.update_runtime_ini
+        register_runtime_archives = _should_register_runtime_archives(options)
+    if options is not None and not deploy_loose:
+        archives_already_deployed = _pack_existing_output(
+            paths,
+            options,
+            resolved_workers=options.workers or _effective_conversion_workers(None),
+        )
+    else:
+        output_archives = _output_archive_names(paths.output_root, names)
+        archives_already_deployed = not bool(output_archives)
+    deploy_kwargs = {
+        "archives_already_deployed": archives_already_deployed,
+        "update_runtime_ini": update_runtime_ini,
+    }
+    if not register_runtime_archives:
+        deploy_kwargs["register_runtime_archives"] = False
+    if deploy_loose:
+        deploy_kwargs["deploy_loose"] = True
+    _deploy_post_steps(paths, names, tr, **deploy_kwargs)
     return RegenResult(
         exit_code=0,
         output_root=paths.output_root,

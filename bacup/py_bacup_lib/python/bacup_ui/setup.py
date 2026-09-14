@@ -1,6 +1,6 @@
 """First-run and per-project setup for B.A.C.U.P.
 
-Each conversion project validates only its own Steam games and extracts only
+Each conversion project validates only its own store-verified games and extracts
 its own source games. Fallout 4 is the shared target and reads its official
 archives directly, so an extracted Fallout 4 tree remains optional.
 """
@@ -18,6 +18,15 @@ from pathlib import Path
 
 from imgui_bundle import hello_imgui, imgui, immapp
 
+from creation_lib.ui.theme import get_theme
+from creation_lib.ui.theme.appearance import configure_runner_appearance
+from creation_lib.ui.widgets.modern import (
+    action_button, heading, navigation_item, scaled, section, semantic_color, toggle,
+)
+
+
+from creation_lib.core.path_detector import detect_game_path, validate_game_path
+from creation_lib.core.store_install import StoreInstallResult, validate_store_install_for_game
 from creation_lib.ui.theme.window_chrome import (
     set_ini_folder,
     set_native_dark_title_bar,
@@ -28,13 +37,11 @@ from bacup_lib.upgrade_manifest import (
 )
 from bacup_ui.conversion.widgets import draw_runner_overlay
 from ui.toolkit.app_paths import get_exe_dir, get_ini_dir
-from ui.toolkit.path_detector import detect_game_path, validate_game_path
 from ui.toolkit.setup_wizard import (
     _GameExtractor,
     _browse_button_width,
     _browse_input_width,
 )
-from ui.toolkit.steam_install import SteamInstallResult, validate_steam_install_for_game
 
 _log = logging.getLogger("toolkit.bacup_setup")
 
@@ -75,6 +82,7 @@ _LABELS = {
     "fnv": "Fallout: New Vegas (source)",
     "fo3": "Fallout 3 (grafted source)",
     "skyrimse": "Skyrim Special Edition (source)",
+    "starfield": "Starfield (source)",
 }
 _WORKSPACE_ID = "appalachia"
 _CLEANUP_EXTRACTED_KEY = "cleanup_app_owned_extracted"
@@ -85,14 +93,15 @@ _PENDING_PROJECT_SETUP_KEY = "pending_project_setup"
 _ACTIVE_PROJECT_KEY = "active_conversion_project"
 _ALPHA_ACCEPTED_KEY = "alpha_v0_0_1_accepted"
 _PERSONAL_USE_ACCEPTED_KEY = "personal_use_only_accepted"
-_STEAM_OWNERSHIP_ACCEPTED_KEY = "steam_owned_not_pirated_accepted"
-_STEAM_REQUIREMENT_TEXT = (
-    "Steam copies are required for every game used by the selected conversion "
-    "project. Microsoft Store and GOG installs are not supported right now."
+_STORE_OWNERSHIP_ACCEPTED_KEY = "steam_owned_not_pirated_accepted"
+_STORE_REQUIREMENT_TEXT = (
+    "Steam or GOG copies are required for every game used by the selected "
+    "conversion project. Microsoft Store installs are not supported right now. "
+    "Fallout 76 has no GOG release, so projects that use it require Steam."
 )
-_STEAM_OWNERSHIP_CHECKBOX = (
-    "I verify that I own the selected project's games on Steam, have not pirated "
-    "them, and am using Steam-installed copies."
+_STORE_OWNERSHIP_CHECKBOX = (
+    "I verify that I own the selected project's games on Steam or GOG, have not "
+    "pirated them, and am using store-installed copies."
 )
 _FEATURE_STATUS_TITLE = f"{_CURRENT_RELEASE_LABEL} Status - Expect Random Crashes"
 _FEATURE_STATUS_INTRO = (
@@ -111,10 +120,8 @@ _FEATURE_STATUS_NOT_PRIORITY = (
 _FEATURE_STATUS_FOOTER = (
     "Creatures and weapons may work, partially work, or not work at all."
 )
-_FOOTER_BUTTON_WIDTH = 160.0
-_FOOTER_HEIGHT = 52.0
 _SETUP_WINDOW_SIZE = (900, 680)
-_STEAM_INSTALL_REQUIRED_GAMES = {"fo4", "fo76", "fnv", "fo3", "skyrimse"}
+_VERIFIED_INSTALL_REQUIRED_GAMES = {"fo4", "fo76", "fnv", "fo3", "skyrimse", "starfield"}
 
 
 @dataclass(frozen=True)
@@ -155,7 +162,7 @@ PROJECT_PROFILES = {
         conversion_id="fnvfo3:fo4",
         games=("fo4", "fnv", "fo3"),
         source_games=("fnv", "fo3"),
-        generated_mod_name="FNV_FO3_Merged",
+        generated_mod_name="FNV_FO3",
         description="Convert Fallout: New Vegas and grafted Fallout 3 content into Fallout 4.",
     ),
     "north": ProjectSetupProfile(
@@ -165,8 +172,18 @@ PROJECT_PROFILES = {
         conversion_id="skyrimse:fo4",
         games=("fo4", "skyrimse"),
         source_games=("skyrimse",),
-        generated_mod_name="Skyrim_Merged",
+        generated_mod_name="Skyrim",
         description="Convert Skyrim Special Edition's northern lands into Fallout 4.",
+    ),
+    "stars": ProjectSetupProfile(
+        id="stars",
+        title="To The Stars",
+        source_label="Starfield (MVP)",
+        conversion_id="starfield:fo4",
+        games=("fo4", "starfield"),
+        source_games=("starfield",),
+        generated_mod_name="Starfield_Ported",
+        description="Convert Starfield's settled-systems cities into Fallout 4.",
     ),
 }
 
@@ -389,7 +406,16 @@ def _has_root(paths: dict) -> bool:
 
 
 def _has_extracted(paths: dict) -> bool:
-    return bool(paths.get("extracted_dir"))
+    value = str(paths.get("extracted_dir", "") or "").strip()
+    if not value:
+        return False
+    path = Path(value)
+    try:
+        if path.is_dir():
+            return any(path.iterdir())
+    except OSError:
+        pass
+    return True
 
 
 @dataclass
@@ -408,7 +434,7 @@ def project_setup_needed(settings, project_id: str) -> bool:
         return True
     if not workspace_settings.get(_PERSONAL_USE_ACCEPTED_KEY, False):
         return True
-    if not workspace_settings.get(_STEAM_OWNERSHIP_ACCEPTED_KEY, False):
+    if not workspace_settings.get(_STORE_OWNERSHIP_ACCEPTED_KEY, False):
         return True
     for g in profile.games:
         p = settings.get_game_paths(g)
@@ -510,6 +536,8 @@ class BacupProjectPicker:
         )
         params.callbacks.show_gui = self._draw
         params.callbacks.post_init = self._apply_window_icon
+        theme = get_theme(getattr(self._settings, "theme", "falloutnv"))
+        configure_runner_appearance(params, theme, getattr(self._settings, "theme_colors", {}).get(theme.id))
         immapp.run(params)
         return self.selected_project_id if self._completed else None
 
@@ -525,37 +553,21 @@ class BacupProjectPicker:
         set_native_dark_title_bar()
 
     def _draw(self) -> None:
-        imgui.text_colored(
-            imgui.ImVec4(0.88, 0.94, 1.0, 1.0),
-            f"{_PRODUCT_NAME} Setup",
-        )
-        imgui.text_disabled(f"{_CURRENT_RELEASE_LABEL} - Steam installs required")
-        imgui.separator()
+        heading(f"{_PRODUCT_NAME} Setup", large=True)
+        imgui.text_disabled(f"{_CURRENT_RELEASE_LABEL} - Steam or GOG installs required")
         imgui.spacing()
-        imgui.text_colored(
-            imgui.ImVec4(0.88, 0.94, 1.0, 1.0),
-            "Which games do you want to set up?",
-        )
-        imgui.text_wrapped(
-            "Choose the source-game set to extract now. You can configure the "
-            "other conversions later from their Setup menu."
-        )
+        content_height = max(scaled(100), imgui.get_content_region_avail().y - scaled(65))
+        with section("##project_picker", "Choose a conversion project", height=content_height) as visible:
+            if visible:
+                for profile in PROJECT_PROFILES.values():
+                    if navigation_item(profile.id, profile.title,
+                                       selected=self.selected_project_id == profile.id,
+                                       detail=f"{profile.source_label} → Fallout 4"):
+                        self.select_project(profile.id)
+                    imgui.text_wrapped(profile.description)
+                    imgui.spacing()
         imgui.spacing()
-        for profile in PROJECT_PROFILES.values():
-            if imgui.radio_button(
-                f"{profile.source_label}  ->  Fallout 4##{profile.id}",
-                self.selected_project_id == profile.id,
-            ):
-                self.select_project(profile.id)
-            imgui.indent()
-            imgui.text_disabled(profile.title)
-            imgui.text_wrapped(profile.description)
-            imgui.unindent()
-            imgui.spacing()
-        imgui.separator()
-        x = max(0.0, imgui.get_content_region_avail().x - _FOOTER_BUTTON_WIDTH)
-        imgui.set_cursor_pos_x(x)
-        if imgui.button("Continue", imgui.ImVec2(_FOOTER_BUTTON_WIDTH, 0)):
+        if action_button("Continue", primary=True, width=scaled(180)):
             self.confirm()
 
 
@@ -599,8 +611,8 @@ class BacupProjectSetup:
         self._personal_use_accepted = bool(
             workspace_settings.get(_PERSONAL_USE_ACCEPTED_KEY, False)
         )
-        self._steam_ownership_accepted = bool(
-            workspace_settings.get(_STEAM_OWNERSHIP_ACCEPTED_KEY, False)
+        self._store_ownership_accepted = bool(
+            workspace_settings.get(_STORE_OWNERSHIP_ACCEPTED_KEY, False)
         )
         # Cache of extract-size estimates keyed by (game -> (root_dir, gb)) so the
         # per-frame draw does not re-stat the BA2s every frame.
@@ -613,7 +625,7 @@ class BacupProjectSetup:
         self._space_prepare_progress = 0.0
         self._space_prepare_result: _SpacePrepareResult | None = None
         self._space_prepare_error: str | None = None
-        self._steam_install_cache: dict[str, tuple[str, SteamInstallResult]] = {}
+        self._store_install_cache: dict[str, tuple[str, StoreInstallResult]] = {}
 
     def _workspace_key(self, base_key: str) -> str:
         return _project_workspace_key(base_key, self.project_id)
@@ -756,7 +768,7 @@ class BacupProjectSetup:
         return (
             self._alpha_accepted
             and self._personal_use_accepted
-            and self._steam_ownership_accepted
+            and self._store_ownership_accepted
         )
 
     def persist_agreements(self) -> None:
@@ -767,7 +779,7 @@ class BacupProjectSetup:
                 {
                     _ALPHA_ACCEPTED_KEY: self._alpha_accepted,
                     _PERSONAL_USE_ACCEPTED_KEY: self._personal_use_accepted,
-                    _STEAM_OWNERSHIP_ACCEPTED_KEY: self._steam_ownership_accepted,
+                    _STORE_OWNERSHIP_ACCEPTED_KEY: self._store_ownership_accepted,
                 },
             )
 
@@ -798,14 +810,19 @@ class BacupProjectSetup:
 
     def start_extraction(self, output_root: Path | None = None) -> bool:
         self.persist_paths()
-        games = [
-            (g, self._roots[g])
-            for g in games_needing_extraction(self._settings, self.project_id)
-        ]
+        needed = games_needing_extraction(self._settings, self.project_id)
+        games = [(g, self._roots[g]) for g in needed]
         if not games:
             return False
+        selected_empty_dirs = {
+            game_id: Path(self._extracted[game_id].strip())
+            for game_id in needed
+            if self._extracted.get(game_id, "").strip()
+        }
         self._extractor = _GameExtractor(
-            games, output_root=output_root or get_exe_dir() / "extracted"
+            games,
+            output_root=output_root or get_exe_dir() / "extracted",
+            output_dirs=selected_empty_dirs,
         )
         self._extractor.start()
         return True
@@ -884,37 +901,31 @@ class BacupProjectSetup:
         )
         params.callbacks.show_gui = self._draw
         params.callbacks.post_init = self._apply_window_icon
+        theme = get_theme(getattr(self._settings, "theme", "falloutnv"))
+        configure_runner_appearance(params, theme, getattr(self._settings, "theme_colors", {}).get(theme.id))
         immapp.run(params)
         return self._completed
 
     def _draw(self) -> None:
         self._poll_space_prepare()
         self._draw_setup_header()
-        imgui.separator()
-        avail = imgui.get_content_region_avail()
-        imgui.begin_child(
-            "##appalachia_setup_content",
-            imgui.ImVec2(0, max(0.0, avail.y - _FOOTER_HEIGHT)),
-        )
-        self._draw_step_content()
-        imgui.end_child()
-        imgui.separator()
+        imgui.spacing()
+        height = max(scaled(80), imgui.get_content_region_avail().y - scaled(75))
+        with section("##appalachia_setup_content", height=height) as visible:
+            if visible:
+                self._draw_step_content()
         self._draw_footer()
         self._draw_loading_mask()
 
     def _draw_setup_header(self) -> None:
-        imgui.text_colored(
-            imgui.ImVec4(0.88, 0.94, 1.0, 1.0),
-            f"{_PRODUCT_NAME} Setup - {self.profile.title}",
-        )
-        imgui.same_line()
-        imgui.text_disabled(f"Step {self.step + 1} of {self.STEP_EXTRACT + 1}")
-        imgui.text_disabled(f"{_CURRENT_RELEASE_LABEL} - Steam installs required")
+        heading(self.profile.title, large=True)
+        labels = ("Welcome", "Agreements", "Features", "Storage", "Paths", "Extraction")
+        imgui.text_disabled(f"{_PRODUCT_NAME} Setup  ·  Step {self.step + 1} of {len(labels)}  ·  {labels[self.step]}")
+        imgui.progress_bar((self.step + 1) / len(labels), imgui.ImVec2(-1, scaled(5)), "")
 
     @staticmethod
     def _draw_section_title(title: str, subtitle: str = "") -> None:
-        imgui.spacing()
-        imgui.text_colored(imgui.ImVec4(0.88, 0.94, 1.0, 1.0), title)
+        heading(title)
         if subtitle:
             imgui.text_wrapped(subtitle)
         imgui.spacing()
@@ -940,24 +951,26 @@ class BacupProjectSetup:
         root = self._roots.get(game_id, "")
         if not validate_game_path(game_id, root):
             return False
-        if game_id not in _STEAM_INSTALL_REQUIRED_GAMES:
+        if game_id not in _VERIFIED_INSTALL_REQUIRED_GAMES:
             return True
-        return self._steam_install_result(game_id).ok
+        return self._store_install_result(game_id).ok
 
-    def _steam_install_result(self, game_id: str) -> SteamInstallResult:
+    def _store_install_result(self, game_id: str) -> StoreInstallResult:
         root = self._roots.get(game_id, "")
-        cached = self._steam_install_cache.get(game_id)
+        cached = self._store_install_cache.get(game_id)
         if cached is not None and cached[0] == root:
             return cached[1]
-        result = validate_steam_install_for_game(game_id, root)
-        self._steam_install_cache[game_id] = (root, result)
+        result = validate_store_install_for_game(game_id, root)
+        self._store_install_cache[game_id] = (root, result)
         return result
 
     def _games_without_extracted_dir(self) -> list[str]:
         return [
             game_id
             for game_id in self._source_games
-            if not self._extracted.get(game_id, "").strip()
+            if not _has_extracted(
+                {"extracted_dir": self._extracted.get(game_id, "")}
+            )
         ]
 
     def footer_primary_label(self) -> str:
@@ -1003,15 +1016,12 @@ class BacupProjectSetup:
 
     def _draw_footer(self) -> None:
         label = self.footer_primary_label()
-        enabled = self.footer_primary_enabled()
-        x = max(0.0, imgui.get_content_region_avail().x - _FOOTER_BUTTON_WIDTH)
-        imgui.set_cursor_pos_x(x)
-        if not enabled:
-            imgui.begin_disabled()
-        if imgui.button(label, imgui.ImVec2(_FOOTER_BUTTON_WIDTH, 0)):
+        imgui.spacing()
+        width = min(imgui.get_content_region_avail().x,
+                    max(scaled(180), imgui.calc_text_size(label).x + scaled(32)))
+        imgui.set_cursor_pos_x(imgui.get_cursor_pos_x() + imgui.get_content_region_avail().x - width)
+        if action_button(label, primary=True, width=width, enabled=self.footer_primary_enabled()):
             self._run_footer_primary_action()
-        if not enabled:
-            imgui.end_disabled()
 
     def _draw_loading_mask(self) -> None:
         preparing_space, status, progress = self._space_prepare_state()
@@ -1024,8 +1034,8 @@ class BacupProjectSetup:
             self.profile.description,
         )
         imgui.text_wrapped(
-            f"{_PRODUCT_LONG_NAME} requires Steam-installed copies of this "
-            "project's games. Setup will verify the install folders, estimate "
+            f"{_PRODUCT_LONG_NAME} requires Steam- or GOG-installed copies of "
+            "this project's games. Setup will verify the install folders, estimate "
             "disk use, and extract source archives if loose files are not already "
             "available."
         )
@@ -1040,7 +1050,7 @@ class BacupProjectSetup:
             "These acknowledgements are required before the converter can run.",
         )
         imgui.text_colored(
-            imgui.ImVec4(1.0, 0.55, 0.35, 1.0), _CURRENT_RELEASE_LABEL
+            semantic_color("warning"), _CURRENT_RELEASE_LABEL
         )
         imgui.text_wrapped(
             "This is an early release. Bugs, crashes, failed conversions, "
@@ -1048,56 +1058,77 @@ class BacupProjectSetup:
             "failures should be expected."
         )
         imgui.spacing()
-        imgui.text_colored(imgui.ImVec4(0.85, 0.9, 1.0, 1.0), "Personal Use Only")
+        imgui.text_colored(semantic_color("text"), "Personal Use Only")
         imgui.text_wrapped(
             "Personal use only: this app and any generated Fallout 4 mod/output "
             "are for your personal use only. Do not redistribute the app, generated "
             "plugins, archives, extracted files, or converted output."
         )
         imgui.spacing()
-        imgui.text_colored(imgui.ImVec4(0.85, 0.9, 1.0, 1.0), "Steam Installs Required")
-        imgui.text_wrapped(_STEAM_REQUIREMENT_TEXT)
+        imgui.text_colored(
+            semantic_color("text"), "Steam or GOG Installs Required"
+        )
+        imgui.text_wrapped(_STORE_REQUIREMENT_TEXT)
         imgui.separator()
         imgui.spacing()
-        _, self._alpha_accepted = imgui.checkbox(
+        _, self._alpha_accepted = toggle(
             (
                 f"I understand {_PRODUCT_NAME} is {_CURRENT_RELEASE_LABEL} "
                 "and may contain bugs, crash, or fail."
             ),
             self._alpha_accepted,
         )
-        _, self._personal_use_accepted = imgui.checkbox(
+        _, self._personal_use_accepted = toggle(
             "I agree the app and generated output are for personal use only.",
             self._personal_use_accepted,
         )
-        _, self._steam_ownership_accepted = imgui.checkbox(
-            _STEAM_OWNERSHIP_CHECKBOX,
-            self._steam_ownership_accepted,
+        _, self._store_ownership_accepted = toggle(
+            _STORE_OWNERSHIP_CHECKBOX,
+            self._store_ownership_accepted,
         )
 
     def _draw_features(self) -> None:
-        self._draw_section_title(_FEATURE_STATUS_TITLE)
+        is_tales = self.profile.id == "appalachia"
+        self._draw_section_title(
+            f"{_CURRENT_RELEASE_LABEL} Status" if is_tales else _FEATURE_STATUS_TITLE
+        )
+        imgui.spacing()
+        imgui.text_wrapped(
+            "Creatures and weapons are now expected to work alongside the world "
+            "and environment assets. The remaining major work is restoring "
+            "Fallout 76's gameplay systems and quests."
+            if is_tales else _FEATURE_STATUS_INTRO
+        )
+        imgui.spacing()
+        imgui.text_colored(semantic_color("success"),
+                           "Expected to work" if is_tales else "Expected to work best")
+        working = _FEATURE_STATUS_WORKS_BEST + (("Creatures", "Weapons") if is_tales else ())
+        for item in working:
+            imgui.text(f"- {item}")
+        imgui.spacing()
+        imgui.text_colored(semantic_color("warning"),
+                           "Major work remaining" if is_tales else "Not a priority yet")
+        remaining = (
+            "Recreate Fallout 76 gameplay systems in Fallout 4 using F4SE",
+            "Then fix all quests",
+        ) if is_tales else _FEATURE_STATUS_NOT_PRIORITY
+        for item in remaining:
+            imgui.text_wrapped(f"- {item}")
+        if not is_tales:
+            imgui.spacing()
+            imgui.text_wrapped(_FEATURE_STATUS_FOOTER)
         if self._release_notes:
+            imgui.spacing()
+            imgui.separator()
+            imgui.spacing()
             imgui.text_colored(
-                imgui.ImVec4(0.55, 0.78, 1.0, 1.0),
+                semantic_color("accent"),
                 f"What's new in {_CURRENT_RELEASE_LABEL}",
             )
             for note in self._release_notes:
+                imgui.push_text_wrap_pos(0)
                 imgui.bullet_text(note)
-            imgui.separator()
-            imgui.spacing()
-        imgui.spacing()
-        imgui.text_wrapped(_FEATURE_STATUS_INTRO)
-        imgui.spacing()
-        imgui.text_colored(imgui.ImVec4(0.55, 0.9, 0.55, 1.0), "Expected to work best")
-        for item in _FEATURE_STATUS_WORKS_BEST:
-            imgui.text(f"- {item}")
-        imgui.spacing()
-        imgui.text_colored(imgui.ImVec4(1.0, 0.75, 0.35, 1.0), "Not a priority yet")
-        for item in _FEATURE_STATUS_NOT_PRIORITY:
-            imgui.text(f"- {item}")
-        imgui.spacing()
-        imgui.text_wrapped(_FEATURE_STATUS_FOOTER)
+                imgui.pop_text_wrap_pos()
 
     def _draw_space(self) -> None:
         self._start_space_prepare()
@@ -1123,7 +1154,7 @@ class BacupProjectSetup:
         if self._space_prepare_error:
             imgui.spacing()
             imgui.text_colored(
-                imgui.ImVec4(1.0, 0.5, 0.3, 1.0),
+                semantic_color("warning"),
                 f"Setup check warning: {self._space_prepare_error}",
             )
         imgui.spacing()
@@ -1140,11 +1171,11 @@ class BacupProjectSetup:
         imgui.text(f"Current total mod output: {_format_gb(space_usage['mod_output'])}")
         imgui.text(f"Current archives in mod output: {_format_gb(space_usage['ba2'])}")
         imgui.spacing()
-        _, self._cleanup_mod_output = imgui.checkbox(
+        _, self._cleanup_mod_output = toggle(
             "Remove generated mod output after successful deploy",
             self._cleanup_mod_output,
         )
-        _, self._cleanup_extracted = imgui.checkbox(
+        _, self._cleanup_extracted = toggle(
             "Remove extracted dirs created by this app after successful deploy",
             self._cleanup_extracted,
         )
@@ -1158,7 +1189,8 @@ class BacupProjectSetup:
             return
         self._draw_section_title(
             "Game Paths",
-            "Select this project's Steam install folders and optional extracted data folders.",
+            "Select this project's Steam or GOG install folders and optional "
+            "extracted data folders.",
         )
         imgui.text_wrapped(
             "Source games require extracted data folders. Fallout 4 reads official "
@@ -1166,10 +1198,10 @@ class BacupProjectSetup:
             "development override."
         )
         imgui.spacing()
-        green = imgui.ImVec4(0.3, 0.9, 0.3, 1.0)
-        orange = imgui.ImVec4(1.0, 0.5, 0.3, 1.0)
+        green = semantic_color("success")
+        orange = semantic_color("warning")
         for g in self._games:
-            imgui.text_colored(imgui.ImVec4(0.88, 0.94, 1.0, 1.0), _LABELS[g])
+            imgui.text_colored(semantic_color("text"), _LABELS[g])
 
             imgui.text_disabled("Install folder:")
             browse_label = f"Browse...##root_{g}"
@@ -1187,13 +1219,13 @@ class BacupProjectSetup:
                 g, self._roots[g]
             )
             ok = local_ok
-            steam_result = None
-            if local_ok and g in _STEAM_INSTALL_REQUIRED_GAMES:
-                steam_result = self._steam_install_result(g)
-                ok = steam_result.ok
+            store_result = None
+            if local_ok and g in _VERIFIED_INSTALL_REQUIRED_GAMES:
+                store_result = self._store_install_result(g)
+                ok = store_result.ok
             imgui.text_colored(green if ok else orange, "OK" if ok else "invalid")
-            if local_ok and steam_result is not None and not steam_result.ok:
-                imgui.text_disabled(steam_result.message)
+            if local_ok and store_result is not None and not store_result.ok:
+                imgui.text_colored(orange, f"Reason: {store_result.message}")
 
             imgui.text_disabled("Extracted folder (optional):")
             browse_label = f"Browse...##ext_{g}"
@@ -1219,7 +1251,10 @@ class BacupProjectSetup:
                         "will extract" if gb is None else f"will extract (~{gb:.0f} GB)"
                     )
             elif Path(ext).is_dir():
-                imgui.text_colored(green, "use existing")
+                if _has_extracted({"extracted_dir": ext}):
+                    imgui.text_colored(green, "use existing")
+                else:
+                    imgui.text_disabled("empty - will extract here")
             else:
                 imgui.text_colored(orange, "not found")
             imgui.separator()
@@ -1252,7 +1287,7 @@ class BacupProjectSetup:
             self._apply_extraction_results()
             if self._extractor.error:
                 imgui.text_colored(
-                    imgui.ImVec4(1.0, 0.3, 0.3, 1.0),
+                    semantic_color("error"),
                     f"Extraction error: {self._extractor.error}",
                 )
 

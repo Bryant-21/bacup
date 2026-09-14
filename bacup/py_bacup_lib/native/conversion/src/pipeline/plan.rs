@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -88,7 +88,7 @@ fn stage_body(ctx: &mut StageCtx<'_, PlanData>) -> Result<StageReport, StageErro
             .run
             .lock()
             .map_err(|_| StageError::Internal("run lock poisoned".into()))?;
-        run.config.conversion_workers.filter(|w| *w > 0)
+        run.config.conversion_workers
     };
     let dispatch = || -> Result<phase::PhaseReport, PhaseError> {
         let mut run = slot
@@ -106,19 +106,15 @@ fn stage_body(ctx: &mut StageCtx<'_, PlanData>) -> Result<StageReport, StageErro
         };
         phase.run(&mut pctx)
     };
-    let result = match workers {
-        Some(w) => rayon::ThreadPoolBuilder::new()
-            .num_threads(w)
-            .build()
-            .map_err(|e| StageError::Internal(format!("rayon pool: {e}")))?
-            .install(dispatch),
-        None => dispatch(),
-    };
-    let report = match result {
+    let started = Instant::now();
+    let result = crate::worker_pool::install(workers, dispatch)
+        .map_err(|e| StageError::Internal(format!("rayon pool: {e}")))?;
+    let mut report = match result {
         Ok(r) => r,
         Err(PhaseError::Cancelled) => return Err(StageError::Cancelled),
         Err(e) => return Err(StageError::Internal(e.to_string())),
     };
+    report.elapsed_ms = started.elapsed().as_millis() as u64;
     // Forward the phase Completed event so existing Python event consumers
     // see the same telemetry the run_phase path produces.
     let _ = slot.event_tx.try_send(phase::PhaseEvent::Completed {
@@ -143,6 +139,7 @@ fn stage_body(ctx: &mut StageCtx<'_, PlanData>) -> Result<StageReport, StageErro
         items_failed: failed,
         warnings: report.warnings,
         elapsed_ms: 0, // executor fills it
+        phase_report: Some(report),
     })
 }
 
@@ -211,6 +208,30 @@ mod tests {
     use super::*;
     use crate::phase::dispatcher_tests::test_run;
     use crate::run::drop_run;
+
+    #[test]
+    fn saturated_event_queue_preserves_phase_report() {
+        let id = test_run();
+        let slot = crate::run::run_slot(id).unwrap();
+        while slot
+            .event_tx
+            .try_send(phase::PhaseEvent::Log {
+                phase: "test_noop",
+                level: phase::LogLevel::Info,
+                message: "fill queue".into(),
+            })
+            .is_ok()
+        {}
+        let plan = serde_json::json!({
+            "events_run_id": id,
+            "stages": [{"phase": "test_noop", "run_id": id,
+                "mod_path": "", "source_extracted_dir": ""}],
+        });
+        let report = run_plan(&plan.to_string()).unwrap();
+        assert_eq!(report.stages.len(), 1);
+        assert!(report.stages[0].1.phase_report.is_some());
+        drop_run(id).unwrap();
+    }
 
     #[test]
     fn plan_runs_phases_as_stages_with_after_edges() {

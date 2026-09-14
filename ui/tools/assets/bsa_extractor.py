@@ -13,7 +13,7 @@ from imgui_bundle import imgui
 from creation_lib.ba2 import native_runtime
 from ui.tools.base import BaseTool
 from creation_lib.ui.widgets import pick_folder
-from ui.tools.imgui_helpers import begin_form, end_form, draw_path_row, draw_int_field, draw_combo_field, pick_file, pick_save_file
+from creation_lib.ui.widgets.forms import begin_form, end_form, draw_path_row, draw_int_field, draw_combo_field, pick_file, pick_save_file
 
 _log = logging.getLogger("tools.bsa_extractor")
 

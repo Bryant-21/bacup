@@ -14,14 +14,15 @@ GENERATED_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "Use
 
 PATCHED_CASES = {
     "W05_MQ_004P_Crane_DoorTriggerScript": ("OnTriggerEnter", "OnTimer"),
+    "W05_MQ_004p_UpstairDoorAliasScript": (
+        "OnInit",
+        "Quest.OnStageSet",
+        "UnlockUpstairsDoor",
+    ),
+    "W05_MQ_101P_A_RepairTerminalScript": ("OnActivate",),
     "W05_MQ_101P_A_RepairSubTerminalScript": ("OnMenuItemRun",),
     "W05_MQA_206P_SSTalkTriggerBoxScript": ("OnTriggerEnter",),
 }
-
-INTENTIONAL_NO_PATCH = (
-    "W05_MQ_004p_UpstairDoorAliasScript",
-    "W05_MQ_101P_A_RepairTerminalScript",
-)
 
 
 def _fo4_base_source() -> Path | None:
@@ -61,7 +62,10 @@ def test_w05_patched_members_merge_once(script_name: str, members: tuple[str, ..
 
     merged = _merged_source(script_name)
     for member in members:
-        assert merged.lower().count(f"event {member.lower()}(") == 1
+        member_name = member.lower()
+        count = merged.lower().count(f"event {member_name}(")
+        count += merged.lower().count(f"function {member_name}(")
+        assert count == 1
 
 
 def test_crane_door_uses_its_configured_open_stage():
@@ -73,9 +77,23 @@ def test_crane_door_uses_its_configured_open_stage():
     assert "IsStageDone(1000)" not in merged
 
 
-@pytest.mark.parametrize("script_name", INTENTIONAL_NO_PATCH)
-def test_w05_open_controller_scripts_remain_unpatched(script_name: str):
-    assert _script_patch_source(script_name) is None
+def test_upstairs_door_unlocks_on_init_or_prerequisite_stage():
+    merged = _merged_source("W05_MQ_004p_UpstairDoorAliasScript")
+
+    assert 'RegisterForRemoteEvent(owningQuest, "OnStageSet")' in merged
+    assert "owningQuest.GetStage() >= PreReqStage" in merged
+    assert "auiStageID >= PreReqStage" in merged
+    assert "doorRef != None && doorRef.IsLocked()" in merged
+    assert "doorRef.Unlock()" in merged
+
+
+def test_repair_terminal_activates_the_bound_terminal_and_passcode_stage():
+    merged = _merged_source("W05_MQ_101P_A_RepairTerminalScript")
+
+    assert "akActionRef != Game.GetPlayer()" in merged
+    assert "akActionRef.GetItemCount(W05_MQ_101P_A_RepairTerminalKey) < 1" in merged
+    assert "IsStageDone(iStageGetPasscode)" in merged
+    assert "SetStage(iStageGetPasscode)" in merged
 
 
 @pytest.mark.parametrize("script_name", PATCHED_CASES)

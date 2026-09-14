@@ -7,10 +7,49 @@ use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::SigCode;
 use crate::session::PluginSession;
 
-const RADIO_SCRIPT: &[u8] = b"RadioGeneral_MasterScript";
-const SONGS_DATA_PROPERTY: &[u8] = b"songsData";
-const SONG_FORM_IDS_PROPERTY: &[u8] = b"songFormIDs";
-const TRACK_MEMBER: &[u8] = b"Track";
+struct RadioTrackArray {
+    struct_property: &'static [u8],
+    member: &'static [u8],
+    int_property: &'static [u8],
+}
+
+struct RadioScriptSpec {
+    script: &'static [u8],
+    arrays: &'static [RadioTrackArray],
+}
+
+/// Each station script keeps its track scenes in one or more struct arrays; the
+/// member holding the Scene differs per script.
+const RADIO_SCRIPTS: &[RadioScriptSpec] = &[
+    RadioScriptSpec {
+        script: b"RadioGeneral_MasterScript",
+        arrays: &[RadioTrackArray {
+            struct_property: b"songsData",
+            member: b"Track",
+            int_property: b"songFormIDs",
+        }],
+    },
+    RadioScriptSpec {
+        script: b"RadioDramaRadio_MasterScript",
+        arrays: &[
+            RadioTrackArray {
+                struct_property: b"songsData",
+                member: b"trackScene",
+                int_property: b"songFormIDs",
+            },
+            RadioTrackArray {
+                struct_property: b"dramasData",
+                member: b"trackScene",
+                int_property: b"dramaFormIDs",
+            },
+            RadioTrackArray {
+                struct_property: b"commercialsData",
+                member: b"trackScene",
+                int_property: b"commercialFormIDs",
+            },
+        ],
+    },
+];
 
 pub struct RepairRadioScenePropertiesFixup;
 
@@ -77,6 +116,7 @@ impl Fixup for RepairRadioScenePropertiesFixup {
 struct PropertyInsertion {
     property_count_offset: usize,
     insert_offset: usize,
+    property_name: &'static [u8],
     form_ids: Vec<i32>,
 }
 
@@ -100,7 +140,7 @@ fn repair_radio_vmad(data: &mut Vec<u8>, own_master_index: u32) -> bool {
             .copy_from_slice(&property_count.to_le_bytes());
 
         let mut property = Vec::new();
-        push_string(&mut property, SONG_FORM_IDS_PROPERTY);
+        push_string(&mut property, insertion.property_name);
         property.push(13); // Int[]
         property.push(1); // edited
         property.extend_from_slice(&(insertion.form_ids.len() as i32).to_le_bytes());
@@ -130,37 +170,57 @@ fn find_property_insertions(data: &[u8], own_master_index: u32) -> Option<Vec<Pr
         if property_count == u16::MAX {
             return None;
         }
-        let is_radio_script = eq_ascii_case(script_name, RADIO_SCRIPT);
-        let mut has_form_ids = false;
-        let mut form_ids = None;
+        let spec = RADIO_SCRIPTS
+            .iter()
+            .find(|candidate| eq_ascii_case(script_name, candidate.script));
+        let mut collected: Vec<(usize, Vec<i32>)> = Vec::new();
+        let mut already_present: Vec<usize> = Vec::new();
 
         for _ in 0..property_count {
             let property_name = reader.read_string()?;
             let property_type = reader.read_u8()?;
             reader.advance(1)?; // flags
 
-            if is_radio_script
-                && eq_ascii_case(property_name, SONGS_DATA_PROPERTY)
-                && property_type == 17
-            {
-                form_ids = Some(read_song_form_ids(
-                    &mut reader,
-                    object_format,
-                    own_master_index,
-                )?);
-            } else {
-                if is_radio_script && eq_ascii_case(property_name, SONG_FORM_IDS_PROPERTY) {
-                    has_form_ids = true;
+            let mut consumed = false;
+            if let Some(spec) = spec {
+                let struct_slot = spec
+                    .arrays
+                    .iter()
+                    .position(|array| eq_ascii_case(property_name, array.struct_property));
+                if let Some(slot) = struct_slot {
+                    if property_type == 17 {
+                        let form_ids = read_song_form_ids(
+                            &mut reader,
+                            object_format,
+                            own_master_index,
+                            spec.arrays[slot].member,
+                        )?;
+                        collected.push((slot, form_ids));
+                        consumed = true;
+                    }
+                } else if let Some(slot) = spec
+                    .arrays
+                    .iter()
+                    .position(|array| eq_ascii_case(property_name, array.int_property))
+                {
+                    already_present.push(slot);
                 }
+            }
+
+            if !consumed {
                 skip_property_value(&mut reader, property_type, object_format)?;
             }
         }
 
-        if is_radio_script && !has_form_ids {
-            if let Some(form_ids) = form_ids {
+        if let Some(spec) = spec {
+            for (slot, form_ids) in collected {
+                if already_present.contains(&slot) {
+                    continue;
+                }
                 insertions.push(PropertyInsertion {
                     property_count_offset,
                     insert_offset: reader.offset,
+                    property_name: spec.arrays[slot].int_property,
                     form_ids,
                 });
             }
@@ -173,6 +233,7 @@ fn read_song_form_ids(
     reader: &mut Reader<'_>,
     object_format: u16,
     own_master_index: u32,
+    track_member: &[u8],
 ) -> Option<Vec<i32>> {
     let count = reader.read_count()?;
     let mut form_ids = Vec::with_capacity(count);
@@ -183,7 +244,7 @@ fn read_song_form_ids(
             let member_name = reader.read_string()?;
             let member_type = reader.read_u8()?;
             reader.advance(1)?; // flags
-            if eq_ascii_case(member_name, TRACK_MEMBER) && member_type == 1 {
+            if eq_ascii_case(member_name, track_member) && member_type == 1 {
                 let raw = read_object(reader, object_format)?;
                 if raw >> 24 == own_master_index {
                     form_id = (raw & 0x00ff_ffff) as i32;
@@ -347,30 +408,38 @@ mod tests {
         out.extend_from_slice(&raw.to_le_bytes());
     }
 
-    fn radio_vmad(script_name: &[u8], tracks: &[u32]) -> Vec<u8> {
+    /// Build a VMAD holding one script with `arrays` struct-array properties,
+    /// each `(struct_property, track_member, tracks)`.
+    fn radio_vmad_multi(script_name: &[u8], arrays: &[(&[u8], &[u8], &[u32])]) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&5u16.to_le_bytes());
         out.extend_from_slice(&2u16.to_le_bytes());
         out.extend_from_slice(&1u16.to_le_bytes());
         push_string(&mut out, script_name);
         out.push(0);
-        out.extend_from_slice(&1u16.to_le_bytes());
-        push_string(&mut out, SONGS_DATA_PROPERTY);
-        out.push(17);
-        out.push(1);
-        out.extend_from_slice(&(tracks.len() as i32).to_le_bytes());
-        for (index, track) in tracks.iter().enumerate() {
-            out.extend_from_slice(&2i32.to_le_bytes());
-            push_string(&mut out, b"title");
-            out.push(2);
+        out.extend_from_slice(&(arrays.len() as u16).to_le_bytes());
+        for (struct_property, track_member, tracks) in arrays {
+            push_string(&mut out, struct_property);
+            out.push(17);
             out.push(1);
-            push_string(&mut out, format!("Track {index}").as_bytes());
-            push_string(&mut out, TRACK_MEMBER);
-            out.push(1);
-            out.push(1);
-            push_object(&mut out, *track);
+            out.extend_from_slice(&(tracks.len() as i32).to_le_bytes());
+            for (index, track) in tracks.iter().enumerate() {
+                out.extend_from_slice(&2i32.to_le_bytes());
+                push_string(&mut out, b"title");
+                out.push(2);
+                out.push(1);
+                push_string(&mut out, format!("Track {index}").as_bytes());
+                push_string(&mut out, track_member);
+                out.push(1);
+                out.push(1);
+                push_object(&mut out, *track);
+            }
         }
         out
+    }
+
+    fn radio_vmad(script_name: &[u8], tracks: &[u32]) -> Vec<u8> {
+        radio_vmad_multi(script_name, &[(b"songsData", b"Track", tracks)])
     }
 
     fn int_array_property(data: &[u8], wanted: &[u8]) -> Option<Vec<i32>> {
@@ -400,21 +469,61 @@ mod tests {
         None
     }
 
+    const GENERAL: &[u8] = b"RadioGeneral_MasterScript";
+    const DRAMA: &[u8] = b"RadioDramaRadio_MasterScript";
+
     #[test]
     fn adds_local_scene_ids_parallel_to_song_structs() {
-        let mut data = radio_vmad(RADIO_SCRIPT, &[0x084f_c07a, 0x0839_9c31, 0x0003_04f0]);
+        let mut data = radio_vmad(GENERAL, &[0x084f_c07a, 0x0839_9c31, 0x0003_04f0]);
 
         assert!(repair_radio_vmad(&mut data, 8));
         assert_eq!(
-            int_array_property(&data, SONG_FORM_IDS_PROPERTY),
+            int_array_property(&data, b"songFormIDs"),
             Some(vec![0x4f_c07a, 0x39_9c31, 0])
         );
-        assert_eq!(read_u16(&data, 6 + 2 + RADIO_SCRIPT.len() + 1), Some(2));
+        assert_eq!(read_u16(&data, 6 + 2 + GENERAL.len() + 1), Some(2));
+    }
+
+    #[test]
+    fn adds_one_int_array_per_drama_station_track_list() {
+        // Pirate Radio keeps songs, dramas and ads in three separate struct
+        // arrays, all using `trackScene` rather than `Track`.
+        let mut data = radio_vmad_multi(
+            DRAMA,
+            &[
+                (b"songsData", b"trackScene", &[0x0863_4301, 0x0864_811f]),
+                (b"dramasData", b"trackScene", &[0x0869_ed5f]),
+                (
+                    b"commercialsData",
+                    b"trackScene",
+                    &[0x0863_337e, 0x0000_1234],
+                ),
+            ],
+        );
+
+        assert!(repair_radio_vmad(&mut data, 8));
+        assert_eq!(
+            int_array_property(&data, b"songFormIDs"),
+            Some(vec![0x63_4301, 0x64_811f])
+        );
+        assert_eq!(
+            int_array_property(&data, b"dramaFormIDs"),
+            Some(vec![0x69_ed5f])
+        );
+        assert_eq!(
+            int_array_property(&data, b"commercialFormIDs"),
+            Some(vec![0x63_337e, 0])
+        );
+        assert_eq!(read_u16(&data, 6 + 2 + DRAMA.len() + 1), Some(6));
+
+        let repaired = data.clone();
+        assert!(!repair_radio_vmad(&mut data, 8));
+        assert_eq!(data, repaired);
     }
 
     #[test]
     fn second_pass_is_byte_identical() {
-        let mut data = radio_vmad(RADIO_SCRIPT, &[0x084f_c07a]);
+        let mut data = radio_vmad(GENERAL, &[0x084f_c07a]);
         assert!(repair_radio_vmad(&mut data, 8));
         let repaired = data.clone();
 
@@ -429,7 +538,7 @@ mod tests {
         assert!(!repair_radio_vmad(&mut other, 8));
         assert_eq!(other, original);
 
-        let mut malformed = radio_vmad(RADIO_SCRIPT, &[0x084f_c07a]);
+        let mut malformed = radio_vmad(GENERAL, &[0x084f_c07a]);
         malformed.truncate(malformed.len() - 3);
         let original = malformed.clone();
         assert!(!repair_radio_vmad(&mut malformed, 8));

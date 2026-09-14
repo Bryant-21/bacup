@@ -9,8 +9,13 @@ Event OnActivate(ObjectReference akActionRef)
 
     Int weaponIndex = 0
     While weaponIndex < FireworksWeapons.Length
+        ; Self is an activator, not an actor — Weapon.Fire must be given an
+        ; explicit ammo or the engine resolves it off a null actor process.
         If FireworksWeapons[weaponIndex] != None
-            FireworksWeapons[weaponIndex].Fire(Self)
+            Ammo fireworkAmmo = FireworksWeapons[weaponIndex].GetAmmo()
+            If fireworkAmmo != None
+                FireworksWeapons[weaponIndex].Fire(Self, fireworkAmmo)
+            EndIf
         EndIf
         weaponIndex += 1
     EndWhile

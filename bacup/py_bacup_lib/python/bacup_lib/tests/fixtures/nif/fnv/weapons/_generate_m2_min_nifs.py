@@ -1,4 +1,4 @@
-"""Generate repo-local M2 fixture copies from existing valid FNV NIFs."""
+"""Copy existing valid FNV NIFs into the repo-local ``m2_min_*.nif`` fixtures."""
 from __future__ import annotations
 
 import shutil

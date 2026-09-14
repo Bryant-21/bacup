@@ -1,7 +1,6 @@
 """Gizmo-drag undo batching — every drag must be ONE undo entry, not N.
 
-Regression from the bone-editor rewrite: every frame of a drag pushed its
-own undo entry, so Undo after an arm rotation only reverted the last frame.
+Otherwise Undo after an arm rotation reverts only the last frame.
 `PoseSession.begin_drag()` / `end_drag()` are the batch boundary; while
 `_in_drag` is True, `_push_undo()` is a no-op.
 """
@@ -29,7 +28,7 @@ def test_drag_batches_many_set_local_rotation_calls_into_one_undo_entry():
     s.begin_drag()
     # Simulate a gizmo drag across many frames: each frame the viewport
     # converts the gizmo delta into a different parent-local quat and calls
-    # set_local_rotation. Previously, each call pushed its own undo entry.
+    # set_local_rotation.
     quats = [
         np.array([0.0, 0.0, 0.05, 0.9987]),
         np.array([0.0, 0.0, 0.10, 0.9950]),
@@ -93,17 +92,14 @@ def test_drag_ik_tip_inside_drag_session_batches_into_one_entry():
 
 
 def test_viewport_interact_edge_detection_fires_begin_drag_before_new_mat():
-    """Regression for the real bug: ImGuizmo reports is_using()=True for
-    one or more frames BEFORE it produces a non-None new_mat. Before the
-    fix, `begin_drag()` was gated inside `if new_mat is not None:`, so
-    `_gizmo_was_using` was flipped True on the gated frames (by the
-    unconditional assignment at the end of handle_input), `begin_drag`
-    never fired, and every frame of the drag pushed its own undo entry.
+    """ImGuizmo reports is_using()=True for one or more frames BEFORE it
+    produces a non-None new_mat. If `begin_drag()` is gated on
+    `new_mat is not None`, `_gizmo_was_using` flips True on those frames,
+    `begin_drag` never fires, and every frame pushes its own undo entry.
 
-    This test drives the edge detection directly via _update_drag_state,
-    simulating: is_using=True for 2 gated frames (no new_mat), then
-    is_using=True for 5 frames WITH new_mat (set_local_rotation calls),
-    then is_using=False (drag released).
+    Drives _update_drag_state directly: is_using=True for 2 frames with no
+    new_mat, then 5 frames WITH new_mat (set_local_rotation calls), then
+    is_using=False (drag released).
     """
     from ui.bone_editor.viewport_interact import ViewportInteract
 

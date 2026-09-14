@@ -36,11 +36,10 @@ DEPLOYED_QUEST_ROOT = (
 )
 
 # All 12 are once/boolean AVIF flags (DefaultTo0, "0 = not present / 1 = present"
-# or "fires off once per player" style descriptions; the 3 undocumented
-# Sunny*_Insult AVs share the identical structural CTDA shape -- every sibling
-# INFO gates at ==0.0, never a progressive threshold -- see
-# contracts/w3-w05-dialoguesettlers.md Section A). SetValue(1.0) is therefore
-# correct for every row; none are accumulating counters.
+# or "fires off once per player" style descriptions). The 3 undocumented
+# Sunny*_Insult AVs have the same CTDA shape: every sibling INFO gates at ==0.0,
+# never a progressive threshold (contracts/w3-w05-dialoguesettlers.md). So
+# SetValue(1.0) is correct for every row; none are counters.
 TOPICINFO_PATCH_CASES: dict[str, tuple[str, ...]] = {
     "TIF_W05_DialogueSettlers_00562162": (
         "akSpeakerRef == None",

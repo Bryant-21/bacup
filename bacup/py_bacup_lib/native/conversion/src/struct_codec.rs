@@ -1,32 +1,14 @@
 //! Schema-driven struct-codec facade for conversion fixups.
 //!
-//! # Why this module exists
-//! Subrecords whose schema codec starts with `struct:` (e.g. `WEAP.DNAM` =
-//! `struct:I,f,f,f,...,B,B,B,B`) decode through `source_read.rs` as
-//! `FieldValue::Bytes` — a raw payload with no named-field access. The Python
-//! conversion fixups operate on YAML-translated dicts and access nested
-//! struct fields by display-name (`data["DamageBase"]`,
-//! `entry["Relations"]["Faction"]`, …). Porting those fixups to Rust without a
-//! way to decode struct payloads into name-keyed values is impossible.
+//! `struct:` subrecords (e.g. `WEAP.DNAM` = `struct:I,f,f,f,...,B,B,B,B`)
+//! decode through `source_read.rs` as raw `FieldValue::Bytes`.
+//! [`decode_subrecord`] turns one into a name-keyed `serde_json::Value` with
+//! `authoring_serialize`'s `compact_subrecord_to_json`, using the plugin's
+//! masters / name / game from the handle store and the schema from
+//! `compiled_schema_for_game`.
 //!
-//! This module bridges the gap by reusing the already-built decode pipeline in
-//! `authoring_serialize.rs` (`compact_subrecord_to_json` →
-//! `serde_json::Value`). The facade:
-//!
-//! 1. Pulls the plugin's masters / name / game from the global handle store.
-//! 2. Looks up the schema record + subrecord def via `compiled_schema_for_game`.
-//! 3. Builds a `DecodeSpec` and runs the JSON decoder.
-//!
-//! The encode side is intentionally NOT included in this first cut — it
-//! requires propagating `NativeImportContext` mutations (master growth,
-//! localized-string allocation) back into the plugin slot, which is a
-//! larger change.
-//!
-//! # Public surface
-//! - [`decode_subrecord`] — turn `(handle_id, record_sig, subrec_sig, bytes)`
-//!   into a name-keyed `serde_json::Value`.
-//! - [`decoded_field_object`] — small accessor helper that returns the JSON
-//!   object map when decode succeeds and produced an object.
+//! Decode only: encoding would need `NativeImportContext` mutations (master
+//! growth, localized-string allocation) written back into the plugin slot.
 
 use crate::fixups::FixupError;
 use crate::ids::{SigCode, SubrecordSig};
@@ -45,21 +27,13 @@ use esp_authoring_core::plugin_runtime::{
 /// Decode a subrecord payload into a name-keyed `serde_json::Value` using the
 /// plugin's authoring schema.
 ///
-/// `handle_id` selects which plugin's masters / name / strings the FormID
-/// resolution and lstring lookups will use. `record_sig` is the parent
-/// record signature (e.g. `WEAP`); `subrec_sig` is the subrecord signature
-/// (e.g. `DNAM`). `data` is the raw subrecord payload bytes.
+/// `handle_id` selects the masters / name / strings used for FormID and
+/// lstring resolution. For `WEAP.DNAM` the result is an object with keys
+/// `ammo`, `speed`, `attack_delay`, ...
 ///
-/// # Returns
-/// On success the JSON value mirrors the YAML dict the legacy Python pipeline
-/// works on — e.g. for `WEAP.DNAM` an object with keys `ammo`, `speed`,
-/// `attack_delay`, …
-///
-/// # Errors
-/// - `HandleError` if the plugin handle is unknown.
-/// - `SchemaError` if the plugin has no recorded game, the schema has no
-///   record/subrecord def for the given sigs, or the codec isn't a decodable
-///   struct form.
+/// Errors with `HandleError` for an unknown handle, or `SchemaError` when the
+/// plugin has no recorded game, the schema lacks the record/subrecord def, or
+/// the codec isn't a decodable struct.
 pub fn decode_subrecord(
     handle_id: u64,
     record_sig: SigCode,
@@ -119,12 +93,8 @@ pub fn decode_subrecord(
     Ok(value)
 }
 
-/// Convenience: when [`decode_subrecord`] succeeds and the decoded value is a
-/// JSON object, return its fields map. Returns `None` when the value is a
-/// scalar / array / raw-only wrapper (`{"value": ..., "raw_hex": ...}`).
-///
-/// Fixups that just want to read named struct fields can lean on this helper
-/// to avoid threading `serde_json::Value` matches at every call site.
+/// The fields map of a decoded JSON object; `None` for a scalar, array, or
+/// raw-only wrapper (`{"value": ..., "raw_hex": ...}`).
 pub fn decoded_field_object(
     value: serde_json::Value,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
@@ -217,7 +187,7 @@ mod tests {
 
     // ── end-to-end decode against the FO4 schema ──────────────────────────
 
-    /// Defer plugin handle close so cleanup is robust on assertion failure.
+    /// Closes the plugin handle on drop, so cleanup runs even when an assertion fails.
     struct CloseOnDrop(u64);
     impl Drop for CloseOnDrop {
         fn drop(&mut self) {
@@ -332,9 +302,8 @@ mod tests {
         let map = decoded_field_object(decoded.clone())
             .unwrap_or_else(|| panic!("expected typed object for FACT.XNAM, got: {decoded}"));
 
-        // Keys come from authoring_key_name(display_label, id) — CamelCase of
-        // the display_label. This matches the YAML shape Python fixups
-        // operated on (e.g. `entry["Relations"]["Faction"]`).
+        // Keys come from authoring_key_name(display_label, id): CamelCase of the
+        // display_label, the YAML shape of e.g. `entry["Relations"]["Faction"]`.
         assert!(
             map.contains_key("Faction"),
             "decoded FACT.XNAM must expose `Faction` key; got: {:?}",

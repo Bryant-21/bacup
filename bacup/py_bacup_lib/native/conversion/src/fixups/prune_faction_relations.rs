@@ -1,18 +1,10 @@
 //! Fixup: drop FACT Relations (XNAM) entries that reference factions outside
 //! the converted graph.
 //!
-
-//!
-//! # What this does
-//! FO76 faction records carry Relations entries (XNAM subrecords) linking to
-//! dozens of unrelated creature, vendor, and quest factions.  After the
-//! FO76→FO4 translation sweep, all FormKeys in the target plugin have been
-//! remapped.  However, only factions that were actually walked into the
-//! dependency graph exist in the target plugin.
-//!
-//! This fixup collects every FACT FormKey present in the target plugin, then
-//! for each FACT record it drops any XNAM subrecord whose referenced faction
-//! FormKey is not in that set (and is not the record's own FormKey).
+//! FO76 factions relate to dozens of unrelated creature, vendor, and quest
+//! factions, but only factions walked into the dependency graph exist in the
+//! target. Each FACT drops XNAM entries whose faction is neither present in the
+//! target nor the record itself.
 //!
 //! # XNAM struct layout (FO4, codec `struct:I,i,I`, 12 bytes)
 //! | Offset | Size | Field               |
@@ -22,8 +14,7 @@
 //! |      8 |    4 | group_combat_reaction (uint32) |
 //!
 //! XNAM decodes as `FieldValue::Struct` when the schema carries field metadata
-//! (faction field `kind="formid"`); this fixup handles both the typed Struct
-//! variant and the Bytes fallback.
+//! (faction field `kind="formid"`), otherwise as `Bytes`; both are handled.
 
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -137,16 +128,9 @@ impl Fixup for PruneFactionRelationsFixup {
 // Record-level mutation (extracted for unit-test access)
 // ---------------------------------------------------------------------------
 
-/// Prune XNAM subrecords whose referenced faction FormKey is not in
-/// `graph_faction_object_ids`.
-///
-/// `own_local` identifies the record's own FormKey (a faction always keeps
-/// Relations entries pointing to itself).
-///
-/// Returns the number of XNAM entries that were dropped.
-///
-/// XNAM is emitted as `FieldValue::Bytes` (12-byte struct).  Unknown or
-/// shorter XNAM payloads are kept as-is (no mutation).
+/// Prune XNAM subrecords whose faction is not in `graph_faction_object_ids` and
+/// return how many were dropped. Entries pointing at the record itself
+/// (`own_local`) are kept, as are unknown or short payloads.
 pub fn prune_xnam_entries(
     record: &mut Record,
     own_local: u32,

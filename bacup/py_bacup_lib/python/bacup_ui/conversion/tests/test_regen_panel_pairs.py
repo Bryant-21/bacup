@@ -3,9 +3,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from bacup_lib.lod_settings import (
+    PROFILE_HIGH_QUALITY,
+    PROFILE_PERFORMANCE,
+    cross_game_default_settings,
+)
 from bacup_lib.regen_pipeline import RegenResult
-from bacup_lib.source_pairs import get_pair
-from bacup_ui.conversion.panels.regen_panel import RegenPanel
+from bacup_lib.source_pairs import (
+    FNV_REQUIRED_EXCLUDE_SIGNATURES,
+    get_pair,
+)
+from bacup_ui.conversion.panels.regen_panel import RegenPanel, _lod_profile_values
 
 
 def _workspace(game_paths):
@@ -27,6 +35,7 @@ def _game_paths(tmp_path: Path):
         },
         "fo76": {
             "root_dir": str(tmp_path / "Fallout76"),
+            "pts_root_dir": str(tmp_path / "Fallout 76 Playtest"),
             "extracted_dir": str(tmp_path / "extracted" / "fo76"),
         },
         "fnv": {
@@ -68,14 +77,14 @@ def test_build_paths_uses_fnv_pair_and_populates_merge_inputs(monkeypatch, tmp_p
     assert paths.source_data_dir == tmp_path / "FalloutNV" / "Data"
     assert paths.source_extracted_dir == tmp_path / "extracted" / "fnv"
     assert paths.target_data_dir == tmp_path / "Fallout4" / "Data"
-    assert paths.output_root == tmp_path / "app" / "mods" / "FNV_FO3_Merged"
+    assert paths.output_root == tmp_path / "app" / "mods" / "FNV_FO3"
     assert paths.target_asset_catalog_path == (
         tmp_path / "app" / "cache" / "conversion" / "fo4_target_assets.sqlite3"
     )
     assert paths.target_asset_cache_dir == (
         tmp_path / "app" / "cache" / "conversion" / "target_assets"
     )
-    assert paths.mod_name == "FNV_FO3_Merged"
+    assert paths.mod_name == "FNV_FO3"
     assert paths.merge_primary_plugin_paths == tuple(
         tmp_path / "FalloutNV" / "Data" / name
         for name in (*pair.source_plugins, "CaravanPack.esm")
@@ -83,7 +92,94 @@ def test_build_paths_uses_fnv_pair_and_populates_merge_inputs(monkeypatch, tmp_p
     assert paths.merge_grafted_plugin_paths == tuple(
         tmp_path / "Fallout3" / "Data" / name for name in pair.merge.grafted_plugins
     )
-    assert paths.additional_source_asset_roots == (tmp_path / "extracted" / "fo3",)
+    assert paths.additional_source_asset_roots == (
+        tmp_path / "extracted" / "fo3",
+        tmp_path / "Fallout3" / "Data",
+    )
+
+
+def test_build_paths_uses_selected_fo76_playtest_esm_source(monkeypatch, tmp_path):
+    paths_by_game = _game_paths(tmp_path)
+    panel = RegenPanel(_workspace(paths_by_game))
+    panel.fo76_source = "playtest"
+    monkeypatch.setattr(
+        "bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: tmp_path / "app"
+    )
+
+    paths = panel.build_paths()
+
+    assert paths.source_data_dir == tmp_path / "Fallout 76 Playtest" / "Data"
+    assert paths.source_extracted_dir == tmp_path / "extracted" / "fo76"
+
+
+def test_fo76_ownership_check_still_uses_retail_install(monkeypatch, tmp_path):
+    paths_by_game = _game_paths(tmp_path)
+    panel = RegenPanel(_workspace(paths_by_game))
+    panel.fo76_source = "playtest"
+    checked = {}
+
+    def validate(game_id, root):
+        checked[game_id] = root
+        return SimpleNamespace(ok=True)
+
+    monkeypatch.setattr(
+        "bacup_ui.conversion.panels.regen_panel.validate_store_install_for_game",
+        validate,
+    )
+
+    panel._store_install_result("fo76")
+
+    assert checked["fo76"] == str(tmp_path / "Fallout76")
+
+
+def test_fnv_panel_lod_settings_match_cli_engine_defaults(tmp_path):
+    panel = RegenPanel(_workspace(_game_paths(tmp_path)), fixed_pair_id="fnvfo3:fo4")
+
+    settings = panel._selected_lod_settings(panel.lod_mode)
+
+    expected = cross_game_default_settings()
+    expected["objects"]["atlas_mip_flooding"] = False
+    assert settings == expected
+
+
+def test_lod_mode_and_quality_choices_follow_the_pair(tmp_path):
+    paths = _game_paths(tmp_path)
+
+    assert RegenPanel(_workspace(paths)).lod_mode == "hybrid-atlas"
+    assert _lod_profile_values("fo76:fo4") == [
+        PROFILE_HIGH_QUALITY,
+        PROFILE_PERFORMANCE,
+    ]
+
+    for pair_id in ("fnvfo3:fo4", "skyrimse:fo4"):
+        panel = RegenPanel(_workspace(paths), fixed_pair_id=pair_id)
+        assert panel.lod_mode == "generate"
+    assert _lod_profile_values("fnvfo3:fo4") == []
+    assert _lod_profile_values("skyrimse:fo4") == [PROFILE_HIGH_QUALITY]
+
+
+def test_fnv_build_admits_nonquest_records_and_gates_only_quest_runtime(tmp_path):
+    panel = RegenPanel(_workspace(_game_paths(tmp_path)), fixed_pair_id="fnvfo3:fo4")
+
+    overrides = panel._build_option_overrides()
+
+    assert overrides is not None
+    assert overrides["exclude_signatures"] == FNV_REQUIRED_EXCLUDE_SIGNATURES
+    assert overrides["exclude_signatures"] == {"DIAL", "INFO", "QUST", "SCEN"}
+    assert "PACK" not in overrides["exclude_signatures"]
+    assert "WEAP" not in overrides["exclude_signatures"]
+
+
+def test_skyrim_gameplay_uses_native_capability_planning(tmp_path):
+    panel = RegenPanel(_workspace(_game_paths(tmp_path)), fixed_pair_id="skyrimse:fo4")
+
+    overrides = panel._build_option_overrides()
+
+    assert overrides is None
+
+
+def test_fo76_keeps_every_record_signature(tmp_path):
+    assert RegenPanel(_workspace(_game_paths(tmp_path)))._build_option_overrides() is None
 
 
 def test_build_paths_populates_skyrim_flatten_only_inputs(monkeypatch, tmp_path):
@@ -97,7 +193,7 @@ def test_build_paths_populates_skyrim_flatten_only_inputs(monkeypatch, tmp_path)
 
     paths = panel.build_paths()
 
-    assert paths.output_root == tmp_path / "app" / "mods" / "Skyrim_Merged"
+    assert paths.output_root == tmp_path / "app" / "mods" / "Skyrim"
     assert paths.merge_primary_plugin_paths == tuple(
         tmp_path / "SkyrimSE" / "Data" / name for name in pair.source_plugins
     )
@@ -114,9 +210,9 @@ def test_steam_gate_uses_selected_pair_games(monkeypatch, tmp_path):
         checked.append(game_id)
         return SimpleNamespace(ok=True)
 
-    monkeypatch.setattr(panel, "_steam_install_result", result)
+    monkeypatch.setattr(panel, "_store_install_result", result)
 
-    assert panel._steam_installs_ok() is True
+    assert panel._store_installs_ok() is True
     assert checked == ["fo4", "fnv", "fo3"]
 
 
@@ -188,7 +284,7 @@ def test_non_default_start_passes_pair_and_supports_pair_upgrade(
     )
     monkeypatch.setattr(
         panel,
-        "_require_steam_installs",
+        "_require_store_installs",
         lambda: None,
     )
     monkeypatch.setattr(
@@ -209,9 +305,10 @@ def test_non_default_start_passes_pair_and_supports_pair_upgrade(
 
     assert captured["pair"] is pair
     assert captured["options"].upgrade is True
-    assert captured["paths"].mod_name == "FNV_FO3_Merged"
+    assert captured["paths"].mod_name == "FNV_FO3"
     assert captured["paths"].additional_source_asset_roots == (
         tmp_path / "extracted" / "fo3",
+        tmp_path / "Fallout3" / "Data",
     )
     assert captured["complete"][1]["companion_deployed"] == []
 
@@ -219,8 +316,8 @@ def test_non_default_start_passes_pair_and_supports_pair_upgrade(
 @pytest.mark.parametrize(
     ("pair_id", "expected_plugin"),
     [
-        ("fnvfo3:fo4", "FNV_FO3_Merged.esm"),
-        ("skyrimse:fo4", "Skyrim_Merged.esm"),
+        ("fnvfo3:fo4", "FalloutNV.esm"),
+        ("skyrimse:fo4", "Skyrim.esm"),
         ("fo76:fo4", "SeventySix.esm"),
     ],
 )

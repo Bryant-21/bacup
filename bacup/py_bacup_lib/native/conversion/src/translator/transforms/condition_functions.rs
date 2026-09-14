@@ -3,9 +3,8 @@
 //! The YAML file maps integer FO76 function codes to FO4 named enum strings.
 //! Unknown codes are NOT in the table; conditions that reference them are dropped.
 //!
-//! Data is embedded in the binary via `include_str!` in
-//! `crate::phase::record_translation::embedded`.
-//! Cached lazily via `OnceLock` — safe for concurrent access after first load.
+//! Data is embedded via `include_str!` in `crate::embedded` and cached lazily
+//! in a `OnceLock`.
 
 use rustc_hash::FxHashMap;
 use std::sync::OnceLock;

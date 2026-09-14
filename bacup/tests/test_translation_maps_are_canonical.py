@@ -44,6 +44,7 @@ REQUIRED_MAP_FILENAMES = {
     "fo3_to_fo4.yaml",
     "fo4_to_skyrimse.yaml",
     "fo76_to_skyrimse.yaml",
+    "skeleton_skyrimse_to_fo4.yaml",
     "skyrimse_to_fo4.yaml",
     "starfield_to_fo4.yaml",
 }

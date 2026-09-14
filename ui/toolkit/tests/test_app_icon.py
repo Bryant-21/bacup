@@ -80,13 +80,14 @@ def test_toolkit_post_init_sets_variant_window_icon(monkeypatch):
     variant = get_variant("full")
     app = ToolkitApp.__new__(ToolkitApp)
     app._app_variant = variant
-    app._current_theme = "dark"
+    app._current_theme = SimpleNamespace(id="dark")
+    app._settings = SimpleNamespace(theme_colors={})
     app._mono_font = None
     app._ws_map = {}
 
     monkeypatch.setattr("ui.toolkit.app.set_window_icon", lambda app_variant=None: called.append(app_variant))
     monkeypatch.setattr("ui.toolkit.app.set_native_dark_title_bar", lambda: None)
-    monkeypatch.setattr("ui.toolkit.app.apply_theme", lambda _theme: None)
+    monkeypatch.setattr("ui.toolkit.app.apply_theme", lambda _theme, **_kwargs: None)
     monkeypatch.setattr("ui.toolkit.app._signal_ready_file", lambda: None)
 
     app._post_init()

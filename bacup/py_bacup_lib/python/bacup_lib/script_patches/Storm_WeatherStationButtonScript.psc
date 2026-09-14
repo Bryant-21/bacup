@@ -31,11 +31,10 @@ Function UpdateLinkedButtonState(Actor akPlayer)
     ApplyLocalState(bIsOpen)
 EndFunction
 
-Event OnSyncVariableNetworkChanged(String varName)
-    If varName == "bIsOpen"
-        ApplyLocalState(bIsOpen)
-    EndIf
-EndEvent
+; OnSyncVariableNetworkChanged("bIsOpen") was the FO76 server->client replication
+; callback. bIsOpen is now only written by OnActivate/OnTimer here, and both already
+; call UpdateLinkedButtonState -> ApplyLocalState, so the handler is redundant.
+; @drop-member OnSyncVariableNetworkChanged
 
 Event OnActivate(ObjectReference akActionRef)
     If bIsOpen || !IsEnabled()

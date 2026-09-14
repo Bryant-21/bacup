@@ -1,12 +1,12 @@
 use super::super::fnv_magic_effects::{
     LegacyMagicFamily, MagicEffectsNormalizeReport, MagicReferenceOutcome,
-    normalize_legacy_magic_effects,
+    normalize_legacy_magic_effects_for_source,
 };
 use super::super::fnv_mgef::{
     LegacyMgefFamily, MgefNormalizeReport, MgefReferenceOutcome, normalize_legacy_mgef_data,
 };
 use super::super::fnv_perk::{
-    LegacyPerkFamily, PerkNormalizeReport, PerkReferenceOutcome, normalize_legacy_perk,
+    LegacyPerkFamily, PerkNormalizeReport, PerkReferenceOutcome, normalize_legacy_perk_for_source,
 };
 use super::super::fnv_wrld::{
     WrldNormalizationError, WrldNormalizationReport, WrldReferenceState, WrldSourceFamily,
@@ -289,7 +289,7 @@ pub(crate) fn normalize_legacy_serial_record_once(
         ))),
         sig if matches!(sig, s if s == *b"ALCH" || s == *b"ENCH" || s == *b"SPEL") => {
             Some(Ok(LegacySerialNormalizeReport::Effects(
-                normalize_legacy_magic_effects(record, magic_family, mapper),
+                normalize_legacy_magic_effects_for_source(record, magic_family, source_fk, mapper),
             )))
         }
         sig if sig == *b"WRLD" => Some(
@@ -302,7 +302,7 @@ pub(crate) fn normalize_legacy_serial_record_once(
                 return Some(Ok(LegacySerialNormalizeReport::PerkAlreadyNormalized));
             }
             Some(Ok(LegacySerialNormalizeReport::Perk(
-                normalize_legacy_perk(record, perk_family, mapper),
+                normalize_legacy_perk_for_source(record, perk_family, source_fk, mapper),
             )))
         }
         _ => None,

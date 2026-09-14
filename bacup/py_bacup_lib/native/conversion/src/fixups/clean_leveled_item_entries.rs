@@ -1,37 +1,9 @@
 //! Fixup: strip invalid entries from LVLI / LVLN records.
 //!
-
-//!
-//! # What this does
-//! After `_fix_invalid_target_formkeys` and the translation sweep, some LVLI
-//! (LeveledItem) and LVLN (LeveledNPC) records may still contain entries whose
-//! leveled-entry FormKey is invalid:
-//! - Null FormKey (`local == 0`).
-//! - Direct self-reference to the owning leveled list.
-//! - Pointer into the target master ESM or generated plugin for a record that
-//!   doesn't exist there.
-//! - Indirect generated-plugin cycles between leveled lists of the same kind.
-//!
-//! This fixup scans every LVLI / LVLN record in the target plugin, drops bad
-//! entries, and writes the cleaned record back.
-//!
-//! # Entry structure
-//! LVLI/LVLN entries can appear either as decoded structs with a named
-//! `Reference`, `item`, or `npc` field or as raw `LVLO` bytes.  The raw FO4
-//! LVLO payload stores its reference FormID at byte offset 4.
-//!
-//! # Master-validity check
-//! The Python drops entries whose leveled-entry reference points to a target
-//! master ESM at a FormKey that doesn't exist in that master.  The Rust path also
-//! drops entries that point into the generated target plugin at a missing local
-//! FormKey.  Both checks use `record_exists_in_handle` (an O(1) index lookup, no
-//! decode).
-//!
-//! # Design note
-//! `apply_to_record` accepts a `is_invalid_ref: &dyn Fn(&FormKey) -> bool`
-//! closure so that unit tests can inject the validation logic without needing
-//! real plugin handles.  The `run()` method constructs a closure that performs
-//! the full null + master-existence check against real handles.
+//! Drops leveled entries whose reference is null, is the owning list, names a
+//! record missing from a target master or the generated plugin, or closes a
+//! generated-plugin cycle between lists of the same kind. Existence checks use
+//! `record_exists_in_handle` (index lookup, no decode).
 
 use std::collections::{HashMap, HashSet};
 
@@ -220,26 +192,11 @@ impl Fixup for CleanLeveledItemEntriesFixup {
 // Record-level mutation
 // ---------------------------------------------------------------------------
 
-/// Remove LVLO/LVLE subrecord entries whose leveled-entry FormKey is invalid.
+/// Remove LVLO/LVLE entries whose reference `is_invalid_ref` rejects, plus dangling
+/// LLKC rows. Returns `true` when anything was dropped.
 ///
-/// Returns `true` when at least one entry was dropped.
-///
-/// # Entry identification
-/// A subrecord is treated as a leveled-entry if its signature is `LVLO` or
-/// `LVLE`.  Struct entries use the named `Reference`, `item`, or `npc` field.
-/// Raw byte entries use the FO4 LVLO reference FormID at byte offset 4.
-///
-/// # Drop conditions (matching Python `_clean_leveled_item_entries` exactly)
-/// An entry is dropped when `is_invalid_ref` returns `true` for its
-/// leveled-entry FormKey.  The predicate should implement:
-/// 1. null FormKey (`local == 0`) → invalid.
-/// 2. non-null FK pointing at a target master or the generated plugin at a FK
-///    that doesn't exist there → invalid.
-///
-/// # Parameters
-/// - `reference_sym` — the interned `Sym` for `"Reference"` compatibility.
-/// - `is_invalid_ref` — predicate that returns `true` when the entry FK
-///   should cause the entry to be dropped.
+/// Struct entries use the named `Reference`, `item`, or `npc` field; raw entries
+/// use the FO4 LVLO reference FormID at byte offset 4.
 pub fn apply_to_record<F>(
     record: &mut Record,
     reference_sym: Sym,
@@ -255,13 +212,10 @@ where
     let mut new_fields: smallvec::SmallVec<[FieldEntry; 8]> = smallvec::SmallVec::new();
 
     for mut entry in record.fields.drain(..) {
-        // LLKC Filter-Keyword-Chances: a single `array_struct:I,I` subrecord whose
-        // value is a row-list of {keyword→KYWD, chance}. FO76-only filter keywords
-        // (Fallout4.esm:0xxxxxx with no FO4 home) leave the row's keyword FK
-        // dangling — CK then empties the list and the parent ref collapses. Drop the
-        // dangling rows; if the list empties, drop the whole subrecord. There is no
-        // separate LLKC count subrecord (LLCT counts LVLO only), so the row-list
-        // length IS the count — dropping a row is inherently lockstep.
+        // LLKC is one `array_struct:I,I` subrecord of {keyword→KYWD, chance} rows.
+        // FO76-only filter keywords leave dangling keyword FKs; CK then empties the
+        // list and the parent ref collapses. Drop dangling rows, and the subrecord if
+        // it empties. LLCT counts LVLO only, so the row list is its own count.
         if entry.sig.as_str() == "LLKC" {
             match drop_dangling_llkc_rows(&mut entry.value, interner, is_invalid_ref) {
                 LlkcOutcome::Unchanged => new_fields.push(entry),
@@ -940,7 +894,7 @@ fn record_needs_leveled_list_defaults(record: &Record) -> bool {
         || !record.fields.iter().any(|entry| entry.sig == lvlm_sig)
 }
 
-fn is_invalid_ref(
+pub(crate) fn is_invalid_ref(
     session: &mut PluginSession,
     fk: &FormKey,
     interner: &StringInterner,

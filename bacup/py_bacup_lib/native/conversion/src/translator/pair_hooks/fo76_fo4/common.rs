@@ -276,34 +276,6 @@ pub(super) fn truncate_raw_subrecord(record: &mut Record, sig: &[u8; 4], max_len
     }
 }
 
-pub(super) fn project_raw_array_rows(
-    record: &mut Record,
-    sig: &[u8; 4],
-    source_row_len: usize,
-    target_row_len: usize,
-) {
-    if source_row_len <= target_row_len || target_row_len == 0 {
-        return;
-    }
-
-    for entry in &mut record.fields {
-        if entry.sig.0 != *sig {
-            continue;
-        }
-        let FieldValue::Bytes(bytes) = &mut entry.value else {
-            continue;
-        };
-        if bytes.is_empty() || bytes.len() % source_row_len != 0 {
-            continue;
-        }
-
-        let mut projected = smallvec::SmallVec::new();
-        for row in bytes.chunks_exact(source_row_len) {
-            projected.extend_from_slice(&row[..target_row_len]);
-        }
-        *bytes = projected;
-    }
-}
 impl Fo76Fo4Hook {
     pub(super) fn struct_field_name_is(
         interner: &crate::sym::StringInterner,

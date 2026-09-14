@@ -1,36 +1,19 @@
 //! Rewrite Race skeletal model paths for sub-creatures.
 //!
-
+//! Some FO76 sub-creatures reuse the parent's behavior graph and
+//! `CharacterAssets` skeleton path in RACE but ship their own
+//! `Actors/<Parent>/<child>/skeleton.nif`; on the parent's bones the NPC
+//! T-poses. A race qualifies when `MaleSkeletalModel` ends in
+//! `CharacterAssets/skeleton.nif`, a `Path` (`SAPT`) entry is one directory
+//! deeper than `Actors/<Parent>/Animations/`, and
+//! `<source_extracted_dir>/meshes/Actors/<Parent>/<child>/skeleton.nif` exists
+//! (or the same without `meshes/`). `MaleSkeletalModel` becomes
+//! `Actors\<Parent>\<child>\skeleton.nif`; `FemaleSkeletalModel` only when it
+//! names the same parent skeleton, since some races keep a target-game fallback
+//! there (Sheepsquatch → Deathclaw, RadHog → Molerat).
 //!
-//! # What this does
-//! Some FO76 sub-creatures inherit the parent creature's behavior graph and
-//! share the parent's `CharacterAssets` skeleton path in the source RACE record,
-//! but ship their own skeleton nested under
-//! `Actors/<Parent>/<child>/skeleton.nif`.  Without this rewrite, the converted
-//! race animates the sub-creature mesh on the parent's bones and the NPC
-//! T-poses in-game.
-//!
-//! Detection signal:
-//!   - `MaleSkeletalModel` ends in `CharacterAssets/skeleton.nif`
-//!   - A `Path` field entry is one sub-directory deeper than `Actors/<Parent>/Animations/`
-//!   - A `skeleton.nif` exists at `<source_extracted_dir>/meshes/Actors/<Parent>/<child>/skeleton.nif`
-//!     (or one level up without `meshes/`)
-//!
-//! Canonical rewrites:
-//!   - `MaleSkeletalModel`: `Actors\<Parent>\CharacterAssets\skeleton.nif`
-//!     → `Actors\<Parent>\<child>\skeleton.nif`
-//!   - `FemaleSkeletalModel`: same rewrite only when it points at the same
-//!     parent `CharacterAssets/skeleton.nif`. Some FO76 creature races keep a
-//!     target-game fallback in the female row (e.g. Sheepsquatch → Deathclaw,
-//!     RadHog → Molerat); those must remain untouched.
-//!
-//! # Schema mapping
-//! In the FO4 RACE schema, both Male and Female skeletal model paths share the
-//! subrecord signature `ANAM` (zstring). They are positionally disambiguated by
-//! a preceding `MNAM` (Male Marker, empty) and `FNAM` (Female Marker, empty)
-//! subrecord. The first `ANAM` after `MNAM` is `MaleSkeletalModel`; the first
-//! `ANAM` after `FNAM` is `FemaleSkeletalModel`. The `Path` field-list entries
-//! use subrecord sig `SAPT` (zstring, repeatable).
+//! Both skeletal models are `ANAM` zstrings: the first after `MNAM` is Male, the
+//! first after `FNAM` is Female.
 
 use std::path::Path as FsPath;
 

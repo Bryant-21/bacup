@@ -1,12 +1,13 @@
 """Havok tool workspaces — Annotation Extractor, HKX Packer, HKX Converter."""
 
-from imgui_bundle import imgui, icons_fontawesome_6 as fa
+from imgui_bundle import icons_fontawesome_6 as fa
+from imgui_bundle import imgui
 
 from ui.toolkit.workspaces.tool_workspace import ToolWorkspace
 from ui.tools.animation.annotation_extractor import AnnotationExtractorTool
+from ui.tools.animation.havok_converter import HavokConverterTool
 from ui.tools.animation.hkx_packer import HKXPackerTool
 from ui.tools.animation.hkx_viewer import HKXViewerTool
-from ui.tools.animation.havok_converter import HavokConverterTool
 
 
 class AnnotationExtractorWorkspace(ToolWorkspace):
@@ -84,7 +85,7 @@ class HKXViewerWorkspace(ToolWorkspace):
 
 
 class HKXConverterWorkspace(ToolWorkspace):
-    name = "HKX Converter"
+    name = "PS4 / HKX Converter"
     icon = "HKC"
     id = "hkx_converter"
     tool_class = HavokConverterTool

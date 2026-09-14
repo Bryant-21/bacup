@@ -8,15 +8,13 @@ import logging
 
 from imgui_bundle import imgui
 
+from creation_lib.ui.widgets.modern import semantic_color, scaled
+
 _logger = logging.getLogger("toolkit.conversion")
 
 _NS = "##conversion"
 
-_COLORS = {
-    "INFO": imgui.ImVec4(0.85, 0.85, 0.85, 1.0),
-    "WARN": imgui.ImVec4(1.0, 0.9, 0.3, 1.0),
-    "ERROR": imgui.ImVec4(1.0, 0.3, 0.3, 1.0),
-}
+_COLOR_ROLES = {"INFO": "text", "WARN": "warning", "ERROR": "error"}
 
 _MAX_ENTRIES = 5000
 _SCROLL_BOTTOM_TOLERANCE = 10.0
@@ -41,16 +39,21 @@ class ConversionLogPanel:
         imgui.end()
 
     def draw_body(self):
-        # Filter buttons
-        _, self._show_info = imgui.checkbox(f"INFO{_NS}_fi", self._show_info)
-        imgui.same_line()
-        _, self._show_warn = imgui.checkbox(f"WARN{_NS}_fw", self._show_warn)
-        imgui.same_line()
-        _, self._show_error = imgui.checkbox(f"ERROR{_NS}_fe", self._show_error)
-        imgui.same_line()
+        available = imgui.get_content_region_avail().x
+        used = 0.0
+        for label, attr in (("INFO", "_show_info"), ("WARN", "_show_warn"), ("ERROR", "_show_error")):
+            width = imgui.calc_text_size(label).x + imgui.get_frame_height() + scaled(16)
+            if used and used + width <= available:
+                imgui.same_line()
+            else:
+                used = 0.0
+            _, value = imgui.checkbox(f"{label}{_NS}_{attr}", getattr(self, attr))
+            setattr(self, attr, value)
+            used += width
+        if used + scaled(65) <= available:
+            imgui.same_line()
         if imgui.button(f"Clear{_NS}"):
             self._entries.clear()
-
         imgui.separator()
 
         # Log content
@@ -67,7 +70,7 @@ class ConversionLogPanel:
                 if level == "ERROR" and not self._show_error:
                     continue
 
-                color = _COLORS.get(level, _COLORS["INFO"])
+                color = semantic_color(_COLOR_ROLES.get(level, "text"))
                 imgui.push_style_color(imgui.Col_.text, color)
                 imgui.text_wrapped(f"[{level}] {msg}")
                 imgui.pop_style_color()

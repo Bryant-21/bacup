@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "inventory_source": "mods/SeventySix/logs/20260902-100719-pid31876/logs/quest_runtime_inventory.json",
+  "routes": [
+    {
+      "quest_editor_id": "FFZ10_Light",
+      "source_quest": "187531@SeventySix.esm",
+      "selector_keyword": "01564F@SeventySix.esm",
+      "local_lifecycle_patch": "Fragments:Quests:QF_FFZ10_Light_00187531",
+      "inventory_issues": [
+        "no_local_source_producer"
+      ],
+      "resolution": "carrier-dependency"
+    },
+    {
+      "quest_editor_id": "MTR07_Earth",
+      "source_quest": "3443FB@SeventySix.esm",
+      "selector_keyword": "345A29@SeventySix.esm",
+      "local_lifecycle_patch": "Fragments:Quests:QF_MTR07_Earth_003443FB",
+      "inventory_issues": [
+        "no_local_source_producer"
+      ],
+      "resolution": "patched-pending-regen"
+    },
+    {
+      "quest_editor_id": "MTR05_Mother",
+      "source_quest": "06A379@SeventySix.esm",
+      "selector_keyword": "2C3F0B@SeventySix.esm",
+      "local_lifecycle_patch": "Fragments:Quests:QF_MTR05_Mother_0006A379",
+      "inventory_issues": [
+        "no_local_source_producer",
+        "unproven_runtime_entry"
+      ],
+      "sender_script": "DefaultSendStoryEventOnMenuItemRun",
+      "terminal_chains": [
+        {
+          "submenu_terminal": "0681DF@SeventySix.esm",
+          "parent_terminal": "0681C0@SeventySix.esm",
+          "placed_reference": "331C8C@SeventySix.esm"
+        },
+        {
+          "submenu_terminal": "0683AB@SeventySix.esm",
+          "parent_terminal": "068276@SeventySix.esm",
+          "placed_reference": "4331AA@SeventySix.esm"
+        }
+      ],
+      "resolution": "adapted-pending-regen"
+    },
+    {
+      "quest_editor_id": "SFM04_Organic",
+      "source_quest": "10AE02@SeventySix.esm",
+      "selector_keyword": "10AE03@SeventySix.esm",
+      "local_lifecycle_patch": "Fragments:Quests:QF_SFM04_Organic_0010AE02",
+      "inventory_issues": [
+        "no_local_source_producer"
+      ],
+      "resolution": "carrier-dependency"
+    }
+  ]
+}

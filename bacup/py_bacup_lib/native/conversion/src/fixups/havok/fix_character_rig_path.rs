@@ -1,26 +1,14 @@
 //! Rewrite FO76-style skeleton paths in converted character HKX files.
 //!
-
-//!
-//! # What this does
-//! FO76 ships `SingleBoneSkeleton.hkt` at
-//! `Meshes\UniqueBehaviors\zSingleBoneSkeleton\` — one level up from the
-//! `UniqueBehaviors\<name>\Characters\` directory — so FO76 `character.hkx`
-//! files use `"..\zSingleBoneSkeleton\SingleBoneSkeleton.hkt"` as their
-//! `rigName`.
-//!
-//! FO4 ships the same skeleton at `Meshes\GenericBehaviors\zSingleBoneSkeleton\`
-//! — two levels up from the same directory — so the FO4 path should be
-//! `"..\..\GenericBehaviors\zSingleBoneSkeleton\SingleBoneSkeleton.hkt"`.
-//!
-//! Without this rewrite, weapon FX characters fail to locate the skeleton and
-//! the behavior graph never drives the NIF's controller sequences.
-//!
-//! This fixup walks every `character.hkx` under `ctx.mod_path/meshes/`,
-//! loads it, checks `hkbCharacterStringData.rigName`, and rewrites if needed.
-//!
-//! # FixupReport mapping
-//! `records_changed` = number of `character.hkx` files whose `rigName` was rewritten.
+//! FO76 keeps `SingleBoneSkeleton.hkt` in
+//! `Meshes\UniqueBehaviors\zSingleBoneSkeleton\`, so its `character.hkx`
+//! `rigName` is `"..\zSingleBoneSkeleton\SingleBoneSkeleton.hkt"`. FO4 keeps it
+//! in `Meshes\GenericBehaviors\zSingleBoneSkeleton\`, two levels up from
+//! `UniqueBehaviors\<name>\Characters\`:
+//! `"..\..\GenericBehaviors\zSingleBoneSkeleton\SingleBoneSkeleton.hkt"`. With
+//! the FO76 path, weapon FX characters can't find the skeleton and the graph
+//! never drives the NIF's controller sequences. `records_changed` counts
+//! rewritten `character.hkx` files.
 
 use std::path::{Path, PathBuf};
 

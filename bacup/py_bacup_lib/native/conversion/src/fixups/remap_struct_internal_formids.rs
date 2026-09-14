@@ -1,55 +1,72 @@
 //! Fixup: remap source-local FormIDs that live INSIDE struct/array_struct codec
 //! subrecords, which the `FormKeyMapper` never reached.
 //!
-//! # Root cause (the systemic struct-FK remap gap)
-//! `FormKeyMapper::rewrite_record` remaps only (a) VMAD bytes and (b) typed
-//! `FieldValue::FormKey` leaves. A `struct:`/`array_struct:` codec subrecord
-//! decodes to a single `FieldValue::Bytes` blob, so every FormID inside it is
-//! invisible to the mapper and keeps its FO76 source-local (master byte 0)
-//! value → it serializes as a non-existent `Fallout4.esm:00xxxxxx` and dangles.
+//! `FormKeyMapper::rewrite_record` remaps only VMAD bytes and typed
+//! `FieldValue::FormKey` leaves. A `struct:`/`array_struct:` subrecord decodes to
+//! one `FieldValue::Bytes` blob, so its FormIDs keep their FO76 source-local (master
+//! byte 0) value and serialize as dangling `Fallout4.esm:00xxxxxx`. Affected: OMOD
+//! `DATA`, LCTN `LCEP`/`ACEP` enable-parent Actor/Ref and `LCUN`, RACE/MGEF `DATA`.
+//! The LCEP enable-parent ref is dereferenced on cell load, so it is a crash vector.
 //!
-//! Affected subrecords include OMOD `DATA`, LCTN `LCEP`/`ACEP` enable-parent
-//! Actor/Ref and `LCUN`, and RACE/MGEF `DATA`. The LCEP enable-parent ref is
-//! also a cell-load crash vector — it is dereferenced on cell load.
-//!
-//! # The general fix
-//! Descend EVERY struct-codec subrecord generically via `struct_field_layout`
-//! (per-field byte offset/width/formlink_targets) and remap each source-local
-//! FK to its target-encoded id — the same encoded rewrite
-//! `rewrite_raw_object_template_formids` does for OMOD/OBTS, applied uniformly
-//! to all struct subrecords.
-//!
-//! Runs UPSTREAM of the type validators (`validate_reference_target_types`,
-//! placed-record normalization): remap first so the FKs resolve to real
-//! converted records, THEN validate type. Shares `struct_field_layout` offsets
-//! with the validators, so they agree by construction.
+//! Every struct-codec subrecord is walked via `struct_field_layout` and each
+//! source-local FK is rewritten to its target-encoded id (the rewrite
+//! `rewrite_raw_object_template_formids` does for OMOD/OBTS). Runs before the type
+//! validators (`validate_reference_target_types`, placed-record normalization),
+//! which share the same layout offsets.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::fixups::ref_index::remap_struct_fk_fields;
 use crate::fixups::rewrite_raw_object_template_formids::{
-    encoded_targets_by_source_object_id, rewrite_formid_at,
+    encode_target_form_id, encoded_targets_by_source_object_id, rewrite_formid_at,
 };
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
+use crate::ids::SigCode;
 use crate::record::{FieldValue, Record};
 use crate::schema::{AuthoringSchema, FieldDef, SubrecordDef};
 use crate::session::PluginSession;
+use crate::sym::StringInterner;
 
-/// FO4 record form version. Every record in the FO4 conversion output carries
-/// form_version 131, so the struct-FK layout and the layout-divergence guard
-/// must be resolved at this version to honor wbFromVersion-gated fields
-/// (e.g. RACE.DATA's FV-143/188 fields are absent at 131 → 200B, not 216B).
-///
-/// Assumes a single-FV source: schema verified the FO76 source is uniformly
-/// form_version 131 across every affected record type (RACE/WEAP/MGEF/ALCH/
-/// BPTD/QUST/WTHR/EFSH). If a future source carries records at FV ≥ 143, this
-/// constant would wrongly drop their real gte-143 fields and re-skew offsets —
-/// thread the per-record ParsedRecord.form_version (needs a session accessor)
-/// instead of this constant if multi-version sources appear.
+/// FO4 record form version. Every record in the conversion output is FV 131, so
+/// struct-FK layouts and the divergence guard resolve at 131 to honor
+/// wbFromVersion-gated fields (RACE.DATA's FV-143/188 fields are absent: 200B, not
+/// 216B). The FO76 source is uniformly FV 131 across the affected types
+/// (RACE/WEAP/MGEF/ALCH/BPTD/QUST/WTHR/EFSH). A source with FV ≥ 143 records would
+/// need the per-record `ParsedRecord.form_version` (a session accessor) instead.
 pub const FO4_TARGET_FORM_VERSION: u16 = 131;
+const RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET: usize = 24;
 
 pub struct RemapStructInternalFormIdsFixup;
+
+pub(crate) fn encoded_target_formids_of_signature(
+    session: &mut PluginSession,
+    config: &FixupConfig,
+    interner: &StringInterner,
+    target_masters: &[String],
+    signature: SigCode,
+) -> Result<FxHashSet<u32>, FixupError> {
+    let mut encoded = FxHashSet::default();
+    for (load_index, handle_id) in config.target_master_handle_ids.iter().copied().enumerate() {
+        let signatures = session
+            .own_record_signatures_in_handle(handle_id)
+            .map_err(|error| FixupError::HandleError(error.to_string()))?;
+        for (local, record_signature) in signatures {
+            if record_signature == signature && load_index <= u8::MAX as usize {
+                encoded.insert(((load_index as u32) << 24) | local);
+            }
+        }
+    }
+    let target_form_keys = session
+        .form_keys_of_sig(signature, interner)
+        .map_err(|error| FixupError::HandleError(error.to_string()))?;
+    for form_key in target_form_keys {
+        if let Some(form_id) = encode_target_form_id(form_key, interner, target_masters) {
+            encoded.insert(form_id);
+        }
+    }
+    Ok(encoded)
+}
 
 pub(crate) fn candidate_signatures(
     session: &mut PluginSession,
@@ -146,26 +163,34 @@ impl Fixup for RemapStructInternalFormIdsFixup {
             .as_deref()
             .ok_or_else(|| FixupError::Other("missing target schema in fixup config".into()))?;
 
-        // Post-relayout, every `struct:` subrecord in the TARGET plugin is
-        // already laid out per the FO4 target schema (the FO76→FO4 byte relayout
-        // runs at decode — see `crate::struct_relayout`). So the bytes in hand
-        // here match the TARGET layout, not the FO76 source layout. Feed the
-        // target schema as the divergence-guard's "source" so the guard compares
-        // target-vs-target (identical ⇒ not divergent ⇒ the FK remap proceeds and
-        // bumps the now-correctly-positioned gore/owner FKs 00→07). Passing the
-        // real FO76 source_schema here would make the guard see FO76≠FO4 and skip
-        // the remap over already-relaid-out bytes — re-stranding the gore FKs.
+        // Target `struct:` subrecords are already relaid out to the FO4 layout at
+        // decode (`crate::struct_relayout`), so the divergence guard gets the
+        // target schema as "source" and the remap proceeds. The real FO76 schema
+        // would make it skip relaid-out bytes and strand the gore/owner FKs at 00.
         let source_schema = Some(target_schema);
 
         let target_masters = session.target_masters().to_vec();
         let encoded_targets = encoded_targets_by_source_object_id(mapper, &target_masters);
+        let encoded_target_keywords = encoded_target_formids_of_signature(
+            session,
+            config,
+            mapper.interner,
+            &target_masters,
+            SigCode::from_str("KYWD").expect("valid KYWD signature"),
+        )?;
         // Source-local id → target FormKey, for remapping FormKey leaves inside
         // List/Struct-decoded subrecords (LCEP/LCUN) the Bytes path can't reach.
-        let target_by_source_local: rustc_hash::FxHashMap<u32, crate::ids::FormKey> = mapper
-            .source_to_target_iter()
-            .map(|(source, target)| (source.local, target))
-            .collect();
-        if encoded_targets.is_empty() && target_by_source_local.is_empty() {
+        let target_by_source_form_key: rustc_hash::FxHashMap<
+            crate::ids::FormKey,
+            crate::ids::FormKey,
+        > = mapper.source_to_target_iter().collect();
+        let first_target_master_sigs = config
+            .target_master_handle_ids
+            .first()
+            .map(|handle_id| session.own_record_signatures_in_handle(*handle_id))
+            .transpose()
+            .map_err(|error| FixupError::HandleError(error.to_string()))?;
+        if encoded_targets.is_empty() && target_by_source_form_key.is_empty() {
             return Ok(report);
         }
 
@@ -184,18 +209,16 @@ impl Fixup for RemapStructInternalFormIdsFixup {
                     Ok(r) => r,
                     Err(_) => continue,
                 };
-                // The conversion target is FO4, whose records use form_version
-                // 131. Pass it so struct_field_layout_versioned computes the
-                // FV-gated layout (RACE.DATA: 200B at FV-131, not the maximal
-                // 216B) — both for the remap offsets and the divergence guard.
-                // Without this, version-gated FK offsets skew.
+                // FV 131 selects the FV-gated layout (RACE.DATA 200B, not 216B) for
+                // both the remap offsets and the divergence guard.
                 let mut remap = remap_struct_fk_fields(
                     &mut record,
                     target_schema,
                     source_schema,
                     Some(FO4_TARGET_FORM_VERSION),
+                    first_target_master_sigs.as_ref(),
                     &encoded_targets,
-                    &target_by_source_local,
+                    &target_by_source_form_key,
                 );
                 // PACK PTDA/PLDT/PDTO and FACT PLVD hide their FK inside a
                 // VALUE-selected union the generic struct-field layout can't
@@ -207,6 +230,11 @@ impl Fixup for RemapStructInternalFormIdsFixup {
                     remap.remapped +=
                         remap_value_selected_union_formids(&mut record, &encoded_targets);
                 }
+                remap.remapped += remap_race_atkd_attack_type_keywords(
+                    &mut record,
+                    &encoded_targets,
+                    &encoded_target_keywords,
+                );
                 if remap.changed() {
                     changed_records.push(record);
                 }
@@ -255,37 +283,21 @@ pub(crate) fn union_type_holds_formid(sub_sig: &str, kind: i32) -> bool {
     }
 }
 
-/// Remap the FormID hidden in a value-selected union subrecord — PACK
-/// `PTDA`/`PLDT`/`PDTO` and FACT `PLVD`.
+/// Remap the FormID in a value-selected union subrecord (PACK `PTDA`/`PLDT`/`PDTO`,
+/// FACT `PLVD`), laid out as `[i32 type][union value @4][...]`. The union field has
+/// no `formlink_targets`, so the generic remap never sees the FK and it keeps its
+/// FO76 00 master byte. `union_type_holds_formid` gates the offset-4 rewrite per sig
+/// and type, leaving scalar / fourCC / packed payloads alone.
 ///
-/// Each subrecord lays out as `[i32 type][union value @offset 4][...]`. The
-/// union's active variant (and thus whether offset 4 is a FormID at all) is
-/// chosen by the `type` selector, which the schema-driven struct-field layout
-/// can't evaluate — the union field carries no `formlink_targets`, so the
-/// generic remap never sees the FK and it keeps its FO76 00-prefix master byte.
-/// `union_type_holds_formid` gates the offset-4 rewrite per sig+type so scalar /
-/// fourCC / packed payloads at other types are left untouched.
+/// `rewrite_formid_at` rewrites only a master-byte-0 leaf whose object-id is in
+/// `encoded_targets`, so finalized cross-master FKs (DLCCoast etc.) are never
+/// clobbered and never-emitted targets are left as they are.
 ///
-/// PLUGIN-AWARE: `rewrite_formid_at` rewrites ONLY a leaf whose
-/// master byte is 0 (an un-remapped source-plugin FK) AND whose object-id is in
-/// `encoded_targets`; a leaf already carrying a foreign master byte (DLCCoast
-/// etc.) or absent from the map is left untouched. So this never clobbers an
-/// already-finalized cross-master FK, and it is a no-op when the target record
-/// was never emitted (those dangles are an emission gap, not a union-visibility
-/// one).
-///
-/// CONTRACT / scope: this handles ONLY the *value-selected union* case — a
-/// struct field whose FK presence depends on a sibling type selector and whose
-/// field-level `formlink_targets` is therefore empty (invisible to the generic
-/// `remap_struct_fk_fields` Bytes path). It is NOT a substitute for plain
-/// struct FK fields that DO declare `formlink_targets` (e.g. RACE.DATA
-/// severable/explodable EXPL/DEBR/IPDS gore slots): those are already surfaced
-/// by `struct_field_layout` and remapped generically — if they dangle, the
-/// cause is the `source_struct_layout_diverges` skip-guard (FO76 codec
-/// divergence), NOT a union-visibility gap. Generalizing this
-/// helper would require a schema-driven selector model (read the selector field
-/// offset + each variant's per-type FK offsets from the union spec) rather than
-/// the hardcoded offset-0 selector + offset-4 FK used here.
+/// Only for FKs whose presence depends on a sibling type selector. Plain struct FK
+/// fields with `formlink_targets` (e.g. RACE.DATA EXPL/DEBR/IPDS gore slots) go
+/// through `remap_struct_fk_fields`; if those dangle, the cause is the
+/// `source_struct_layout_diverges` guard. Generalizing this needs a schema-driven
+/// selector model instead of the hardcoded offset-0 selector and offset-4 FK.
 pub(crate) fn remap_value_selected_union_formids(
     record: &mut Record,
     encoded_targets: &FxHashMap<u32, u32>,
@@ -309,6 +321,51 @@ pub(crate) fn remap_value_selected_union_formids(
         if rewrite_formid_at(bytes, 4, encoded_targets) {
             remapped += 1;
         }
+    }
+    remapped
+}
+
+/// Remap the attack-type keyword hidden at byte 24 of a RACE `ATKD` row.
+///
+/// The generated FO4 schema labels this word as a float, but the engine and CK
+/// treat it as a KYWD FormID. Restricting the rewrite to source-local values
+/// whose mapped target is an emitted KYWD prevents legitimate float words from
+/// being mistaken for FormIDs.
+pub(crate) fn remap_race_atkd_attack_type_keywords(
+    record: &mut Record,
+    encoded_targets: &FxHashMap<u32, u32>,
+    encoded_target_keywords: &FxHashSet<u32>,
+) -> u32 {
+    if record.sig.as_str() != "RACE" {
+        return 0;
+    }
+
+    let mut remapped = 0u32;
+    for entry in record.fields.iter_mut() {
+        if entry.sig.as_str() != "ATKD" {
+            continue;
+        }
+        let FieldValue::Bytes(bytes) = &mut entry.value else {
+            continue;
+        };
+        let Some(raw_bytes) = bytes
+            .get(RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET..RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET + 4)
+        else {
+            continue;
+        };
+        let raw = u32::from_le_bytes(raw_bytes.try_into().expect("four-byte ATKD word"));
+        if raw == 0 || raw >> 24 != 0 {
+            continue;
+        }
+        let Some(&mapped) = encoded_targets.get(&raw) else {
+            continue;
+        };
+        if mapped == raw || !encoded_target_keywords.contains(&mapped) {
+            continue;
+        }
+        bytes[RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET..RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET + 4]
+            .copy_from_slice(&mapped.to_le_bytes());
+        remapped += 1;
     }
     remapped
 }
@@ -357,6 +414,30 @@ mod tests {
         u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]])
     }
 
+    fn race_atkd(keyword: u32) -> Record {
+        let mut raw = vec![0u8; 44];
+        raw[RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET..RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET + 4]
+            .copy_from_slice(&keyword.to_le_bytes());
+        record_of(
+            "RACE",
+            vec![FieldEntry {
+                sig: SubrecordSig(*b"ATKD"),
+                value: FieldValue::Bytes(SmallVec::from_vec(raw)),
+            }],
+        )
+    }
+
+    fn race_atkd_keyword(record: &Record) -> u32 {
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("expected bytes");
+        };
+        u32::from_le_bytes(
+            bytes[RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET..RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET + 4]
+                .try_into()
+                .unwrap(),
+        )
+    }
+
     #[test]
     fn candidate_filter_includes_known_struct_internal_fk_records() {
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
@@ -366,6 +447,39 @@ mod tests {
         assert!(record_may_have_struct_internal_formids(&schema, "LCTN"));
         assert!(record_may_have_struct_internal_formids(&schema, "PACK"));
         assert!(record_may_have_struct_internal_formids(&schema, "FACT"));
+    }
+
+    #[test]
+    fn remaps_hidden_race_atkd_attack_type_keyword() {
+        let mut encoded_targets = FxHashMap::default();
+        encoded_targets.insert(0x0085_4686, 0x0885_4686);
+        let encoded_target_keywords = FxHashSet::from_iter([0x0885_4686]);
+        let mut record = race_atkd(0x0085_4686);
+
+        let remapped = remap_race_atkd_attack_type_keywords(
+            &mut record,
+            &encoded_targets,
+            &encoded_target_keywords,
+        );
+
+        assert_eq!(remapped, 1);
+        assert_eq!(race_atkd_keyword(&record), 0x0885_4686);
+    }
+
+    #[test]
+    fn leaves_race_atkd_float_collision_when_target_is_not_keyword() {
+        let mut encoded_targets = FxHashMap::default();
+        encoded_targets.insert(0x0085_4686, 0x0885_4686);
+        let mut record = race_atkd(0x0085_4686);
+
+        let remapped = remap_race_atkd_attack_type_keywords(
+            &mut record,
+            &encoded_targets,
+            &FxHashSet::default(),
+        );
+
+        assert_eq!(remapped, 0);
+        assert_eq!(race_atkd_keyword(&record), 0x0085_4686);
     }
 
     #[test]

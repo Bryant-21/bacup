@@ -1,43 +1,24 @@
 //! Fixup: rewrite raw FormIDs preserved inside byte payloads.
 //!
-//! OBTS contains variable arrays for template keywords, included OMODs, and
-//! material-swap property rows. In the whole-plugin path those values can
-//! remain raw source-local FormIDs such as `0037D0C1`, which are then written
-//! as FO4 master references instead of the converted output-plugin FormID.
-//!
-//! NPC_ TPTA has the same failure mode: FO76 source-local template actor slots
-//! must be rewritten to the converted target FormIDs before the FO4 plugin is
-//! saved. It can also contain already-encoded output-plugin self references
-//! when a converted NPC shares a local FormID with a FO4 template NPC; those
-//! direct self slots are redirected to the record's default template.
-//!
-//! OMOD MODS and DATA also carry raw FormIDs in material-swap slots, attach
-//! points, attach parent slots, and included-mod rows. Those rows drive the
-//! power-armor selector chains and otherwise load as missing Fallout4.esm
-//! objects.
-//!
-//! PACK PKCU and raw CTDA/CTDT condition subrecords have the same on-disk
-//! hazard: source-local parameters remain `00xxxxxx` bytes until this pass can
-//! rewrite them with the final target plugin index.
-//!
-//! REGN RDWT weather rows, RDSA sound rows, RFCT effect-art slots, and WTHR
-//! image-space/sound/spell slots can also survive as raw `00xxxxxx` FormIDs,
-//! which makes the FO4 CK look for those records in Fallout4.esm.
-//!
-//! FSTS DATA footstep arrays have the same shape: packed source-local FSTP refs.
-//!
-//! AMMO DNAM, HAZD DNAM, PROJ DNAM, and STAG TNAM carry byte-packed refs. When
-//! source-local FO76 IDs survive there, CK resolves them as Fallout4.esm.
-//!
-//! Parsed FormKey fields can fail the same way: a raw source-local `00xxxxxx`
-//! value is decoded as the first target master before byte-level fixups see it.
-//!
-//! REFR/ACHR location payloads also include current-zone cell refs (`XCZC`);
-//! leaving those source-local can make CK treat the compact FormID as a pointer.
-//!
-//! VMAD script object properties have the same source-context raw FormID
-//! encoding. Without rewriting, CK resolves copied FO76 property targets as
-//! Fallout4.esm objects and reports invalid script properties.
+//! Source-local `00xxxxxx` FormIDs (e.g. `0037D0C1`) left in byte payloads are
+//! written as FO4 master references, so the CK looks for them in Fallout4.esm
+//! instead of the converted output record. Covered payloads:
+//! - OBTS template keywords, included OMODs, and material-swap property rows.
+//! - NPC_ TPTA template actor slots. Already-encoded self references (a converted
+//!   NPC sharing a local FormID with a FO4 template NPC) go to the record's default
+//!   template.
+//! - OMOD MODS/DATA material-swap slots, attach points, attach parent slots, and
+//!   included-mod rows, which drive the power-armor selector chains.
+//! - PACK PKCU and raw CTDA/CTDT condition parameters.
+//! - REGN RDWT weather, RDSA sound, and RFCT effect-art rows; WTHR
+//!   image-space/sound/spell slots.
+//! - FSTS DATA footstep arrays (packed FSTP refs).
+//! - AMMO DNAM, HAZD DNAM, PROJ DNAM, and STAG TNAM.
+//! - Parsed FormKey fields, which decode a raw `00xxxxxx` as the first target master.
+//! - REFR/ACHR `XCZC` current-zone cell refs; source-local values can make the CK
+//!   treat the compact FormID as a pointer.
+//! - VMAD script object properties, which otherwise resolve as Fallout4.esm objects
+//!   and fail as invalid script properties.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -56,6 +37,34 @@ use crate::session::PluginSession;
 use crate::sym::StringInterner;
 
 pub struct RewriteRawObjectTemplateFormIdsFixup;
+
+#[derive(Clone, Copy)]
+struct AuditedFnvPackTemplate {
+    data_input_count: u32,
+    package_template: u32,
+    version: u32,
+}
+
+fn audited_fnv_pack_template(local: u32) -> Option<AuditedFnvPackTemplate> {
+    match local {
+        0x0012_31B6 => Some(AuditedFnvPackTemplate {
+            data_input_count: 7,
+            package_template: 0x0000_2CE0,
+            version: 2,
+        }),
+        0x0012_31B7 => Some(AuditedFnvPackTemplate {
+            data_input_count: 4,
+            package_template: 0x0000_2CB0,
+            version: 1,
+        }),
+        0x0013_3F3E => Some(AuditedFnvPackTemplate {
+            data_input_count: 7,
+            package_template: 0x0000_2CE0,
+            version: 2,
+        }),
+        _ => None,
+    }
+}
 
 enum TargetMasterValidityCache {
     NoFirstMaster,
@@ -157,6 +166,25 @@ const FO76_CTDA_PARAM2_FORMID_FUNCTIONS: &[u16] = &[
     149, 180, 181, 230, 280, 576, 577, 600, 601, 603, 604, 605, 608, 610, 650, 846,
 ];
 
+/// CTDA type-flag bit 1 ("Use Aliases"). When set, an object-reference
+/// parameter holds a **quest alias index**, not a FormID.
+const CTDA_USE_ALIASES_FLAG: u8 = 0x02;
+
+/// `GetIsAliasRef` always stores a quest-alias index in Parameter #1. The
+/// index is not a FormID even when the generic `Use Aliases` flag is clear.
+const QUEST_ALIAS_PARAMETER_1_FUNCTION_IDS: &[u16] = &[566];
+
+/// Functions whose Parameter #1 is an object reference and so becomes a quest alias
+/// index under `CTDA_USE_ALIASES_FLAG`: `GetDistance` (1) and `GetWithinDistance`
+/// (639), the pair `strip_invalid_quest_condition_params` treats as persistent
+/// references. The flag only reinterprets reference-typed parameters, so e.g.
+/// `GetItemCount` (47, ptInventoryObject) still needs its rewrite with the flag set.
+///
+/// Validating an alias index as a FormID is doubly destructive: a low index that
+/// collides with no live record drops the whole condition, and one that collides
+/// with a converted object id is rewritten into that FormID, retargeting the check.
+const ALIAS_INDEX_PARAMETER_1_FUNCTION_IDS: &[u16] = &[1, 639];
+
 impl Fixup for RewriteRawObjectTemplateFormIdsFixup {
     fn name(&self) -> &'static str {
         "rewrite_raw_object_template_formids"
@@ -177,6 +205,11 @@ impl Fixup for RewriteRawObjectTemplateFormIdsFixup {
         config: &FixupConfig,
     ) -> Result<FixupReport, FixupError> {
         let target_masters = session.target_masters().to_vec();
+        let preserve_audited_fnv_pack_templates = session
+            .source_slot_opt()
+            .and_then(|slot| slot.parsed.game.as_deref())
+            == Some("fnv")
+            && session.target_slot().parsed.game.as_deref() == Some("fo4");
         let rewrite_skyrim_weather_master_refs = session
             .source_slot_opt()
             .and_then(|slot| slot.parsed.game.as_deref())
@@ -207,7 +240,7 @@ impl Fixup for RewriteRawObjectTemplateFormIdsFixup {
             return Ok(FixupReport::empty());
         }
         let target_record_sigs_by_encoded_form_id =
-            target_record_sigs_by_encoded_form_id(session, mapper.interner, &target_masters)?;
+            target_record_sigs_by_encoded_form_id(session, &target_masters)?;
 
         let target_schema = session
             .schema()
@@ -250,6 +283,19 @@ impl Fixup for RewriteRawObjectTemplateFormIdsFixup {
                         continue;
                     }
                 };
+
+            let audited_pack_contract = if preserve_audited_fnv_pack_templates
+                && record.form_key.plugin == output_plugin
+                && record.sig.0 == *b"PACK"
+            {
+                let expected = audited_fnv_pack_template(record.form_key.local);
+                if let Some(expected) = expected {
+                    validate_audited_fnv_pack_pkcu(&record, expected)?;
+                }
+                expected
+            } else {
+                None
+            };
 
             let schema_rewrite_changed = {
                 let mut is_valid_target_master_formid =
@@ -311,6 +357,10 @@ impl Fixup for RewriteRawObjectTemplateFormIdsFixup {
                     &mut record,
                     mapper,
                 );
+            let audited_pack_template_restored = audited_pack_contract
+                .map(|expected| restore_audited_fnv_pack_pkcu(&mut record, expected))
+                .transpose()?
+                .unwrap_or(false);
             let pack_template_changed = resolve_pack_template_inputs_with_session(
                 session,
                 &changed_records_by_fk,
@@ -325,6 +375,7 @@ impl Fixup for RewriteRawObjectTemplateFormIdsFixup {
                 || xmsp_rewrite_changed
                 || raw_rewrite_changed
                 || skyrim_weather_rewrite_changed
+                || audited_pack_template_restored
                 || pack_template_changed
             {
                 changed_records_by_fk.insert(record.form_key, record.clone());
@@ -372,25 +423,9 @@ fn add_output_record_targets(
 
 pub(crate) fn target_record_sigs_by_encoded_form_id(
     session: &mut PluginSession,
-    interner: &StringInterner,
     target_masters: &[String],
-) -> Result<FxHashMap<u32, crate::ids::SigCode>, FixupError> {
-    let mut out = FxHashMap::default();
-    for sig in session
-        .target_signatures()
-        .map_err(|e| FixupError::HandleError(e.to_string()))?
-    {
-        let form_keys = session
-            .form_keys_of_sig(sig, interner)
-            .map_err(|e| FixupError::HandleError(e.to_string()))?;
-        for fk in form_keys {
-            let Some(encoded) = encode_target_form_id(fk, interner, target_masters) else {
-                continue;
-            };
-            out.insert(encoded, sig);
-        }
-    }
-    Ok(out)
+) -> Result<std::sync::Arc<FxHashMap<u32, crate::ids::SigCode>>, FixupError> {
+    Ok(session.encoded_target_record_signatures(target_masters))
 }
 
 pub(crate) fn encoded_targets_by_source_object_id(
@@ -2253,6 +2288,92 @@ struct PackPkcu {
     version: u32,
 }
 
+fn audited_fnv_pack_pkcu_bytes(record: &Record) -> Result<(usize, &[u8]), FixupError> {
+    let mut matches = record
+        .fields
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.sig.0 == *b"PKCU");
+    let Some((index, entry)) = matches.next() else {
+        return Err(FixupError::SchemaError(format!(
+            "audited FNV PACK {:06X} is missing PKCU",
+            record.form_key.local
+        )));
+    };
+    if matches.next().is_some() {
+        return Err(FixupError::SchemaError(format!(
+            "audited FNV PACK {:06X} has duplicate PKCU subrecords",
+            record.form_key.local
+        )));
+    }
+    let FieldValue::Bytes(bytes) = &entry.value else {
+        return Err(FixupError::SchemaError(format!(
+            "audited FNV PACK {:06X} PKCU is not raw target-layout bytes",
+            record.form_key.local
+        )));
+    };
+    if bytes.len() != 12 {
+        return Err(FixupError::SchemaError(format!(
+            "audited FNV PACK {:06X} PKCU is {} bytes, expected 12",
+            record.form_key.local,
+            bytes.len()
+        )));
+    }
+    Ok((index, bytes.as_slice()))
+}
+
+fn validate_audited_fnv_pack_pkcu(
+    record: &Record,
+    expected: AuditedFnvPackTemplate,
+) -> Result<(), FixupError> {
+    let (_, bytes) = audited_fnv_pack_pkcu_bytes(record)?;
+    let actual = PackPkcu {
+        data_input_count: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+        package_template: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+        version: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+    };
+    if actual.data_input_count != expected.data_input_count
+        || actual.package_template != expected.package_template
+        || actual.version != expected.version
+    {
+        return Err(FixupError::SchemaError(format!(
+            "audited FNV PACK {:06X} PKCU changed: got ({}, {:08X}, {}), expected ({}, {:08X}, {})",
+            record.form_key.local,
+            actual.data_input_count,
+            actual.package_template,
+            actual.version,
+            expected.data_input_count,
+            expected.package_template,
+            expected.version
+        )));
+    }
+    Ok(())
+}
+
+fn restore_audited_fnv_pack_pkcu(
+    record: &mut Record,
+    expected: AuditedFnvPackTemplate,
+) -> Result<bool, FixupError> {
+    let (index, bytes) = audited_fnv_pack_pkcu_bytes(record)?;
+    let data_input_count = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    if data_input_count != expected.data_input_count || version != expected.version {
+        return Err(FixupError::SchemaError(format!(
+            "audited FNV PACK {:06X} PKCU shape changed during raw FormID rewrite",
+            record.form_key.local
+        )));
+    }
+    let current_template = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    if current_template == expected.package_template {
+        return Ok(false);
+    }
+    let FieldValue::Bytes(bytes) = &mut record.fields[index].value else {
+        unreachable!("audited_fnv_pack_pkcu_bytes checked the field value")
+    };
+    bytes[4..8].copy_from_slice(&expected.package_template.to_le_bytes());
+    Ok(true)
+}
+
 fn resolve_pack_template_inputs_with_session(
     session: &mut PluginSession,
     rewritten_records: &FxHashMap<FormKey, Record>,
@@ -2668,6 +2789,27 @@ enum RawFormIdRewrite {
     Invalid,
 }
 
+/// `GetStageDone` (59) is the one Parameter #1 "FormID" function whose FO76 shape
+/// carries no FormID: FO76 puts the STAGE in Parameter #1 with Parameter #2 = 0;
+/// FO4 wants the QUST in #1 and the stage in #2. Validating the stage as a FormID
+/// drops the condition unless the number collides with a live FormID
+/// (`W05_MQ_001P_Wayward` loses all seven stage gates; `W05_MQ_003P_Muscle` keeps
+/// only 500 = `0001F4` WEAP and 710 = `0002C6` AVIF). The source shape is left for
+/// `strip_invalid_quest_condition_params`, which lowers it against the owning
+/// quest's stage list or drops it.
+fn is_source_shaped_get_stage_done(bytes: &[u8], function_id: u16) -> bool {
+    const GET_STAGE_DONE_FUNCTION_ID: u16 = 59;
+    function_id == GET_STAGE_DONE_FUNCTION_ID
+        && bytes.len() >= 20
+        && u32::from_le_bytes(bytes[16..20].try_into().unwrap()) == 0
+}
+
+fn holds_alias_index_parameter_1(bytes: &[u8], function_id: u16) -> bool {
+    QUEST_ALIAS_PARAMETER_1_FUNCTION_IDS.contains(&function_id)
+        || (bytes[0] & CTDA_USE_ALIASES_FLAG != 0
+            && ALIAS_INDEX_PARAMETER_1_FUNCTION_IDS.contains(&function_id))
+}
+
 fn rewrite_raw_condition_bytes(
     bytes: &mut [u8],
     encoded_targets: &FxHashMap<u32, u32>,
@@ -2695,6 +2837,8 @@ fn rewrite_raw_condition_bytes(
     if FO76_CTDA_PARAM1_FORMID_FUNCTIONS
         .binary_search(&function_id)
         .is_ok()
+        && !is_source_shaped_get_stage_done(bytes, function_id)
+        && !holds_alias_index_parameter_1(bytes, function_id)
     {
         match rewrite_or_validate_formid_at(
             bytes,
@@ -3096,14 +3240,11 @@ fn placed_ref_location_signature_matches(
             b"XEZN" => target_sig.0 == *b"ECZN",
             _ => true,
         },
-        // Unresolved/unindexed target (the index only covers the OUTPUT plugin's
-        // own records, not masters). For XEZN this is still a positive defect:
-        // a FO4 placed-ref XEZN whose target is anything other than an ECZN is
-        // always invalid (xEdit "Found a LCTN, expected: ECZN"), and the dominant
-        // FO76 case is a master-resident or converted LCTN that the output-only
-        // index can't see. Treat unresolved XEZN as a non-match (strip). XLCN's
-        // valid target IS a LCTN — a master-resident LCTN is legitimate there, so
-        // keep XLCN conservative (unresolved ⇒ assume valid, don't strip).
+        // Unresolved: the index covers only the output plugin's own records. A FO4
+        // placed-ref XEZN targeting anything but an ECZN is always invalid (xEdit
+        // "Found a LCTN, expected: ECZN"), and the dominant FO76 case is a master or
+        // converted LCTN the index can't see, so unresolved XEZN is stripped. A
+        // master-resident LCTN is valid for XLCN, so unresolved XLCN is kept.
         None => subrecord_sig.0 != *b"XEZN",
     }
 }
@@ -5351,6 +5492,188 @@ mod tests {
     }
 
     #[test]
+    fn audited_fnv_pack_templates_survive_colliding_fixup_save_and_reopen() {
+        use crate::formkey_mapper::{MapperOptions, MapperState};
+        use crate::target_write::add_record_native;
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_add_master_no_py, plugin_handle_close_native, plugin_handle_load_no_py,
+            plugin_handle_new_native, plugin_handle_save_preserving_identity_no_py,
+        };
+
+        const OUTPUT_PLUGIN: &str = "FalloutNV.esm";
+        let interner = StringInterner::new();
+        let output_plugin = interner.intern(OUTPUT_PLUGIN);
+        let form_key = |local| FormKey {
+            local,
+            plugin: output_plugin,
+        };
+        let schema = AuthoringSchema::for_game("fo4").unwrap();
+        let source = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fnv")).unwrap();
+        let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
+        let fallout4 = plugin_handle_new_native("Fallout4.esm", Some("fo4")).unwrap();
+        let target_masters = vec![
+            "Fallout4.esm".to_string(),
+            "DLCRobot.esm".to_string(),
+            "DLCworkshop01.esm".to_string(),
+            "DLCCoast.esm".to_string(),
+            "DLCworkshop02.esm".to_string(),
+            "DLCworkshop03.esm".to_string(),
+            "DLCNukaWorld.esm".to_string(),
+        ];
+        for master in &target_masters {
+            plugin_handle_add_master_no_py(target, master, None).unwrap();
+        }
+
+        let fallout4_plugin = interner.intern("Fallout4.esm");
+        for local in [0x0000_2CB0, 0x0000_2CE0, 0x0001_7BAB] {
+            add_record_native(
+                fallout4,
+                Record::new(
+                    SigCode(*b"PACK"),
+                    FormKey {
+                        local,
+                        plugin: fallout4_plugin,
+                    },
+                ),
+                &schema,
+                &interner,
+            )
+            .unwrap();
+        }
+
+        for local in [0x0000_2CB0, 0x0000_2CE0] {
+            add_record_native(
+                target,
+                Record::new(SigCode(*b"LAND"), form_key(local)),
+                &schema,
+                &interner,
+            )
+            .unwrap();
+        }
+
+        let fixtures = [
+            (0x0012_31B6, 7, 0x0000_2CE0, 2),
+            (0x0012_31B7, 4, 0x0000_2CB0, 1),
+            (0x0013_3F3E, 7, 0x0000_2CE0, 2),
+            (0x0013_289E, 24, 0x0001_7BAB, 11),
+        ];
+        for (local, count, template, version) in fixtures {
+            let mut record = Record::new(SigCode(*b"PACK"), form_key(local));
+            let mut pkdt = vec![0_u8; 12];
+            pkdt[4] = 18;
+            pkdt[6] = 2;
+            record.fields.push(raw_field("PKDT", pkdt));
+            record.fields.push(pkcu(count, template, version));
+            for _ in 0..count {
+                record.fields.push(raw_field("ANAM", b"Bool\0".to_vec()));
+            }
+            record.fields.push(raw_field("XNAM", vec![0]));
+            add_record_native(target, record, &schema, &interner).unwrap();
+        }
+
+        let options = MapperOptions {
+            output_plugin_name: OUTPUT_PLUGIN.to_string(),
+            source_plugin_name: OUTPUT_PLUGIN.to_string(),
+            target_master_names: target_masters.clone(),
+            ..Default::default()
+        };
+        let mut mapper_state = MapperState::new([], options);
+        for local in [0x0000_2CB0, 0x0000_2CE0] {
+            mapper_state
+                .source_to_target
+                .insert(form_key(local), form_key(local));
+        }
+        let (raw_report, struct_report) = {
+            let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &interner);
+            let mut session = crate::session::open_session(target, Some(source)).unwrap();
+            let config = FixupConfig {
+                target_master_handle_ids: vec![fallout4],
+                target_schema: Some(schema.clone()),
+                ..FixupConfig::default()
+            };
+            let raw_report = RewriteRawObjectTemplateFormIdsFixup
+                .run_with_session(&mut session, &mut mapper, &config)
+                .unwrap();
+            let struct_report =
+                crate::fixups::remap_struct_internal_formids::RemapStructInternalFormIdsFixup
+                    .run_with_session(&mut session, &mut mapper, &config)
+                    .unwrap();
+            (raw_report, struct_report)
+        };
+        assert_eq!(raw_report.records_changed, 3);
+        assert_eq!(struct_report.records_changed, 0);
+
+        let temp = tempfile::tempdir().unwrap();
+        let saved = temp.path().join(OUTPUT_PLUGIN);
+        plugin_handle_save_preserving_identity_no_py(target, saved.to_str().unwrap()).unwrap();
+        let reopened =
+            plugin_handle_load_no_py(saved.to_str().unwrap(), Some("fo4"), None, None, true)
+                .unwrap();
+        let target_schema = AuthoringSchema::for_game("fo4").unwrap();
+        let mut session = crate::session::open_session(reopened, None).unwrap();
+        let masters = session.target_masters().to_vec();
+        assert_eq!(masters, target_masters);
+        let mut template_form_keys = Vec::new();
+        for (local, count, template, version) in fixtures {
+            let record = session
+                .record_decoded(&form_key(local), &target_schema, &interner)
+                .unwrap();
+            assert_eq!(record.sig.0, *b"PACK");
+            let (_, actual) = read_pack_pkcu(&record).unwrap();
+            assert_eq!(actual.data_input_count, count);
+            assert_eq!(actual.package_template, template);
+            assert_eq!(actual.version, version);
+            let template_fk = form_key_from_encoded_target(
+                actual.package_template,
+                output_plugin,
+                &masters,
+                &interner,
+            )
+            .unwrap();
+            assert_eq!(interner.resolve(template_fk.plugin), Some("Fallout4.esm"));
+            template_form_keys.push(template_fk);
+        }
+        for local in [0x0000_2CB0, 0x0000_2CE0] {
+            let collision = session
+                .record_decoded(&form_key(local), &target_schema, &interner)
+                .unwrap();
+            assert_eq!(collision.sig.0, *b"LAND");
+        }
+        drop(session);
+
+        let mut master_session = crate::session::open_session(fallout4, None).unwrap();
+        for template_fk in template_form_keys {
+            let template = master_session
+                .record_decoded(&template_fk, &target_schema, &interner)
+                .unwrap();
+            assert_eq!(template.sig.0, *b"PACK");
+        }
+        drop(master_session);
+
+        plugin_handle_close_native(reopened);
+        plugin_handle_close_native(fallout4);
+        plugin_handle_close_native(source);
+        plugin_handle_close_native(target);
+    }
+
+    #[test]
+    fn audited_fnv_pack_template_guard_rejects_shape_drift() {
+        let interner = StringInterner::new();
+        let mut record = Record::new(
+            SigCode(*b"PACK"),
+            FormKey::parse("1231B7@FalloutNV.esm", &interner).unwrap(),
+        );
+        record.fields.push(pkcu(4, 0x0000_2CE0, 1));
+
+        let error = validate_audited_fnv_pack_pkcu(
+            &record,
+            audited_fnv_pack_template(record.form_key.local).unwrap(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("PKCU changed"));
+    }
+
+    #[test]
     fn resolves_stale_pack_template_inputs_from_newer_template() {
         let mut instance_fields = vec![pkcu(4, 0x07002CB0, 1)];
         for unam in [1, 3, 5, 7] {
@@ -5948,6 +6271,68 @@ mod tests {
         );
     }
 
+    /// FO76 `GetStageDone` carries the STAGE in Parameter #1 with Parameter #2
+    /// = 0. Validating that stage as a FormID dropped the whole condition —
+    /// `W05_MQ_001P_Wayward` lost all seven of its stage gates this way. The
+    /// row must survive here so the later stage-lowering pass can convert it.
+    #[test]
+    fn keeps_source_shaped_get_stage_done_with_unresolvable_stage_parameter() {
+        // Wayward's stage 300 gate: no Fallout4 record has FormID 0x0000012C.
+        let mut record = make_pack_record("CTDA", ctda(59, 0, 300, 0));
+
+        assert!(!rewrite_raw_condition_record(
+            &mut record,
+            &target_map(),
+            &mut |_| false,
+        ));
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("expected raw bytes");
+        };
+        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 300);
+    }
+
+    /// `W05_MQ_002P_Radical` INFO 0054386A uses alias 11 to restrict
+    /// "You Crane?" to RadGanger01. Treating 11 as a FormID deletes the speaker
+    /// gate and makes the greeting eligible for unrelated NPCs.
+    #[test]
+    fn keeps_get_is_alias_ref_parameter_for_quest_aware_validation() {
+        let mut record = make_pack_record("CTDA", ctda(566, 0, 11, 0));
+
+        assert!(!rewrite_raw_condition_record(
+            &mut record,
+            &target_map(),
+            &mut |_| false,
+        ));
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("expected CTDA bytes");
+        };
+        assert_eq!(
+            u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+            11,
+            "quest alias index must survive verbatim"
+        );
+    }
+
+    /// Once lowered to the FO4 layout the stage lives in Parameter #2 and
+    /// Parameter #1 is a real QUST, so it must still be validated as a FormID.
+    #[test]
+    fn still_validates_fo4_shaped_get_stage_done_quest_parameter() {
+        let mut record = make_pack_record("CTDA", ctda(59, 0, 0x0036DABA, 530));
+
+        assert!(rewrite_raw_condition_record(
+            &mut record,
+            &target_map(),
+            &mut |_| false,
+        ));
+        assert!(
+            record
+                .fields
+                .iter()
+                .all(|field| field.sig.as_str() != "CTDA"),
+            "an unresolvable QUST in the lowered layout must still drop"
+        );
+    }
+
     #[test]
     fn drops_raw_ctda_unmapped_source_local_formid_parameter() {
         let mut record = make_pack_record("CTDA", ctda(67, 0, 0x0036DABA, 0));
@@ -5963,6 +6348,93 @@ mod tests {
                 .iter()
                 .all(|field| field.sig.as_str() != "CTDA"),
             "unmapped source-local condition parameter should drop the condition"
+        );
+    }
+
+    /// `COMP_Quest_Intro_Full_Astronaut` (0054EB40) objective gate:
+    /// `GetDistance` with the Use-Aliases flag against alias index 47. The
+    /// index is not a FormID, so neither the target map nor master validation
+    /// may reach it.
+    #[test]
+    fn keeps_alias_indexed_getdistance_condition() {
+        let mut record = make_pack_record("CTDA", ctda(1, 0x62, 0x0000002F, 0));
+
+        assert!(!rewrite_raw_condition_record(
+            &mut record,
+            &target_map(),
+            &mut |_| false,
+        ));
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("expected CTDA bytes");
+        };
+        assert_eq!(
+            u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+            0x0000002F,
+            "alias index must survive verbatim"
+        );
+    }
+
+    /// Index stability: alias index 0x24 collides with a converted object id
+    /// (`00000024 -> 07000814` in `target_map`). Rewriting it would silently
+    /// retarget the distance check at that record instead of the alias.
+    #[test]
+    fn does_not_rewrite_alias_index_colliding_with_converted_object_id() {
+        for function_id in [1_u16, 639] {
+            let mut record = make_pack_record("CTDA", ctda(function_id, 0x42, 0x00000024, 0));
+
+            assert!(!rewrite_raw_condition_record(
+                &mut record,
+                &target_map(),
+                &mut |_| false,
+            ));
+            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+                panic!("expected CTDA bytes");
+            };
+            assert_eq!(
+                u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+                0x00000024,
+                "function {function_id} alias index must not be remapped as a FormID"
+            );
+        }
+    }
+
+    /// The flag only reinterprets reference-typed parameters. `GetItemCount`
+    /// (47) carries it on the same quest with a real source-local FormID in
+    /// Parameter #1, which still needs the rewrite.
+    #[test]
+    fn rewrites_non_reference_parameter_when_alias_flag_is_set() {
+        let mut record = make_pack_record("CTDA", ctda(47, 0x82, 0x00685532, 0));
+
+        assert!(rewrite_raw_condition_record(
+            &mut record,
+            &target_map(),
+            &mut |_| false,
+        ));
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("expected CTDA bytes");
+        };
+        assert_eq!(
+            u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+            0x07685532
+        );
+    }
+
+    /// Without the flag Parameter #1 is a real reference again, so an
+    /// unmapped source-local id still drops the condition.
+    #[test]
+    fn drops_unaliased_getdistance_with_unmapped_reference() {
+        let mut record = make_pack_record("CTDA", ctda(1, 0x60, 0x0036DABA, 0));
+
+        assert!(rewrite_raw_condition_record(
+            &mut record,
+            &target_map(),
+            &mut |_| false,
+        ));
+        assert!(
+            record
+                .fields
+                .iter()
+                .all(|field| field.sig.as_str() != "CTDA")
         );
     }
 

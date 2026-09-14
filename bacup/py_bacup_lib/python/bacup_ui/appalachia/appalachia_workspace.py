@@ -9,25 +9,20 @@ from imgui_bundle import hello_imgui, imgui
 
 from creation_lib.ui.shell import BaseWorkspace, make_window
 from bacup_ui.appalachia.window_title import appalachia_window_title
-from bacup_ui.setup import get_active_project, set_active_project
+from bacup_ui.setup import PROJECT_PROFILES, get_active_project, set_active_project
+from creation_lib.ui.widgets.modern import (
+    InteractionState, heading, navigation_item, prepare_dialog, scaled, semantic_color, toggle,
+)
 
 _log = logging.getLogger("toolkit.appalachia")
 _NS = "##appalachia"
 _CHANGELOG_POPUP = f"Changelog{_NS}"
 _SETUP_CONFIRM_POPUP = f"Re-run Setup{_NS}"
 
-_COL_OK = imgui.ImVec4(0.40, 0.85, 0.40, 1.0)
-_COL_WARN = imgui.ImVec4(1.00, 0.85, 0.30, 1.0)
-_COL_ACCENT = imgui.ImVec4(0.55, 0.78, 1.00, 1.0)
-
 APP_NAME = "B.A.C.U.P."
 APP_EXPANSION = "Bethesda Asset Converter Universal Platform"
 
-_PROJECTS = (
-    ("appalachia", "Tales From Appalachia", "fo76:fo4"),
-    ("wasteland", "Legends of the Wasteland", "fnvfo3:fo4"),
-    ("north", "Northern Lands", "skyrimse:fo4"),
-)
+_PROJECTS = tuple((p.id, p.title, p.conversion_id) for p in PROJECT_PROFILES.values())
 
 _ENABLED_PROJECTS = _PROJECTS
 
@@ -49,9 +44,15 @@ class AppalachiaWorkspace(BaseWorkspace):
             get_active_project(toolkit_settings) if toolkit_settings is not None
             else "appalachia"
         )
-        self._initial_project_tab_pending = True
         self._changelog_pending = False
         self._setup_confirm_pending = False
+        self._navigation_state = InteractionState()
+        self._music_controls_height = 0.0
+        workspace_settings = (
+            toolkit_settings.get_workspace_settings(self.id)
+            if toolkit_settings is not None else {}
+        )
+        self.show_logs = bool(workspace_settings.get("show_logs", False))
 
     def get_dockable_windows(self):
         return [
@@ -90,31 +91,84 @@ class AppalachiaWorkspace(BaseWorkspace):
         if not imgui.begin(f"{APP_NAME}{_NS}"):
             imgui.end()
             return
-        imgui.text(APP_NAME)
-        imgui.text_disabled(APP_EXPANSION)
-        imgui.separator()
-        if imgui.begin_tab_bar(f"{_NS}_projects"):
-            for project_id, label, _pair_id in _ENABLED_PROJECTS:
-                flags = (
-                    imgui.TabItemFlags_.set_selected
-                    if self._initial_project_tab_pending
-                    and project_id == self._active_project_id
-                    else imgui.TabItemFlags_.none
-                )
-                opened = imgui.begin_tab_item(label, flags=flags)
-                if isinstance(opened, tuple):
-                    opened = opened[0]
-                if opened:
-                    if self._active_project_id != project_id:
-                        self._active_project_id = project_id
-                        set_active_project(self._toolkit_settings, project_id)
-                    self._regen_panel = self._regen_panels[project_id]
-                    self._log_panel = self._log_panels[project_id]
-                    self._regen_panels[project_id].draw_project()
-                    imgui.end_tab_item()
-            imgui.end_tab_bar()
-            self._initial_project_tab_pending = False
+        flags = imgui.TableFlags_.sizing_fixed_fit
+        if imgui.begin_table(f"{_NS}_project_layout", 2, flags):
+            imgui.table_setup_column("Projects", imgui.TableColumnFlags_.width_fixed, scaled(230))
+            imgui.table_setup_column("Project", imgui.TableColumnFlags_.width_stretch)
+            imgui.table_next_row()
+            imgui.table_set_column_index(0)
+            if imgui.begin_child(f"{_NS}_sidebar", imgui.ImVec2(0, 0), imgui.ChildFlags_.always_use_window_padding):
+                self._draw_sidebar()
+            imgui.end_child()
+            imgui.table_set_column_index(1)
+            imgui.push_style_color(imgui.Col_.child_bg, semantic_color("background"))
+            visible = imgui.begin_child(
+                f"{_NS}_project_content", imgui.ImVec2(0, 0),
+                imgui.ChildFlags_.always_use_window_padding,
+            )
+            imgui.pop_style_color()
+            if visible:
+                imgui.push_id(self._active_project_id)
+                self._regen_panel.draw_project()
+                imgui.pop_id()
+            imgui.end_child()
+            imgui.end_table()
         imgui.end()
+
+    def _select_project(self, project_id: str) -> None:
+        if project_id not in self._regen_panels:
+            raise KeyError(project_id)
+        if self._active_project_id != project_id:
+            self._active_project_id = project_id
+            set_active_project(self._toolkit_settings, project_id)
+        self._regen_panel = self._regen_panels[project_id]
+        self._log_panel = self._log_panels[project_id]
+
+    def _draw_sidebar(self) -> None:
+        from imgui_bundle import icons_fontawesome_6 as fa
+
+        icons = {"appalachia": fa.ICON_FA_TREE, "wasteland": fa.ICON_FA_SUN,
+                 "north": fa.ICON_FA_MOUNTAIN, "stars": fa.ICON_FA_ROCKET}
+        heading(APP_NAME)
+        imgui.text_disabled("CONVERSION PROJECTS")
+        imgui.spacing()
+        footer_height = max(scaled(38), self._music_controls_height)
+        if imgui.begin_child(f"{_NS}_project_list", imgui.ImVec2(
+            0, -footer_height - imgui.get_style().item_spacing.y,
+        )):
+            self._draw_project_navigation(icons)
+        imgui.end_child()
+
+        imgui.begin_group()
+        imgui.separator()
+        imgui.push_id(self._active_project_id)
+        self._regen_panel._draw_music_controls()
+        imgui.pop_id()
+        imgui.end_group()
+        self._music_controls_height = imgui.get_item_rect_size().y
+
+    def _draw_project_navigation(self, icons: dict[str, str]) -> None:
+        from imgui_bundle import icons_fontawesome_6 as fa
+
+        for project_id, label, _pair_id in _ENABLED_PROJECTS:
+            panel = self._regen_panels[project_id]
+            running = self._runner_owner is panel and self._runner is not None and not self._runner.done
+            if navigation_item(project_id, label, selected=project_id == self._active_project_id,
+                               icon=icons.get(project_id, fa.ICON_FA_FOLDER), running=running,
+                               detail="Converting…" if running else "",
+                               state=self._navigation_state):
+                self._select_project(project_id)
+
+        imgui.spacing()
+        imgui.separator()
+        changed, show_logs = toggle(f"Show logs{_NS}", self.show_logs)
+        if changed:
+            self.set_show_logs(show_logs)
+
+    def set_show_logs(self, visible: bool) -> None:
+        self.show_logs = visible
+        if self._toolkit_settings is not None:
+            self._toolkit_settings.set_workspace_settings(self.id, {"show_logs": visible})
 
     def start_conversion_runner(self, owner, runner) -> None:
         if self._runner is not None and not self._runner.done:
@@ -172,10 +226,10 @@ class AppalachiaWorkspace(BaseWorkspace):
         if self._changelog_pending:
             imgui.open_popup(_CHANGELOG_POPUP)
             self._changelog_pending = False
-        imgui.set_next_window_size(imgui.ImVec2(480, 400), imgui.Cond_.appearing)
+        prepare_dialog(640, 520)
         opened, _ = imgui.begin_popup_modal(_CHANGELOG_POPUP)
         if opened:
-            imgui.text(f"Changelog — {self._active_project_label()}")
+            heading(f"Changelog — {self._active_project_label()}")
             imgui.separator()
             entries = self._changelog_entries()
             imgui.begin_child(
@@ -186,13 +240,15 @@ class AppalachiaWorkspace(BaseWorkspace):
                 imgui.text_disabled("No changelog available.")
             else:
                 for version_id, is_current, notes in entries:
-                    imgui.text_colored(_COL_ACCENT, version_id)
+                    imgui.text_colored(semantic_color("accent"), version_id)
                     if is_current:
                         imgui.same_line()
-                        imgui.text_colored(_COL_OK, "(current)")
+                        imgui.text_colored(semantic_color("success"), "(current)")
                     imgui.indent()
                     for note in notes:
+                        imgui.push_text_wrap_pos(0)
                         imgui.bullet_text(note)
+                        imgui.pop_text_wrap_pos()
                     imgui.unindent()
                     imgui.dummy(imgui.ImVec2(0, 4))
             imgui.end_child()
@@ -216,18 +272,19 @@ class AppalachiaWorkspace(BaseWorkspace):
         if self._setup_confirm_pending:
             imgui.open_popup(_SETUP_CONFIRM_POPUP)
             self._setup_confirm_pending = False
+        prepare_dialog(550, 240)
         opened, _ = imgui.begin_popup_modal(
             _SETUP_CONFIRM_POPUP,
             None,
-            imgui.WindowFlags_.always_auto_resize,
+            imgui.WindowFlags_.none,
         )
         if opened:
-            imgui.text_colored(_COL_WARN, "Re-run project setup?")
+            imgui.text_colored(semantic_color("warning"), "Re-run project setup?")
             imgui.text_wrapped(
                 f"This resets B.A.C.U.P.-owned extracted data for "
                 f"{self._active_project_label()} and restarts its setup."
             )
-            button_size = imgui.ImVec2(120, 0)
+            button_size = imgui.ImVec2(scaled(120), 0)
             if imgui.button("Continue", button_size):
                 imgui.close_current_popup()
                 self._rerun_setup()

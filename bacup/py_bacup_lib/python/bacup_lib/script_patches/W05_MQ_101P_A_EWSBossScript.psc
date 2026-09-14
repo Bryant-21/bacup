@@ -1,7 +1,7 @@
 Event OnDeath(ObjectReference akSenderRef, Actor akKiller)
     Int index = 0
     While index < EWSBossSolomonsPond.GetCount()
-        Actor bossRef = EWSBossSolomonsPond.GetActorAt(index)
+        Actor bossRef = EWSBossSolomonsPond.GetAt(index) as Actor
         If bossRef != None && bossRef != akSenderRef && !bossRef.IsDead()
             Return
         EndIf

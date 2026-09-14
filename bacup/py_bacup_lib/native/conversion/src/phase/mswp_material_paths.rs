@@ -26,13 +26,19 @@ impl Phase for RewriteMswpMaterialPathsPhase {
             return Ok(PhaseReport::default());
         }
 
-        let mswp_sig =
-            SigCode::from_str("MSWP").map_err(|e| PhaseError::Internal(e.to_string()))?;
         let mut session = open_session(ctx.run.target_handle_id, None)
             .map_err(|e| PhaseError::Internal(e.to_string()))?;
-        let fks = session
-            .form_keys_of_sig(mswp_sig, &ctx.run.interner)
-            .map_err(|e| PhaseError::Internal(e.to_string()))?;
+
+        let mut fks = Vec::new();
+        for sig_name in ["MSWP", "TXST"] {
+            let sig =
+                SigCode::from_str(sig_name).map_err(|e| PhaseError::Internal(e.to_string()))?;
+            fks.extend(
+                session
+                    .form_keys_of_sig(sig, &ctx.run.interner)
+                    .map_err(|e| PhaseError::Internal(e.to_string()))?,
+            );
+        }
 
         let mut changed = 0u32;
         for fk in fks {
@@ -40,7 +46,7 @@ impl Phase for RewriteMswpMaterialPathsPhase {
             let mut record = session
                 .record_decoded(&fk, &ctx.run.schema_target, &ctx.run.interner)
                 .map_err(|e| PhaseError::Internal(e.to_string()))?;
-            if rewrite_mswp_relocated_materials(
+            if rewrite_relocated_material_paths(
                 &mut record,
                 &ctx.run.interner,
                 &ctx.run.relocation_members,
@@ -53,26 +59,40 @@ impl Phase for RewriteMswpMaterialPathsPhase {
             }
         }
 
+        // Pass 1 above only reaches swaps this plugin owns. Records whose model
+        // relocated but whose swap was remapped onto a target master still point
+        // at a base swap keyed on the pre-relocation material path.
+        drop(session);
+        let base_swaps = crate::phase::relocated_base_material_swaps::run(ctx, &namespace)?;
+
         Ok(PhaseReport {
-            records_changed: changed,
+            records_changed: changed + base_swaps.changed,
+            records_added: base_swaps.added,
+            warnings: base_swaps.unresolved,
             ..Default::default()
         })
     }
 }
 
-fn rewrite_mswp_relocated_materials(
+fn rewrite_relocated_material_paths(
     record: &mut Record,
     interner: &StringInterner,
     relocation_members: &HashSet<String>,
     namespace: &str,
 ) -> bool {
-    if record.sig.as_str() != "MSWP" {
+    let record_sig = record.sig.as_str();
+    if !matches!(record_sig, "MSWP" | "TXST") {
         return false;
     }
 
     let mut changed = false;
     for entry in record.fields.iter_mut() {
-        if !matches!(entry.sig.as_str(), "BNAM" | "SNAM") {
+        let rewrite = match record_sig {
+            "MSWP" => matches!(entry.sig.as_str(), "BNAM" | "SNAM"),
+            "TXST" => entry.sig.as_str() == "MNAM",
+            _ => false,
+        };
+        if !rewrite {
             continue;
         }
         changed |= rewrite_material_value_if_relocated(
@@ -119,6 +139,22 @@ fn rewrite_material_value_if_relocated(
         _ => return false,
     }
     true
+}
+
+/// Namespace `value` when it names a relocated material, else `None`. Shared
+/// with the base-swap clone pass, which works on raw strings rather than
+/// decoded fields.
+pub(super) fn namespace_relocated_material(
+    value: &str,
+    relocation_members: &HashSet<String>,
+    namespace: &str,
+) -> Option<String> {
+    let key = material_member_key(value)?;
+    if !relocation_member_matches(&key, relocation_members) {
+        return None;
+    }
+    let rewritten = namespace_material_value(value, namespace)?;
+    (rewritten != value).then_some(rewritten)
 }
 
 fn field_value_string(value: &FieldValue, interner: &StringInterner) -> Option<String> {
@@ -308,7 +344,7 @@ mod tests {
             "materials/landscape/ground/forestdirt01.bgsm".to_string(),
         ]);
 
-        assert!(rewrite_mswp_relocated_materials(
+        assert!(rewrite_relocated_material_paths(
             &mut record,
             &interner,
             &relocation_members,
@@ -332,6 +368,36 @@ mod tests {
                 "FO76\\Landscape\\Ground\\ForestDirt01.BGSM",
                 "",
             ]
+        );
+    }
+
+    #[test]
+    fn rewrites_relocated_txst_material() {
+        let interner = StringInterner::new();
+        let mut record = Record::new(
+            SigCode::from_str("TXST").unwrap(),
+            FormKey {
+                local: 0x21bc6c,
+                plugin: interner.intern("SeventySix.esm"),
+            },
+        );
+        record
+            .fields
+            .push(string_field("MNAM", "shared/flatgray01.bgsm", &interner));
+
+        assert!(rewrite_relocated_material_paths(
+            &mut record,
+            &interner,
+            &HashSet::from(["materials/shared/flatgray01.bgsm".to_string()]),
+            "FO76",
+        ));
+
+        let FieldValue::String(material) = &record.fields[0].value else {
+            panic!("expected TXST MNAM string");
+        };
+        assert_eq!(
+            interner.resolve(*material),
+            Some("FO76\\shared\\flatgray01.bgsm")
         );
     }
 }

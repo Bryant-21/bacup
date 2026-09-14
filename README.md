@@ -1,28 +1,25 @@
 # B.A.C.U.P.
 
-**Beth Asset Converter Universal Platform** — a framework for converting
-records and assets from one Bethesda / Creation Engine game to another. BACUP
-is not a single-purpose Fallout 76 → Fallout 4 tool: each game's record
-schema, FormID space, and asset formats are modeled independently, and a
-source → target *pair* plugs into a shared conversion pipeline (schema-driven
-record translation, FormID remapping, per-pair fixups) plus shared asset
-converters for meshes, materials, textures, Havok, terrain, and audio.
+**Beth Asset Converter Universal Platform** converts records and assets
+from one Bethesda / Creation Engine game to another. Each game's record schema,
+FormID space, and asset formats are modeled separately. A source → target
+*pair* plugs into a shared conversion pipeline (schema-driven record
+translation, FormID remapping, per-pair fixups) and shared asset converters for
+meshes, materials, textures, Havok, terrain, and audio.
 
 ## Supported conversions
 
-A unified driver dispatches by source → target pair. As of this writing:
+A unified driver dispatches by source → target pair:
 
 | Pair | Maturity |
 |---|---|
-| Fallout 76 → Fallout 4 (`fo76:fo4`) | Most mature pipeline — full record translation, terrain/LOD, Havok, NPC/creature conversion, audio, archive packaging |
-| Fallout 3 / New Vegas → Fallout 4 (`fnvfo3:fo4`) | Wired into the same driver and pair-hook architecture; hook coverage still growing |
-| Skyrim SE → Fallout 4 (`skyrimse:fo4`) | Wired into the same driver; earliest-stage hook coverage |
+| Fallout 76 → Fallout 4 (`fo76:fo4`) | Most complete: record translation, terrain/LOD, Havok, NPC/creature conversion, audio, archive packaging |
+| Fallout 3 / New Vegas → Fallout 4 (`fnvfo3:fo4`) | Same driver and pair-hook architecture; partial hook coverage |
+| Skyrim SE → Fallout 4 (`skyrimse:fo4`) | Same driver; early hook coverage |
 
-Adding a new pair means implementing another pair-hook module against the
-existing phase pipeline — it isn't a new engine. The framework carries
-per-game schemas for Fallout 3, Fallout: New Vegas, Fallout 4, Fallout 76,
-Skyrim SE, and Starfield; conversion pairs targeting the schemas beyond the
-three above are not yet wired into the driver.
+A new pair is another pair-hook module against the existing phase pipeline.
+Per-game schemas exist for Fallout 3, Fallout: New Vegas, Fallout 4, Fallout 76,
+Skyrim SE, and Starfield; only the three pairs above are wired into the driver.
 
 ## What it converts
 
@@ -71,11 +68,10 @@ builds it on tags.
     uv run --no-sync python scripts/regen.py --pair fnvfo3:fo4 --overwrite-existing
     uv run --no-sync python scripts/regen.py --pair skyrimse:fo4 --overwrite-existing
 
-See `bacup/docs/regen_commands.md` and `bacup/docs/non-fo76-conversion-workflows.md`
-for the full command reference, including deploy/undeploy and partial-scope runs.
+Run `scripts/regen.py --help` for the full option list, including
+`--lod-profile`.
 
-`fo76:fo4` LOD profiles live under `bacup/scripts/lod_settings/` — see
-`bacup/docs/regen_commands.md` for the named profiles.
+`fo76:fo4` LOD profiles live under `bacup/scripts/lod_settings/`.
 
 ## Game data
 

@@ -1,25 +1,27 @@
 //! Fixup trait and registry for the FO76→FO4 conversion pipeline.
 //!
-//! A `Fixup` is a single post-translation pass that inspects or rewrites
-//! records in the target plugin (via the `ConversionRun` handle). The
-//! `FixupRegistry` runs them in registration order, with optional convergence
-//! looping for fixups that declare `convergent() == true`.
-//!
-//! Lifecycle:
-//!   1. Caller builds a `FixupContext` (owns `source_handle_id`,
-//!      `target_handle_id`, path hints, config).
-//!   2. Caller holds `FormKeyMapper` separately — the mapper owns the
-//!      `&StringInterner` and fixups reach it via `mapper.interner`.
-//!   3. `FixupRegistry::run_all(ctx, mapper)` iterates fixups in order.
+//! A `Fixup` is a post-translation pass over records in the target plugin.
+//! `FixupRegistry::run_all(ctx, mapper)` runs them in registration order and loops
+//! `convergent()` fixups to a fixed point. The `FormKeyMapper` is passed beside the
+//! `FixupContext`, not inside it; fixups reach the interner via `mapper.interner`.
 
 pub mod apply_fo76_workshop_catalog;
 pub mod apply_weapon_sound_defaults;
+pub mod assign_legacy_worldspace_music;
+pub mod attach_fo76_camp_collectors;
+pub mod attach_fo76_furniture_buffs;
+pub mod attach_fo76_holotape_stage_listener;
 pub mod backfill_placed_loc_ref_types;
+pub mod bridge_fo76_combat_music;
 pub mod clean_leveled_item_entries;
 pub mod clear_interior_hand_changed;
+pub mod clear_orphaned_npc_template_flags;
+pub mod clear_protected_on_hostile_actors;
+pub mod collapse_projectile_compound_loop_sounds;
 pub mod creature;
 pub(crate) mod curve_table;
 pub mod drop_incompatible_player_idles;
+pub mod drop_orphan_quest_event_scope;
 pub mod drop_untranslatable_loadscreen_records;
 pub mod encounter_zones;
 pub mod expand_arma_races_from_armor_race;
@@ -30,6 +32,7 @@ pub mod fix_stag_sound_refs;
 pub mod fix_water_spell_refs;
 pub mod flatten_npc_property_curves;
 pub mod flatten_omod_includes;
+pub mod gate_event_quest_barks;
 pub mod gate_runtime_controlled_placed_refs;
 pub mod harvest_modt;
 pub mod havok;
@@ -38,44 +41,65 @@ pub mod inject_required_child_blocks;
 pub mod inject_weap_extra_data;
 pub mod ltex_txst_synth;
 pub(crate) mod mark_public_wastelanders_hubs;
+pub mod mark_shelter_workshop_surfaces;
+pub mod materialize_fo76_local_encounter_waves;
+pub mod materialize_inherited_npc_object_templates;
+pub mod materialize_legacy_npc_outfits;
 pub mod normalize_fo76_pack_templates;
 pub mod normalize_fo76_weather;
-pub mod normalize_placed_light_radius;
+pub mod normalize_light_radii;
 pub mod normalize_placed_records;
 pub mod null_dangling_misc_refs;
 pub mod null_dangling_own_plugin_refs;
 pub mod null_dangling_vmad_refs;
 pub mod null_invalid_qust_alla_keywords;
+pub mod pad_scene_player_dialogue_topics;
+pub mod placed_record_vmad;
+pub(crate) mod placed_record_vmad_catalog;
 pub mod preserve_packin_storage_cells;
 pub mod promote_placed_custom_material_swaps;
 pub mod prune_faction_relations;
 pub mod prune_orphaned_records;
+pub(crate) mod quest_script_vmad;
+pub mod recentre_far_interiors;
 pub mod recover_fo76_leveled_list_values;
 pub mod ref_index;
+pub mod remap_creature_weapon_to_playable_twin;
 pub mod remap_idle_anchor_actions;
 pub mod remap_light_gobo_to_fo4_base;
+pub mod remap_nonplayable_armor_to_playable_twin;
 pub mod remap_struct_internal_formids;
+pub mod repair_expedition_mission_rewards;
+pub mod repair_fo76_ingestible_effects;
 pub mod repair_omod_target_keywords;
 pub mod repair_placed_linked_refs;
 pub mod repair_placed_teleport_doors;
+pub mod repair_quest_completion_rewards;
 pub mod repair_quest_completion_xp;
 pub mod repair_radio_scene_properties;
 pub mod repair_scen_htid_sound_refs;
+pub mod repair_vault79_reactor_door_topology;
 pub mod resolve_addon_node_indices;
+pub mod resolve_fo76_magic_effect_globals;
 pub mod resolve_injected_stub_refs;
 pub mod resolve_placed_leveled_bases;
+pub mod restore_fo76_plan_learning;
 pub mod restrict_translated_npc_for_slice;
 pub mod rewrite_raw_lctn_formids;
 pub mod rewrite_raw_object_template_formids;
 pub mod rewrite_raw_wrld_large_refs;
 pub mod sky_regions;
+pub mod strip_alias_created_base_loc_ref_types;
 pub mod strip_atx_cobj_conditions;
+pub mod strip_crafting_recipe_filters;
+pub mod strip_dead_workshop_conditions;
 pub mod strip_invalid_quest_condition_params;
 pub mod strip_orphan_race_properties;
 pub mod strip_perk_leveled_lists_from_containers;
 pub mod stub_injection;
 pub mod sweep_unmapped_formkeys;
 pub mod sync_armo_hand_slots_from_addons;
+pub mod synthesize_legacy_music;
 pub mod synthesize_weap_data_blocks;
 pub mod synthesize_workshop_boundaries;
 pub mod validate_reference_target_types;
@@ -122,10 +146,19 @@ pub struct FixupConfig {
     pub mod_path: Option<std::path::PathBuf>,
     /// Optional path to the directory holding extracted source assets.
     pub source_extracted_dir: Option<std::path::PathBuf>,
+    /// Additional loose/extracted source roots used by merged conversions.
+    pub additional_source_asset_roots: Vec<std::path::PathBuf>,
+    /// Legacy Fallout music files discovered before record translation.
+    pub legacy_music_tracks: Vec<crate::run::LegacyMusicTrackRow>,
     /// Optional path to the directory holding extracted FO4 base-game assets.
-    /// Used by fixups that may substitute a vanilla asset for a FO76 reference
-    /// (e.g. `remap_light_gobo_to_fo4_base`).
+    /// Fixups resolve real base-game paths under it (e.g.
+    /// `Meshes/Actors/Character/Behaviors`), so it must stay the extracted
+    /// root — never a narrower per-asset tree.
     pub target_extracted_dir: Option<std::path::PathBuf>,
+    /// Optional root of a prepared membership tree for one asset class, used to
+    /// test whether the base game ships a given file. Narrow by construction,
+    /// so it is kept separate from `target_extracted_dir`.
+    pub target_membership_root: Option<std::path::PathBuf>,
     /// Handle IDs of every master plugin loaded for the target game.
     pub target_master_handle_ids: Vec<u64>,
     /// Schema for the target game.
@@ -136,12 +169,10 @@ pub struct FixupConfig {
     pub asset_phases: AssetPhaseFlags,
     /// True only for whole-plugin FO76→FO4 worldspace runs, where the phase-6
     /// cell-slice copy re-inserts exterior placed children (ACHR/REFR/...) AFTER
-    /// the fixup phase. When set, pre-copy fixups defer the placed-ref-target
-    /// class (LCTN LCUN/LCEP/ACEP) and the raw LCTN special-ref arrays
-    /// (LCPR/LCSR) because their targets are not yet present. The authoritative
-    /// resolution runs post-copy via
-    /// `ConversionRun::repair_placed_child_refs`. False for every other pipeline
-    /// (the pre-copy pass resolves the whole class as before).
+    /// the fixup phase. Pre-copy fixups then defer the placed-ref-target class
+    /// (LCTN LCUN/LCEP/ACEP) and the raw LCTN special-ref arrays (LCPR/LCSR),
+    /// whose targets are not yet present; `ConversionRun::repair_placed_child_refs`
+    /// resolves them post-copy. Other pipelines resolve the class pre-copy.
     pub defer_placed_child_ref_class: bool,
 }
 
@@ -301,13 +332,9 @@ impl std::error::Error for FixupError {}
 // Fixup trait
 // ---------------------------------------------------------------------------
 
-/// A single post-translation fixup pass.
-///
-/// Implementors must be `Send + Sync` so the registry can be stored in
-/// shared contexts (e.g. `Arc<FixupRegistry>`).
-///
-/// `FormKeyMapper` is accepted directly by `run` (not via `FixupContext`) to
-/// sidestep nested lifetime conflicts — see module-level docs.
+/// A single post-translation fixup pass. `Send + Sync` so the registry can be
+/// shared (e.g. `Arc<FixupRegistry>`). `run` takes `FormKeyMapper` directly, not via
+/// `FixupContext`, to avoid nested lifetimes (see `FixupContext`).
 pub trait Fixup: Send + Sync {
     /// Stable identifier for this fixup, used in reports and error messages.
     fn name(&self) -> &'static str;

@@ -1,13 +1,9 @@
-//! Semantic transform — rewrites FNV AST nodes to FO4/Papyrus equivalents.
+//! Semantic transform: rewrites FNV AST nodes to FO4/Papyrus equivalents.
 //!
-//! Strategy:
-//! - Walk the AST recursively.
-//! - For every `ExprAst::Call { name, args }`, look up `name` (case-insensitive)
-//!   in `ctx.function_map`.  If found, emit a `SemanticCall` annotation that
-//!   the emitter uses to build the Papyrus template.
-//! - For every arg whose kind is `"actor_value"`, replace the `Ident` string
-//!   using `ctx.actor_value_map`.
-//! - Functions not in the map are left as-is unless `strict` is requested.
+//! Calls found (case-insensitively) in `ctx.function_map` become pre-rendered
+//! Papyrus template strings (see `RENDERED_PREFIX`); `"actor_value"` args are
+//! renamed via `ctx.actor_value_map`. Unmapped functions pass through unchanged;
+//! `drop_with_warning` functions and unmapped actor values are errors.
 
 use super::ast::{BeginBlock, BinOpKind, ExprAst, ScriptAst, StmtAst};
 use crate::fnv_legacy_scripting::function_map::{FnvScriptContext, FunctionEntry};
@@ -88,9 +84,8 @@ pub(super) const RENDERED_PREFIX: &str = "\x00papyrus\x00";
 
 /// Walk `ast`, substituting FNV names with FO4/Papyrus equivalents.
 ///
-/// Errors are returned eagerly on the first unmapped name.  In non-strict mode
-/// (`ctx` doesn't expose a strict flag at this level), unknown functions are
-/// left untouched as bare `Ident` references.
+/// Returns the first error hit (unmapped actor value or dropped function).
+/// Unknown functions stay as unchanged calls.
 pub fn apply_semantic(ast: ScriptAst, ctx: &FnvScriptContext) -> Result<ScriptAst, SemanticError> {
     let blocks = ast
         .blocks
@@ -152,8 +147,8 @@ fn transform_stmt(stmt: StmtAst, ctx: &FnvScriptContext) -> Result<StmtAst, Sema
 
 /// Transform an expression node.
 ///
-/// `parent_entry` is `Some(entry)` when we are transforming an argument whose
-/// kind is known from the parent call's `arg_kinds` list.
+/// `parent_kind` is the argument's kind from the parent call's `arg_kinds`,
+/// when known.
 fn transform_expr(
     expr: ExprAst,
     parent_kind: Option<&str>,

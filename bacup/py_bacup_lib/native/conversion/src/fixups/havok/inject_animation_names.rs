@@ -1,29 +1,17 @@
 //! Populate `animationBundleNameData[0].assetNames` in character.hkx.
 //!
-
+//! FO76 `character.hkx` files leave `assetNames` empty; FO4 needs every
+//! animation the behavior graph references listed there, or the creature
+//! T-poses. Names come from the adjacent `Behaviors/` clip generators merged
+//! with the emitted `Animations/` inventory, since RACE subgraphs can override
+//! a shared graph's clips from directories no adjacent behavior names. Orphan
+//! `hkbBoneIndexArray` objects (empty `boneIndices`, unreferenced; a TAG0
+//! reader artifact) and the `variantVariableValues` entries pointing at them
+//! are removed.
 //!
-//! # What this does
-//! FO76 `character.hkx` files have an empty `assetNames` array because FO76
-//! resolves animations differently.  FO4 needs the `character.hkx` to list
-//! every animation file the behavior graph references, otherwise the creature
-//! T-poses.
-//!
-//! Algorithm:
-//! 1. Collect behavior-referenced clip names from adjacent `Behaviors/` dir
-//!    (via `collect_behavior_clip_names`). Actor-local names are intersected
-//!    with the emitted `Animations/` tree; `..\` shared-actor references are
-//!    preserved. Fall back to the disk inventory if no clip names are found.
-//! 2. Read `character.hkx`, find `hkbCharacterStringData`, inject assetNames.
-//! 3. Clean up orphan `hkbBoneIndexArray` objects (empty `boneIndices`,
-//!    unreferenced) — TAG0 reader artifact.
-//! 4. Remove trailing `variantVariableValues` entries pointing at orphans.
-//!
-//! Existing Havok string references are preserved. Some working FO4 creature
-//! ports keep internal animation names as `.hkt` even when the converted loose
-//! files are emitted as `.hkx`.
-//!
-//! # FixupReport mapping
-//! `records_changed` = number of `character.hkx` files updated.
+//! Existing Havok string references are kept: some working FO4 creature ports
+//! keep internal `.hkt` names even when the loose files are `.hkx`.
+//! `records_changed` counts updated `character.hkx` files.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -206,6 +194,17 @@ fn animation_asset_key(path: &str) -> String {
         .to_string()
 }
 
+fn animation_asset_with_extension(path: &str, extension: &str) -> String {
+    let trimmed = path.trim().trim_matches('\0');
+    let without_extension = trimmed
+        .strip_suffix(".hkx")
+        .or_else(|| trimmed.strip_suffix(".HKX"))
+        .or_else(|| trimmed.strip_suffix(".hkt"))
+        .or_else(|| trimmed.strip_suffix(".HKT"))
+        .unwrap_or(trimmed);
+    format!("{without_extension}{extension}")
+}
+
 fn select_animation_names(clip_names: &HashSet<String>, anim_dir: Option<&Path>) -> Vec<String> {
     let mut referenced: Vec<String> = clip_names.iter().cloned().collect();
     referenced.sort();
@@ -226,18 +225,28 @@ fn select_animation_names(clip_names: &HashSet<String>, anim_dir: Option<&Path>)
         .iter()
         .map(|path| animation_asset_key(path))
         .collect();
-    let filtered: Vec<String> = referenced
-        .into_iter()
-        .filter(|path| {
-            let key = animation_asset_key(path);
-            !key.starts_with("animations\\") || available.contains(&key)
-        })
-        .collect();
-    if filtered.is_empty() {
-        on_disk
-    } else {
-        filtered
+    let prefer_hkt = referenced.iter().any(|path| {
+        let lower = path.to_ascii_lowercase();
+        lower.starts_with("animations\\") && lower.ends_with(".hkt")
+    });
+    let mut selected = std::collections::BTreeMap::new();
+    for path in referenced {
+        let key = animation_asset_key(&path);
+        if !key.starts_with("animations\\") || available.contains(&key) {
+            selected.insert(key, path);
+        }
     }
+    for path in on_disk {
+        let key = animation_asset_key(&path);
+        selected.entry(key).or_insert_with(|| {
+            if prefer_hkt {
+                animation_asset_with_extension(&path, ".hkt")
+            } else {
+                path
+            }
+        });
+    }
+    selected.into_values().collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -339,10 +348,8 @@ fn inject_anim_names(
     if !orphan_indices.is_empty() {
         hkx.retain_objects_remap_pointers(|idx, _obj| !orphan_indices.contains(&idx));
 
-        // Clean up variantVariableValues entries pointing at orphans (now removed).
-        // After retain, the orphan objects no longer exist; their pointer slots
-        // in arrays will have been set to None by retain_objects_remap_pointers.
-        // We need to remove Pointer(None) entries from variantVariableValues arrays.
+        // retain_objects_remap_pointers leaves Pointer(None) where an orphan was;
+        // drop those from variantVariableValues.
         for obj in hkx.objects_mut() {
             if obj.class_name != "hkbVariableValueSet" {
                 continue;
@@ -514,6 +521,27 @@ mod tests {
             vec![
                 "..\\Character\\Animations\\SharedDeath.hkt".to_string(),
                 "Animations\\Idle.hkt".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn includes_emitted_race_subgraph_overrides_not_named_by_local_behaviors() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("H2H")).unwrap();
+        fs::create_dir_all(dir.path().join("MT")).unwrap();
+        fs::write(dir.path().join("H2H").join("Idle.hkx"), b"idle").unwrap();
+        fs::write(dir.path().join("MT").join("RunForward.hkx"), b"run").unwrap();
+        let clip_names = HashSet::from(["Animations\\H2H\\Idle.hkt".to_string()]);
+
+        let selected = select_animation_names(&clip_names, Some(dir.path()));
+
+        assert_eq!(
+            selected,
+            vec![
+                "Animations\\H2H\\Idle.hkt".to_string(),
+                "Animations\\MT\\RunForward.hkt".to_string(),
             ]
         );
     }

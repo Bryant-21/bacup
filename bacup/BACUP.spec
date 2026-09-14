@@ -75,6 +75,7 @@ bacup_lib_mods = collect_submodules(
 bacup_ui_mods = collect_submodules(
     "bacup_ui",
     filter=lambda name: ".tests" not in name
+    and not name.endswith(".conftest")
     and not name.rsplit(".", 1)[-1].startswith("test"),
 )
 bacup_lib_datas = collect_data_files("bacup_lib")
@@ -185,6 +186,7 @@ a = Analysis(
         *winpty_datas,
         *bacup_lib_datas,
         *bacup_ui_datas,
+        (os.path.join(resource_root, "bacup", "projects"), "resource/bacup/projects"),
         *ui_datas,
         # App code and data
         (os.path.join(creation_package_root, "ba2"), "py_creation_lib/python/creation_lib/ba2"),
@@ -192,6 +194,10 @@ a = Analysis(
         (os.path.join(creation_package_root, "fbx"), "py_creation_lib/python/creation_lib/fbx"),
         (os.path.join(creation_package_root, "nif"), "py_creation_lib/python/creation_lib/nif"),
         (os.path.join(creation_package_root, "nif", "nif_xml"), "creation_lib/nif/nif_xml"),
+        # Papyrus default-parameter/event manifest and user-flag definitions.
+        # Without these the type universe synthesized from the game's .pex is
+        # wrong and every converted script fails to compile.
+        (os.path.join(creation_package_root, "pex", "data"), "creation_lib/pex/data"),
         *creation_resource_datas,
         (os.path.join(creation_package_root, "renderer", "shaders"), "creation_lib/renderer/shaders"),
         (os.path.join(creation_package_root, "renderer", "assets"), "creation_lib/renderer/assets"),

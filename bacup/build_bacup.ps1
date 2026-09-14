@@ -28,6 +28,7 @@ $Icon     = Join-Path $RepoRoot "resource\icons\modbox21-converter.ico"
 $CompanionModName = "B21_TalesFromAppalachia"
 $GeneratedModNames = @(
     "SeventySix",
+    "FNV_FO3",
     "FNV_FO3_Merged",
     "MojaveCapital",
     "Skyrim_Merged",
@@ -138,7 +139,11 @@ function Copy-AppalachiaCompanionMod($DestinationRoot) {
 
     Copy-Item -Force -LiteralPath (Join-Path $src "$CompanionModName.esp") -Destination (Join-Path $dst "$CompanionModName.esp")
 
-    $runtimeDirs = @("data", "PrismaUI_F4")
+    # F4SE\ carries the companion plugin DLL and its .pdb, so user crash reports can be
+    # symbolicated (the plugin fixes FO4's 16-bit auto-calc health truncation and is a hard
+    # runtime dependency). /PDBALTPATH keeps build-machine paths out of the DLL. The .pdb
+    # purge above runs on $DistDir before this copy, so it doesn't strip these.
+    $runtimeDirs = @("data", "PrismaUI_F4", "F4SE")
     foreach ($dir in $runtimeDirs) {
         $srcDir = Join-Path $src $dir
         if (-not (Test-Path $srcDir)) {
@@ -147,7 +152,6 @@ function Copy-AppalachiaCompanionMod($DestinationRoot) {
         $dstDir = Join-Path $dst $dir
         New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
         Get-ChildItem -LiteralPath $srcDir -Recurse -File |
-            Where-Object { $_.Extension -ine ".pdb" } |
             ForEach-Object {
                 $rel = $_.FullName.Substring($srcDir.Length).TrimStart("\")
                 $out = Join-Path $dstDir $rel

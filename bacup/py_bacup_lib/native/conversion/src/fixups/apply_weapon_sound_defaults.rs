@@ -1,51 +1,9 @@
 //! Fixup: fill FO4 melee sound defaults for WEAP records missing sound fields.
 //!
-
-//!
-//! # What this does
-//! After the FO76→FO4 translation sweep removes packed-data FormKeys from
-//! sound fields, weapons may be left with sound fields zeroed out.  This
-//! fixup finds every WEAP record in the target plugin whose DNAM `sound_attack`,
-//! `sound_equip_sound`, or `sound_unequip_sound` field is zero, and writes in
-//! sensible FO4 melee defaults from Fallout4.esm.
-//!
-//! # DNAM struct layout (FO4, 40 fields, codec `I,f,f,...`)
-//! The struct begins at byte 0 of the DNAM subrecord data:
-//!
-//! | Offset | Size | Field              | Notes                      |
-//! |--------|------|--------------------|----------------------------|
-//! |      0 |    4 | ammo (formid)      |                            |
-//! |      4 |   36 | speed … damage_outofrange_mult (floats) |     |
-//! |     40 |   12 | on_hit, skill, resist (uint32/formid) |       |
-//! |     52 |    4 | flags              |                            |
-//! |     56 |    2 | capacity           |                            |
-//! |     58 |    1 | animation_type     |                            |
-//! |     59 |    8 | damage_secondary, weight (floats) |            |
-//! |     67 |    4 | value              |                            |
-//! |     71 |    2 | damage_base        |                            |
-//! |     73 |    4 | sound_level        |                            |
-//! |     77 |    4 | **sound_attack** (formid) |                    |
-//! |     81 |    4 | sound_attack_2d   |                            |
-//! |     85 |    4 | sound_attack_loop |                            |
-//! |     89 |    4 | sound_attack_fail |                            |
-//! |     93 |    4 | sound_idle        |                            |
-//! |     97 |    4 | **sound_equip_sound** (formid) |               |
-//! |    101 |    4 | **sound_unequip_sound** (formid) |             |
-//! |    105 |   35 | remaining fields  |                            |
-//!
-//! Minimum DNAM size for sound fields to be present: 105 bytes.
-//!
-//! # Default FormIDs (Fallout4.esm)
-//! These match `_FO4_MELEE_SOUND_DEFAULTS` in the Python fixup:
-//!
-//! | Field            | FormID (hex) | EDID                           |
-//! |------------------|-------------|--------------------------------|
-//! | AttackSound      | 0x094307    | WPNSwingBaseballBat            |
-//! | EquipSound       | 0x2498AE    | WPNGenericMeleeLargeEquipUp    |
-//! | UnequipSound     | 0x1526AC    | WPNEquipDown                   |
-//!
-//! The raw FormID written into DNAM must use master-byte 0 for Fallout4.esm
-//! (since every FO4 plugin has it as master 0).
+//! The FO76→FO4 sweep zeroes DNAM sound FormIDs that pointed into packed data.
+//! Zero `sound_attack`, `sound_equip_sound`, or `sound_unequip_sound` slots get
+//! Fallout4.esm melee defaults, written with master byte 0 (Fallout4.esm is
+//! master 0 of every FO4 plugin).
 
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -109,12 +67,8 @@ impl Fixup for ApplyWeaponSoundDefaultsFixup {
             .map_err(|e| FixupError::HandleError(e.to_string()))?;
 
         for fk in fks {
-            // In-place byte patch on DNAM. Bypasses the schema decode + encode
-            // round-trip that `read_record` + `replace_record_native` would do,
-            // since the only thing we need to touch is 12 bytes inside DNAM.
-            // Records without a DNAM subrecord (or with a DNAM shorter than
-            // DNAM_MIN_LEN) are silently skipped via the closure's `false`
-            // return; "not found" handle/record errors surface as warnings.
+            // In-place DNAM patch that skips the schema decode/encode round-trip;
+            // only 12 bytes change. The kernel returns `false` for a short DNAM.
             match session.patch_subrecord_bytes(&fk, "DNAM", patch_dnam_bytes) {
                 Ok(true) => report.records_changed += 1,
                 Ok(false) => {}
@@ -178,13 +132,8 @@ fn inject_if_zero_slice(data: &mut [u8], offset: usize, form_id: u32) -> bool {
 // Record-level mutation (extracted for unit-test access)
 // ---------------------------------------------------------------------------
 
-/// Inject melee sound defaults into a WEAP `Record`'s DNAM bytes.
-///
-/// Returns `true` when the record was mutated (at least one sound field was
-/// zero and has been filled in), `false` when no change was needed.
-///
-/// The mutation operates directly on `FieldValue::Bytes` because DNAM is a
-/// large struct that the schema emits as raw bytes at this pipeline stage.
+/// Inject melee sound defaults into a WEAP `Record`'s DNAM bytes; returns whether
+/// any sound field was filled. DNAM is still raw `FieldValue::Bytes` at this stage.
 pub fn apply_to_record(record: &mut Record) -> bool {
     let dnam_sig = match SubrecordSig::from_str("DNAM") {
         Ok(s) => s,
@@ -425,10 +374,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // patch_dnam_bytes — direct byte-slice variant used by the in-place
-    // helper. Mirrors the apply_to_record tests but operates on a plain
-    // &mut [u8] so we exercise the same path the registry-driven fixup
-    // takes for records living in the parsed plugin tree.
+    // patch_dnam_bytes: the byte-slice kernel the session fixup runs.
     // -----------------------------------------------------------------------
 
     #[test]

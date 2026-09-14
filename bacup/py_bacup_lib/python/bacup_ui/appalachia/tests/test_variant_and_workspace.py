@@ -21,6 +21,7 @@ def test_bacup_variant_metadata():
     assert v.default_workspace == "appalachia"
     assert v.is_standalone is True
     assert v.auto_hide_single_window_tabs is True
+    assert v.include_status_bar is False
 
 
 def test_bacup_hides_redundant_single_window_dock_tab():
@@ -76,18 +77,19 @@ def test_bacup_window_starts_centered_with_owned_ini(monkeypatch, tmp_path):
 
 
 def test_bacup_seeds_invalid_initial_imgui_display_size(monkeypatch):
-    display = SimpleNamespace(display_size=SimpleNamespace(x=-1.0, y=-1.0))
+    display = SimpleNamespace(display_size=SimpleNamespace(x=-1.0, y=-1.0), config_flags=0)
     app = object.__new__(ToolkitApp)
     app._app_variant = BACUP_VARIANT
     app._initial_display_size = (1280, 760)
-    app._current_theme = "dark"
+    app._current_theme = SimpleNamespace(id="dark")
+    app._settings = SimpleNamespace(theme_colors={})
     app._mono_font = None
     app._ws_map = {}
 
     monkeypatch.setattr("ui.toolkit.app.imgui.get_io", lambda: display)
     monkeypatch.setattr("ui.toolkit.app.set_window_icon", lambda _variant: None)
     monkeypatch.setattr("ui.toolkit.app.set_native_dark_title_bar", lambda: None)
-    monkeypatch.setattr("ui.toolkit.app.apply_theme", lambda _theme: None)
+    monkeypatch.setattr("ui.toolkit.app.apply_theme", lambda _theme, **_kwargs: None)
     monkeypatch.setattr("ui.toolkit.app._signal_ready_file", lambda: None)
 
     app._post_init()

@@ -1,41 +1,19 @@
 //! Per-record "is this a creature?" predicate.
 //!
-//! # Why this exists
-//! The creature-race internal fixups (`fix_creature_npc_records`,
-//! `nullify_creature_death_items`, `augment_creature_factions`,
-//! `fix_creature_weapons_and_records`, ...) currently gate on
-//! `config.root_sig == NPC_/LVLN` — i.e. they only run during a *creature-rooted*
-//! bounded graph walk, where every in-scope record is by construction a
-//! creature. On the whole-plugin path `root_sig` is `None`, so they self-skip;
-//! naively un-gating them would run their mutations over EVERY NPC_/RACE in the
-//! 3.7M-record plugin — and several mutate unconditionally (append
-//! `ActorTypeCreature` keyword + creature combat perks, strip INAM death items,
-//! ...), which would corrupt every HUMAN NPC.
+//! Lets the creature fixups run whole-plugin while touching only creatures.
+//! Several mutate unconditionally (add `ActorTypeCreature` and combat perks,
+//! strip INAM death items) and would corrupt every human NPC. Pure record
+//! inspection; RACE resolution is a caller-supplied closure.
 //!
-//! This module provides a per-record creature test so those fixups can run
-//! whole-plugin while only touching actual creatures. It is intentionally a
-//! standalone, IO-free helper: record inspection is pure, and RACE resolution is
-//! supplied by the caller as a closure, so this file has no session/handle
-//! coupling and is trivially unit-testable.
+//! An actor is a creature iff `ActorTypeCreature` (`Fallout4.esm:013795`) is in
+//! its own `KWDA` or, more commonly, its RACE's. Keywords match on the low 24
+//! bits because the master byte differs between converted (07) and
+//! inherited-vanilla (00) plugins.
 //!
-//! # Signal
-//! An actor is a creature iff its actor-type is `ActorTypeCreature`. In FO4 that
-//! is the keyword `Fallout4.esm:013795`, attached either directly on the NPC's
-//! `KWDA`/`KSIZ`, or — far more commonly — on the NPC's RACE (`RNAM`) `KWDA`.
-//! We check the NPC first (cheap, no resolution) and fall back to resolving its
-//! race. Keyword FormIDs are matched on their low 24 bits because the master
-//! byte differs between converted (07-prefix) and inherited-vanilla (00-prefix)
-//! plugins, but `ActorTypeCreature` is always Fallout4.esm-local `013795`.
-//!
-//! # Template chain (UseTraits)
-//! Many FO76 creatures are Traits-template NPCs (ACBS `UseTraits` bit set): their
-//! RACE is inherited from `TPLT` (an NPC_ or an LVLN leveled-character list), so
-//! their literal `RNAM` is runtime-irrelevant (e.g. the Gulper whose own RNAM was
-//! remapped to a STAT but whose real race comes from `LCharGulper`). Use
-//! [`npc_is_creature_following_template`] for those — it walks the template chain
-//! instead of trusting RNAM. [`npc_is_creature`] is the literal-RNAM-only variant
-//! for callers that have already resolved templates or know the NPC isn't a
-//! template inheritor.
+//! Traits-template NPCs (ACBS `UseTraits`) inherit RACE from `TPLT`, so their
+//! `RNAM` is irrelevant (e.g. the Gulper whose RNAM became a STAT but whose race
+//! comes from `LCharGulper`). [`npc_is_creature_following_template`] walks the
+//! template chain; [`npc_is_creature`] reads only the literal `RNAM`.
 
 use crate::ids::FormKey;
 use crate::ids::SubrecordSig;
@@ -48,6 +26,14 @@ pub const ACTOR_TYPE_CREATURE_LOW24: u32 = 0x00_013795;
 /// `Fallout4.esm:013794` — the `ActorTypeNPC` keyword (humanoids). Used only as
 /// a tie-breaker / negative signal; presence of ActorTypeCreature wins.
 pub const ACTOR_TYPE_NPC_LOW24: u32 = 0x00_013794;
+
+/// `Fallout4.esm:06D7B6` — `ActorTypeSuperMutant`.
+pub const ACTOR_TYPE_SUPER_MUTANT_LOW24: u32 = 0x00_06D7B6;
+
+/// `ActorTypeHumanlike` — an FO76-authored keyword with no Fallout4.esm
+/// equivalent, so this id is FO76-local (`SeventySix.esm:5F1198`). Whole-plugin
+/// conversion preserves local ids, so the low 24 bits are stable in the output.
+pub const ACTOR_TYPE_HUMANLIKE_LOW24: u32 = 0x00_5F1198;
 
 /// FO4 NPC_ ACBS `template_flags` bit for `UseTraits`. When set, the actor
 /// inherits its Traits — INCLUDING its RACE — from the record pointed at by
@@ -117,6 +103,23 @@ pub fn record_has_actor_type_npc(record: &Record) -> bool {
     let mut found = false;
     for_each_kwda_low24(record, |kw| {
         if kw == ACTOR_TYPE_NPC_LOW24 {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Whether `record` (a RACE) wields real weapons despite FO76 tagging it
+/// `ActorTypeCreature`.
+///
+/// FO76 tags mole miners, super mutants and Zetans as creatures, so "is a
+/// creature" cannot mean "cannot hold a weapon" when stripping `RACE.VNAM`
+/// equipment-type bits. `ActorTypeHumanlike` covers mole miners, Zetans and the
+/// Rust King; `ActorTypeSuperMutant` covers the shielded/ghoul mutant races.
+pub fn record_is_armed_humanoid(record: &Record) -> bool {
+    let mut found = false;
+    for_each_kwda_low24(record, |kw| {
+        if kw == ACTOR_TYPE_HUMANLIKE_LOW24 || kw == ACTOR_TYPE_SUPER_MUTANT_LOW24 {
             found = true;
         }
     });
@@ -194,18 +197,10 @@ impl CreatureVerdict {
     }
 }
 
-/// Classify an NPC as creature / not-creature / unknown.
-///
-/// Order of evidence (first hit wins):
-/// 1. NPC's own `KWDA` has `ActorTypeCreature` ⇒ Creature.
-/// 2. NPC's own `KWDA` has `ActorTypeNPC` (and not creature) ⇒ NotCreature.
-/// 3. Resolve the NPC's `RNAM` race via `resolve_race`; the race's `KWDA`
-///    decides (ActorTypeCreature ⇒ Creature, ActorTypeNPC ⇒ NotCreature).
-/// 4. No actor-type keyword anywhere reachable ⇒ Unknown.
-///
-/// `resolve_race` returns the decoded RACE `Record` for a FormKey, or `None`
-/// when the race can't be read (dropped, cross-master, decode error) — keeping
-/// this helper free of session/handle types.
+/// Classify an NPC by its own `KWDA` actor-type keyword, else by its `RNAM`
+/// race's (`ActorTypeCreature` wins over `ActorTypeNPC`); `Unknown` when none is
+/// reachable. `resolve_race` returns `None` for a race that can't be read
+/// (dropped, cross-master, decode error).
 pub fn npc_is_creature(
     npc: &Record,
     resolve_race: impl FnOnce(FormKey) -> Option<Record>,
@@ -236,25 +231,14 @@ fn record_actor_type(record: &Record) -> CreatureVerdict {
 
 /// Template-aware creature classification.
 ///
-/// A Traits-template NPC (ACBS `UseTraits` set) inherits its RACE from `TPLT`
-/// (an NPC_ or LVLN), so its literal `RNAM` is runtime-irrelevant — classifying
-/// off RNAM would misread it (e.g. the FO76 Gulper whose own RNAM was remapped
-/// to a STAT but whose real race comes from `LCharGulper`). This walks the
-/// template chain instead when the Traits bit is set.
+/// 1. The NPC's own actor-type keyword decides if present.
+/// 2. With `UseTraits` set and a resolvable `TPLT`, classify the template (NPC_
+///    recursively, RACE by keyword, LVLN as Creature if any entry is one).
+/// 3. Otherwise use the literal `RNAM` race.
+/// 4. Anything unresolved is `Unknown`, so a human is never mis-flagged.
 ///
-/// Resolution order:
-/// 1. NPC's OWN actor-type keyword (definitive, no resolution) ⇒ that verdict.
-/// 2. If `UseTraits` is set and `TPLT` resolves: recurse on the template
-///    (NPC_ ⇒ recurse template-aware; RACE ⇒ its keyword; LVLN ⇒ classify each
-///    entry the resolver yields, Creature if ANY entry is a creature).
-/// 3. Else fall back to the literal `RNAM` race (the non-template path).
-/// 4. Anything unresolved ⇒ `Unknown` (conservative — never mis-flag a human).
-///
-/// `resolve` returns the decoded `Record` for a FormKey (RACE / NPC_ / LVLN) or
-/// `None` when unreadable, and `lvln_entry_npcs` yields the NPC_ FormKeys a LVLN
-/// references (empty when the arg isn't a LVLN or can't be read) — both supplied
-/// by the caller so this stays free of session/handle types. `depth` guards
-/// against template cycles.
+/// `resolve` decodes a RACE / NPC_ / LVLN or returns `None`; `lvln_entry_npcs`
+/// yields a LVLN's NPC_ entries (empty for a non-LVLN or unreadable record).
 pub fn npc_is_creature_following_template(
     npc: &Record,
     resolve: &impl Fn(FormKey) -> Option<Record>,
@@ -293,27 +277,12 @@ fn classify_actor_following_template(
                     }
                     "RACE" => return record_actor_type(&tmpl),
                     "LVLN" => {
-                        // Creature if ANY leveled entry classifies as creature.
-                        let mut saw_not_creature = false;
-                        for entry_fk in lvln_entry_npcs(tplt_fk) {
-                            if let Some(entry_npc) = resolve(entry_fk) {
-                                match classify_actor_following_template(
-                                    &entry_npc,
-                                    resolve,
-                                    lvln_entry_npcs,
-                                    depth - 1,
-                                ) {
-                                    CreatureVerdict::Creature => return CreatureVerdict::Creature,
-                                    CreatureVerdict::NotCreature => saw_not_creature = true,
-                                    CreatureVerdict::Unknown => {}
-                                }
-                            }
-                        }
-                        return if saw_not_creature {
-                            CreatureVerdict::NotCreature
-                        } else {
-                            CreatureVerdict::Unknown
-                        };
+                        return classify_lvln_following_template(
+                            tplt_fk,
+                            resolve,
+                            lvln_entry_npcs,
+                            depth - 1,
+                        );
                     }
                     _ => {}
                 }
@@ -332,6 +301,45 @@ fn classify_actor_following_template(
         return CreatureVerdict::Unknown;
     };
     record_actor_type(&race)
+}
+
+fn classify_lvln_following_template(
+    lvln_fk: FormKey,
+    resolve: &impl Fn(FormKey) -> Option<Record>,
+    lvln_entry_npcs: &impl Fn(FormKey) -> Vec<FormKey>,
+    depth: u32,
+) -> CreatureVerdict {
+    if depth == 0 {
+        return CreatureVerdict::Unknown;
+    }
+
+    let mut saw_not_creature = false;
+    for entry_fk in lvln_entry_npcs(lvln_fk) {
+        let Some(entry) = resolve(entry_fk) else {
+            continue;
+        };
+        let verdict = match entry.sig.as_str() {
+            "NPC_" => {
+                classify_actor_following_template(&entry, resolve, lvln_entry_npcs, depth - 1)
+            }
+            "RACE" => record_actor_type(&entry),
+            "LVLN" => {
+                classify_lvln_following_template(entry_fk, resolve, lvln_entry_npcs, depth - 1)
+            }
+            _ => CreatureVerdict::Unknown,
+        };
+        match verdict {
+            CreatureVerdict::Creature => return CreatureVerdict::Creature,
+            CreatureVerdict::NotCreature => saw_not_creature = true,
+            CreatureVerdict::Unknown => {}
+        }
+    }
+
+    if saw_not_creature {
+        CreatureVerdict::NotCreature
+    } else {
+        CreatureVerdict::Unknown
+    }
 }
 
 #[cfg(test)]
@@ -614,6 +622,55 @@ mod tests {
                 Vec::new()
             }
         };
+        assert_eq!(
+            npc_is_creature_following_template(&npc, &resolve, &lvln),
+            CreatureVerdict::Creature
+        );
+    }
+
+    #[test]
+    fn traits_template_via_nested_lvln_classifies_terminal_creature() {
+        let interner = StringInterner::new();
+        let mut npc = empty_record("NPC_", &interner);
+        push(
+            &mut npc,
+            "ACBS",
+            acbs_with_template_flags(ACBS_TEMPLATE_FLAG_USE_TRAITS),
+        );
+        let parent_lvln_fk = fk(0x4FB1BA, "Output.esm", &interner);
+        let branch_lvln_fk = fk(0x523CF7, "Output.esm", &interner);
+        let entry_fk = fk(0x490772, "Output.esm", &interner);
+        push(&mut npc, "TPLT", FieldValue::FormKey(parent_lvln_fk));
+
+        let parent_lvln = empty_record("LVLN", &interner);
+        let branch_lvln = empty_record("LVLN", &interner);
+        let mut entry_npc = empty_record("NPC_", &interner);
+        push(
+            &mut entry_npc,
+            "KWDA",
+            kwda_list(&[ACTOR_TYPE_CREATURE_LOW24], "Fallout4.esm", &interner),
+        );
+        let resolve = |asked: FormKey| -> Option<Record> {
+            if asked == parent_lvln_fk {
+                Some(parent_lvln.clone())
+            } else if asked == branch_lvln_fk {
+                Some(branch_lvln.clone())
+            } else if asked == entry_fk {
+                Some(entry_npc.clone())
+            } else {
+                None
+            }
+        };
+        let lvln = |asked: FormKey| {
+            if asked == parent_lvln_fk {
+                vec![branch_lvln_fk]
+            } else if asked == branch_lvln_fk {
+                vec![entry_fk]
+            } else {
+                Vec::new()
+            }
+        };
+
         assert_eq!(
             npc_is_creature_following_template(&npc, &resolve, &lvln),
             CreatureVerdict::Creature

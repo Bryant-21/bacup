@@ -19,13 +19,10 @@ from bacup_lib.tests.test_terminal_fragment_script_patches import _fo4_base_sour
 REPO_ROOT = Path(__file__).resolve().parents[5]
 DEPLOYED_SCRIPTS_ROOT = REPO_ROOT / "mods" / "SeventySix" / "data" / "Scripts"
 
-# contracts/w3c-w05.md -- rows from Parts C/E1/E2/E7/E10/E11 of the shard's own 82-row
-# contract (batches A/D range, #1-24 and #65-82), approved for authoring this wave per
-# team-lead's Q2 (RaiderBlock: ships full body w/ record-dependency residual) and Q7
-# (band cluster: consumer-pull design) rulings, plus this shard's own re-trace of the
-# remaining fully- or high-confidence-evidenced rows. Rows still needing a dedicated
-# follow-up pass (E2b/c, E3a/b, the Graffiti/Secret SettlersDaily sub-shapes, E9) are not
-# authored here -- see the contract's own scope disclosures.
+# contracts/w3c-w05.md rows #1-24 and #65-82 with full or high-confidence evidence.
+# RaiderBlock ships a full body with a record-dependency residual; the band cluster
+# uses a consumer-pull design. Sub-shapes still needing their own pass (E2b/c,
+# E3a/b, the Graffiti/Secret SettlersDaily sub-shapes, E9) are not authored here.
 PATCH_CASES: dict[str, dict[str, set[str] | tuple[str, ...]]] = {
     "W05_RaiderBlock_Quest_Script": {
         "members": {"onquestinit", "objectreference.ontriggerenter"},

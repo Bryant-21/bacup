@@ -1,6 +1,8 @@
 """Validation panel — run checks on loaded NIF and report issues."""
 
 import logging
+import tempfile
+from pathlib import Path
 
 from imgui_bundle import hello_imgui, imgui
 
@@ -29,6 +31,8 @@ class ValidationPanel:
         self._dock_space = "RightDock"
         self._needs_dock = True
         self._issues: list[tuple[str, int, str]] = []  # (severity, block_id, message)
+        self._include_optional = False
+        self._validated_game = ""
 
     def show(self):
         self._visible = True
@@ -43,32 +47,63 @@ class ValidationPanel:
             return None
 
     def validate(self):
-        """Run all validation checks."""
+        """Run the native, header-selected validator on the current NIF."""
         self._issues.clear()
 
         nif = self.app.nif_file
         if not nif:
             return
 
-        # Game-specific checks (run first — global context)
-        profile = self._get_game_profile()
-        if profile:
-            self._check_bs_version(nif, profile)
-            self._check_material_format(nif, profile)
-            self._check_game_paths_configured(profile)
-            self._check_texture_naming(nif, profile)
-
-        # Shared generic checks used by the CLI as well.
-        from creation_lib.nif.validation import validate_nif
-
-        for issue in validate_nif(nif)["issues"]:
-            self._issues.append((
-                issue["severity"].upper(),
-                issue["block"],
-                issue["message"],
-            ))
+        try:
+            report = self._native_validation_report(nif)
+        except Exception as exc:
+            _log.exception("Native validation failed for current NIF")
+            self._issues.append((ERROR, -1, f"Native validation failed: {exc}"))
+            self._validated_game = ""
+        else:
+            self._validated_game = str(report.get("game", ""))
+            for finding in report.get("findings", []):
+                if not isinstance(finding, dict):
+                    continue
+                severity = str(finding.get("severity", "warning")).upper()
+                if severity not in {ERROR, WARNING, INFO}:
+                    severity = WARNING
+                block_id = finding.get("block_id")
+                if not isinstance(block_id, int):
+                    block_id = -1
+                rule = str(finding.get("rule", "")).strip()
+                message = str(finding.get("message", ""))
+                if rule:
+                    message = f"{rule}: {message}"
+                self._issues.append((severity, block_id, message))
+            for warning in report.get("warnings", []):
+                if warning:
+                    self._issues.append((WARNING, -1, str(warning)))
 
         self._visible = True
+
+    def _native_validation_report(self, nif):
+        from creation_lib.nif import native_runtime
+
+        session = getattr(getattr(self.app, "registry", None), "active_session", None)
+        source_path = Path(getattr(session, "file_path", ""))
+        suffix = source_path.suffix if source_path.suffix else ".nif"
+        with tempfile.TemporaryDirectory(prefix="modbox-nif-validation-") as temp_dir:
+            validation_path = Path(temp_dir) / f"current{suffix}"
+            to_native = getattr(type(nif), "_to_native", None)
+            if callable(to_native):
+                native_runtime.save_nif_raw(
+                    to_native(nif),
+                    str(validation_path),
+                )
+            else:
+                nif.save(str(validation_path))
+            return native_runtime.validate_nif_file_raw(
+                str(validation_path),
+                None,
+                False,
+                self._include_optional,
+            )
 
     def _apply_dock(self):
         """Dock into assigned dock space on first render or re-show."""
@@ -95,6 +130,11 @@ class ValidationPanel:
             self.validate()
 
         imgui.same_line()
+        _, self._include_optional = imgui.checkbox(
+            "Optional checks", self._include_optional
+        )
+
+        imgui.same_line()
         if imgui.button("Fix Issues", imgui.ImVec2(110, 0)):
             self.fix_issues()
         if imgui.is_item_hovered():
@@ -108,6 +148,9 @@ class ValidationPanel:
         count_w = sum(1 for s, _, _ in self._issues if s == WARNING)
         count_i = sum(1 for s, _, _ in self._issues if s == INFO)
         imgui.text(f"E:{count_e}  W:{count_w}  I:{count_i}")
+        if self._validated_game:
+            imgui.same_line()
+            imgui.text_disabled(f"Game: {self._validated_game}")
 
         imgui.separator()
 

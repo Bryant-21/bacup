@@ -1,6 +1,4 @@
-//! `scale_nested` transform — scale specific numeric subfields of a Struct value.
-//!
-//! Port of the Python `scale_nested` branch in `RecordTranslator._apply_transforms`.
+//! `scale_nested` transform: scale specific numeric subfields of a Struct value.
 //!
 //! Config keys (all optional):
 //! - `subfields`          : `{subfield_name: factor, ...}`  — multiply each subfield by factor

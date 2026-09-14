@@ -1,9 +1,41 @@
 Event OnQuestInit()
+    RebuildHolotapeMapMarkerFilters()
     Actor player = Game.GetPlayer()
     If player
         RegisterForRemoteEvent(player, "OnItemAdded")
     EndIf
 EndEvent
+
+Event OnQuestShutdown()
+    Actor player = Game.GetPlayer()
+    If player
+        UnregisterForRemoteEvent(player, "OnItemAdded")
+    EndIf
+    RemoveAllInventoryEventFilters()
+EndEvent
+
+Function RebuildHolotapeMapMarkerFilters()
+    RemoveAllInventoryEventFilters()
+    Int index = 0
+    While HolotapeMapMarkerData != None && index < HolotapeMapMarkerData.Length
+        Holotape tapeFilter = HolotapeMapMarkerData[index].Tape
+        If tapeFilter != None && !HasEarlierHolotapeMapMarkerFilter(tapeFilter, index)
+            AddInventoryEventFilter(tapeFilter)
+        EndIf
+        index += 1
+    EndWhile
+EndFunction
+
+Bool Function HasEarlierHolotapeMapMarkerFilter(Holotape tapeFilter, Int beforeIndex)
+    Int index = 0
+    While HolotapeMapMarkerData != None && index < beforeIndex
+        If HolotapeMapMarkerData[index].Tape == tapeFilter
+            Return True
+        EndIf
+        index += 1
+    EndWhile
+    Return False
+EndFunction
 
 Event ObjectReference.OnHolotapePlay(ObjectReference akSender, ObjectReference akTerminalRef)
     ProcessHolotape(GetPlayedHolotape(akSender))

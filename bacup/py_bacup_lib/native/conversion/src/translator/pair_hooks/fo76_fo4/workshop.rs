@@ -9,6 +9,9 @@ pub(super) const FO4_WORKSHOP_WORKBENCH_POWER: u32 = 0x05A0CA;
 pub(super) const FO4_WORKSHOP_WORKBENCH_CRAFTING: u32 = 0x12E2C8;
 pub(super) const FO4_WORKSHOP_WORKBENCH_SETTLEMENT: u32 = 0x246F85;
 
+pub(super) const FO76_WORKSHOP_POWER_CONNECTION_EID: &str = "WorkshopPowerConnectionKW";
+pub(super) const FO4_WORKSHOP_POWER_CONNECTION_EID: &str = "WorkshopPowerConnection";
+
 pub(super) const FO76_WORKSHOP_CATEGORY_APPLIANCES: u32 = 0x04422C;
 pub(super) const FO76_WORKSHOP_CATEGORY_BEDS: u32 = 0x04640E;
 pub(super) const FO76_WORKSHOP_CATEGORY_BLUEPRINTS: u32 = 0x046411;
@@ -51,6 +54,38 @@ pub(super) const FO76_WORKSHOP_CATEGORY_MAIN_UTILITY: u32 = 0x822A19;
 pub(super) const FO76_WORKSHOP_CATEGORY_MAIN_DWELLERS: u32 = 0x8229E7;
 pub(super) const FO76_WORKSHOP_CATEGORY_MAIN_QUEST: u32 = 0x8229DD;
 impl Fo76Fo4Hook {
+    pub(super) fn normalize_workshop_power_connection_keyword(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        if record.sig.0 != *b"KYWD"
+            || !record
+                .eid
+                .and_then(|eid| interner.resolve(eid))
+                .is_some_and(|eid| eid.eq_ignore_ascii_case(FO76_WORKSHOP_POWER_CONNECTION_EID))
+        {
+            return;
+        }
+
+        let editor_id = interner.intern(FO4_WORKSHOP_POWER_CONNECTION_EID);
+        record.eid = Some(editor_id);
+        if let Some(field) = record
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.0 == *b"EDID")
+        {
+            field.value = FieldValue::String(editor_id);
+        } else {
+            record.fields.insert(
+                0,
+                FieldEntry {
+                    sig: SubrecordSig(*b"EDID"),
+                    value: FieldValue::String(editor_id),
+                },
+            );
+        }
+    }
+
     pub(super) fn is_convertible_workshop_cobj(
         interner: &crate::sym::StringInterner,
         record: &Record,
@@ -229,7 +264,7 @@ impl Fo76Fo4Hook {
             .eid
             .and_then(|eid| interner.resolve(eid))
             .unwrap_or_default();
-        let (category, workbench) = if source_bench.local == FO76_WORKSHOP_WORKBENCH_ALL_TYPE {
+        let (_, workbench) = if source_bench.local == FO76_WORKSHOP_WORKBENCH_ALL_TYPE {
             Self::infer_workshop_category(eid)
         } else {
             let Some(workbench) = Self::workshop_category_workbench(source_bench.local) else {
@@ -238,22 +273,10 @@ impl Fo76Fo4Hook {
             (source_bench.local, workbench)
         };
 
-        let category_form_key = FormKey {
-            local: category,
-            plugin: interner.intern(FO76_MASTER_NAME),
-        };
         record.fields[bench_index].value = FieldValue::FormKey(FormKey {
             local: workbench,
             plugin: interner.intern(FO4_MASTER_NAME),
         });
-        if record.fields.iter().all(|entry| entry.sig.0 != *b"FNAM") {
-            record.fields.insert(
-                bench_index + 1,
-                FieldEntry {
-                    sig: SubrecordSig(*b"FNAM"),
-                    value: FieldValue::List(vec![FieldValue::FormKey(category_form_key)]),
-                },
-            );
-        }
+        record.fields.retain(|entry| entry.sig.0 != *b"FNAM");
     }
 }

@@ -17,3 +17,14 @@ def test_output_root_honours_explicit_dir():
         [("fo76", "C:/Games/Fallout76")], output_root=Path("D:/extract_here")
     )
     assert ex._output_root == Path("D:/extract_here")
+
+
+def test_per_game_output_dir_overrides_default_root():
+    selected = Path("D:/selected_empty_folder")
+    ex = _GameExtractor(
+        [("fo76", "C:/Games/Fallout76")],
+        output_root=Path("D:/default"),
+        output_dirs={"fo76": selected},
+    )
+
+    assert ex._output_dirs == {"fo76": selected}

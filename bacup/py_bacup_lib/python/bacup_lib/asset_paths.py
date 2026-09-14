@@ -18,6 +18,7 @@ def normalize_asset_source_path(source_path: str) -> str:
         rel_path = rel_path[5:]
 
     rel_path = rel_path.lstrip("/")
+    rel_path = "/".join(part.strip() for part in rel_path.split("/"))
     lower = rel_path.lower()
     parts = rel_path.split("/")
 

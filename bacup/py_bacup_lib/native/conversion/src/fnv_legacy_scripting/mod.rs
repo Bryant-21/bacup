@@ -8,6 +8,7 @@
 //! - orchestration via `FnvLegacyScriptingContext` + `run_fnv_legacy_scripting`
 //!   on `ConversionRun`.
 
+pub mod component;
 pub mod dialogue;
 pub mod fk_rewrite;
 pub mod form_keys;
@@ -16,9 +17,13 @@ pub mod function_map;
 pub mod naming;
 pub mod psc_emission;
 pub mod quest;
+pub mod quest_alias;
+pub mod quest_ir;
+pub mod record_identity;
 pub mod scene;
 pub mod script_synthesizer;
 pub mod script_translator;
+pub mod start_route;
 pub mod vmad;
 pub mod voice;
 
@@ -43,12 +48,10 @@ pub use script_synthesizer::{PapyrusType, TranslatedScript};
 
 /// All state accumulated during a single FNV legacy-scripting pass.
 ///
-/// Created by `ConversionRun::run_fnv_legacy_scripting` and populated by each
-/// per-record-type synthesizer.  Payloads accumulated in
-/// `translated_record_payloads` are transient: `ConversionRun` drains them
-/// directly into the target plugin handle via
-/// `insert_authoring_record_value` and they never reach the result
-/// returned to Python (spec-clean port — no JSON payload return).
+/// Created by `ConversionRun::run_fnv_legacy_scripting` and filled by the
+/// per-record-type synthesizers. `translated_record_payloads` is drained into
+/// the target plugin via `insert_authoring_record_value` and never returned to
+/// Python.
 #[derive(Debug, Default)]
 pub struct FnvLegacyScriptingContext {
     /// Mod prefix (e.g. `"B21"`).
@@ -108,7 +111,7 @@ pub struct FnvLegacyScriptingResult {
     pub translated_quests: Vec<TranslatedQuest>,
     pub translated_infos: Vec<TranslatedInfo>,
     pub translated_scenes: Vec<TranslatedScene>,
-    /// DIAL records grouped by speaker FormKey (QNAM). Mirrors Python
+    /// DIAL records grouped by source quest owner FormKey (QSTI). Mirrors Python
     /// `FnvLegacyScriptingResult.dialogue_groups` — set but not consumed
     /// downstream today; kept for parity / future inspection.
     pub dialogue_groups: Vec<DialogueGroup>,
@@ -116,19 +119,32 @@ pub struct FnvLegacyScriptingResult {
     pub records_written: u32,
     /// Number of records that translated but failed to write to the handle.
     pub records_failed: u32,
-    /// Number of `.psc` files written under `mod_path/Source/User/`.
+    /// Number of `.psc` files written under `mod_path/Scripts/Source/User/`.
     /// Zero when `mod_path` was empty or when no records carried psc text.
     pub psc_files_written: u32,
-    /// Number of `.psc` emissions skipped (empty psc_text or empty mod_path).
+    /// Number of expected `.psc` candidates not emitted (empty/partial text or
+    /// empty `mod_path`). INFO records with no fragment class and no fragment
+    /// text are intentionally not candidates.
     pub psc_files_skipped: u32,
+    pub generated_psc_classes: Vec<psc_emission::GeneratedPscClass>,
+    pub voice_manifest: voice::FnvVoiceManifest,
     pub skipped_records: Vec<(String, String, String)>,
     pub lip_regeneration_needed: Vec<String>,
     pub warnings: Vec<String>,
-    /// VMAD script-binding intents computed from `scri_links` + translated
-    /// scripts. Empty when `scri_links` was empty.
+    /// VMAD script-binding intents. Current-run scripts remain empty until
+    /// compilation evidence is reconciled through `ConversionRun`.
     pub vmad_intents: Vec<vmad::ScriptBindingIntent>,
     /// True when Rust attached VMAD directly to the target plugin handle.
     pub vmad_attached_in_rust: bool,
+    /// Admitted exact-slice component plans retained for post-fixup reconciliation.
+    pub quest_runtime_component_plans: Vec<crate::quest_runtime::QuestRuntimeComponentPlan>,
+    /// Admission-time receipts frozen before any exact-slice lowering occurs.
+    pub quest_runtime_expected_receipts: Vec<crate::quest_runtime::QuestRuntimeExpectedReceipt>,
+    /// Stable synthetic intent keys resolved to the FormKeys allocated by the live lowering pass.
+    pub quest_runtime_synthetic_targets: std::collections::BTreeMap<
+        crate::quest_runtime::QuestRecordKey,
+        crate::quest_runtime::QuestRecordKey,
+    >,
 }
 
 /// Error type for the FNV scripting phase.

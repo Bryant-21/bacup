@@ -15,6 +15,8 @@ import numpy as np
 from creation_lib.nif.schema import get_schema
 from imgui_bundle import hello_imgui, icons_fontawesome_6 as fa, imgui, implot
 
+from creation_lib.ui.widgets.modern import expandable_section
+
 from ui.editor.animation_effects import EffectStack, build_effect_stacks
 from ui.editor.animation_authoring import (
     AuthoringTarget,
@@ -2082,96 +2084,94 @@ class AnimationEditorPanel:
             return
 
         label = f"Sound Events ({len(seq.sound_events)})"
-        expanded = imgui.tree_node_ex(
+        with expandable_section(
             label,
             imgui.TreeNodeFlags_.default_open,
-        )
-        if not expanded:
-            return
+        ) as expanded:
+            if not expanded:
+                return
 
-        has_text_keys = seq.text_keys_block_id >= 0
-        if not has_text_keys:
-            imgui.text_disabled("No NiTextKeyExtraData block on this sequence.")
+            has_text_keys = seq.text_keys_block_id >= 0
+            if not has_text_keys:
+                imgui.text_disabled("No NiTextKeyExtraData block on this sequence.")
 
-        imgui.same_line()
-        if not has_text_keys:
-            imgui.begin_disabled()
-        if imgui.small_button("Add @ Playhead##add_sound"):
-            seq.sound_events.append(EditableSoundEvent(
-                time=max(seq.start_time, min(self._playhead_time, seq.stop_time)),
-                cue="NewSoundDescriptor",
-            ))
-            seq.sound_events.sort(key=lambda sound_event: sound_event.time)
-            self._write_back_sound_events()
-        if not has_text_keys:
-            imgui.end_disabled()
+            imgui.same_line()
+            if not has_text_keys:
+                imgui.begin_disabled()
+            if imgui.small_button("Add @ Playhead##add_sound"):
+                seq.sound_events.append(EditableSoundEvent(
+                    time=max(seq.start_time, min(self._playhead_time, seq.stop_time)),
+                    cue="NewSoundDescriptor",
+                ))
+                seq.sound_events.sort(key=lambda sound_event: sound_event.time)
+                self._write_back_sound_events()
+            if not has_text_keys:
+                imgui.end_disabled()
 
-        if has_text_keys and not seq.sound_events:
-            imgui.text_disabled("No sound cues.")
-            imgui.tree_pop()
-            imgui.separator()
-            return
+            if has_text_keys and not seq.sound_events:
+                imgui.text_disabled("No sound cues.")
+                imgui.separator()
+                return
 
-        flags = (
-            imgui.TableFlags_.borders_inner_h
-            | imgui.TableFlags_.row_bg
-            | imgui.TableFlags_.resizable
-            | imgui.TableFlags_.sizing_stretch_prop
-        )
-        delete_index = -1
-        changed_any = False
-        if imgui.begin_table("##sound_events", 3, flags, imgui.ImVec2(0, 0)):
-            imgui.table_setup_column("Time", imgui.TableColumnFlags_.width_fixed, 128.0)
-            imgui.table_setup_column("Cue", imgui.TableColumnFlags_.none, 1.0)
-            imgui.table_setup_column("Actions", imgui.TableColumnFlags_.width_fixed, 78.0)
-            imgui.table_headers_row()
+            flags = (
+                imgui.TableFlags_.borders_inner_h
+                | imgui.TableFlags_.row_bg
+                | imgui.TableFlags_.resizable
+                | imgui.TableFlags_.sizing_stretch_prop
+            )
+            delete_index = -1
+            changed_any = False
+            if imgui.begin_table("##sound_events", 3, flags, imgui.ImVec2(0, 0)):
+                imgui.table_setup_column("Time", imgui.TableColumnFlags_.width_fixed, 128.0)
+                imgui.table_setup_column("Cue", imgui.TableColumnFlags_.none, 1.0)
+                imgui.table_setup_column("Actions", imgui.TableColumnFlags_.width_fixed, 78.0)
+                imgui.table_headers_row()
 
-            for idx, event in enumerate(seq.sound_events):
-                imgui.push_id(f"sound_event_{idx}")
-                imgui.table_next_row()
+                for idx, event in enumerate(seq.sound_events):
+                    imgui.push_id(f"sound_event_{idx}")
+                    imgui.table_next_row()
 
-                imgui.table_next_column()
-                imgui.set_next_item_width(-1)
-                changed_t, new_time = imgui.input_float(
-                    "##time", event.time, 0.01, 0.1, "%.5f"
-                )
+                    imgui.table_next_column()
+                    imgui.set_next_item_width(-1)
+                    changed_t, new_time = imgui.input_float(
+                        "##time", event.time, 0.01, 0.1, "%.5f"
+                    )
 
-                imgui.table_next_column()
-                imgui.set_next_item_width(-1)
-                changed_cue, new_cue = imgui.input_text("##cue", event.cue, 256)
+                    imgui.table_next_column()
+                    imgui.set_next_item_width(-1)
+                    changed_cue, new_cue = imgui.input_text("##cue", event.cue, 256)
 
-                imgui.table_next_column()
-                if imgui.small_button(">##play"):
-                    result = play_sound_cue(event.cue, self.app)
-                    if result.error:
-                        self.app.status_text = f"Sound unavailable: {event.cue} ({result.error})"
-                    else:
-                        self.app.status_text = f"Playing sound: {event.cue}"
-                imgui.set_item_tooltip("Preview sound")
-                imgui.same_line()
-                if imgui.small_button("X##remove"):
-                    delete_index = idx
-                imgui.set_item_tooltip("Remove sound event")
+                    imgui.table_next_column()
+                    if imgui.small_button(">##play"):
+                        result = play_sound_cue(event.cue, self.app)
+                        if result.error:
+                            self.app.status_text = f"Sound unavailable: {event.cue} ({result.error})"
+                        else:
+                            self.app.status_text = f"Playing sound: {event.cue}"
+                    imgui.set_item_tooltip("Preview sound")
+                    imgui.same_line()
+                    if imgui.small_button("X##remove"):
+                        delete_index = idx
+                    imgui.set_item_tooltip("Remove sound event")
 
-                if changed_t or changed_cue:
-                    event.time = max(seq.start_time, min(float(new_time), seq.stop_time))
-                    event.cue = str(new_cue).strip()
-                    changed_any = True
-                imgui.pop_id()
+                    if changed_t or changed_cue:
+                        event.time = max(seq.start_time, min(float(new_time), seq.stop_time))
+                        event.cue = str(new_cue).strip()
+                        changed_any = True
+                    imgui.pop_id()
 
-            imgui.end_table()
+                imgui.end_table()
 
-        if changed_any:
-            seq.sound_events.sort(key=lambda sound_event: sound_event.time)
-            self._write_back_sound_events()
-
-        if delete_index >= 0:
-            seq.sound_events.pop(delete_index)
-            if has_text_keys:
+            if changed_any:
+                seq.sound_events.sort(key=lambda sound_event: sound_event.time)
                 self._write_back_sound_events()
 
-        imgui.tree_pop()
-        imgui.separator()
+            if delete_index >= 0:
+                seq.sound_events.pop(delete_index)
+                if has_text_keys:
+                    self._write_back_sound_events()
+
+            imgui.separator()
 
     def _draw_sequence_nav(self):
         """Draw a compact animation toolbar: sequence, transport, loop, speed."""

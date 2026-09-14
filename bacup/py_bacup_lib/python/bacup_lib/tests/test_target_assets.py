@@ -5,10 +5,12 @@ import shutil
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import bacup_lib.target_assets as target_assets
+from bacup_lib.runner import ConversionRunner
 from bacup_lib.target_assets import (
     TargetAssetStore,
     default_target_asset_cache_dir,
@@ -25,6 +27,52 @@ def test_frozen_target_asset_storage_is_exe_local(monkeypatch, tmp_path):
     expected = executable.parent / "cache" / "conversion"
     assert default_target_asset_catalog() == expected / "fo4_target_assets.sqlite3"
     assert default_target_asset_cache_dir() == expected / "target_assets"
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_catalog_build_reports_indeterminate_phase_and_outcome(monkeypatch, tmp_path, fail):
+    runner = ConversionRunner(lambda _runner: None)
+    events = []
+    catalog = tmp_path / "cache" / "catalog.sqlite3"
+    monkeypatch.setattr(target_assets, "_catalog_is_current", lambda _path: False)
+
+    def build(data_dir, output_path, game_build, workers):
+        events.extend(runner.drain())
+        assert events[0]["type"] == "phase_start"
+        assert events[0]["data"]["status"] == "running"
+        assert events[0]["data"]["total_items"] == 0
+        assert (data_dir, output_path, game_build, workers) == (
+            str(tmp_path / "Data"), str(catalog), "test-build", 3,
+        )
+        if fail:
+            raise RuntimeError("Cannot read official archive")
+        catalog.write_bytes(b"test catalog")
+
+    monkeypatch.setattr(
+        "bacup_lib.native_runtime.load_native_module",
+        lambda: SimpleNamespace(conversion_build_target_asset_catalog=build),
+    )
+    kwargs = dict(game_build="test-build", workers=3, runner=runner)
+    if fail:
+        with pytest.raises(RuntimeError, match="Cannot read official archive"):
+            target_assets.ensure_target_asset_catalog(tmp_path / "Data", catalog, **kwargs)
+    else:
+        assert target_assets.ensure_target_asset_catalog(tmp_path / "Data", catalog, **kwargs) == catalog
+    events.extend(runner.drain())
+    assert [event["type"] for event in events] == ["phase_start", "phase_complete"]
+    assert all(event["data"]["phase_name"] == "Building FO4 target-asset catalog" for event in events)
+    final = events[-1]["data"]
+    assert final["status"] == ("error" if fail else "completed")
+    assert final["error"] == ("Cannot read official archive" if fail else None)
+    assert final["elapsed_seconds"] >= 0
+
+
+def test_current_catalog_does_not_emit_a_build_phase(monkeypatch, tmp_path):
+    runner = ConversionRunner(lambda _runner: None)
+    catalog = tmp_path / "catalog.sqlite3"
+    monkeypatch.setattr(target_assets, "_catalog_is_current", lambda _path: True)
+    assert target_assets.ensure_target_asset_catalog(tmp_path / "Data", catalog, runner=runner) == catalog
+    assert runner.drain() == []
 
 
 def _write_catalog(

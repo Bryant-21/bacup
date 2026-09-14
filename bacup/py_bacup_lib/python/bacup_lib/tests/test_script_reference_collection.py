@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import json
 import types
 from pathlib import Path
 
+import pytest
+
 from bacup_lib.models import PluginPortOptions, PluginPortRequest
 from bacup_lib.workflows import unified
-from creation_lib.esp.model import Record, Subrecord
+
+
+@pytest.fixture(autouse=True)
+def _isolate_script_additions(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "_SCRIPT_ADDITION_DIR", tmp_path / "script_additions")
+    # The convert-scripts phase asserts that every durable patch was delivered.
+    # This module tests reference *collection* against synthetic records, so
+    # pointing it at the live corpus makes it fail whenever anyone adds a patch.
+    monkeypatch.setattr(unified, "_SCRIPT_PATCH_DIR", tmp_path / "script_patches")
 
 
 def test_target_pex_index_uses_catalog_membership_without_materializing(tmp_path):
@@ -44,113 +55,137 @@ def _ctda(function_id: int, param1: int = 0) -> bytes:
     return bytes(data)
 
 
-def test_condition_script_refs_infer_script_from_get_vm_quest_variable_form():
-    record = Record(
-        signature="INFO",
-        form_id=0x003C4727,
-        subrecords=[
-            Subrecord("CTDA", _ctda(629, 0x0701A634)),
-            Subrecord("CIS2", b"::iRandomPart_var\x00"),
-        ],
-    )
-    setattr(record, "editor_id", "")
-
-    refs = unified._iter_condition_script_refs(
-        record,
-        form_key="3C4727:SeventySix.esm",
-        scripts_by_form_id={0x0001A634: ["MTNZ05QuestScript"]},
-    )
-
-    assert len(refs) == 1
-    assert refs[0].script_name == "MTNZ05QuestScript"
-    assert refs[0].variable_name == "::iRandomPart_var"
-    assert refs[0].kind == "condition"
-
-
-def test_collect_script_references_finds_conditions_and_vmad(monkeypatch):
+def test_collect_script_references_marshals_native_typed_dtos(monkeypatch):
     runtime = _runtime()
-    info_form_id = 0x003C4727
-    quest_form_id = 0x0001A634
-    summaries = {
-        info_form_id: types.SimpleNamespace(
-            form_id=info_form_id,
-            signature="INFO",
-            editor_id="",
-        ),
-        quest_form_id: types.SimpleNamespace(
-            form_id=quest_form_id,
-            signature="QUST",
-            editor_id="RE_Scene_MTNZ05_Messenger",
-        ),
-    }
-    subrecords = {
-        info_form_id: [
-            ("CTDA", _ctda(629, 0x0701A634), None),
-            ("CIS2", b"::iRandomPart_var\x00", None),
-        ],
-        quest_form_id: [("VMAD", b"\x00", "INFO")],
-    }
-    authoring_records = {
-        quest_form_id: """
-        {
-          "fields": [
-            {
-              "VirtualMachineAdapter": {
-                "Scripts": [
-                  {"ScriptName": "MTNZ05QuestScript", "Properties": []}
+    calls: list[int] = []
+    logs: list[tuple[str, str]] = []
+    native = types.SimpleNamespace(
+        conversion_run_inspect_script_references=lambda run_id: (
+            calls.append(run_id)
+            or (
+                "SeventySix.esm",
+                [
+                    (
+                        "MTNZ05QuestScript",
+                        "::iRandomPart_var",
+                        "3C4727:SeventySix.esm",
+                        0x003C4727,
+                        "INFO",
+                        "",
+                        "condition",
+                        True,
+                    ),
+                    (
+                        "B21TwoStateActivator76",
+                        None,
+                        "37879E:SeventySix.esm",
+                        0x0037879E,
+                        "MSTT",
+                        "CoolingTowerFX",
+                        "vmad",
+                        False,
+                    ),
                 ],
-                "Script Fragments": {
-                  "Script": {
-                    "ScriptName": "fragments:quests:qf_mtnz05_messenger_0001a634"
-                  }
-                }
-              }
-            }
-          ]
-        }
-        """
-    }
+                (2, 1, 1, 3, 91, 0),
+                2,
+                1,
+                1,
+                ["failed to apply FO76 script alias for 00000001"],
+            )
+        )
+    )
+    monkeypatch.setattr(unified, "load_native_module", lambda: native)
+    runner = types.SimpleNamespace(
+        emit_log=lambda level, message: logs.append((level, message))
+    )
 
+    refs, candidate_count = runtime._collect_script_references(7, runner)
+
+    assert calls == [7]
+    assert candidate_count == 2
+    assert refs == [
+        unified._ScriptReference(
+            "MTNZ05QuestScript",
+            "::iRandomPart_var",
+            "3C4727:SeventySix.esm",
+            0x003C4727,
+            "INFO",
+            "",
+            "condition",
+            True,
+        ),
+        unified._ScriptReference(
+            "B21TwoStateActivator76",
+            None,
+            "37879E:SeventySix.esm",
+            0x0037879E,
+            "MSTT",
+            "CoolingTowerFX",
+            "vmad",
+            False,
+        ),
+    ]
+    assert runtime._script_reference_profile == {
+        "timings": (("convert_scripts_collect_native", runtime._script_reference_profile["timings"][0][1]),),
+        "counters": {
+            "native_rows": 2,
+            "vmad_rows": 1,
+            "ctda_rows": 1,
+            "subrecords": 3,
+            "raw_bytes": 91,
+            "authoring_bytes": 0,
+        },
+    }
+    assert any("redirected 1 Default2StateActivator" in message for _level, message in logs)
+    assert ("WARN", "[Scripts] failed to apply FO76 script alias for 00000001") in logs
+
+
+def test_collect_script_references_empty_native_result(monkeypatch):
+    runtime = _runtime()
     monkeypatch.setattr(
         unified,
         "load_native_module",
         lambda: types.SimpleNamespace(
-            conversion_run_script_reference_records=lambda _run_id, _sigs: (
-                "SeventySix.esm",
-                [
-                    (
-                        form_id,
-                        summaries[form_id].signature,
-                        summaries[form_id].editor_id,
-                        subrecords[form_id],
-                        authoring_records.get(form_id),
-                    )
-                    for form_id in (info_form_id, quest_form_id)
-                ],
+            conversion_run_inspect_script_references=lambda _run_id: (
+                "Output.esp",
+                [],
+                (0, 0, 0, 0, 0, 0),
+                0,
+                0,
+                0,
+                [],
             )
         ),
     )
-    runner = types.SimpleNamespace(emit_log=lambda *_args: None)
 
-    refs, candidates = runtime._collect_script_references(1, runner)
+    refs, candidate_count = runtime._collect_script_references(
+        1, types.SimpleNamespace(emit_log=lambda *_args: None)
+    )
 
-    ref_keys = {
-        (ref.kind, ref.script_name, ref.variable_name, ref.form_id) for ref in refs
-    }
-    assert (
-        "condition",
-        "MTNZ05QuestScript",
-        "::iRandomPart_var",
-        info_form_id,
-    ) in ref_keys
-    assert ("vmad", "MTNZ05QuestScript", None, quest_form_id) in ref_keys
-    assert (
-        "vmad",
-        "fragments:quests:qf_mtnz05_messenger_0001a634",
-        None,
-        quest_form_id,
-    ) in ref_keys
-    assert sorted(candidates) == [quest_form_id, info_form_id]
+    assert refs == []
+    assert candidate_count == 0
+
+
+def test_reconcile_script_references_forwards_resolution_evidence(monkeypatch):
+    expected = (1, 0, 2, 1, ["vmad"], ["reward"], ["condition"], [], 2, 1, 1)
+    calls = []
+    monkeypatch.setattr(
+        unified,
+        "load_native_module",
+        lambda: types.SimpleNamespace(
+            conversion_run_reconcile_script_references=lambda *args: (
+                calls.append(args) or expected
+            )
+        ),
+    )
+
+    result = _runtime()._reconcile_script_references(
+        9,
+        [("broken", "Broken", "compile_failed", None)],
+    )
+
+    assert result == expected
+    assert calls == [(9, [("broken", "Broken", "compile_failed", None)])]
 
 
 def test_convert_scripts_phase_includes_all_fo76_source_scripts(monkeypatch, tmp_path):
@@ -188,7 +223,7 @@ def test_convert_scripts_phase_includes_all_fo76_source_scripts(monkeypatch, tmp
     monkeypatch.setattr(runtime, "_decompile_source_scripts_for_fo4", decompile_batch)
     monkeypatch.setattr(runtime, "_compile_decompiled_scripts_for_fo4", compile_batch)
     monkeypatch.setattr(
-        runtime, "_strip_failed_script_refs", lambda *_args, **_kwargs: (0, 0, 0)
+        runtime, "_reconcile_script_references", lambda *_args, **_kwargs: (0, 0, 0, 0, [], [], [], [], 0, 0, 0)
     )
     reports = []
     monkeypatch.setattr(
@@ -233,7 +268,7 @@ def test_convert_scripts_phase_runs_without_a_target_plugin_handle(monkeypatch, 
     monkeypatch.setattr(runtime, "_compile_decompiled_scripts_for_fo4", compile_batch)
     monkeypatch.setattr(
         runtime,
-        "_strip_failed_script_refs",
+        "_reconcile_script_references",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("source-only script conversion must not modify plugin records")
         ),
@@ -249,6 +284,91 @@ def test_convert_scripts_phase_runs_without_a_target_plugin_handle(monkeypatch, 
 
     assert decompiled == ["SourceOnly"]
     assert compiled == ["SourceOnly"]
+
+
+def test_skyrim_script_phase_recovers_archive_script_sources(monkeypatch, tmp_path):
+    from bacup_lib import skyrim_papyrus
+
+    request = PluginPortRequest(
+        source_game="skyrimse",
+        target_game="fo4",
+        source_plugins=[],
+        output_root=tmp_path / "out",
+        source_data_dir=tmp_path / "Data",
+        target_extracted_dir=None,
+        target_data_dir=None,
+        options=PluginPortOptions(),
+    )
+    runtime = unified._UnifiedRecordRuntime(request)
+    script_name = "ArchiveObjectScript"
+    reference = unified._ScriptReference(
+        script_name=script_name,
+        variable_name=None,
+        form_key="000800:Skyrim.esm",
+        form_id=0x00000800,
+        record_sig="ACTI",
+        editor_id="ArchiveActivator",
+        kind="vmad",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_collect_script_references",
+        lambda *_args, **_kwargs: ([reference], 1),
+    )
+    headers_root = tmp_path / "headers"
+    headers_root.mkdir()
+    monkeypatch.setattr(runtime, "_papyrus_type_universe", lambda *_args: headers_root)
+
+    def recover(intents, **kwargs):
+        assert [intent.class_name for intent in intents] == [script_name]
+        assert kwargs["source_data_dir"] == tmp_path / "Data"
+        return skyrim_papyrus.SkyrimPapyrusProductionResult(
+            supported=True,
+            artifacts=(
+                skyrim_papyrus.SkyrimPscSourceArtifact(
+                    class_name=script_name,
+                    source=f"Scriptname {script_name} Extends ObjectReference\n",
+                    kind="record-vmad",
+                    required=False,
+                ),
+            ),
+            receipts=(),
+            unsupported_reason=None,
+        )
+
+    monkeypatch.setattr(skyrim_papyrus, "discover_skyrim_psc_artifacts", recover)
+    def decompile_batch(script_names, **_kwargs):
+        assert script_names == []
+        return []
+
+    monkeypatch.setattr(runtime, "_decompile_source_scripts_for_fo4", decompile_batch)
+    compiled: list[str] = []
+
+    def compile_batch(script_names, **_kwargs):
+        compiled.extend(script_names)
+        return [
+            (name, unified._ScriptResolution(name, "compiled", Path(f"{name}.pex")))
+            for name in script_names
+        ]
+
+    monkeypatch.setattr(runtime, "_compile_decompiled_scripts_for_fo4", compile_batch)
+    monkeypatch.setattr(
+        runtime, "_reconcile_script_references", lambda *_args, **_kwargs: (0, 0, 0, 0, [], [], [], [], 0, 0, 0)
+    )
+    monkeypatch.setattr(runtime, "_write_script_port_report", lambda *_args, **_kwargs: None)
+    ctx = types.SimpleNamespace(
+        _rust_conversion_run=types.SimpleNamespace(id=1),
+        mod_path=str(tmp_path / "mod"),
+        summary=types.SimpleNamespace(scripts_flagged=0),
+    )
+    runner = types.SimpleNamespace(emit_log=lambda *_args: None)
+
+    runtime._run_convert_scripts_phase(ctx, runner)
+
+    assert compiled == [script_name]
+    assert (
+        tmp_path / "mod" / "Scripts" / "Source" / "User" / f"{script_name}.psc"
+    ).is_file()
 
 
 def test_fo76_to_fo4_base_creature_script_suppression_is_exact_and_target_aware():
@@ -308,7 +428,7 @@ def test_convert_scripts_suppresses_explicit_base_creature_refs_but_keeps_custom
         for script_name in [*protected_names, "CustomCreatureScript"]
     ]
     monkeypatch.setattr(
-        runtime, "_collect_script_references", lambda *_args: (refs, {})
+        runtime, "_collect_script_references", lambda *_args: (refs, len({ref.form_id for ref in refs}))
     )
 
     decompiled: list[str] = []
@@ -328,7 +448,7 @@ def test_convert_scripts_suppresses_explicit_base_creature_refs_but_keeps_custom
     monkeypatch.setattr(runtime, "_decompile_source_scripts_for_fo4", decompile_batch)
     monkeypatch.setattr(runtime, "_compile_decompiled_scripts_for_fo4", compile_batch)
     monkeypatch.setattr(
-        runtime, "_strip_failed_script_refs", lambda *_args, **_kwargs: (0, 0, 0)
+        runtime, "_reconcile_script_references", lambda *_args, **_kwargs: (0, 0, 0, 0, [], [], [], [], 0, 0, 0)
     )
     reports = []
     monkeypatch.setattr(
@@ -357,7 +477,7 @@ def test_convert_scripts_suppresses_explicit_base_creature_refs_but_keeps_custom
     resolutions = reports[0]["resolutions"]
     for script_name in protected_names:
         key = f"creatures:{script_name}".lower()
-        assert resolutions[key].status == "target"
+        assert resolutions[key].status == "unsupported"
         assert not (
             mod_path / "data" / "Scripts" / "creatures" / f"{script_name}.pex"
         ).exists()
@@ -371,112 +491,19 @@ def test_fo76_to_fo4_script_type_aliases_region():
     assert unified._fo76_to_fo4_script_type("QuestInstance") == "Quest"
 
 
-def test_script_strip_removes_inferred_get_vm_quest_variable_condition():
-    record = Record(
-        signature="INFO",
-        form_id=0x003C4727,
-        subrecords=[
-            Subrecord("CITC", (1).to_bytes(4, "little")),
-            Subrecord("CTDA", _ctda(629, 0x0701A634)),
-            Subrecord("CIS2", b"::iRandomPart_var\x00"),
-            Subrecord("NAM1", b"kept"),
-        ],
+def test_script_port_report_names_every_vmad_change(tmp_path):
+    unified._UnifiedRecordRuntime._write_script_port_report(
+        types.SimpleNamespace(mod_path=tmp_path, diagnostics_root=tmp_path),
+        resolutions={},
+        invalid_condition_notes=[],
+        stripped_conditions=0,
+        stripped_vmad=1,
+        changed_records=1,
+        vmad_notes=["PERK 005727BB COMP_Rescue_CaptiveActivate: removed the whole VMAD"],
     )
 
-    payloads, stripped_conditions, stripped_vmad = (
-        unified._subrecord_payloads_after_script_strip(
-            record,
-            failed_script_keys={"mtnz05questscript"},
-            invalid_condition_keys=set(),
-            strip_vmad=False,
-            scripts_by_form_id={0x0001A634: ["MTNZ05QuestScript"]},
-        )
-    )
+    report = json.loads((tmp_path / "script_port_report.json").read_text())
 
-    assert stripped_conditions == 1
-    assert stripped_vmad == 0
-    assert [item["signature"] for item in payloads] == ["CITC", "NAM1"]
-    assert payloads[0]["data"] == (0).to_bytes(4, "little")
-
-
-def test_strip_failed_script_refs_uses_typed_subrecord_setter(monkeypatch):
-    record = Record(
-        signature="INFO",
-        form_id=0x003C4727,
-        subrecords=[
-            Subrecord("CITC", (1).to_bytes(4, "little")),
-            Subrecord("CTDA", _ctda(629, 0x0701A634)),
-            Subrecord("CIS2", b"::iRandomPart_var\x00"),
-            Subrecord("NAM1", b"kept"),
-        ],
-    )
-    runtime = _runtime()
-    runtime._script_condition_form_scripts = {0x0001A634: ["MTNZ05QuestScript"]}
-    captured = {}
-
-    def set_record_subrecords(run_id, form_id, subrecords):
-        assert all(
-            isinstance(item, tuple) and len(item) == 3 for item in subrecords
-        )
-        captured["args"] = (run_id, form_id, subrecords)
-        return True
-
-    monkeypatch.setattr(
-        unified,
-        "load_native_module",
-        lambda: types.SimpleNamespace(
-            conversion_run_set_record_subrecords=set_record_subrecords
-        ),
-    )
-
-    stripped_conditions, stripped_vmad, changed_records = (
-        runtime._strip_failed_script_refs(
-            42,
-            {record.form_id: record},
-            failed_script_keys={"mtnz05questscript"},
-            invalid_condition_keys=set(),
-            vmad_strip_form_ids=set(),
-        )
-    )
-
-    assert (stripped_conditions, stripped_vmad, changed_records) == (1, 0, 1)
-    assert captured["args"][0:2] == (42, record.form_id)
-    assert [item[0] for item in captured["args"][2]] == ["CITC", "NAM1"]
-    assert captured["args"][2][0][1] == (0).to_bytes(4, "little")
-    assert all(item[2] is None for item in captured["args"][2])
-
-
-def test_script_strip_keeps_inferred_condition_when_any_script_has_variable():
-    record = Record(
-        signature="INFO",
-        form_id=0x003C4727,
-        subrecords=[
-            Subrecord("CITC", (1).to_bytes(4, "little")),
-            Subrecord("CTDA", _ctda(629, 0x0701A634)),
-            Subrecord("CIS2", b"::iRandomPart_var\x00"),
-            Subrecord("NAM1", b"kept"),
-        ],
-    )
-
-    payloads, stripped_conditions, stripped_vmad = (
-        unified._subrecord_payloads_after_script_strip(
-            record,
-            failed_script_keys=set(),
-            invalid_condition_keys={
-                ("unrelatedquestscript", "::irandompart_var"),
-            },
-            strip_vmad=False,
-            scripts_by_form_id={
-                0x0001A634: ["UnrelatedQuestScript", "MTNZ05QuestScript"]
-            },
-        )
-    )
-
-    assert stripped_conditions == 0
-    assert stripped_vmad == 0
-    assert [item["signature"] for item in payloads] == [
-        "CITC",
-        "CTDA",
-        "CIS2",
-        "NAM1",
+    assert report["vmad_changes"] == [
+        "PERK 005727BB COMP_Rescue_CaptiveActivate: removed the whole VMAD"
     ]

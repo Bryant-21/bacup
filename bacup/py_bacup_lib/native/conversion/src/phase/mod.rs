@@ -15,15 +15,18 @@ use crate::run::ConversionRun;
 
 pub mod animations;
 pub mod apply_registry_mappings;
+pub mod audio_rewire;
 pub mod btos;
 pub mod build_esp;
 pub mod copy_materialized_facegen;
 pub mod copy_textures;
+pub mod creature_corpus;
 pub mod creatures;
 pub mod drivers;
 pub mod emit_modt_manifest;
 pub mod equipment;
 pub mod face;
+pub mod final_plugin;
 pub mod fixups_v2;
 pub mod fnv_legacy;
 pub mod gamebryo_nifs;
@@ -37,6 +40,8 @@ pub mod materials;
 pub mod materials_v2;
 pub mod merge_sources;
 pub mod mswp_material_paths;
+pub mod mvp_creatures;
+pub mod mvp_melee;
 pub mod nifs;
 pub mod precombines;
 pub mod progress;
@@ -45,17 +50,25 @@ pub mod projected_navmeshes;
 pub mod rebuild_cell_offsets;
 pub mod record_translation;
 pub mod regenerate_modt;
+pub mod relocated_base_material_swaps;
 pub mod scaffold;
 pub mod skeleton;
 pub mod sounds;
+pub mod starfield_cells;
+pub mod starfield_materials;
+pub mod starfield_meshes;
+pub mod starfield_textures;
+pub mod starfield_worldspace_gate;
 pub mod story_manager;
 pub mod synthesize_object_lod;
 pub mod terrain;
+pub mod terrain_btd;
 pub mod textures;
 pub mod textures_v2;
 pub mod translate;
 pub mod translate_v2;
 pub mod walk;
+pub mod wwise_audio;
 
 // ---------------------------------------------------------------------------
 // Types crossing the dispatcher boundary
@@ -257,14 +270,81 @@ fn build_registry() -> PhaseRegistry {
         "apply_registry_mappings",
         source_free(apply_registry_mappings::ApplyRegistryMappingsPhase),
     );
+    inner.insert(
+        "starfield_worldspace_gate",
+        Box::new(starfield_worldspace_gate::StarfieldWorldspaceGatePhase),
+    );
+
+    // fo4:starfield record track. `starfield_cells` translates the CELL/REFR
+    // records the pair map skip-lists (parentage is group topology, not a
+    // subrecord) and nests them under the WRLD / interior block trees;
+    // `terrain_btd_write` reads the source LAND
+    // records and writes the SFBK/WRLD overlay into the target handle;
+    // `wwise_audio` allocates its synthesized WWED FormKeys through the run's
+    // `mapper_state`, and `audio_rewire` resolves manifest rows through the
+    // same mapper — all three therefore require the source plugin and must be
+    // dispatched after `translate`.
+    inner.insert(
+        "terrain_btd_write",
+        Box::new(terrain_btd::TerrainBtdWritePhase),
+    );
+    inner.insert(
+        "starfield_cells",
+        Box::new(starfield_cells::StarfieldCellsPhase),
+    );
+    inner.insert("wwise_audio", Box::new(wwise_audio::WwiseAudioPhase));
+    inner.insert("audio_rewire", Box::new(audio_rewire::AudioRewirePhase));
+
+    // fo4:starfield asset track — entry-list driven, target-handle free.
+    inner.insert(
+        "starfield_meshes",
+        source_free(starfield_meshes::StarfieldMeshesPhase),
+    );
+    inner.insert(
+        "starfield_materials",
+        source_free(starfield_materials::StarfieldMaterialsPhase),
+    );
+    inner.insert(
+        "starfield_textures",
+        source_free(starfield_textures::StarfieldTexturesPhase),
+    );
 
     inner.insert("convert_btos", source_free(btos::ConvertBtosPhase));
     inner.insert("convert_btos_v2", source_free(btos::ConvertBtosV2Phase));
     inner.insert("convert_nifs_v2", source_free(nifs::ConvertNifsV2Phase));
     inner.insert(
+        "convert_mvp_creature_nifs_v2",
+        source_free(nifs::ConvertMvpCreatureNifsV2Phase),
+    );
+    inner.insert(
         "convert_gamebryo_nifs",
         source_free(gamebryo_nifs::ConvertGamebryoNifsPhase),
     );
+    inner.insert(
+        "convert_mvp_creature_gamebryo_nifs",
+        source_free(gamebryo_nifs::ConvertMvpCreatureGamebryoNifsPhase),
+    );
+    inner.insert(
+        "convert_mvp_skyrim_wolf_havok",
+        source_free(mvp_creatures::ConvertMvpSkyrimWolfHavokPhase),
+    );
+    inner.insert(
+        "emit_mvp_creature",
+        Box::new(mvp_creatures::EmitMvpCreaturePhase),
+    );
+    inner.insert(
+        "discover_creature_corpus",
+        Box::new(creature_corpus::DiscoverCreatureCorpusPhase),
+    );
+    inner.insert(
+        "plan_creature_dependencies",
+        Box::new(creature_corpus::PlanCreatureDependenciesPhase),
+    );
+    inner.insert(
+        "execute_creature_corpus",
+        Box::new(creature_corpus::ExecuteCreatureCorpusPhase),
+    );
+    inner.insert("mvp_melee", Box::new(mvp_melee::MvpMeleePhase));
     inner.insert("convert_terrain", Box::new(terrain::ConvertTerrainPhase));
     inner.insert(
         "prepare_graft_terrain",
@@ -357,20 +437,20 @@ fn build_registry() -> PhaseRegistry {
     inner.insert("scaffold", source_free(scaffold::ScaffoldPhase));
     inner.insert("build_esp", source_free(build_esp::BuildEspPhase));
 
-    // Post-asset — MODT (re)population (Plan B). Runs after build_esp.
+    // Post-asset MODT (re)population. Runs after build_esp.
     inner.insert(
         "regenerate_modt",
         source_free(regenerate_modt::RegenerateModtPhase),
     );
 
-    // MODT compute-manifest PRODUCER (Plan B). Emits the mesh->graph manifest
+    // MODT compute-manifest producer. Emits the mesh->graph manifest
     // that `regenerate_modt` consumes. Runs after the asset waves.
     inner.insert(
         "emit_modt_manifest",
         source_free(emit_modt_manifest::EmitModtManifestPhase),
     );
 
-    // CK-free precombine generation (v0 spike). Source-free: reads/writes
+    // CK-free precombine generation. Source-free: reads/writes
     // only the open target handle. Belongs beside the post-asset MODT phases.
     inner.insert(
         "generate_precombines",
@@ -382,6 +462,10 @@ fn build_registry() -> PhaseRegistry {
     inner.insert(
         "rebuild_cell_offsets",
         source_free(rebuild_cell_offsets::RebuildCellOffsetsPhase),
+    );
+    inner.insert(
+        "finalize_plugin_records",
+        source_free(final_plugin::FinalizePluginRecordsPhase),
     );
 
     // Test-only phases (inert outside #[cfg(test)] builds).
@@ -632,6 +716,44 @@ pub(crate) mod dispatcher_tests {
     }
 
     #[test]
+    fn fo4_starfield_phases_are_registered() {
+        let names = registry().names();
+        for name in [
+            "terrain_btd_write",
+            "starfield_cells",
+            "starfield_meshes",
+            "starfield_materials",
+            "starfield_textures",
+            "wwise_audio",
+            "audio_rewire",
+            "starfield_worldspace_gate",
+        ] {
+            assert!(names.contains(&name), "{name} not registered");
+        }
+        for name in [
+            "terrain_btd_write",
+            "starfield_cells",
+            "wwise_audio",
+            "audio_rewire",
+        ] {
+            assert!(
+                registry().get(name).unwrap().requires_source_plugin(),
+                "{name} must be dispatched with a source plugin"
+            );
+        }
+        for name in [
+            "starfield_meshes",
+            "starfield_materials",
+            "starfield_textures",
+        ] {
+            assert!(
+                !registry().get(name).unwrap().requires_source_plugin(),
+                "{name} is an asset-track phase and must be source-free"
+            );
+        }
+    }
+
+    #[test]
     fn registry_marks_source_required_and_source_free_phases() {
         for name in ["translate_v2", "walk", "convert_terrain"] {
             assert!(
@@ -645,6 +767,52 @@ pub(crate) mod dispatcher_tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn creature_mvp_phases_have_their_required_dispatch_modes() {
+        assert!(
+            registry()
+                .get("emit_mvp_creature")
+                .unwrap()
+                .requires_source_plugin()
+        );
+        for name in [
+            "convert_mvp_creature_nifs_v2",
+            "convert_mvp_creature_gamebryo_nifs",
+            "convert_mvp_skyrim_wolf_havok",
+        ] {
+            assert!(
+                !registry().get(name).unwrap().requires_source_plugin(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn melee_mvp_phase_requires_source_plugin() {
+        assert!(
+            registry()
+                .get("mvp_melee")
+                .unwrap()
+                .requires_source_plugin()
+        );
+    }
+
+    #[test]
+    fn creature_corpus_phases_have_their_required_dispatch_modes() {
+        assert!(
+            registry()
+                .get("discover_creature_corpus")
+                .unwrap()
+                .requires_source_plugin()
+        );
+        assert!(
+            !registry()
+                .get("execute_creature_corpus")
+                .unwrap()
+                .requires_source_plugin()
+        );
     }
 
     /// Two phases on two distinct runs must be able to execute concurrently.

@@ -18,20 +18,16 @@ from creation_lib.pex.native_runtime import compile_psc
 REPO_ROOT = Path(__file__).resolve().parents[5]
 DEPLOYED_SCRIPTS_ROOT = REPO_ROOT / "mods" / "SeventySix" / "data" / "Scripts"
 SCRIPT_NAME = "Fragments:Quests:QF_W05_MQS_205P_0041CB6D"
+# The QUST VMAD of 41CB6D declares exactly these 33 stage fragments, in this
+# order. Every one is implemented: the objective ladder the quest displays
+# (10/20/30/40/50/60/65/70/80/90/100/120/130/140/150) only completes if the
+# stages that own each SetObjectiveCompleted/Displayed pair are present.
 POSITIVE_STAGES = (
-    20, 10, 30, 40, 50, 100, 200, 250, 300, 350, 400, 450, 700, 900,
-    1000, 1050, 1100, 1300, 1400, 1900, 2000, 2100, 2200, 2300, 9000,
+    20, 10, 30, 40, 50, 100, 200, 250, 300, 350, 400, 450, 500, 700,
+    800, 900, 950, 1000, 1050, 1100, 1300, 1400, 1500, 1600, 1800,
+    1900, 1950, 2000, 2100, 2200, 2300, 9000, 10000,
 )
-NEGATIVE_STAGES = (
-    500,
-    800,
-    950,
-    1500,
-    1600,
-    1800,
-    1950,
-    10000,
-)
+NEGATIVE_STAGES: tuple[int, ...] = ()
 STAGE_20_MEMBER = """Function Fragment_Stage_0020_Item_00()
     W05_Jen205_Script jenScript = Alias_Jen as W05_Jen205_Script
     If jenScript != None
@@ -93,16 +89,16 @@ def test_patch_preserves_stage_20_and_exact_reconciled_manifest():
     assert patch.count("jenScript.ActivateStealth()") == 1
 
 
-def test_all_eight_negative_members_remain_absent():
+def test_every_declared_fragment_is_covered_and_nothing_would_be_pruned():
     patch = _script_patch_source(SCRIPT_NAME)
     assert patch is not None
     patch_members = set(_member_names(patch))
     positive_members = {_fragment_member(stage) for stage in POSITIVE_STAGES}
     negative_members = {_fragment_member(stage) for stage in NEGATIVE_STAGES}
 
-    assert len(NEGATIVE_STAGES) == 8
     assert positive_members.isdisjoint(negative_members)
     assert len(positive_members) + len(negative_members) == 33
+    assert patch_members == positive_members
     assert patch_members.isdisjoint(negative_members)
 
 
@@ -115,9 +111,27 @@ def test_progression_members_exclude_online_reward_and_reputation_surfaces():
         "Reputation_AV_",
         "Community",
         "Bounty",
-        "defaultquestencounterwavescript",
     ):
         assert forbidden not in patch
+
+
+def test_security_wave_reaches_the_sibling_controller_through_the_quest_base():
+    # DefaultQuestEncounterWaveScript is a second root script on the same QUST
+    # form, not an ancestor of this fragment script. `Self as
+    # DefaultQuestEncounterWaveScript` is a sibling cast and stock
+    # PapyrusCompiler.exe rejects it outright, which failed the whole script and
+    # left W05_MQS_205P with no fragments at all. Route through Quest instead.
+    patch = _script_patch_source(SCRIPT_NAME)
+    assert patch is not None
+    body = _member_body(patch, _fragment_member(1100))
+
+    assert "Self as DefaultQuestEncounterWaveScript" not in patch
+    assert "Quest owningQuest = Self as Quest" in body
+    assert "owningQuest as DefaultQuestEncounterWaveScript" in body
+    # Wave index 0 is the "Robots" wave; its bound StageToSetAtEnd is 1300,
+    # which is the stage that completes objective 90.
+    assert "waveController.StartLocalEncounterWave(0)" in body
+    assert _fragment_member(1300) in _member_names(patch)
 
 
 def test_production_merge_is_exact_and_idempotent():

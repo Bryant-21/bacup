@@ -16,6 +16,7 @@ const ERROR_EXAMPLE_LIMIT: usize = 25;
 struct GamebryoNifEntry {
     source_path: String,
     resolved_path: String,
+    output_subpath: Option<String>,
 }
 
 #[derive(Default)]
@@ -83,6 +84,7 @@ impl Phase for ConvertGamebryoNifsPhase {
         let sink = ctx.run.output_sink.clone();
         let data_root = mod_path.join("data");
         let written_materials = Arc::new(Mutex::new(HashSet::new()));
+        let convert_options = parse_convert_options(ctx.params)?;
         let reporter = Arc::new(ProgressReporter::new(
             "convert_gamebryo_nifs",
             total,
@@ -106,6 +108,7 @@ impl Phase for ConvertGamebryoNifsPhase {
                     &written_materials,
                     sink.as_deref(),
                     &data_root,
+                    &convert_options,
                 );
                 reporter.inc(1);
                 agg.add(&entry.source_path, result);
@@ -147,6 +150,18 @@ impl Phase for ConvertGamebryoNifsPhase {
     }
 }
 
+pub struct ConvertMvpCreatureGamebryoNifsPhase;
+
+impl Phase for ConvertMvpCreatureGamebryoNifsPhase {
+    fn name(&self) -> &'static str {
+        "convert_mvp_creature_gamebryo_nifs"
+    }
+
+    fn run(&self, ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
+        ConvertGamebryoNifsPhase.run(ctx)
+    }
+}
+
 fn parse_nif_entries(params: &JsonValue) -> Result<Vec<GamebryoNifEntry>, PhaseError> {
     let entries = params
         .get("nif_paths")
@@ -170,9 +185,14 @@ fn parse_nif_entries(params: &JsonValue) -> Result<Vec<GamebryoNifEntry>, PhaseE
                 .and_then(JsonValue::as_str)
                 .unwrap_or("")
                 .to_string();
+            let output_subpath = entry
+                .get("output_subpath")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string);
             Ok(GamebryoNifEntry {
                 source_path,
                 resolved_path,
+                output_subpath,
             })
         })
         .collect()
@@ -187,12 +207,19 @@ fn convert_entry(
     written_materials: &Mutex<HashSet<PathBuf>>,
     sink: Option<&crate::sinks::SinkSet>,
     data_root: &Path,
+    convert_options: &ConvertFileOptions,
 ) -> Result<ConvertFileReport, String> {
     let source = Path::new(&entry.resolved_path);
     if !source.is_file() {
         return Err(format!("NIF not found: {}", entry.resolved_path));
     }
-    let output = nif_output_path(mod_path, &entry.source_path)?;
+    let output = nif_output_path(
+        mod_path,
+        entry
+            .output_subpath
+            .as_deref()
+            .unwrap_or(&entry.source_path),
+    )?;
     let result = convert_entry_staged(
         source,
         &output,
@@ -203,6 +230,7 @@ fn convert_entry(
         written_materials,
         sink,
         data_root,
+        convert_options,
     );
     if result.is_err() {
         let _ = std::fs::remove_file(&output);
@@ -220,6 +248,7 @@ fn convert_entry_staged(
     written_materials: &Mutex<HashSet<PathBuf>>,
     sink: Option<&crate::sinks::SinkSet>,
     data_root: &Path,
+    convert_options: &ConvertFileOptions,
 ) -> Result<ConvertFileReport, String> {
     let parent = output
         .parent()
@@ -245,7 +274,7 @@ fn convert_entry_staged(
         source_game,
         target_game,
         None,
-        &ConvertFileOptions::default(),
+        convert_options,
     )
     .map_err(|error| error.to_string())?;
     if !report.supported || !report.errors.is_empty() {
@@ -273,6 +302,34 @@ fn convert_entry_staged(
         return Err(error);
     }
     Ok(report)
+}
+
+fn parse_convert_options(params: &JsonValue) -> Result<ConvertFileOptions, PhaseError> {
+    let optional_path = |key: &str| {
+        params
+            .get(key)
+            .and_then(JsonValue::as_str)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    Ok(ConvertFileOptions {
+        skin_policy: crate::python_api::skin_policy_from_phase_params(params)
+            .map_err(PhaseError::BadParams)?,
+        translation_maps_dir: optional_path("translation_maps_dir"),
+        target_skeleton: optional_path("target_skeleton"),
+        auto_skin_reference_body: optional_path("auto_skin_reference_body"),
+        emit_first_person: params
+            .get("emit_first_person")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false),
+        first_person_reference: optional_path("first_person_reference"),
+        morph_weight_cap: params
+            .get("morph_weight_cap")
+            .and_then(JsonValue::as_f64)
+            .map(|value| value as f32)
+            .unwrap_or(0.5),
+        ..ConvertFileOptions::default()
+    })
 }
 
 // Shader flag bits, mirroring nif_core's Skyrim/FO4 BSLightingShaderProperty.
@@ -409,6 +466,14 @@ fn has_flag_information(spec: &GamebryoMaterialSpec) -> bool {
     spec.flags_1 != 0
 }
 
+fn uses_environment_mapping(spec: &GamebryoMaterialSpec) -> bool {
+    if has_flag_information(spec) {
+        spec.flags_1 & SLSF1_ENVIRONMENT_MAPPING != 0
+    } else {
+        !slot(spec, 4).is_empty()
+    }
+}
+
 pub(crate) fn fo4_bgsm_from_spec(spec: &GamebryoMaterialSpec) -> bgsm::BgsmData {
     let diffuse = slot(spec, 0);
     let normal = slot(spec, 1);
@@ -440,12 +505,7 @@ pub(crate) fn fo4_bgsm_from_spec(spec: &GamebryoMaterialSpec) -> bgsm::BgsmData 
         material.GlowTexture = nonempty(slot(spec, 2));
     }
 
-    let env_mapped = if flags_known {
-        spec.flags_1 & SLSF1_ENVIRONMENT_MAPPING != 0
-    } else {
-        // No flag word: an authored slot-4 env map is the only evidence.
-        !slot(spec, 4).is_empty()
-    };
+    let env_mapped = uses_environment_mapping(spec);
     if env_mapped {
         material.header.env_mapping = Some(true);
         material.header.env_mapping_mask_scale = Some(spec.environment_map_scale);
@@ -460,6 +520,50 @@ pub(crate) fn fo4_bgsm_from_spec(spec: &GamebryoMaterialSpec) -> bgsm::BgsmData 
     // Slot 5 is the environment mask. It has no FO4 BGSM slot — the texture
     // engine already folded it into `_s.R`.
     material
+}
+
+fn synchronize_fo4_environment_map_shader(
+    block: &mut nif_core_native::model::NifBlock,
+    spec: &GamebryoMaterialSpec,
+) {
+    let enabled = uses_environment_mapping(spec);
+    let mut flags = shader_u64(block, "Shader Flags 1");
+    if enabled {
+        flags |= SLSF1_ENVIRONMENT_MAPPING;
+    } else {
+        flags &= !SLSF1_ENVIRONMENT_MAPPING;
+    }
+    block.set_field("Shader Flags 1", NifValue::UInt(flags));
+    if block.fields.contains_key("Shader Flags 1:FO4") {
+        block.set_field("Shader Flags 1:FO4", NifValue::UInt(flags));
+    }
+
+    if enabled {
+        // Shader Type selects the runtime material subclass. Keeping Default
+        // with Environment_Mapping set makes FO4 read float fields as texture
+        // pointers when it validates the cubemap.
+        block.set_field("Shader Type", NifValue::UInt(1));
+        block.set_field(
+            "Environment Map Scale",
+            NifValue::Float(spec.environment_map_scale.into()),
+        );
+        block.set_field("Use Screen Space Reflections", NifValue::Bool(false));
+        block.set_field("Wetness Control: Use SSR", NifValue::Bool(false));
+    } else {
+        if block
+            .get_field("Shader Type")
+            .is_some_and(|value| value.as_i64() == 1)
+        {
+            block.set_field("Shader Type", NifValue::UInt(0));
+        }
+        for field in [
+            "Environment Map Scale",
+            "Use Screen Space Reflections",
+            "Wetness Control: Use SSR",
+        ] {
+            block.fields.shift_remove(field);
+        }
+    }
 }
 
 /// Derive the extracted-data root from a source NIF path by walking up past the
@@ -649,6 +753,9 @@ fn synthesize_materials(
         };
         if let Some(material_ref) = material_by_texture_set.get(&texture_set_id) {
             block.set_field("Name", NifValue::String(material_ref.clone()));
+            if let Some(spec) = specs.get(&texture_set_id) {
+                synchronize_fo4_environment_map_shader(block, spec);
+            }
         }
     }
     nif.save(Some(nif_path.to_path_buf()))
@@ -948,6 +1055,12 @@ mod tests {
         let converted = NifFile::load(output_nif).unwrap();
         assert!(converted.find_blocks("BSTriShape").len() >= 1);
         assert!(converted.find_blocks("NiTriStrips").is_empty());
+        assert_eq!(converted.find_blocks("bhkNPCollisionObject").len(), 1);
+        assert_eq!(converted.find_blocks("bhkPhysicsSystem").len(), 1);
+        assert!(converted.find_blocks("bhkCollisionObject").is_empty());
+        assert!(converted.find_blocks("bhkRigidBody").is_empty());
+        assert!(converted.find_blocks("bhkRigidBodyT").is_empty());
+        assert!(converted.find_blocks("bhkBoxShape").is_empty());
 
         let material_dir = mod_path.join("data/Materials/Test/gamebryo");
         let materials = std::fs::read_dir(&material_dir)
@@ -995,6 +1108,96 @@ mod tests {
 
         drop_run(run_id).unwrap();
         let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn synthesized_envmap_material_uses_fo4_environment_map_shader_contract() {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/test_fixtures/gamebryo_nifs/cratelarge01.nif");
+        let temp = tempfile::tempdir().unwrap();
+        let mod_path = temp.path().join("mod");
+        let data_root = mod_path.join("data");
+        let nif_path = data_root.join("Meshes/Test/envmapped.nif");
+        std::fs::create_dir_all(nif_path.parent().unwrap()).unwrap();
+
+        convert_nif_file(
+            &fixture,
+            &nif_path,
+            "fnv",
+            "fo4",
+            None,
+            &ConvertFileOptions::default(),
+        )
+        .unwrap();
+
+        let mut nif = NifFile::load(nif_path.clone()).unwrap();
+        let shader_id = nif
+            .blocks
+            .iter()
+            .position(|block| block.type_name == "BSLightingShaderProperty")
+            .unwrap();
+        let texture_set_id = nif.blocks[shader_id]
+            .get_field("Texture Set")
+            .map(NifValue::as_i64)
+            .filter(|id| *id >= 0)
+            .unwrap() as usize;
+        let textures = match nif.blocks[texture_set_id].fields.get_mut("Textures") {
+            Some(NifValue::Array(textures)) => textures,
+            other => panic!("expected texture array, got {other:?}"),
+        };
+        while textures.len() < 10 {
+            textures.push(NifValue::String(String::new()));
+        }
+        textures[4] = NifValue::String("textures\\effects\\ShinyDull_e.dds".to_string());
+        let shader = &mut nif.blocks[shader_id];
+        shader.set_field(
+            "Shader Flags 1",
+            NifValue::UInt(SLSF1_SPECULAR | SLSF1_ENVIRONMENT_MAPPING),
+        );
+        shader.set_field(
+            "Shader Flags 1:FO4",
+            NifValue::UInt(SLSF1_SPECULAR | SLSF1_ENVIRONMENT_MAPPING),
+        );
+        shader.set_field("Shader Type", NifValue::UInt(0));
+        nif.save(Some(nif_path.clone())).unwrap();
+
+        synthesize_materials(
+            &nif_path,
+            &mod_path,
+            "Materials/Test/gamebryo",
+            &Mutex::new(HashSet::new()),
+            None,
+            &data_root,
+            None,
+        )
+        .unwrap();
+
+        let converted = NifFile::load(nif_path).unwrap();
+        let shader = converted
+            .blocks
+            .iter()
+            .find(|block| block.type_name == "BSLightingShaderProperty")
+            .unwrap();
+        assert_eq!(
+            shader.get_field("Shader Type").map(NifValue::as_i64),
+            Some(1)
+        );
+        assert!(matches!(
+            shader.get_field("Environment Map Scale"),
+            Some(NifValue::Float(value)) if (*value - 1.0).abs() < f64::EPSILON
+        ));
+        assert_eq!(
+            shader
+                .get_field("Use Screen Space Reflections")
+                .map(NifValue::as_i64),
+            Some(0)
+        );
+        assert_eq!(
+            shader
+                .get_field("Wetness Control: Use SSR")
+                .map(NifValue::as_i64),
+            Some(0)
+        );
     }
 
     #[test]
@@ -1350,6 +1553,36 @@ mod tests {
     }
 
     #[test]
+    fn gamebryo_options_enable_legacy_skin_conversion() {
+        let params = serde_json::json!({
+            "translation_maps_dir": "X:/maps",
+            "auto_skin_reference_body": "X:/body.nif",
+            "emit_first_person": true,
+            "first_person_reference": "X:/arms.nif",
+            "morph_weight_cap": 0.25,
+            "skin_policy": "preserve_source_rig",
+        });
+
+        let options = parse_convert_options(&params).unwrap();
+
+        assert_eq!(options.translation_maps_dir, Some(PathBuf::from("X:/maps")));
+        assert_eq!(
+            options.auto_skin_reference_body,
+            Some(PathBuf::from("X:/body.nif"))
+        );
+        assert!(options.emit_first_person);
+        assert_eq!(
+            options.first_person_reference,
+            Some(PathBuf::from("X:/arms.nif"))
+        );
+        assert_eq!(options.morph_weight_cap, 0.25);
+        assert_eq!(
+            options.skin_policy,
+            nif_core_native::skin::LegacySkinPolicy::PreserveSourceRig
+        );
+    }
+
+    #[test]
     fn failed_material_synthesis_leaves_no_nif_output_or_sink_entry() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src/test_fixtures/gamebryo_nifs/cratelarge01.nif");
@@ -1377,6 +1610,7 @@ mod tests {
         let entry = GamebryoNifEntry {
             source_path: "Meshes/fnv/clutter/crate/cratelarge01.nif".to_string(),
             resolved_path: fixture.to_string_lossy().to_string(),
+            output_subpath: None,
         };
 
         let result = convert_entry(
@@ -1388,6 +1622,7 @@ mod tests {
             &Mutex::new(HashSet::new()),
             Some(&sink),
             &data_root,
+            &ConvertFileOptions::default(),
         );
 
         assert!(result.is_err());

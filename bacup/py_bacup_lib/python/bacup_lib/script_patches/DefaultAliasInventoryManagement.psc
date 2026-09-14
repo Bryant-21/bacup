@@ -83,16 +83,16 @@ Function EvaluateInventoryState()
     If StopManagingInventoryFlag
         Return
     EndIf
-    Quest owningQuest = GetOwningQuest()
-    If owningQuest == None
+    Quest hostQuest = GetOwningQuest()
+    If hostQuest == None
         Return
     EndIf
     If RequireActivePlayerToComplete && Game.GetPlayer() == None
         Return
     EndIf
 
-    If Objective > -1 && (StageToShowObjective == -1 || owningQuest.GetStage() >= StageToShowObjective)
-        owningQuest.SetObjectiveDisplayed(Objective)
+    If Objective > -1 && (StageToShowObjective == -1 || hostQuest.GetStage() >= StageToShowObjective)
+        hostQuest.SetObjectiveDisplayed(Objective)
     EndIf
 
     Int threshold = RequiredAmount
@@ -111,25 +111,25 @@ Function EvaluateInventoryState()
             Int i = 0
             While i < AdditionalStageData.Length
                 If AdditionalStageData[i].Count <= GetManagedCount()
-                    DefaultScriptFunctions.TryToSetStage(owningQuest, AdditionalStageData[i].StageToSet, PrereqStage, TurnOffStage)
+                    DefaultScriptFunctions.TryToSetStage(hostQuest, AdditionalStageData[i].StageToSet, PrereqStage, TurnOffStage)
                 EndIf
                 i += 1
             EndWhile
         EndIf
         If Objective > -1
-            owningQuest.SetObjectiveCompleted(Objective)
+            hostQuest.SetObjectiveCompleted(Objective)
         EndIf
         If NextObjectives != None
             Int j = 0
             While j < NextObjectives.Length
-                owningQuest.SetObjectiveDisplayed(NextObjectives[j])
+                hostQuest.SetObjectiveDisplayed(NextObjectives[j])
                 j += 1
             EndWhile
         EndIf
     ElseIf DependentObjectives != None
         Int k = 0
         While k < DependentObjectives.Length
-            owningQuest.SetObjectiveDisplayed(DependentObjectives[k], false)
+            hostQuest.SetObjectiveDisplayed(DependentObjectives[k], false)
             k += 1
         EndWhile
     EndIf

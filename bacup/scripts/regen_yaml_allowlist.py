@@ -1,4 +1,4 @@
-"""Regenerate the file allowlist used by the M7 YAML-load test."""
+"""Print a regenerated _ALLOWED_YAML_LOAD_REASONS for test_m7_yaml_load_allowlist.py."""
 from __future__ import annotations
 
 import ast

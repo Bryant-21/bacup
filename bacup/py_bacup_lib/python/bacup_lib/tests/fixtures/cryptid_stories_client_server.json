@@ -1,0 +1,144 @@
+{
+  "capture_date": "2026-09-01",
+  "source_archive": "SeventySix - MiscClient.ba2",
+  "client_pex": {
+    "RE_CryptidStories_FWM": {
+      "path": "scripts/client/re_cryptidstories_fwm.pex",
+      "sha256": "F038AFED7F5BCB53F7800548B2425641C94ED354A59453DC390CFB7DE17B829F",
+      "parent": "QuestInstance",
+      "properties": [
+        "ShouldSpawn",
+        "ForestLocation",
+        "CryptidCounterAVRef"
+      ],
+      "variables": [
+        "CryptidSpawnChanceDeterminant"
+      ],
+      "function_count": 0,
+      "debug_function_count": 0
+    },
+    "W05_RE_CryptidStories_Master": {
+      "path": "scripts/client/w05_re_cryptidstories_master.pex",
+      "sha256": "04171AA64AF2B3766B8FD267F32965F498C9F1CCD181131DCC1521F190B0CA07",
+      "parent": "QuestInstance",
+      "properties": [
+        "ChosenCryptid",
+        "SheepsquatchAVRef",
+        "WendigoAVRef",
+        "SnallygasterAVRef",
+        "FlatwoodsAVRef",
+        "StoryDoneAVRef",
+        "ShouldSpawn"
+      ],
+      "variables": [
+        "SpawnCryptidChance",
+        "CryptidList",
+        "ListLength"
+      ],
+      "function_count": 0,
+      "debug_function_count": 0
+    },
+    "DefaultQuestEncounterWaveScript": {
+      "path": "scripts/client/defaultquestencounterwavescript.pex",
+      "sha256": "8F9BC6FB779DC66F1F2DFC985A7280A3F66D1252D8901F3A2192CA08FE5FD5AB",
+      "parent": "EncounterWaveParentScript",
+      "properties": [
+        "EncounterWaves",
+        "ShowTraces",
+        "DesiredRangeFromPlayers",
+        "FilterByActivePlayers"
+      ],
+      "function_count": 0,
+      "debug_function_count": 0
+    }
+  },
+  "story_manager": {
+    "form_id": "5622DE",
+    "editor_id": "RECampNode",
+    "parent_node": "52540C",
+    "previous_node": "58F277",
+    "flags": [
+      "Random",
+      "DoAllBeforeRepeating"
+    ],
+    "quests": [
+      "562281",
+      "562BA5",
+      "56385E",
+      "569CC7",
+      "571ACC",
+      "571ACB",
+      "571ACA",
+      "586247",
+      "586244",
+      "586248",
+      "586249",
+      "58624A",
+      "586246",
+      "58CEA2",
+      "58CEA3",
+      "58CEA6",
+      "58CEA7",
+      "58CEA8",
+      "58CEA9",
+      "58CEB0",
+      "58CEB5",
+      "58CEB6",
+      "58624B",
+      "58CEB8",
+      "58CEBB",
+      "58CEBC",
+      "58CEBD",
+      "58CEBE",
+      "58CEBF",
+      "58D3B4",
+      "5913EF",
+      "59192E",
+      "591931",
+      "591935",
+      "591937",
+      "59193A",
+      "5C5F59"
+    ]
+  },
+  "master": {
+    "form_id": "569CC5",
+    "editor_id": "W05_RE_Camp_JP05_CryptidStories_DoNotUse",
+    "references": [
+      {
+        "form_id": "5A1539",
+        "editor_id": "RandomEncountersFormList",
+        "record_type": "FLST"
+      }
+    ]
+  },
+  "concrete_quests": {
+    "571ACC": {
+      "editor_id": "W05_RE_Camp_JP08_CryptidStories_FlatwoodsMonster",
+      "counter_actor_value": "569D7A",
+      "forest_location": "095004",
+      "should_spawn_bound": false
+    },
+    "571ACB": {
+      "editor_id": "W05_RE_Camp_JP09_CryptidStories_Snallygaster",
+      "counter_actor_value": "569D7A",
+      "forest_location": "095004",
+      "should_spawn_bound": false
+    },
+    "571ACA": {
+      "editor_id": "W05_RE_Camp_JP10_CryptidStories_Sheepsquatch",
+      "counter_actor_value": "569D7A",
+      "forest_location": "095004",
+      "should_spawn_bound": false
+    }
+  },
+  "counter_actor_value": {
+    "form_id": "569D7A",
+    "editor_id": "W05_RE_CryptidStories_AV_Counter",
+    "minimum": 0.0,
+    "maximum": 10.0,
+    "networking_flags": [
+      "Unknown5"
+    ]
+  }
+}

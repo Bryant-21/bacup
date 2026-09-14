@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use bytes::Bytes;
 use esp_authoring_core::plugin_runtime::{CompiledSchema, ParsedItem, ParsedRecord};
 
-use super::repoint::{DanglingReference, collect_merge_formids_in_subrecords};
+use super::repoint::{
+    DanglingReference, collect_merge_formids_in_subrecords, rewrite_merge_formids_in_subrecords,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SanitizationStats {
@@ -16,6 +18,23 @@ pub(crate) struct SanitizationStats {
 
 type PendingKey = (u32, String, String, u32);
 
+#[derive(Clone, Copy)]
+struct OwnerSchemas<'a> {
+    primary: Option<&'a CompiledSchema>,
+    grafted: Option<&'a CompiledSchema>,
+    grafted_record_ids: &'a HashSet<u32>,
+}
+
+impl<'a> OwnerSchemas<'a> {
+    fn for_record(self, form_id: u32) -> Option<&'a CompiledSchema> {
+        if self.grafted_record_ids.contains(&form_id) {
+            self.grafted
+        } else {
+            self.primary
+        }
+    }
+}
+
 pub(crate) fn sanitize_dangling_references(
     items: &mut Vec<ParsedItem>,
     mut pending: Vec<DanglingReference>,
@@ -24,6 +43,11 @@ pub(crate) fn sanitize_dangling_references(
     grafted_record_ids: &HashSet<u32>,
 ) -> SanitizationStats {
     let mut stats = SanitizationStats::default();
+    let schemas = OwnerSchemas {
+        primary: primary_schema,
+        grafted: grafted_schema,
+        grafted_record_ids,
+    };
     loop {
         if pending.is_empty() {
             return stats;
@@ -32,7 +56,7 @@ pub(crate) fn sanitize_dangling_references(
             stats.dangling = render_sorted(&pending);
             return stats;
         }
-        let (remaining, dropped_ids) = sanitize_items(items, &pending, &mut stats);
+        let (remaining, dropped_ids) = sanitize_items(items, &pending, schemas, &mut stats);
         if !remaining.is_empty() {
             stats.dangling = render_sorted(&remaining);
             return stats;
@@ -70,6 +94,7 @@ fn is_supported(reference: &DanglingReference) -> bool {
             | ("REFR", Some("XAPR" | "XNDP" | "XLKR"))
             | ("ACRE", Some("XESP"))
             | ("INFO", Some("QSTI" | "PNAM"))
+            | (_, Some("CTDA"))
     )
 }
 
@@ -147,6 +172,7 @@ fn collect_references_into(
 fn sanitize_items(
     items: &mut Vec<ParsedItem>,
     pending: &[DanglingReference],
+    schemas: OwnerSchemas<'_>,
     stats: &mut SanitizationStats,
 ) -> (Vec<DanglingReference>, HashSet<u32>) {
     let mut counts = pending_counts(pending);
@@ -155,7 +181,14 @@ fn sanitize_items(
         .map(|reference| reference.owner_form_id)
         .collect::<HashSet<_>>();
     let mut dropped_ids = HashSet::new();
-    sanitize_items_with_counts(items, &owner_ids, &mut counts, &mut dropped_ids, stats);
+    sanitize_items_with_counts(
+        items,
+        &owner_ids,
+        schemas,
+        &mut counts,
+        &mut dropped_ids,
+        stats,
+    );
     let remaining = remaining_references(pending, &counts);
     (remaining, dropped_ids)
 }
@@ -210,6 +243,7 @@ fn pending_counts(pending: &[DanglingReference]) -> HashMap<PendingKey, u64> {
 fn sanitize_items_with_counts(
     items: &mut Vec<ParsedItem>,
     owner_ids: &HashSet<u32>,
+    schemas: OwnerSchemas<'_>,
     counts: &mut HashMap<PendingKey, u64>,
     dropped_ids: &mut HashSet<u32>,
     stats: &mut SanitizationStats,
@@ -218,7 +252,7 @@ fn sanitize_items_with_counts(
         ParsedItem::Record(record) => {
             if !owner_ids.contains(&record.form_id) {
                 true
-            } else if sanitize_record(record, counts, stats) {
+            } else if sanitize_record(record, schemas.for_record(record.form_id), counts, stats) {
                 dropped_ids.insert(record.form_id);
                 false
             } else {
@@ -226,7 +260,14 @@ fn sanitize_items_with_counts(
             }
         }
         ParsedItem::Group(group) => {
-            sanitize_items_with_counts(&mut group.children, owner_ids, counts, dropped_ids, stats);
+            sanitize_items_with_counts(
+                &mut group.children,
+                owner_ids,
+                schemas,
+                counts,
+                dropped_ids,
+                stats,
+            );
             true
         }
     });
@@ -234,6 +275,7 @@ fn sanitize_items_with_counts(
 
 fn sanitize_record(
     record: &mut ParsedRecord,
+    schema: Option<&CompiledSchema>,
     counts: &mut HashMap<PendingKey, u64>,
     stats: &mut SanitizationStats,
 ) -> bool {
@@ -255,16 +297,43 @@ fn sanitize_record(
             return true;
         }
     }
-    let changed = match record.signature.as_str() {
+    let mut changed = match record.signature.as_str() {
         "CELL" => sanitize_cell(record, counts, stats),
         "NAVM" => sanitize_navm(record, counts, stats),
         "REFR" => sanitize_refr(record, counts, stats),
         _ => false,
     };
+    changed |= sanitize_conditions(record, schema, counts, stats);
     if changed {
         record.raw_payload = None;
     }
     false
+}
+
+fn sanitize_conditions(
+    record: &mut ParsedRecord,
+    schema: Option<&CompiledSchema>,
+    counts: &mut HashMap<PendingKey, u64>,
+    stats: &mut SanitizationStats,
+) -> bool {
+    let owner_form_id = record.form_id;
+    let owner_signature = record.signature.to_string();
+    let mut zeroed = 0_u64;
+    rewrite_merge_formids_in_subrecords(
+        &owner_signature,
+        &mut record.subrecords,
+        schema,
+        &mut |subrecord_signature, raw| {
+            (subrecord_signature == "CTDA"
+                && take_one(counts, owner_form_id, &owner_signature, "CTDA", raw))
+            .then(|| {
+                zeroed += 1;
+                0
+            })
+        },
+    );
+    stats.note(&format!("{owner_signature}.CTDA"), "zero_formid", zeroed);
+    zeroed != 0
 }
 
 fn take_owner_context(
@@ -674,6 +743,51 @@ mod tests {
         assert_eq!(linked[1].signature.as_str(), "XCLP");
         assert_eq!(linked[1].data, Bytes::from(preserved_color));
         assert_ne!(linked[1].data, Bytes::from(removed_color));
+    }
+
+    fn condition(function: u16, run_on: u32, reference: u32) -> ParsedSubrecord {
+        let mut data = vec![0_u8; 4];
+        data.extend_from_slice(&1.0_f32.to_le_bytes());
+        data.extend_from_slice(&function.to_le_bytes());
+        data.extend_from_slice(&[0, 0]);
+        data.extend_from_slice(&0_u32.to_le_bytes());
+        data.extend_from_slice(&0_u32.to_le_bytes());
+        data.extend_from_slice(&run_on.to_le_bytes());
+        data.extend_from_slice(&reference.to_le_bytes());
+        subrecord("CTDA", data)
+    }
+
+    #[test]
+    fn dangling_condition_reference_is_zeroed_only_in_formid_slots() {
+        const GET_DISABLED: u16 = 0x23;
+        let primary_schema = compiled_schema_for_game_str("fnv").unwrap();
+        let grafted_schema = compiled_schema_for_game_str("fo3").unwrap();
+        let mut pack = rec("PACK", 0x9000, "Package");
+        pack.subrecords.push(condition(GET_DISABLED, 2, 0xBEEF));
+        pack.subrecords.push(condition(GET_DISABLED, 0, 0xBEEF));
+        let unused_reference = pack.subrecords[2].data.clone();
+        let pending = vec![dangling(&pack, "CTDA", 0xBEEF)];
+        let mut items = vec![ParsedItem::Record(pack)];
+
+        let stats = sanitize_dangling_references(
+            &mut items,
+            pending,
+            Some(&primary_schema),
+            Some(&grafted_schema),
+            &HashSet::from([0x9000]),
+        );
+
+        assert!(stats.dangling.is_empty());
+        assert_eq!(stats.occurrences, 1);
+        assert_eq!(stats.by_context["PACK.CTDA"], 1);
+        assert_eq!(stats.by_action["zero_formid"], 1);
+        let pack = first_record(&items, 0x9000).unwrap();
+        assert_eq!(pack.subrecords[1].data[24..], [0, 0, 0, 0]);
+        assert_eq!(
+            pack.subrecords[1].data[..24],
+            condition(GET_DISABLED, 2, 0xBEEF).data[..24]
+        );
+        assert_eq!(pack.subrecords[2].data, unused_reference);
     }
 
     #[test]

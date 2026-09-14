@@ -1,17 +1,13 @@
 //! FO76→FO4 encounter-zone synthesis (post-copy).
 //!
-//! FO76 has no `ECZN`; the encounter-zone role lives on `LCTN` (band on `DATA`,
-//! parent on `PNAM`, cell footprint on `LCEC`, keywords on `KWDA`). This module
-//! synthesizes one FO4 `ECZN` per qualifying Location, stamps `CELL.XEZN` on each
-//! footprint cell, and rewrites workshop `LCTN` keyword arrays to FO4's
-//! settlement contract.
+//! FO76 has no `ECZN`; the role lives on `LCTN` (band on `DATA`, parent on
+//! `PNAM`, cell footprint on `LCEC`, keywords on `KWDA`). This synthesizes one
+//! FO4 `ECZN` per qualifying Location, stamps `CELL.XEZN` on its footprint
+//! cells, and rewrites workshop `LCTN` keywords to FO4's settlement contract.
 //!
-//! Runs as a free function (NOT a registry `Fixup`) because exterior CELLs do
-//! not exist at fixup time — the translator skips top-level CELL/REFR/ACHR and
-//! the cell-slice copy inserts them post-fixups. `synthesize_encounter_zones`
-//! is invoked by `ConversionRun::synthesize_encounter_zones` AFTER the
-//! persistent-cell synthesis (cells present) and with the source handle still
-//! open (LCTN readable).
+//! Not a registry `Fixup`: exterior CELLs only exist after the post-fixup
+//! cell-slice copy. `ConversionRun::synthesize_encounter_zones` calls this after
+//! persistent-cell synthesis, with the source handle still open for LCTN reads.
 
 mod build;
 mod cell_index;
@@ -40,6 +36,10 @@ const SEVENTYSIX_ESM: &str = "SeventySix.esm";
 const SYNTH_ECZN_PLUGIN: &str = "__synth_eczn__";
 const SYNTH_ESS_SPAWN_PLUGIN: &str = "__synth_ess_spawn__";
 const FO76_ESS_LOCATION_CONDITION_FUNCTION_ID: u16 = 579;
+/// Gates each branch `LVLO` on the spawn point's role marker
+/// (`EncMainBossMarkerLocRef`, `EncSubMeleeMarkerLocRef`, …), matched against
+/// the base actor's `FTYP`.
+const FO76_ESS_ROLE_CONDITION_FUNCTION_ID: u16 = 561;
 
 struct ZonePlan {
     source_lctn: FormKey,
@@ -62,6 +62,13 @@ struct DeferredPlacedActor {
     template_local: u32,
 }
 
+struct BranchResolutionSource<'a> {
+    schema: &'a crate::schema::AuthoringSchema,
+    plugin: crate::sym::Sym,
+    output_to_source: &'a HashMap<u32, u32>,
+    config: &'a FixupConfig,
+}
+
 fn first_form_key(value: &FieldValue) -> Option<FormKey> {
     match value {
         FieldValue::FormKey(fk) => Some(*fk),
@@ -71,7 +78,11 @@ fn first_form_key(value: &FieldValue) -> Option<FormKey> {
     }
 }
 
-fn lvlo_entry_form_key(value: &FieldValue, source_plugin: crate::sym::Sym) -> Option<FormKey> {
+fn lvlo_entry_form_key(
+    value: &FieldValue,
+    source_plugin: crate::sym::Sym,
+    interner: &crate::sym::StringInterner,
+) -> Option<FormKey> {
     match value {
         FieldValue::FormKey(fk) => Some(*fk),
         FieldValue::Uint(local) if *local != 0 && *local <= 0x00FF_FFFF => Some(FormKey {
@@ -96,12 +107,34 @@ fn lvlo_entry_form_key(value: &FieldValue, source_plugin: crate::sym::Sym) -> Op
                 plugin: source_plugin,
             })
         }
-        FieldValue::Struct(fields) => fields
-            .iter()
-            .find_map(|(_, value)| lvlo_entry_form_key(value, source_plugin)),
+        FieldValue::Struct(fields) => {
+            if let Some(entry) = struct_field_value(fields, interner, "npc")
+                .and_then(|value| lvlo_entry_form_key(value, source_plugin, interner))
+            {
+                return Some(entry);
+            }
+
+            // Current FO76 LVLO stores the entry FormID in bytes 0..4, while
+            // the generated schema still decodes those bytes as the legacy
+            // `level: u16, unknown_u8_1: u8, unknown_u8_2: u8` prefix. Rebuild
+            // the 24-bit object id from that live decoded shape. Without this,
+            // 5196A2 becomes 0096A2 and every role-gated ESS branch misses.
+            let low = struct_field_value(fields, interner, "level")
+                .and_then(numeric_or_form_key_local)?
+                & 0xFFFF;
+            let byte_2 = struct_field_value(fields, interner, "unknown_u8_1")
+                .and_then(numeric_or_form_key_local)
+                .unwrap_or(0)
+                & 0xFF;
+            let local = low | (byte_2 << 16);
+            (local != 0).then_some(FormKey {
+                local,
+                plugin: source_plugin,
+            })
+        }
         FieldValue::List(items) => items
             .iter()
-            .find_map(|value| lvlo_entry_form_key(value, source_plugin)),
+            .find_map(|value| lvlo_entry_form_key(value, source_plugin, interner)),
         _ => None,
     }
 }
@@ -177,13 +210,26 @@ fn avif_actor_value_keyword(record: &Record) -> Option<u32> {
     None
 }
 
+/// FO76 spawn chances live on two orthogonal actor-value axes, distinguished by
+/// a closed, vanilla-authored naming scheme: `ESSChance{Main,Sub,Critter}*`
+/// (115 AVIFs) picks WHICH SPECIES spawns, `EMSChanceVariant*` (3 AVIFs) picks
+/// which VARIANT of it. They must never be pooled into one choice — a species
+/// axis always yields a species, while the variant axis has a "normal" outcome
+/// that FO4 expresses as *not specializing at all*.
+fn avif_is_variant_axis(record: &Record, interner: &crate::sym::StringInterner) -> bool {
+    record
+        .eid
+        .and_then(|sym| interner.resolve(sym))
+        .is_some_and(|eid| eid.starts_with("EMSChance"))
+}
+
 fn source_avif_actor_value_keyword(
     session: &mut PluginSession,
     schema_source: &std::sync::Arc<crate::schema::AuthoringSchema>,
     interner: &crate::sym::StringInterner,
-    cache: &mut HashMap<u32, Option<u32>>,
+    cache: &mut HashMap<u32, Option<(u32, bool)>>,
     avif: FormKey,
-) -> Option<u32> {
+) -> Option<(u32, bool)> {
     let local = avif.local & 0x00FF_FFFF;
     if let Some(value) = cache.get(&local) {
         return *value;
@@ -191,7 +237,10 @@ fn source_avif_actor_value_keyword(
     let value = session
         .source_record_decoded(&avif, schema_source.as_ref(), interner)
         .ok()
-        .and_then(|record| avif_actor_value_keyword(&record));
+        .and_then(|record| {
+            avif_actor_value_keyword(&record)
+                .map(|keyword| (keyword, avif_is_variant_axis(&record, interner)))
+        });
     cache.insert(local, value);
     value
 }
@@ -264,7 +313,9 @@ fn lvln_condition_branch_keywords(
     let mut current_entry = None;
     for field in &record.fields {
         match field.sig.as_str() {
-            "LVLO" => current_entry = lvlo_entry_form_key(&field.value, record.form_key.plugin),
+            "LVLO" => {
+                current_entry = lvlo_entry_form_key(&field.value, record.form_key.plugin, interner)
+            }
             "CTDA" => {
                 if condition_function_id(&field.value, interner)
                     != Some(FO76_ESS_LOCATION_CONDITION_FUNCTION_ID)
@@ -286,6 +337,48 @@ fn lvln_condition_branch_keywords(
         }
     }
     branches
+}
+
+/// Map every `LCRT` role marker a source branch `LVLN` gates on to the entry it
+/// selects.
+///
+/// FO76 gates each `LVLO` with an OR-group of func-561 conditions naming the
+/// spawn point's role, so one species list serves boss, melee, helper, giant,
+/// … from a single record. FO4 `LVLI` entries cannot carry conditions, so the
+/// converted list is flat and every role would otherwise resolve to whichever
+/// entry happens to come first — collapsing an entire species onto one actor.
+fn branch_role_entries(
+    record: &Record,
+    interner: &crate::sym::StringInterner,
+) -> HashMap<u32, FormKey> {
+    let mut roles = HashMap::new();
+    let mut current_entry = None;
+    for field in &record.fields {
+        match field.sig.as_str() {
+            "LVLO" => {
+                current_entry = lvlo_entry_form_key(&field.value, record.form_key.plugin, interner)
+            }
+            "CTDA" => {
+                if condition_function_id(&field.value, interner)
+                    != Some(FO76_ESS_ROLE_CONDITION_FUNCTION_ID)
+                {
+                    continue;
+                }
+                let Some(entry) = current_entry else {
+                    continue;
+                };
+                let Some(loc_ref_type) = condition_parameter_1(&field.value, interner) else {
+                    continue;
+                };
+                let loc_ref_type = loc_ref_type & 0x00FF_FFFF;
+                if loc_ref_type != 0 {
+                    roles.entry(loc_ref_type).or_insert(entry);
+                }
+            }
+            _ => {}
+        }
+    }
+    roles
 }
 
 fn replace_form_key(value: &mut FieldValue, old: FormKey, new: FormKey) -> bool {
@@ -540,16 +633,6 @@ fn replace_field_form_key(record: &mut Record, sig: &str, old: FormKey, new: For
     changed
 }
 
-/// Walk the FO76 template / leveled-list chain from `start` to the first `NPC_`
-/// that carries its own `FULL`, returning that `FULL` (and optional `SHRT`) so a
-/// synthesized ESS clone can bake a concrete display name.
-///
-/// The FO76 `Lvl*` actor families resolve their name by templating (Use-Traits)
-/// through a leveled list whose leaves are themselves name-less templated NPCs.
-/// FO4 does not chase a display name across a leveled-list hop, so a placed ESS
-/// clone that inherits its name this way renders empty above the health bar.
-/// Baking the resolved `FULL` onto the clone gives it a stable name; it is
-/// harmless if FO4 does resolve the template (it lands on the same string).
 fn scalar_form_key(value: &FieldValue, plugin: crate::sym::Sym) -> Option<FormKey> {
     match value {
         FieldValue::FormKey(fk) => Some(*fk),
@@ -575,10 +658,11 @@ fn lvln_entry_form_key(
     interner: &crate::sym::StringInterner,
 ) -> Option<FormKey> {
     match value {
-        // FO4 LVLO decodes as a struct; the entry form is the `npc` field
-        // (not the leading `level`, which is also a non-zero uint).
+        // Converted LVLOs expose the entry as `npc`, while records decoded
+        // directly from a target master expose the same slot as `reference`.
+        // Never fall through to `level`, which is also a non-zero uint.
         FieldValue::Struct(fields) => fields.iter().find_map(|(name, value)| {
-            (interner.resolve(*name) == Some("npc"))
+            matches!(interner.resolve(*name), Some("npc" | "reference"))
                 .then(|| scalar_form_key(value, plugin))
                 .flatten()
         }),
@@ -599,6 +683,106 @@ fn lvln_entry_form_key(
     }
 }
 
+fn lvln_entry_level(value: &FieldValue, interner: &crate::sym::StringInterner) -> u32 {
+    match value {
+        FieldValue::Struct(fields) => struct_field_value(fields, interner, "level")
+            .and_then(numeric_or_form_key_local)
+            .unwrap_or(0),
+        FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
+            u16::from_le_bytes([bytes[0], bytes[1]]) as u32
+        }
+        _ => 0,
+    }
+}
+
+fn source_unconditioned_lvln_entries(
+    record: &Record,
+    interner: &crate::sym::StringInterner,
+) -> Option<HashSet<u32>> {
+    let mut rows: Vec<(u32, bool)> = Vec::new();
+    let mut current = None;
+    for field in &record.fields {
+        match field.sig.as_str() {
+            "LVLO" => {
+                current = lvlo_entry_form_key(&field.value, record.form_key.plugin, interner).map(
+                    |entry| {
+                        rows.push((entry.local & 0x00FF_FFFF, false));
+                        rows.len() - 1
+                    },
+                );
+            }
+            "CTDA" => {
+                if let Some(index) = current {
+                    rows[index].1 = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    let unconditioned: HashSet<u32> = rows
+        .iter()
+        .filter_map(|(entry, conditioned)| (!conditioned).then_some(*entry))
+        .collect();
+    (!unconditioned.is_empty() && unconditioned.len() < rows.len()).then_some(unconditioned)
+}
+
+fn preferred_lvln_entries(
+    session: &mut PluginSession,
+    record: &Record,
+    interner: &crate::sym::StringInterner,
+    target_plugin: crate::sym::Sym,
+    source: Option<&BranchResolutionSource<'_>>,
+) -> Vec<FormKey> {
+    let preferred_source_entries = source.and_then(|source| {
+        (record.form_key.plugin == target_plugin)
+            .then(|| {
+                source_object_id_for_target(
+                    record.form_key.local,
+                    source.output_to_source,
+                    source.config,
+                )
+            })
+            .flatten()
+            .and_then(|source_local| {
+                session
+                    .source_record_decoded(
+                        &FormKey {
+                            local: source_local,
+                            plugin: source.plugin,
+                        },
+                        source.schema,
+                        interner,
+                    )
+                    .ok()
+            })
+            .and_then(|source_record| source_unconditioned_lvln_entries(&source_record, interner))
+    });
+
+    let mut entries: Vec<(u8, u32, FormKey)> = record
+        .fields
+        .iter()
+        .filter(|field| field.sig.as_str() == "LVLO")
+        .filter_map(|field| {
+            let entry = lvln_entry_form_key(&field.value, record.form_key.plugin, interner)?;
+            let source_rank = preferred_source_entries.as_ref().map_or(0, |preferred| {
+                let is_preferred = source
+                    .and_then(|source| {
+                        source_object_id_for_target(
+                            entry.local,
+                            source.output_to_source,
+                            source.config,
+                        )
+                    })
+                    .is_some_and(|source_local| preferred.contains(&source_local));
+                u8::from(!is_preferred)
+            });
+            Some((source_rank, lvln_entry_level(&field.value, interner), entry))
+        })
+        .collect();
+    entries.sort_by_key(|(source_rank, level, _)| (*source_rank, *level));
+    entries.into_iter().map(|(_, _, entry)| entry).collect()
+}
+
 /// Resolve a selected ESS branch to a concrete NPC template. FO4 does not
 /// resolve NPC template categories through an LVLN, so leaving a synthesized
 /// clone's TPLT/TPTA pointed at the selected species list produces an actor with
@@ -610,6 +794,7 @@ fn resolve_branch_template_npc(
     target_plugin: crate::sym::Sym,
     target_masters: &[String],
     target_master_handle_ids: &[u64],
+    source: Option<&BranchResolutionSource<'_>>,
     current: FormKey,
     visited: &mut HashSet<FormKey>,
     depth: u32,
@@ -628,11 +813,8 @@ fn resolve_branch_template_npc(
     )?;
     match record.sig.as_str() {
         "NPC_" => Some(record.form_key),
-        "LVLN" => record
-            .fields
-            .iter()
-            .filter(|field| field.sig.as_str() == "LVLO")
-            .filter_map(|field| lvln_entry_form_key(&field.value, record.form_key.plugin, interner))
+        "LVLN" => preferred_lvln_entries(session, &record, interner, target_plugin, source)
+            .into_iter()
             .find_map(|entry| {
                 resolve_branch_template_npc(
                     session,
@@ -641,6 +823,7 @@ fn resolve_branch_template_npc(
                     target_plugin,
                     target_masters,
                     target_master_handle_ids,
+                    source,
                     entry,
                     visited,
                     depth + 1,
@@ -650,6 +833,59 @@ fn resolve_branch_template_npc(
     }
 }
 
+/// Trait-category subrecords beyond the bare `RNAM` every NPC_ carries.
+const NPC_TRAIT_SUBRECORDS: [&str; 9] = [
+    "WNAM", "ATKR", "VTCK", "ANAM", "HCLF", "FULL", "SHRT", "TPLT", "TPTA",
+];
+
+/// Whether a branch NPC is the concrete actor for its location rather than a
+/// per-category template stub.
+///
+/// FO76 bases template each category separately, so the conditional LVLN an ESS
+/// spawn selects is not always the Traits provider. `LChar_MainTurretHostile`
+/// sits in the turret bases' Factions slot and its branches are
+/// `EncTEMPLATE_Turret_Faction*` records that exist only to carry a FACT list:
+/// a placeholder `RNAM` of HumanRace, empty bounds, no skin or model. Copying
+/// one of those over the whole actor replaces a turret with a naked human, so
+/// only a branch carrying its own traits may be materialized wholesale.
+fn npc_supplies_own_traits(record: &Record) -> bool {
+    record
+        .fields
+        .iter()
+        .any(|field| NPC_TRAIT_SUBRECORDS.contains(&field.sig.as_str()))
+}
+
+/// The record an NPC_ inherits its Traits category from: `TPTA` slot 0, else
+/// the default `TPLT`.
+fn npc_traits_template(record: &Record) -> Option<FormKey> {
+    let plugin = record.form_key.plugin;
+    record
+        .fields
+        .iter()
+        .find(|f| f.sig.as_str() == "TPTA")
+        .and_then(|f| match &f.value {
+            FieldValue::Struct(fields) => fields
+                .first()
+                .and_then(|(_, value)| scalar_form_key(value, plugin)),
+            other => scalar_form_key(other, plugin),
+        })
+        .or_else(|| {
+            record
+                .fields
+                .iter()
+                .find(|f| f.sig.as_str() == "TPLT")
+                .and_then(|f| scalar_form_key(&f.value, plugin))
+        })
+}
+
+/// Walk the FO76 template / leveled-list chain from `current` to the preferred
+/// `NPC_` with its own `FULL`, returning that `FULL` (and optional `SHRT`) so a
+/// synthesized ESS clone can bake a concrete display name.
+///
+/// FO76 `Lvl*` families get their name through Use-Traits templating over a
+/// leveled list of name-less templated NPCs. FO4 does not chase a display name
+/// across a leveled-list hop, so such a clone renders an empty name above its
+/// health bar. The baked `FULL` is the same string FO4 would resolve anyway.
 fn resolve_branch_display_name(
     session: &mut PluginSession,
     schema: &crate::schema::AuthoringSchema,
@@ -657,10 +893,11 @@ fn resolve_branch_display_name(
     target_plugin: crate::sym::Sym,
     target_masters: &[String],
     target_master_handle_ids: &[u64],
+    source: Option<&BranchResolutionSource<'_>>,
     current: FormKey,
     visited: &mut HashSet<FormKey>,
     depth: u32,
-) -> Option<(FieldEntry, Option<FieldEntry>)> {
+) -> Option<(FieldEntry, Option<FieldEntry>, crate::sym::Sym)> {
     if depth > 8 || !visited.insert(current) {
         return None;
     }
@@ -677,25 +914,20 @@ fn resolve_branch_display_name(
     match record.sig.as_str() {
         "LVLN" => {
             // Try each entry until one resolves a name (leaves may be external).
-            for field in &record.fields {
-                if field.sig.as_str() != "LVLO" {
-                    continue;
-                }
-                let leaf = lvln_entry_form_key(&field.value, plugin, interner);
-                if let Some(leaf) = leaf {
-                    if let Some(found) = resolve_branch_display_name(
-                        session,
-                        schema,
-                        interner,
-                        target_plugin,
-                        target_masters,
-                        target_master_handle_ids,
-                        leaf,
-                        visited,
-                        depth + 1,
-                    ) {
-                        return Some(found);
-                    }
+            for leaf in preferred_lvln_entries(session, &record, interner, target_plugin, source) {
+                if let Some(found) = resolve_branch_display_name(
+                    session,
+                    schema,
+                    interner,
+                    target_plugin,
+                    target_masters,
+                    target_master_handle_ids,
+                    source,
+                    leaf,
+                    visited,
+                    depth + 1,
+                ) {
+                    return Some(found);
                 }
             }
             None
@@ -707,7 +939,7 @@ fn resolve_branch_display_name(
                     .iter()
                     .find(|f| f.sig.as_str() == "SHRT")
                     .cloned();
-                return Some((full.clone(), shrt));
+                return Some((full.clone(), shrt, plugin));
             }
             // No own name: follow the Traits template (TPTA slot 0 = traits), then TPLT.
             let next = record
@@ -734,6 +966,7 @@ fn resolve_branch_display_name(
                 target_plugin,
                 target_masters,
                 target_master_handle_ids,
+                source,
                 next,
                 visited,
                 depth + 1,
@@ -761,16 +994,96 @@ fn bake_display_name(record: &mut Record, full: FieldEntry, shrt: Option<FieldEn
     }
 }
 
+/// A deterministic per-actor roll in `[0, 1)`.
+///
+/// FO76 rolls the variant axis at spawn time; FO4 has to bake one answer per
+/// actor. Deriving the roll from the placed actor's own object id keeps the
+/// population distributed the way the location authored it while staying byte
+/// identical across regens — a random source would make output unreproducible.
+fn stable_actor_roll(object_id: u32) -> f32 {
+    // SplitMix32 finalizer: cheap, no dependency, well-distributed low bits.
+    let mut z = object_id
+        .wrapping_mul(0x9E37_79B9)
+        .wrapping_add(0x85EB_CA6B);
+    z ^= z >> 16;
+    z = z.wrapping_mul(0x7FEB_352D);
+    z ^= z >> 15;
+    z = z.wrapping_mul(0x846C_A68B);
+    z ^= z >> 16;
+    (z >> 8) as f32 / ((1u32 << 24) as f32)
+}
+
+enum BranchSelection {
+    Selected(u32, FormKey),
+    /// Nothing this template can serve matched — fall back to its default.
+    NoBranch,
+    /// The variant roll landed on "normal": FO4 expresses that as the base
+    /// actor, so this one must NOT be specialized or force-defaulted.
+    LeaveOnBase,
+}
+
+/// Pick the branch a location spawns for one placed actor.
+///
+/// Keywords carry the `PNAM` depth they were found at. The nearest tier that
+/// matches any branch wins, so a location's own species is never overridden by
+/// its region's roster (no ghouls in a robots-only location); the `PRPS` chance
+/// weight then ranks within that tier.
+///
+/// A species template takes its best match outright. A variant-only template is
+/// a per-spawn coin in FO76: `EMSChanceVariantNormal` is the absence of a
+/// branch, so baking the one existing branch would turn a 5-in-50 Scorched into
+/// every spawn. Variants roll against the tier's full declared variant weight,
+/// and losing the roll leaves the base actor (see [`avif_is_variant_axis`]).
 fn selected_branch_for_location(
     branches: &HashMap<u32, FormKey>,
-    encounter_keywords: &[(u32, f32)],
-) -> Option<(u32, FormKey)> {
-    encounter_keywords.iter().find_map(|(keyword, _)| {
-        branches
-            .get(keyword)
-            .copied()
-            .map(|branch| (*keyword, branch))
-    })
+    encounter_keywords: &[(u32, f32, u32)],
+    variant_keywords: &HashSet<u32>,
+    actor_object_id: u32,
+) -> BranchSelection {
+    let matched = |variant: bool| {
+        encounter_keywords
+            .iter()
+            .filter(move |(keyword, _, _)| variant_keywords.contains(keyword) == variant)
+            .filter_map(|(keyword, weight, depth)| {
+                branches
+                    .get(keyword)
+                    .copied()
+                    .map(|branch| (*depth, *weight, *keyword, branch))
+            })
+    };
+
+    if let Some((_, _, keyword, branch)) = matched(false).min_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| b.1.total_cmp(&a.1))
+            .then_with(|| a.2.cmp(&b.2))
+    }) {
+        return BranchSelection::Selected(keyword, branch);
+    }
+
+    let Some(tier) = matched(true).map(|(depth, ..)| depth).min() else {
+        return BranchSelection::NoBranch;
+    };
+    // Denominator is every variant chance declared at this tier, including the
+    // ones with no branch — those are precisely the "stay normal" outcomes.
+    let declared: f32 = encounter_keywords
+        .iter()
+        .filter(|(keyword, _, depth)| *depth == tier && variant_keywords.contains(keyword))
+        .map(|(_, weight, _)| *weight)
+        .sum();
+    if !(declared > 0.0) {
+        return BranchSelection::NoBranch;
+    }
+    let mut slots: Vec<(u32, f32, u32, FormKey)> =
+        matched(true).filter(|(depth, ..)| *depth == tier).collect();
+    slots.sort_by_key(|(_, _, keyword, _)| *keyword);
+    let mut cursor = stable_actor_roll(actor_object_id) * declared;
+    for (_, weight, keyword, branch) in slots {
+        if cursor < weight {
+            return BranchSelection::Selected(keyword, branch);
+        }
+        cursor -= weight;
+    }
+    BranchSelection::LeaveOnBase
 }
 
 enum SpecializeOutcome {
@@ -794,12 +1107,14 @@ fn specialize_actor_to_branch(
     output_plugin: crate::sym::Sym,
     target_masters: &[String],
     target_master_handle_ids: &[u64],
+    resolution_source: &BranchResolutionSource<'_>,
     mut actor_record: Record,
     base_fk: FormKey,
     base_local: u32,
     base_npc: &Record,
     template_local: u32,
     branch_target: FormKey,
+    role_entries: Option<&HashMap<u32, FormKey>>,
 ) -> SpecializeOutcome {
     // The clone registry survives repeated specialization work (see
     // `MapperState::ess_clone_registry`): the same (base, branch) resolves to one
@@ -808,30 +1123,80 @@ fn specialize_actor_to_branch(
     let clone_fk = if let Some(clone_fk) = mapper.ess_clone_lookup(cache_key) {
         clone_fk
     } else {
-        let mut template_visited: HashSet<FormKey> = HashSet::new();
-        let concrete_template = resolve_branch_template_npc(
-            session,
-            target_schema,
-            mapper.interner,
-            output_plugin,
-            target_masters,
-            target_master_handle_ids,
-            branch_target,
-            &mut template_visited,
-            0,
-        );
-        let (mut clone, materialized_concrete_actor) = match concrete_template.and_then(|fk| {
-            read_target_or_master_record(
+        // The branch lists one entry per spawn role, gated in FO76 by func-561
+        // conditions FO4 cannot express. Narrow the branch to the entry this
+        // base's `FTYP` role marker selects, so `LvlMainBoss` and
+        // `LvlSubHelper` resolve to different actors instead of both landing on
+        // whichever entry resolves first. Each role is already its own base, so
+        // the clone cache key separates them.
+        let role_root = role_entries.and_then(|roles| {
+            field_form_key(base_npc, "FTYP")
+                .and_then(|forced| roles.get(&(forced.local & 0x00FF_FFFF)).copied())
+        });
+        // A role entry can lead only to master records, which resolve to
+        // nothing here. Falling straight back to the base would strand the
+        // actor as an unnamed copy of its own template, so try the role entry
+        // first and the whole branch second — narrower answer preferred,
+        // broader answer still better than none.
+        let roots: smallvec::SmallVec<[FormKey; 2]> = match role_root {
+            Some(role) if role != branch_target => smallvec::smallvec![role, branch_target],
+            _ => smallvec::smallvec![branch_target],
+        };
+        let mut resolution_root = branch_target;
+        let mut materialized: Option<Record> = None;
+        let mut untraited: Option<Record> = None;
+        for root in roots {
+            let mut template_visited: HashSet<FormKey> = HashSet::new();
+            let candidate = resolve_branch_template_npc(
                 session,
                 target_schema,
                 mapper.interner,
                 output_plugin,
                 target_masters,
                 target_master_handle_ids,
-                fk,
+                Some(resolution_source),
+                root,
+                &mut template_visited,
+                0,
             )
-        }) {
-            Some(record) => (record, true),
+            .and_then(|fk| {
+                read_target_or_master_record(
+                    session,
+                    target_schema,
+                    mapper.interner,
+                    output_plugin,
+                    target_masters,
+                    target_master_handle_ids,
+                    fk,
+                )
+            });
+            match candidate {
+                Some(record) if npc_supplies_own_traits(&record) => {
+                    resolution_root = root;
+                    materialized = Some(record);
+                    break;
+                }
+                Some(record) => untraited = Some(record),
+                None => {}
+            }
+        }
+        let (mut clone, materialized_concrete_actor) = match materialized.or(untraited) {
+            Some(record) if npc_supplies_own_traits(&record) => (record, true),
+            Some(record) => {
+                warning_once(
+                    warnings,
+                    seen_warnings,
+                    mapper.interner,
+                    format!(
+                        "ess_spawn_fallback:branch_npc_without_traits base={:06X} template={:06X} branch={:06X} npc={:06X}",
+                        base_local,
+                        template_local,
+                        branch_target.local & 0x00FF_FFFF,
+                        record.form_key.local & 0x00FF_FFFF,
+                    ),
+                );
+                (base_npc.clone(), false)
+            }
             None => {
                 warning_once(
                     warnings,
@@ -862,7 +1227,7 @@ fn specialize_actor_to_branch(
             plugin: output_plugin,
         };
         if !materialized_concrete_actor
-            && !replace_template_form_key(&mut clone, old_template, branch_target)
+            && !replace_template_form_key(&mut clone, old_template, resolution_root)
         {
             warning_once(
                 warnings,
@@ -877,22 +1242,67 @@ fn specialize_actor_to_branch(
             );
             return SpecializeOutcome::ReplaceFailed;
         }
-        // The clone inherits its name by templating through `branch_target` (a
+        // The clone inherits its name by templating through the branch (a
         // leveled list of name-less templated NPCs) — a chain FO4 will not chase
         // for the display name. Resolve it now and bake a concrete FULL so the
-        // placed actor is not nameless above the health bar.
+        // placed actor is not nameless above the health bar. Names come from the
+        // same role-narrowed root as the traits so they cannot disagree.
         let mut name_visited: HashSet<FormKey> = HashSet::new();
-        if let Some((full, shrt)) = resolve_branch_display_name(
+        let mut display_name = resolve_branch_display_name(
             session,
             target_schema,
             mapper.interner,
             output_plugin,
             target_masters,
             target_master_handle_ids,
-            branch_target,
+            Some(resolution_source),
+            resolution_root,
             &mut name_visited,
             0,
-        ) {
+        );
+        if display_name.is_none() && resolution_root != branch_target {
+            // The role entry named nothing; the broader branch still can.
+            let mut branch_visited: HashSet<FormKey> = HashSet::new();
+            display_name = resolve_branch_display_name(
+                session,
+                target_schema,
+                mapper.interner,
+                output_plugin,
+                target_masters,
+                target_master_handle_ids,
+                Some(resolution_source),
+                branch_target,
+                &mut branch_visited,
+                0,
+            );
+        }
+        if display_name.is_none()
+            && let Some(traits_template) = npc_traits_template(&clone)
+            && traits_template.plugin == output_plugin
+        {
+            // The branch carries no name of its own — either a per-category
+            // stub (see `npc_supplies_own_traits`) or a chain that never
+            // reaches a named actor. Fall back to the clone's OWN Traits slot,
+            // which is the body it renders as, so the name always matches what
+            // the player sees. Deliberately not the base's Traits slot: when
+            // the conditional LVLN occupied every category the replacement
+            // above already repointed Traits at the branch, and the base's list
+            // would name a different species.
+            let mut traits_visited: HashSet<FormKey> = HashSet::new();
+            display_name = resolve_branch_display_name(
+                session,
+                target_schema,
+                mapper.interner,
+                output_plugin,
+                target_masters,
+                target_master_handle_ids,
+                Some(resolution_source),
+                traits_template,
+                &mut traits_visited,
+                0,
+            );
+        }
+        if let Some((full, shrt, _)) = display_name {
             bake_display_name(&mut clone, full, shrt);
         }
         mapper.ess_clone_register(cache_key, clone_fk);
@@ -923,8 +1333,13 @@ fn specialize_placed_actor_templates(
     target: &cell_index::TargetIndex,
     prepared_actors: Vec<PreparedPlacedActor>,
     conditional_lvln_branches: &HashMap<u32, HashMap<u32, FormKey>>,
-    location_encounter_keywords: &HashMap<u32, Vec<(u32, f32)>>,
+    branch_role_entry_index: &HashMap<u32, HashMap<u32, FormKey>>,
+    location_encounter_keywords: &HashMap<u32, Vec<(u32, f32, u32)>>,
+    variant_keywords: &HashSet<u32>,
     cell_source_lctn_assignment: &HashMap<u32, (u32, u32)>,
+    source_schema: &crate::schema::AuthoringSchema,
+    source_plugin: crate::sym::Sym,
+    output_to_source: &HashMap<u32, u32>,
     output_plugin: crate::sym::Sym,
 ) -> Result<(u32, u32, Vec<crate::sym::Sym>), FixupError> {
     if conditional_lvln_branches.is_empty() || prepared_actors.is_empty() {
@@ -932,6 +1347,12 @@ fn specialize_placed_actor_templates(
     }
 
     let target_masters = session.target_masters().to_vec();
+    let resolution_source = BranchResolutionSource {
+        schema: source_schema,
+        plugin: source_plugin,
+        output_to_source,
+        config,
+    };
     let npc_sig = SigCode::from_str("NPC_").map_err(FixupError::SchemaError)?;
     let synth_plugin = mapper.interner.intern(SYNTH_ESS_SPAWN_PLUGIN);
     let mut clone_records: Vec<Record> = Vec::new();
@@ -949,6 +1370,8 @@ fn specialize_placed_actor_templates(
     let mut n_specialized = 0u32;
     let mut n_specialized_default = 0u32;
     let mut n_default_unresolved = 0u32;
+    let mut n_variant_roll_normal = 0u32;
+    let mut n_variant_only_not_defaulted = 0u32;
     // Actors whose location evidence could not select a branch: retried below
     // with the template's deterministic default branch. FO4 cannot express the
     // conditional broad list, so leaving them on it is never an option.
@@ -1001,20 +1424,31 @@ fn specialize_placed_actor_templates(
                     None
                 }
                 Some(encounter_keywords) => {
-                    let selected = selected_branch_for_location(branches, encounter_keywords);
-                    if selected.is_none() {
-                        n_no_branch += 1;
-                        warning_once(
-                            &mut warnings,
-                            &mut seen_warnings,
-                            mapper.interner,
-                            format!(
-                                "ess_spawn_fallback:no_matching_branch actor={:06X} cell={:06X} source_lctn={:06X} template={:06X}",
-                                actor.ref_objid, actor.cell_objid, source_lctn, template_local
-                            ),
-                        );
+                    match selected_branch_for_location(
+                        branches,
+                        encounter_keywords,
+                        variant_keywords,
+                        actor.ref_objid,
+                    ) {
+                        BranchSelection::Selected(keyword, branch) => Some((keyword, branch)),
+                        BranchSelection::LeaveOnBase => {
+                            n_variant_roll_normal += 1;
+                            continue;
+                        }
+                        BranchSelection::NoBranch => {
+                            n_no_branch += 1;
+                            warning_once(
+                                &mut warnings,
+                                &mut seen_warnings,
+                                mapper.interner,
+                                format!(
+                                    "ess_spawn_fallback:no_matching_branch actor={:06X} cell={:06X} source_lctn={:06X} template={:06X}",
+                                    actor.ref_objid, actor.cell_objid, source_lctn, template_local
+                                ),
+                            );
+                            None
+                        }
                     }
-                    selected
                 }
             },
         };
@@ -1083,12 +1517,14 @@ fn specialize_placed_actor_templates(
             output_plugin,
             &target_masters,
             &config.target_master_handle_ids,
+            &resolution_source,
             actor_record,
             base_fk,
             base_local,
             &base_npc,
             template_local,
             branch_target,
+            branch_role_entry_index.get(&(branch_target.local & 0x00FF_FFFF)),
         ) {
             SpecializeOutcome::Specialized => n_specialized += 1,
             SpecializeOutcome::ReplaceFailed => n_replace_failed += 1,
@@ -1101,6 +1537,17 @@ fn specialize_placed_actor_templates(
     // with no resolved selection falls back to its lowest keyword id.
     let mut default_branches: HashMap<u32, (u32, FormKey)> = HashMap::new();
     for (template_local, branches) in conditional_lvln_branches {
+        // A template whose every branch is a variant has no "ordinary" member to
+        // fall back to — its normal outcome is the base actor. Defaulting such a
+        // template is what turned every ESS tick into a Scorched Tick, so an
+        // actor with no location evidence stays on its base instead.
+        if branches
+            .keys()
+            .all(|keyword| variant_keywords.contains(keyword))
+        {
+            n_variant_only_not_defaulted += 1;
+            continue;
+        }
         let keyword = selection_counts
             .get(template_local)
             .and_then(|counts| {
@@ -1161,12 +1608,14 @@ fn specialize_placed_actor_templates(
             output_plugin,
             &target_masters,
             &config.target_master_handle_ids,
+            &resolution_source,
             actor_record,
             base_fk,
             base_local,
             &base_npc,
             template_local,
             branch_target,
+            branch_role_entry_index.get(&(branch_target.local & 0x00FF_FFFF)),
         ) {
             SpecializeOutcome::Specialized => {
                 n_specialized_default += 1;
@@ -1190,7 +1639,7 @@ fn specialize_placed_actor_templates(
     }
 
     warnings.push(mapper.interner.intern(&format!(
-        "ess_spawn: summary template_actors={} specialized={} specialized_default={} clones={} skip_no_cell_location={} skip_no_keywords={} skip_no_branch={} skip_unmapped_branch={} skip_external_branch={} skip_replace_failed={} default_unresolved={}",
+        "ess_spawn: summary template_actors={} specialized={} specialized_default={} clones={} skip_no_cell_location={} skip_no_keywords={} skip_no_branch={} skip_unmapped_branch={} skip_external_branch={} skip_replace_failed={} default_unresolved={} variant_roll_normal={} variant_only_templates={}",
         n_template_actors,
         n_specialized,
         n_specialized_default,
@@ -1201,7 +1650,9 @@ fn specialize_placed_actor_templates(
         n_unmapped_branch,
         n_external_branch,
         n_replace_failed,
-        n_default_unresolved
+        n_default_unresolved,
+        n_variant_roll_normal,
+        n_variant_only_not_defaulted
     )));
 
     let added = session
@@ -1356,6 +1807,73 @@ fn build_conditional_lvln_branch_index_for_target_templates(
     out
 }
 
+/// Per converted branch `LVLN`, which target entry each `LCRT` role marker
+/// selects. Keyed by target branch object id so the specializer can look it up
+/// from `branch_target`; the inner map is keyed by target `LCRT` object id so it
+/// can be matched against the base actor's converted `FTYP`.
+#[allow(clippy::too_many_arguments)]
+fn build_branch_role_entry_index(
+    session: &mut PluginSession,
+    schema_source: &std::sync::Arc<crate::schema::AuthoringSchema>,
+    interner: &crate::sym::StringInterner,
+    target: &cell_index::TargetIndex,
+    mapper: &FormKeyMapper,
+    output_plugin: crate::sym::Sym,
+    config: &FixupConfig,
+    conditional_lvln_branches: &HashMap<u32, HashMap<u32, FormKey>>,
+) -> HashMap<u32, HashMap<u32, FormKey>> {
+    let mut out: HashMap<u32, HashMap<u32, FormKey>> = HashMap::new();
+    let mut seen_branches: HashSet<u32> = HashSet::new();
+    for branches in conditional_lvln_branches.values() {
+        for source_branch in branches.values() {
+            if !seen_branches.insert(source_branch.local & 0x00FF_FFFF) {
+                continue;
+            }
+            let Ok(record) =
+                session.source_record_decoded(source_branch, schema_source.as_ref(), interner)
+            else {
+                continue;
+            };
+            let roles = branch_role_entries(&record, interner);
+            if roles.is_empty() {
+                continue;
+            }
+            let Some(branch_target) =
+                branch_target_form_key(*source_branch, target, mapper, output_plugin, config)
+                    .filter(|fk| fk.plugin == output_plugin)
+            else {
+                continue;
+            };
+            let mut mapped: HashMap<u32, FormKey> = HashMap::new();
+            for (loc_ref_type, entry) in roles {
+                let source_loc_ref_type = FormKey {
+                    local: loc_ref_type,
+                    plugin: source_branch.plugin,
+                };
+                let Some(target_loc_ref_type) = branch_target_form_key(
+                    source_loc_ref_type,
+                    target,
+                    mapper,
+                    output_plugin,
+                    config,
+                ) else {
+                    continue;
+                };
+                let Some(target_entry) =
+                    branch_target_form_key(entry, target, mapper, output_plugin, config)
+                else {
+                    continue;
+                };
+                mapped.insert(target_loc_ref_type.local & 0x00FF_FFFF, target_entry);
+            }
+            if !mapped.is_empty() {
+                out.insert(branch_target.local & 0x00FF_FFFF, mapped);
+            }
+        }
+    }
+    out
+}
+
 const LCTN_PARENT_WALK_CAP: usize = 16;
 
 fn location_encounter_keywords_for_sources(
@@ -1364,20 +1882,24 @@ fn location_encounter_keywords_for_sources(
     interner: &crate::sym::StringInterner,
     source_plugin: crate::sym::Sym,
     source_lctn_locals: &HashSet<u32>,
-) -> HashMap<u32, Vec<(u32, f32)>> {
-    let mut avif_keyword_cache: HashMap<u32, Option<u32>> = HashMap::new();
+) -> (HashMap<u32, Vec<(u32, f32, u32)>>, HashSet<u32>) {
+    let mut avif_keyword_cache: HashMap<u32, Option<(u32, bool)>> = HashMap::new();
     // Per-location decode cache: own PRPS-derived keywords + PNAM parent.
     let mut lctn_cache: HashMap<u32, (Vec<(u32, f32)>, Option<u32>)> = HashMap::new();
+    let mut variant_keywords: HashSet<u32> = HashSet::new();
     let mut out = HashMap::new();
     for source_local in source_lctn_locals {
         // FO76 stores encounter-species AVIFs on the nearest location that
         // defines them; leaf locations named by a cell's XLCN often carry
         // none. Walk the PNAM parent chain nearest-first so ancestor
         // properties select a branch when the leaf has no matching family.
-        let mut keywords: Vec<(u32, f32)> = Vec::new();
+        // Each keyword carries the depth it was found at so the selector can
+        // prefer the leaf's own species and only fall back to the region's.
+        let mut keywords: Vec<(u32, f32, u32)> = Vec::new();
         let mut seen_keywords: HashSet<u32> = HashSet::new();
         let mut seen_locals: HashSet<u32> = HashSet::new();
         let mut current = Some(*source_local & 0x00FF_FFFF);
+        let mut depth = 0u32;
         while let Some(local) = current {
             if !seen_locals.insert(local) || seen_locals.len() > LCTN_PARENT_WALK_CAP {
                 break;
@@ -1400,13 +1922,16 @@ fn location_encounter_keywords_for_sources(
                                 if !value.is_finite() || value <= 0.0 {
                                     continue;
                                 }
-                                if let Some(keyword) = source_avif_actor_value_keyword(
+                                if let Some((keyword, is_variant)) = source_avif_actor_value_keyword(
                                     session,
                                     schema_source,
                                     interner,
                                     &mut avif_keyword_cache,
                                     avif,
                                 ) {
+                                    if is_variant {
+                                        variant_keywords.insert(keyword);
+                                    }
                                     own.push((keyword, value));
                                 }
                             }
@@ -1423,14 +1948,15 @@ fn location_encounter_keywords_for_sources(
             };
             for (keyword, value) in own {
                 if seen_keywords.insert(keyword) {
-                    keywords.push((keyword, value));
+                    keywords.push((keyword, value, depth));
                 }
             }
             current = parent;
+            depth += 1;
         }
         out.insert(*source_local & 0x00FF_FFFF, keywords);
     }
-    out
+    (out, variant_keywords)
 }
 
 fn source_location_assignments_for_target_cells(
@@ -1626,6 +2152,10 @@ pub fn specialize_placed_actor_templates_after_ref_repair(
         return Ok(report);
     };
 
+    // Placed-child copy can mutate topology outside PluginSession, so cached
+    // paths from an earlier phase cannot be trusted at this late boundary.
+    session.refresh_target_read_indexes();
+
     let started = std::time::Instant::now();
     let target = build_target_index(&session.target_slot().parsed.root_items, true);
     log_timing("build_target_index", started);
@@ -1698,7 +2228,7 @@ pub fn specialize_placed_actor_templates_after_ref_repair(
     // No early return on empty assignments: unresolvable actors still get the
     // deterministic default branch below — FO4 must never keep the broad list.
     let started = std::time::Instant::now();
-    let location_encounter_keywords = location_encounter_keywords_for_sources(
+    let (location_encounter_keywords, variant_keywords) = location_encounter_keywords_for_sources(
         session,
         &source_schema,
         mapper.interner,
@@ -1706,6 +2236,23 @@ pub fn specialize_placed_actor_templates_after_ref_repair(
         &source_lctn_locals,
     );
     log_timing("location_encounter_keywords", started);
+    let started = std::time::Instant::now();
+    let branch_role_entry_index = build_branch_role_entry_index(
+        session,
+        &source_schema,
+        mapper.interner,
+        &target,
+        mapper,
+        output_plugin,
+        config,
+        &conditional_lvln_branches,
+    );
+    log_timing("branch_role_entries", started);
+    report.warnings.push(mapper.interner.intern(&format!(
+        "ess_spawn: role_gated_branches={} role_entries={}",
+        branch_role_entry_index.len(),
+        branch_role_entry_index.values().map(|m| m.len()).sum::<usize>(),
+    )));
     report.warnings.push(mapper.interner.intern(&format!(
         "ess_spawn: gates placed_actors={} actor_cells={} candidate_templates={} branch_templates={} assigned_cells={} keyword_locations={} keyword_locations_nonempty={} output_to_source={}",
         target.placed_actors.len(),
@@ -1729,8 +2276,13 @@ pub fn specialize_placed_actor_templates_after_ref_repair(
         &target,
         prepared_actors,
         &conditional_lvln_branches,
+        &branch_role_entry_index,
         &location_encounter_keywords,
+        &variant_keywords,
         &cell_source_lctn_assignment,
+        source_schema.as_ref(),
+        source_plugin,
+        &output_to_source,
         output_plugin,
     )?;
     log_timing("specialize_and_apply", started);
@@ -1804,6 +2356,29 @@ pub fn finalize_placed_xezn_targets(
     config: &FixupConfig,
     interner: &StringInterner,
 ) -> Result<FixupReport, FixupError> {
+    finalize_placed_xezn_targets_with_refr_candidates(session, config, interner, None)
+}
+
+pub(crate) fn finalize_placed_xezn_targets_for_refr_candidates(
+    session: &mut PluginSession,
+    config: &FixupConfig,
+    interner: &StringInterner,
+    refr_candidates: &[FormKey],
+) -> Result<FixupReport, FixupError> {
+    finalize_placed_xezn_targets_with_refr_candidates(
+        session,
+        config,
+        interner,
+        Some(refr_candidates),
+    )
+}
+
+fn finalize_placed_xezn_targets_with_refr_candidates(
+    session: &mut PluginSession,
+    config: &FixupConfig,
+    interner: &StringInterner,
+    refr_candidates: Option<&[FormKey]>,
+) -> Result<FixupReport, FixupError> {
     use rayon::prelude::*;
 
     let mut report = FixupReport::empty();
@@ -1851,6 +2426,12 @@ pub fn finalize_placed_xezn_targets(
 
     let mut placed_fks = Vec::new();
     for placed_sig in PLACED_SIGNATURES {
+        if placed_sig == "REFR" {
+            if let Some(refr_candidates) = refr_candidates {
+                placed_fks.extend_from_slice(refr_candidates);
+                continue;
+            }
+        }
         let sig = SigCode::from_str(placed_sig).map_err(FixupError::SchemaError)?;
         placed_fks.extend(
             session
@@ -2009,14 +2590,14 @@ pub fn synthesize_encounter_zones(
                 _ => return None,
             };
             let info = decode_lctn_info(&rec, mapper.interner);
-            let class = classify(info.location_type, &info.keyword_locals);
-            let footprint =
-                decode_lcec_footprint(&rec, mapper.interner, &source_masters, &source_plugin_name);
             let editor_id = rec
                 .eid
                 .and_then(|sym| mapper.interner.resolve(sym))
                 .map(str::to_string)
                 .unwrap_or_default();
+            let class = classify(info.location_type, &info.keyword_locals, &editor_id);
+            let footprint =
+                decode_lcec_footprint(&rec, mapper.interner, &source_masters, &source_plugin_name);
             Some((
                 info.form_key.local,
                 info.own_band,
@@ -2178,20 +2759,14 @@ pub fn synthesize_encounter_zones(
     }
     log_timing("plan_loop_add_eczns", started);
 
-    // Repoint placed-ref XEZN → synthesized ECZN. FO76 placed refs carry
-    // XEZN→LCTN (FO76 encounter zones are Locations); post-copy the formid is
-    // already remapped to the target LCTN object-id. Now that ECZNs exist, set
-    // XEZN to the LCTN's ECZN. Safety net: an XEZN still pointing at a target
-    // LCTN with no synthesized ECZN (should not happen — every XEZN target is in
-    // placed_xezn_targets and thus qualified above; only a master-resident LCTN
-    // remains) is stripped, since FO4 hard-requires XEZN→ECZN. Placed records are
-    // nested under cell groups, so use replace_record_contents (preserves the
-    // tree position; replace_record would relocate them to a top-level group).
-    // Only placed records that actually carry a non-null XEZN need touching —
-    // `build_target_index` recorded their object-ids on its single raw walk, so we
-    // decode just those instead of every placed record in the worldspace. Collect
-    // the edits and apply them with ONE batched, single-traversal replace (the
-    // per-record `replace_record_contents` is an O(changed × tree) scan).
+    // Repoint placed-ref XEZN at the synthesized ECZN. FO76 XEZN names an LCTN,
+    // already remapped to the target LCTN post-copy. An XEZN whose LCTN has no
+    // ECZN (only a master-resident LCTN) is stripped, since FO4 requires
+    // XEZN→ECZN. Placed records sit under cell groups, so edits go through one
+    // batched contents replace that keeps tree position (`replace_record` would
+    // move them to a top-level group; per-record replace is O(changed × tree)).
+    // `build_target_index` recorded which refs carry a non-null XEZN, so only
+    // those are decoded.
     let started = std::time::Instant::now();
     let mut placed_changes: Vec<crate::record::Record> = Vec::new();
     for &ref_objid in &target.placed_xezn_ref_objids {
@@ -2345,7 +2920,8 @@ mod interior_tests {
     use esp_authoring_core::plugin_runtime::{
         ParsedItem, ParsedRecord, ParsedSubrecord, ensure_interior_cell_and_child_group,
         insert_placed_child_into_cell_group, plugin_handle_add_master_native,
-        plugin_handle_new_native, plugin_handle_store_ref,
+        plugin_handle_close_native, plugin_handle_new_native, plugin_handle_save_no_py,
+        plugin_handle_store_ref,
     };
     use smol_str::SmolStr;
 
@@ -2381,6 +2957,239 @@ mod interior_tests {
         FieldEntry {
             sig: SubrecordSig::from_str(sig).unwrap(),
             value,
+        }
+    }
+
+    /// The real FO76 shapes the ESS branch gate has to tell apart:
+    /// `EncTEMPLATE_Turret_FactionRobots` (`2B131D`) carries a placeholder
+    /// `RNAM` and nothing else, while `LvlMoleMinerScorched` (`3D14E4`) is a
+    /// complete actor. Only the latter may be materialized over a placed actor.
+    #[test]
+    fn only_a_branch_npc_with_its_own_traits_may_be_materialized() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+
+        let mut faction_stub = decoded_record("NPC_", 0x2B131D, plugin);
+        faction_stub
+            .fields
+            .push(decoded_field("RNAM", FieldValue::Uint(0x013746)));
+        assert!(
+            !npc_supplies_own_traits(&faction_stub),
+            "a bare placeholder race is a per-category template stub"
+        );
+
+        for sig in [
+            "WNAM", "ATKR", "VTCK", "ANAM", "HCLF", "FULL", "SHRT", "TPLT", "TPTA",
+        ] {
+            let mut actor = decoded_record("NPC_", 0x3D14E4, plugin);
+            actor
+                .fields
+                .push(decoded_field("RNAM", FieldValue::Uint(0x012E6B)));
+            actor
+                .fields
+                .push(decoded_field(sig, FieldValue::Uint(0x0B2BF1)));
+            assert!(
+                npc_supplies_own_traits(&actor),
+                "{sig} makes the branch a concrete actor"
+            );
+        }
+    }
+
+    /// Real `LChar_TGroupGhouls` (`51C577`) role gating: eight `LVLO` each
+    /// followed by an `EncMain<Role>` OR `EncSub<Role>` func-561 pair. Every
+    /// marker must resolve to its own entry — the whole-map "one creature
+    /// everywhere" bug was these gates going unread, so `LvlMainBoss` and
+    /// `LvlMainShort` both resolved to whichever entry came first.
+    #[test]
+    fn branch_role_entries_maps_every_role_marker_to_its_gated_entry() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let mut record = decoded_record("LVLN", 0x51C577, plugin);
+        // (entry, EncMain<Role>LocRef, EncSub<Role>LocRef) as authored.
+        let rows: [(u32, u32, u32); 4] = [
+            (0x5196A6, 0x0992DB, 0x0992DE),
+            (0x1D510B, 0x1D50B8, 0x1E7B84),
+            (0x51C578, 0x1D50BC, 0x1E7B88),
+            (0x1D510B, 0x1D50B7, 0x1E7B85),
+        ];
+        for (entry, main_marker, sub_marker) in rows {
+            record
+                .fields
+                .push(decoded_field("LVLO", FieldValue::Uint(entry as u64)));
+            for marker in [main_marker, sub_marker] {
+                record.fields.push(decoded_field(
+                    "CTDA",
+                    FieldValue::Bytes(ess_role_ctda(marker).into_iter().collect()),
+                ));
+            }
+        }
+        // A location gate on the same record must not be mistaken for a role.
+        record.fields.push(decoded_field(
+            "CTDA",
+            FieldValue::Bytes(ess_location_ctda(0x0581DE).into_iter().collect()),
+        ));
+
+        let roles = branch_role_entries(&record, &interner);
+        assert_eq!(roles.len(), 8, "eight markers, four entries: {roles:?}");
+        for (entry, main_marker, sub_marker) in rows {
+            let expected = FormKey {
+                local: entry,
+                plugin,
+            };
+            assert_eq!(roles.get(&main_marker).copied(), Some(expected));
+            assert_eq!(roles.get(&sub_marker).copied(), Some(expected));
+        }
+        assert!(
+            !roles.contains_key(&0x0581DE),
+            "func-579 location keyword is not a role marker"
+        );
+    }
+
+    #[test]
+    fn source_lvlo_live_shape_reconstructs_full_entry_object_id() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let value = FieldValue::Struct(vec![
+            (interner.intern("level"), FieldValue::Uint(0x96A2)),
+            (interner.intern("unknown_u8_1"), FieldValue::Uint(0x51)),
+        ]);
+
+        assert_eq!(
+            lvlo_entry_form_key(&value, plugin, &interner),
+            Some(FormKey {
+                local: 0x5196A2,
+                plugin,
+            }),
+            "real 51C55F first LVLO must not truncate 5196A2 to 0096A2"
+        );
+    }
+
+    /// `LocSwampDyerChemicalLocation` (`055E01`) declares Robots; its region
+    /// parent `SubRegionSwamp07Location` (`2F706E`) declares the full swamp
+    /// roster including Ghouls. The leaf's own species must win even though the
+    /// region also matches, and within one tier the authored `PRPS` chance —
+    /// not declaration order — must rank.
+    #[test]
+    fn leaf_location_species_outrank_region_and_weight_ranks_within_a_tier() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let robots = FormKey {
+            local: 0x51C591,
+            plugin,
+        };
+        let ghouls = FormKey {
+            local: 0x51C577,
+            plugin,
+        };
+        let branches: HashMap<u32, FormKey> =
+            HashMap::from([(0x0581DF, robots), (0x0581DE, ghouls)]);
+        let no_variants: HashSet<u32> = HashSet::new();
+        let pick = |kw: &[(u32, f32, u32)]| match selected_branch_for_location(
+            &branches,
+            kw,
+            &no_variants,
+            0x28_9E6D,
+        ) {
+            BranchSelection::Selected(keyword, branch) => Some((keyword, branch)),
+            _ => None,
+        };
+
+        // Depth 0 = leaf (Robots), depth 1 = region parent (Ghouls).
+        assert_eq!(
+            pick(&[(0x0581DF, 5.0, 0), (0x0581DE, 45.0, 1)]),
+            Some((0x0581DF, robots)),
+            "the leaf's own species outranks the region's even at a lower chance"
+        );
+
+        // Leaf declares neither: the region is the only evidence there is.
+        assert_eq!(
+            pick(&[(0x0581DE, 5.0, 1)]),
+            Some((0x0581DE, ghouls)),
+            "region roster still selects when the leaf names no matching species"
+        );
+
+        // Both in the leaf: chance weight decides, not PRPS order.
+        assert_eq!(
+            pick(&[(0x0581DF, 5.0, 0), (0x0581DE, 45.0, 0)]),
+            Some((0x0581DE, ghouls)),
+            "within a tier the higher authored chance wins regardless of order"
+        );
+    }
+
+    /// The real tick shape: `LCharTick` (`26BBCC`) offers exactly one selectable
+    /// branch, `LvlTickScorched`, gated by `EMSChanceVariantScorched` (`2D3EBF`,
+    /// weight 5) against `EMSChanceVariantNormal` (`2A3AA4`, weight 45) — which
+    /// has no branch because "normal" IS the base actor. Baking the only branch
+    /// turned every ESS tick in the game into a Scorched Tick.
+    #[test]
+    fn variant_only_template_rolls_against_normal_instead_of_baking_the_variant() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let scorched_tick = FormKey {
+            local: 0x3AFE19,
+            plugin,
+        };
+        let branches: HashMap<u32, FormKey> = HashMap::from([(0x2D3EBF, scorched_tick)]);
+        let variants: HashSet<u32> = HashSet::from([0x2D3EBF, 0x2A3AA4]);
+        let keywords = [(0x2D3EBF, 5.0f32, 0), (0x2A3AA4, 45.0f32, 0)];
+
+        let mut scorched = 0usize;
+        let mut normal = 0usize;
+        for object_id in 0x28_0000u32..0x28_2000 {
+            match selected_branch_for_location(&branches, &keywords, &variants, object_id) {
+                BranchSelection::Selected(_, branch) => {
+                    assert_eq!(branch, scorched_tick);
+                    scorched += 1;
+                }
+                BranchSelection::LeaveOnBase => normal += 1,
+                BranchSelection::NoBranch => panic!("a variant branch matched"),
+            }
+        }
+        let share = scorched as f32 / (scorched + normal) as f32;
+        assert!(
+            (share - 0.1).abs() < 0.02,
+            "authored 5/50 = 10% Scorched, got {share} ({scorched} vs {normal})"
+        );
+
+        // Same actor, same answer on every regen — output must stay reproducible.
+        let twice = (0..2).map(|_| {
+            matches!(
+                selected_branch_for_location(&branches, &keywords, &variants, 0x28_9E6B),
+                BranchSelection::Selected(..)
+            )
+        });
+        assert_eq!(twice.clone().count(), 2);
+        assert!(twice.clone().all(|v| v == twice.clone().next().unwrap()));
+    }
+
+    /// A species template must never be put to a roll: "no matching species" is
+    /// not "spawn nothing", so pooling the two axes would leave most actors
+    /// unspecialized.
+    #[test]
+    fn species_template_always_selects_even_when_variant_weights_dominate() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let robots = FormKey {
+            local: 0x51C591,
+            plugin,
+        };
+        let branches: HashMap<u32, FormKey> = HashMap::from([(0x0581DF, robots)]);
+        let variants: HashSet<u32> = HashSet::from([0x2D3EBF, 0x2A3AA4]);
+        // Dyer Chemical's real leaf: Robots 5, SubGhoul 5, Normal 45, Scorched 5.
+        let keywords = [
+            (0x0581DF, 5.0f32, 0),
+            (0x0067E1, 5.0f32, 0),
+            (0x2A3AA4, 45.0f32, 0),
+            (0x2D3EBF, 5.0f32, 0),
+        ];
+        for object_id in 0x28_0000u32..0x28_0400 {
+            assert!(
+                matches!(
+                    selected_branch_for_location(&branches, &keywords, &variants, object_id),
+                    BranchSelection::Selected(0x0581DF, b) if b == robots
+                ),
+                "species axis is not a roll (actor {object_id:06X})"
+            );
         }
     }
 
@@ -2625,6 +3434,15 @@ mod interior_tests {
         data[4..8].copy_from_slice(&1.0f32.to_le_bytes());
         data[8..10].copy_from_slice(&FO76_ESS_LOCATION_CONDITION_FUNCTION_ID.to_le_bytes());
         data[12..16].copy_from_slice(&keyword.to_le_bytes());
+        data[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
+        data
+    }
+
+    fn ess_role_ctda(loc_ref_type: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 32];
+        data[4..8].copy_from_slice(&1.0f32.to_le_bytes());
+        data[8..10].copy_from_slice(&FO76_ESS_ROLE_CONDITION_FUNCTION_ID.to_le_bytes());
+        data[12..16].copy_from_slice(&loc_ref_type.to_le_bytes());
         data[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
         data
     }
@@ -3390,6 +4208,80 @@ mod interior_tests {
     }
 
     #[test]
+    fn shared_refr_candidates_match_legacy_xezn_scan_exactly() {
+        let interner = StringInterner::new();
+        let build = || {
+            let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
+            let lctn_local = 0x0955B5u32;
+            put_target_lctn(target, lctn_local);
+            add_target_eczn(target, &interner, 0xA15300, lctn_local);
+            let cell_local = 0x00275EF4u32;
+            ensure_interior_cell_and_child_group(
+                target,
+                interior_cell_record(cell_local, "ParityCell", None),
+            )
+            .unwrap();
+            insert_placed_child_into_cell_group(
+                target,
+                cell_local,
+                9,
+                placed_refr(0x00300014, lctn_local),
+            )
+            .unwrap();
+            let mut malformed = placed_refr(0x00300015, lctn_local);
+            malformed
+                .subrecords
+                .iter_mut()
+                .find(|subrecord| subrecord.signature.as_str() == "XEZN")
+                .unwrap()
+                .data = Bytes::from_static(&[1, 2]);
+            malformed.parse_error = Some("malformed XEZN fixture".to_string());
+            insert_placed_child_into_cell_group(target, cell_local, 9, malformed).unwrap();
+            invalidate_handle(target);
+            target
+        };
+        let legacy = build();
+        let shared = build();
+        let run = |handle, use_shared: bool| {
+            let report = {
+                let mut session = open_session(handle, None).unwrap();
+                let report = if use_shared {
+                    let discovery = crate::fixups::repair_placed_teleport_doors::discover_placed_refr_candidates(
+                        &mut session,
+                        &interner,
+                    )
+                    .unwrap();
+                    finalize_placed_xezn_targets_for_refr_candidates(
+                        &mut session,
+                        &config(),
+                        &interner,
+                        &discovery.xezn_candidates,
+                    )
+                    .unwrap()
+                } else {
+                    finalize_placed_xezn_targets(&mut session, &config(), &interner).unwrap()
+                };
+                session.flush_pending_effects();
+                report
+            };
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join(OUTPUT_PLUGIN);
+            plugin_handle_save_no_py(handle, path.to_str().unwrap()).unwrap();
+            let bytes = std::fs::read(path).unwrap();
+            assert!(plugin_handle_close_native(handle));
+            (report, bytes)
+        };
+
+        let (legacy_report, legacy_bytes) = run(legacy, false);
+        let (shared_report, shared_bytes) = run(shared, true);
+        assert_eq!(legacy_report.records_changed, shared_report.records_changed);
+        assert_eq!(legacy_report.records_dropped, shared_report.records_dropped);
+        assert_eq!(legacy_report.warnings, shared_report.warnings);
+        assert_eq!(legacy_report.diagnostics, shared_report.diagnostics);
+        assert_eq!(legacy_bytes, shared_bytes);
+    }
+
+    #[test]
     fn finalizer_repoints_after_late_repair_restores_lctn() {
         let interner = StringInterner::new();
         let source = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
@@ -3706,6 +4598,213 @@ mod interior_tests {
         );
     }
 
+    /// Regression for synthesized F000CD
+    /// (`LvlMainTurretTripodMounted_Hostile_ESS_2B131D`), which spawned as a
+    /// naked human. The turret bases template Factions — not Traits — through
+    /// the conditional `LChar_MainTurretHostile`, whose branches are
+    /// `EncTEMPLATE_Turret_Faction*` stubs carrying a placeholder HumanRace and
+    /// nothing else. Materializing such a stub wholesale threw away the base's
+    /// race, skin and bounds, so the clone must keep its own traits and only
+    /// repoint the templated category.
+    #[test]
+    fn placed_actor_keeps_base_traits_when_branch_is_a_category_template_stub() {
+        let interner = StringInterner::new();
+        let source = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
+        let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
+
+        let out = interner.intern(OUTPUT_PLUGIN);
+        let sevsix = interner.intern("SeventySix.esm");
+        let src_lctn_local = 0x09A451u32;
+        let avif_local = 0x00594Fu32;
+        let robots_keyword = 0x0581DEu32;
+        let traits_lvln = 0x116667u32; // LCharTurretTripodMounted_Normal
+        let factions_lvln = 0x2A9D54u32; // LChar_MainTurretHostile (conditional)
+        let faction_stub = 0x2B131Du32; // EncTEMPLATE_Turret_FactionRobots
+        let turret_race = 0x0B1F08u32; // TurretTripodRace
+        let turret_skin = 0x0CAB95u32;
+        let placeholder_race = 0x013746u32; // HumanRace
+        let base_npc = 0x2A9D51u32;
+        let turret_leaf = 0x1153F0u32; // EncTurretTripodMounted01
+        let turret_name = "Machinegun Turret Mk I";
+        let cell_local = 0xA044E2u32;
+        let actor_local = 0x2283FBu32;
+
+        put_record_in_group(
+            source,
+            *b"AVIF",
+            source_avif_record(avif_local, "ESSChanceMainTurretRobots", robots_keyword),
+        );
+        put_source_lctn(
+            source,
+            source_lctn_record_with_prps(
+                src_lctn_local,
+                "LocWhitespringGolf",
+                0,
+                0,
+                0,
+                &[],
+                avif_local,
+                5.0,
+            ),
+        );
+        put_record_in_group(
+            source,
+            *b"LVLN",
+            source_lvln_condition_record(
+                factions_lvln,
+                "LChar_MainTurretHostile",
+                faction_stub,
+                robots_keyword,
+            ),
+        );
+
+        put_target_lctn(target, src_lctn_local);
+        put_record_in_group(
+            target,
+            *b"LVLN",
+            target_lvln_record(factions_lvln, "LChar_MainTurretHostile"),
+        );
+        put_record_in_group(
+            target,
+            *b"LVLN",
+            target_lvln_record_with_entry(
+                traits_lvln,
+                "LCharTurretTripodMounted_Normal",
+                turret_leaf,
+            ),
+        );
+        // The only named actor in the whole scenario sits behind the Traits
+        // template, not the branch — so the name can only come from there.
+        let mut leaf =
+            target_npc_named_record(turret_leaf, "EncTurretTripodMounted01", turret_name);
+        leaf.subrecords
+            .push(sub("RNAM", turret_race.to_le_bytes().to_vec()));
+        put_record_in_group(target, *b"NPC_", leaf);
+
+        // The selected branch supplies only a FACT list; its RNAM is the
+        // placeholder every FO76 category template carries.
+        put_record_in_group(
+            target,
+            *b"NPC_",
+            ParsedRecord {
+                signature: SmolStr::new("NPC_"),
+                form_id: faction_stub,
+                flags: 0,
+                version_control: 0,
+                form_version: Some(131),
+                version2: None,
+                subrecords: vec![
+                    sub("EDID", {
+                        let mut v = b"EncTEMPLATE_Turret_FactionRobots".to_vec();
+                        v.push(0);
+                        v
+                    }),
+                    sub("RNAM", placeholder_race.to_le_bytes().to_vec()),
+                ],
+                raw_payload: None,
+                parse_error: None,
+            },
+        );
+
+        let mut base =
+            target_npc_template_record(base_npc, "LvlMainTurretTripodMounted_Hostile", traits_lvln);
+        for subrecord in base.subrecords.iter_mut() {
+            if subrecord.signature.as_str() == "TPTA" {
+                let mut slots = template_actor_slots(traits_lvln);
+                slots[8..12].copy_from_slice(&factions_lvln.to_le_bytes());
+                subrecord.data = Bytes::from(slots);
+            }
+        }
+        base.subrecords
+            .push(sub("RNAM", turret_race.to_le_bytes().to_vec()));
+        base.subrecords
+            .push(sub("WNAM", turret_skin.to_le_bytes().to_vec()));
+        put_record_in_group(target, *b"NPC_", base);
+
+        ensure_interior_cell_and_child_group(
+            target,
+            interior_cell_record(cell_local, "WhitespringGolfClub", Some(src_lctn_local)),
+        )
+        .unwrap();
+        insert_placed_child_into_cell_group(
+            target,
+            cell_local,
+            9,
+            placed_achr(actor_local, base_npc),
+        )
+        .unwrap();
+        invalidate_handle(target);
+
+        let mut state = crate::formkey_mapper::MapperState::new([], mapper_options());
+        for local in [src_lctn_local, factions_lvln, faction_stub, base_npc] {
+            state.source_to_target.insert(
+                FormKey {
+                    local,
+                    plugin: sevsix,
+                },
+                FormKey { local, plugin: out },
+            );
+        }
+
+        {
+            let mut mapper =
+                crate::formkey_mapper::FormKeyMapper::from_state(&mut state, &interner);
+            let mut session = open_session(target, Some(source)).unwrap();
+            synthesize_encounter_zones(&mut session, &mut mapper, &config(), false).unwrap();
+            specialize_placed_actor_templates_after_ref_repair(
+                &mut session,
+                &mut mapper,
+                &config(),
+            )
+            .unwrap();
+            session.flush_pending_effects();
+        }
+
+        let store = plugin_handle_store_ref().lock().unwrap();
+        let slot = store.get(&target).unwrap();
+        let actor = find_record_by_sig_id(&slot.parsed.root_items, "ACHR", actor_local)
+            .expect("placed actor");
+        let clone_local = subrecord_formid(actor, "NAME").expect("ACHR NAME");
+        assert_ne!(clone_local, base_npc, "ACHR base is redirected to a clone");
+        let clone = find_record_by_sig_id(&slot.parsed.root_items, "NPC_", clone_local)
+            .expect("specialized NPC clone");
+        assert_eq!(
+            subrecord_formid(clone, "RNAM"),
+            Some(turret_race),
+            "clone keeps the base turret race instead of the stub's placeholder HumanRace"
+        );
+        assert_eq!(
+            subrecord_formid(clone, "WNAM"),
+            Some(turret_skin),
+            "clone keeps the base turret skin"
+        );
+        let template_actor_slots = subrecord_formids(clone, "TPTA");
+        assert!(
+            template_actor_slots.contains(&faction_stub),
+            "the templated Factions slot is repointed at the selected branch"
+        );
+        assert!(
+            !template_actor_slots.contains(&factions_lvln),
+            "no conditional LVLN survives in the clone"
+        );
+        assert!(
+            template_actor_slots.contains(&traits_lvln),
+            "the Traits slot still points at the turret traits list"
+        );
+        let baked = clone
+            .subrecords
+            .iter()
+            .find(|s| s.signature.as_str() == "FULL")
+            .map(|s| s.data.as_ref().to_vec());
+        let mut expected = turret_name.as_bytes().to_vec();
+        expected.push(0);
+        assert_eq!(
+            baked,
+            Some(expected),
+            "a nameless branch falls back to the Traits template for the display name"
+        );
+    }
+
     #[test]
     fn placed_actor_template_specialized_after_ref_repair_from_whitespring_payloads() {
         let interner = StringInterner::new();
@@ -3721,7 +4820,7 @@ mod interior_tests {
         let ghoul_branch = 0x51C577u32;
         let base_npc = 0x1D513Du32;
         let cell_local = 0xA044E2u32;
-        let actor_local = 0x1F0F76u32;
+        let actor_local = 0x1EE80Bu32;
         let whitespring_prps = [
             0x4F, 0x59, 0x00, 0x00, 0x00, 0x00, 0xA0, 0x40, 0x00, 0x00, 0x00, 0x00, 0x4F, 0x9D,
             0x3E, 0x00, 0x00, 0x00, 0xA0, 0x40, 0x00, 0x00, 0x00, 0x00,
@@ -3776,6 +4875,10 @@ mod interior_tests {
             *b"NPC_",
             target_npc_template_record(base_npc, "LvlMainMelee", main_all),
         );
+        {
+            let mut session = open_session(target, None).unwrap();
+            let _stale_view = session.target_read_view().unwrap();
+        }
         ensure_interior_cell_and_child_group(
             target,
             interior_cell_record(cell_local, "WhitespringGolfClub", Some(src_lctn_local)),
@@ -3788,7 +4891,6 @@ mod interior_tests {
             placed_achr(actor_local, base_npc),
         )
         .unwrap();
-        invalidate_handle(target);
 
         let mut state = crate::formkey_mapper::MapperState::new([], mapper_options());
         for local in [src_lctn_local, main_all, ghoul_branch, base_npc] {
@@ -4015,6 +5117,97 @@ mod interior_tests {
         );
     }
 
+    #[test]
+    fn branch_resolver_prefers_unconditioned_lowest_level_actor() {
+        let interner = StringInterner::new();
+        let source = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
+        let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
+        let out = interner.intern(OUTPUT_PLUGIN);
+        let sevsix = interner.intern("SeventySix.esm");
+        let branch = 0x1D5110u32;
+        let source_glowing = 0x2B75FEu32;
+        let target_glowing = 0xB03EE4u32;
+        let normal_list = 0x2B75FDu32;
+        let high_leaf = 0xB03F07u32;
+        let low_leaf = 0xB03EFFu32;
+
+        let mut source_branch = source_lvln_condition_record_with_ctda(
+            branch,
+            "LCharLiberator",
+            source_glowing,
+            &ess_location_ctda(0x8464EF),
+        );
+        source_branch
+            .subrecords
+            .push(sub("LVLO", normal_list.to_le_bytes().to_vec()));
+        put_record_in_group(source, *b"LVLN", source_branch);
+
+        let mut target_branch = target_lvln_record(branch, "LCharLiberator");
+        target_branch
+            .subrecords
+            .push(sub("LVLO", lvlo_entry_bytes(target_glowing)));
+        target_branch
+            .subrecords
+            .push(sub("LVLO", lvlo_entry_bytes(normal_list)));
+        put_record_in_group(target, *b"LVLN", target_branch);
+
+        let mut target_normal = target_lvln_record(normal_list, "LCharLiberator_Normal");
+        let mut high_entry = lvlo_entry_bytes(high_leaf);
+        high_entry[0..2].copy_from_slice(&54u16.to_le_bytes());
+        let mut low_entry = lvlo_entry_bytes(low_leaf);
+        low_entry[0..2].copy_from_slice(&1u16.to_le_bytes());
+        target_normal.subrecords.push(sub("LVLO", high_entry));
+        target_normal.subrecords.push(sub("LVLO", low_entry));
+        put_record_in_group(target, *b"LVLN", target_normal);
+        put_record_in_group(
+            target,
+            *b"NPC_",
+            target_npc_named_record(high_leaf, "EncLiberator05", "Liberator Mk V"),
+        );
+        put_record_in_group(
+            target,
+            *b"NPC_",
+            target_npc_named_record(low_leaf, "EncLiberator00", "Liberator Mk 0"),
+        );
+        invalidate_handle(source);
+        invalidate_handle(target);
+
+        let target_schema = AuthoringSchema::for_game("fo4").unwrap();
+        let source_schema = AuthoringSchema::for_game("fo76").unwrap();
+        let config = config();
+        let output_to_source = HashMap::from([(target_glowing, source_glowing)]);
+        let source_context = BranchResolutionSource {
+            schema: &source_schema,
+            plugin: sevsix,
+            output_to_source: &output_to_source,
+            config: &config,
+        };
+        let mut session = open_session(target, Some(source)).unwrap();
+        let resolved = resolve_branch_template_npc(
+            &mut session,
+            &target_schema,
+            &interner,
+            out,
+            &[],
+            &[],
+            Some(&source_context),
+            FormKey {
+                local: branch,
+                plugin: out,
+            },
+            &mut HashSet::new(),
+            0,
+        );
+        assert_eq!(
+            resolved,
+            Some(FormKey {
+                local: low_leaf,
+                plugin: out,
+            }),
+            "conditioned glowing branch and level-54 leaf must lose to the normal level-1 path"
+        );
+    }
+
     /// The ESS clone inherits its name by templating through the branch (a
     /// leveled list of name-less templated NPCs) — FO4 will not chase that chain
     /// for the display name, so the clone must bake a concrete FULL. This mirrors
@@ -4056,6 +5249,7 @@ mod interior_tests {
             out,
             &[],
             &[],
+            None,
             FormKey {
                 local: branch,
                 plugin: out,
@@ -4079,6 +5273,7 @@ mod interior_tests {
             out,
             &[],
             &[],
+            None,
             FormKey {
                 local: branch,
                 plugin: out,
@@ -4086,7 +5281,7 @@ mod interior_tests {
             &mut visited,
             0,
         );
-        let (full, _shrt) = resolved.expect("resolves FULL through LVLN + template hop");
+        let (full, _shrt, _) = resolved.expect("resolves FULL through LVLN + template hop");
         assert_eq!(full.sig.as_str(), "FULL", "resolved field is a FULL");
 
         // Bake it into a name-less clone: inserted before DATA, and idempotent.
@@ -4157,25 +5352,50 @@ mod interior_tests {
             output_plugin,
             &[master_name.to_string()],
             &[master],
+            None,
             current,
             &mut HashSet::new(),
             0,
         );
         assert_eq!(concrete, Some(current));
 
-        let (full, _) = resolve_branch_display_name(
+        let (full, _, _) = resolve_branch_display_name(
             &mut session,
             &schema,
             &interner,
             output_plugin,
             &[master_name.to_string()],
             &[master],
+            None,
             current,
             &mut HashSet::new(),
             0,
         )
         .expect("master NPC name should resolve");
         assert_eq!(full.sig.as_str(), "FULL");
+    }
+
+    #[test]
+    fn target_master_lvln_reference_entry_is_readable() {
+        let interner = StringInterner::new();
+        let master = interner.intern("Fallout4.esm");
+        let leaf = 0x758ADu32;
+        let value = FieldValue::Struct(vec![(
+            interner.intern("reference"),
+            FieldValue::FormKey(FormKey {
+                local: leaf,
+                plugin: master,
+            }),
+        )]);
+
+        assert_eq!(
+            lvln_entry_form_key(&value, master, &interner),
+            Some(FormKey {
+                local: leaf,
+                plugin: master,
+            }),
+            "FO4 master LVLN entries expose their actor field as `reference`"
+        );
     }
 
     /// Runs the late pass against a prepared source/target pair and returns
@@ -5190,7 +6410,7 @@ mod live_ess_diagnostics {
         );
 
         // Gate 6: encounter keywords per source location.
-        let kw = location_encounter_keywords_for_sources(
+        let (kw, variant_keywords) = location_encounter_keywords_for_sources(
             &mut session,
             &source_schema,
             mapper.interner,
@@ -5203,7 +6423,7 @@ mod live_ess_diagnostics {
             eprintln!(
                 "  {PROBE_LCTN:06X} keywords: {:?}",
                 k.iter()
-                    .map(|(k, v)| format!("{k:06X}@{v}"))
+                    .map(|(k, v, depth)| format!("{k:06X}@{v}^{depth}"))
                     .collect::<Vec<_>>()
             );
         } else {
@@ -5211,6 +6431,16 @@ mod live_ess_diagnostics {
         }
 
         // Full per-actor pass.
+        let role_entries = build_branch_role_entry_index(
+            &mut session,
+            &source_schema,
+            mapper.interner,
+            &tindex,
+            &mapper,
+            output_plugin,
+            &config,
+            &branches,
+        );
         let (added, changed, warnings) = specialize_placed_actor_templates(
             &mut session,
             &mut mapper,
@@ -5219,8 +6449,13 @@ mod live_ess_diagnostics {
             &tindex,
             prepared_actors,
             &branches,
+            &role_entries,
             &kw,
+            &variant_keywords,
             &assignment,
+            source_schema.as_ref(),
+            source_plugin,
+            &output_to_source,
             output_plugin,
         )
         .unwrap();

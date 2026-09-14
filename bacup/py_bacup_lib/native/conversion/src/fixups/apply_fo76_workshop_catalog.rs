@@ -24,6 +24,8 @@ const FO4_WORKSHOP_WORKBENCH_DECORATIONS: u32 = 0x08280B;
 const FO4_WORKSHOP_WORKBENCH_POWER: u32 = 0x05A0CA;
 const FO4_WORKSHOP_WORKBENCH_CRAFTING: u32 = 0x12E2C8;
 const FO4_WORKSHOP_WORKBENCH_SETTLEMENT: u32 = 0x246F85;
+const FO4_WORKSHOP_CRAFTING_CHEMS_RECIPE: u32 = 0x134438;
+const FO4_WORKSHOP_CRAFTING_POWER_ARMOR_RECIPE: u32 = 0x1649A7;
 
 pub struct ApplyFo76WorkshopCatalogFixup;
 
@@ -352,13 +354,18 @@ fn parse_catalog(bytes: &[u8]) -> Result<WorkshopCatalog, FixupError> {
             catalog.category_ids.insert(category_id);
             for (index, recipe) in subcategory.recipes.into_iter().enumerate() {
                 let priority = u16::try_from(index + 1).unwrap_or(u16::MAX);
+                let recipe_workbench_id = match recipe.form_id {
+                    FO4_WORKSHOP_CRAFTING_CHEMS_RECIPE
+                    | FO4_WORKSHOP_CRAFTING_POWER_ARMOR_RECIPE => FO4_WORKSHOP_WORKBENCH_CRAFTING,
+                    _ => workbench_id,
+                };
                 let placement =
                     catalog
                         .recipes
                         .entry(recipe.form_id)
                         .or_insert_with(|| RecipePlacement {
                             category_ids: Vec::new(),
-                            workbench_id,
+                            workbench_id: recipe_workbench_id,
                             priority,
                         });
                 if !placement.category_ids.contains(&category_id) {
@@ -652,8 +659,8 @@ fn set_form_key_list_field(record: &mut Record, sig: SubrecordSig, values: Vec<F
     let insert_at = record
         .fields
         .iter()
-        .position(|field| field.sig.0 == *b"BNAM")
-        .map_or(record.fields.len(), |index| index + 1);
+        .position(|field| field.sig.0 == *b"INTV")
+        .unwrap_or(record.fields.len());
     record.fields.insert(insert_at, FieldEntry { sig, value });
     true
 }
@@ -783,6 +790,32 @@ mod tests {
     }
 
     #[test]
+    fn preserves_vanilla_crafting_workbench_for_shared_recipes() {
+        let json = br#"[{
+          "CategoryKeyword":{"FormEditorID":"Workshop2_MainCategory_CAMP","FormID":8530398},
+          "SubCategories":[{
+            "CategoryKeyword":{"FormEditorID":"Workshop2_SubCategory_Crafting","FormID":8530421},
+            "Recipes":[
+              {"FormEditorID":"workshop_co_CraftingChems","FormID":1262648},
+              {"FormEditorID":"workshop_co_CraftingPowerArmor","FormID":1460647}
+            ]
+          }]
+        }]"#;
+
+        let catalog = parse_catalog(json).unwrap();
+
+        for recipe_id in [
+            FO4_WORKSHOP_CRAFTING_CHEMS_RECIPE,
+            FO4_WORKSHOP_CRAFTING_POWER_ARMOR_RECIPE,
+        ] {
+            assert_eq!(
+                catalog.recipes[&recipe_id].workbench_id,
+                FO4_WORKSHOP_WORKBENCH_CRAFTING
+            );
+        }
+    }
+
+    #[test]
     fn replaces_heuristic_recipe_fields_with_catalog_values() {
         let interner = StringInterner::new();
         let count = interner.intern("created_object_count");
@@ -819,6 +852,16 @@ mod tests {
             ],
             warnings: SmallVec::new(),
         };
+        let art_position = record.fields.len() - 1;
+        record.fields.insert(
+            art_position,
+            field(
+                "ANAM",
+                FieldValue::FormKey(fk(0x100, "SeventySix.esm", &interner)),
+            ),
+        );
+        // Exercise category insertion on the output of the regressed converter.
+        record.fields.retain(|field| field.sig.0 != *b"FNAM");
         let exact_categories = vec![
             fk(0x8229F5, "SeventySix.esm", &interner),
             fk(0x8229ED, "SeventySix.esm", &interner),
@@ -854,6 +897,11 @@ mod tests {
             panic!("INTV was not a struct");
         };
         assert_eq!(data[1].1, FieldValue::Uint(7));
+        let sigs: Vec<_> = record.fields.iter().map(|field| field.sig.0).collect();
+        assert!(
+            sigs.iter().position(|sig| sig == b"ANAM").unwrap()
+                < sigs.iter().position(|sig| sig == b"FNAM").unwrap()
+        );
     }
 
     #[test]

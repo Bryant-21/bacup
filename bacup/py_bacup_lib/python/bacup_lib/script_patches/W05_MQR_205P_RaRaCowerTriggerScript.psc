@@ -1,12 +1,10 @@
-; TODO
-
 Event OnTriggerEnter(ObjectReference akActionRef)
     If akActionRef != Game.GetPlayer()
         Return
     EndIf
 
     W05_MQR_205P_QuestScript owningQuestScript = GetOwningQuest() as W05_MQR_205P_QuestScript
-    If owningQuestScript == None || owningQuestScript.RaRaCowerIdleMarker == None
+    If owningQuestScript == None || owningQuestScript.RaRaCowerIdleMarker == None || owningQuestScript.RaRa == None
         Return
     EndIf
 

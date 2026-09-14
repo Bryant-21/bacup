@@ -3,7 +3,7 @@
 ; equivalent FO4 sawblade default when it has no configured value.
 
 Function SetSawbladeHitEnabled(Bool shouldHit)
-    PhysicalTrapHit hitScript = Self as PhysicalTrapHit
+    PhysicalTrapHit hitScript = (Self as TrapBase) as PhysicalTrapHit
     If hitScript != None
         hitScript.SetCanHit(shouldHit)
     EndIf

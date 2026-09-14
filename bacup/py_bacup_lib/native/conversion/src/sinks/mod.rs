@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub use ba2::Ba2ShardWriter;
+use ba2::PreparedBa2Batch;
+use serde::Serialize;
 
 /// Mirror of build/archive_plan.py::classify_archive_family. Keep in lockstep
 /// — a Python cross-language test pins both over the same fixture list.
@@ -123,6 +125,99 @@ pub struct SinkSet {
     pub terrain: TerrainSidecarSink,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SinkBatchFileReceipt {
+    pub relative_path: String,
+    pub byte_len: usize,
+    pub blake3: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SinkBatchReceipt {
+    pub file_count: usize,
+    pub loose_file_count: usize,
+    pub ba2_entry_count: usize,
+    pub files: Vec<SinkBatchFileReceipt>,
+}
+
+impl SinkBatchReceipt {
+    pub fn canonical_json(&self) -> Result<String, String> {
+        serde_json::to_string(self)
+            .map_err(|error| format!("failed to serialize sink batch receipt: {error}"))
+    }
+}
+
+struct FrozenSinkFile {
+    relative_path: String,
+    bytes: Vec<u8>,
+}
+
+pub struct PreparedSinkBatch<'sink> {
+    sink: &'sink SinkSet,
+    ba2: Option<PreparedBa2Batch>,
+    receipt: SinkBatchReceipt,
+}
+
+impl PreparedSinkBatch<'_> {
+    pub fn receipt(&self) -> &SinkBatchReceipt {
+        &self.receipt
+    }
+
+    pub fn commit(self) -> Result<SinkBatchReceipt, String> {
+        self.commit_inner(false)
+    }
+
+    fn commit_inner(self, fail_after_gnrl: bool) -> Result<SinkBatchReceipt, String> {
+        if self.sink.loose.enabled {
+            for file in &self.receipt.files {
+                let published = self
+                    .sink
+                    .loose
+                    .mod_root
+                    .join("data")
+                    .join(&file.relative_path);
+                let bytes = std::fs::read(&published).map_err(|error| {
+                    format!(
+                        "prepared sink batch loose file is not published at {}: {error}",
+                        published.display()
+                    )
+                })?;
+                let actual_blake3 = blake3::hash(&bytes).to_hex();
+                if bytes.len() != file.byte_len || actual_blake3.as_str() != file.blake3.as_str() {
+                    return Err(format!(
+                        "prepared sink batch loose file changed before commit: {}",
+                        published.display()
+                    ));
+                }
+            }
+        }
+        if let Some(batch) = self.ba2 {
+            #[cfg(test)]
+            if fail_after_gnrl {
+                self.sink
+                    .ba2
+                    .as_ref()
+                    .expect("prepared BA2 sink")
+                    .commit_prepared_batch_with_failure(batch)?;
+                unreachable!("injected BA2 failure must return an error");
+            }
+            #[cfg(not(test))]
+            let _ = fail_after_gnrl;
+            self.sink
+                .ba2
+                .as_ref()
+                .expect("prepared BA2 sink")
+                .commit_prepared_batch(batch)?;
+        }
+        Ok(self.receipt)
+    }
+
+    #[cfg(test)]
+    fn commit_with_ba2_failure(self) -> Result<SinkBatchReceipt, String> {
+        self.commit_inner(true)
+    }
+}
+
 impl SinkSet {
     /// The phase-side write choke point. `rel` is data-relative
     /// ("Meshes/a.nif"). Writes loose (when enabled) and appends to the BA2
@@ -149,6 +244,89 @@ impl SinkSet {
             None => Ok(false),
         }
     }
+
+    /// Freeze and pre-encode an already-produced file set without changing
+    /// the loose tree or live BA2 spill/index. The caller may promote its
+    /// batch roots and validate prepared records before committing.
+    pub fn prepare_existing_files_batch(
+        &self,
+        registrations: &[(&str, &Path)],
+    ) -> Result<PreparedSinkBatch<'_>, String> {
+        let mut frozen = Vec::with_capacity(registrations.len());
+        let mut seen = std::collections::BTreeSet::new();
+        for (relative_path, absolute_path) in registrations {
+            let relative_path = normalize_sink_relative_path(relative_path)?;
+            let key = relative_path.to_ascii_lowercase();
+            if !seen.insert(key) {
+                return Err(format!(
+                    "duplicate relative path in prepared sink batch: {relative_path}"
+                ));
+            }
+            let bytes = std::fs::read(absolute_path).map_err(|error| {
+                format!(
+                    "read prepared sink batch file {}: {error}",
+                    absolute_path.display()
+                )
+            })?;
+            frozen.push(FrozenSinkFile {
+                relative_path,
+                bytes,
+            });
+        }
+        frozen.sort_by(|left, right| {
+            left.relative_path
+                .to_ascii_lowercase()
+                .cmp(&right.relative_path.to_ascii_lowercase())
+        });
+
+        let ba2_entries = frozen
+            .iter()
+            .map(|file| (file.relative_path.as_str(), file.bytes.as_slice()))
+            .collect::<Vec<_>>();
+        let ba2 = self
+            .ba2
+            .as_ref()
+            .map(|ba2| ba2.prepare_bytes_batch(&ba2_entries))
+            .transpose()?;
+        let receipt_files = frozen
+            .iter()
+            .map(|file| SinkBatchFileReceipt {
+                relative_path: file.relative_path.clone(),
+                byte_len: file.bytes.len(),
+                blake3: blake3::hash(&file.bytes).to_hex().to_string(),
+            })
+            .collect::<Vec<_>>();
+        let file_count = receipt_files.len();
+        Ok(PreparedSinkBatch {
+            sink: self,
+            ba2,
+            receipt: SinkBatchReceipt {
+                file_count,
+                loose_file_count: if self.loose.enabled { file_count } else { 0 },
+                ba2_entry_count: if self.ba2.is_some() { file_count } else { 0 },
+                files: receipt_files,
+            },
+        })
+    }
+}
+
+fn normalize_sink_relative_path(path: &str) -> Result<String, String> {
+    let trimmed = path.trim();
+    let rooted = trimmed.starts_with('/') || trimmed.starts_with('\\');
+    let normalized = trimmed
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string();
+    if rooted
+        || normalized.is_empty()
+        || normalized.contains(':')
+        || normalized
+            .split('/')
+            .any(|part| part.is_empty() || matches!(part, "." | ".."))
+    {
+        return Err(format!("unsafe sink relative path: {path}"));
+    }
+    Ok(normalized)
 }
 
 /// Helper for phase write sites: None sink = byte-for-byte the legacy
@@ -325,5 +503,108 @@ mod tests {
         t.register("Terrain/APPALACHIA.btd4");
         t.register("Terrain/APPALACHIA.btd4");
         assert_eq!(t.list(), vec!["Terrain/APPALACHIA.btd4".to_string()]);
+    }
+
+    #[test]
+    fn prepared_existing_batch_is_invisible_until_loose_and_ba2_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let mod_root = temp.path().join("mod");
+        let staged = temp.path().join("staged");
+        std::fs::create_dir_all(&staged).unwrap();
+        let body = staged.join("body.nif");
+        let skeleton = staged.join("skeleton.hkx");
+        std::fs::write(&body, b"body").unwrap();
+        std::fs::write(&skeleton, b"skeleton").unwrap();
+        let sink = SinkSet {
+            ba2: Some(Ba2ShardWriter::new(temp.path().join("spill")).unwrap()),
+            loose: LooseSink {
+                enabled: true,
+                mod_root: mod_root.clone(),
+            },
+            terrain: TerrainSidecarSink::default(),
+        };
+        let registrations = [
+            ("Meshes/Actors/Wolf/body.nif", body.as_path()),
+            ("Meshes/Actors/Wolf/skeleton.hkx", skeleton.as_path()),
+        ];
+
+        let prepared = sink.prepare_existing_files_batch(&registrations).unwrap();
+        assert_eq!(prepared.receipt().file_count, 2);
+        assert_eq!(prepared.receipt().loose_file_count, 2);
+        assert_eq!(prepared.receipt().ba2_entry_count, 2);
+        assert_eq!(sink.ba2.as_ref().unwrap().entry_count(), 0);
+        assert!(!mod_root.join("data/Meshes/Actors/Wolf/body.nif").exists());
+
+        for (relative, source) in registrations {
+            let destination = mod_root.join("data").join(relative);
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::copy(source, destination).unwrap();
+        }
+        let receipt = prepared.commit().unwrap();
+        assert_eq!(receipt.file_count, 2);
+        assert_eq!(
+            sink.ba2.as_ref().unwrap().streamed_rel_paths(),
+            vec![
+                "meshes/actors/wolf/body.nif".to_string(),
+                "meshes/actors/wolf/skeleton.hkx".to_string(),
+            ]
+        );
+        assert!(receipt.canonical_json().unwrap().contains("blake3"));
+    }
+
+    #[test]
+    fn changed_loose_file_aborts_prepared_batch_without_ba2_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let mod_root = temp.path().join("mod");
+        let staged = temp.path().join("body.nif");
+        std::fs::write(&staged, b"staged").unwrap();
+        let sink = SinkSet {
+            ba2: Some(Ba2ShardWriter::new(temp.path().join("spill")).unwrap()),
+            loose: LooseSink {
+                enabled: true,
+                mod_root: mod_root.clone(),
+            },
+            terrain: TerrainSidecarSink::default(),
+        };
+        let prepared = sink
+            .prepare_existing_files_batch(&[("Meshes/Actors/Wolf/body.nif", staged.as_path())])
+            .unwrap();
+        let published = mod_root.join("data/Meshes/Actors/Wolf/body.nif");
+        std::fs::create_dir_all(published.parent().unwrap()).unwrap();
+        std::fs::write(&published, b"changed").unwrap();
+
+        let error = prepared.commit().unwrap_err();
+        assert!(error.contains("changed before commit"), "got: {error}");
+        assert_eq!(sink.ba2.as_ref().unwrap().entry_count(), 0);
+    }
+
+    #[test]
+    fn injected_ba2_batch_failure_restores_spill_and_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let staged = temp.path().join("body.nif");
+        std::fs::write(&staged, b"staged").unwrap();
+        let sink = SinkSet {
+            ba2: Some(Ba2ShardWriter::new(temp.path().join("spill")).unwrap()),
+            loose: LooseSink {
+                enabled: false,
+                mod_root: temp.path().join("mod"),
+            },
+            terrain: TerrainSidecarSink::default(),
+        };
+        let prepared = sink
+            .prepare_existing_files_batch(&[("Meshes/Actors/Wolf/body.nif", staged.as_path())])
+            .unwrap();
+
+        let error = prepared.commit_with_ba2_failure().unwrap_err();
+        assert!(error.contains("injected BA2 batch failure"), "got: {error}");
+        let ba2 = sink.ba2.as_ref().unwrap();
+        assert_eq!(ba2.entry_count(), 0);
+        assert!(ba2.streamed_rel_paths().is_empty());
+        assert_eq!(
+            std::fs::metadata(temp.path().join("spill/GNRL.spill"))
+                .unwrap()
+                .len(),
+            0
+        );
     }
 }

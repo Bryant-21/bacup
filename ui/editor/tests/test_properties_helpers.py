@@ -1,6 +1,8 @@
 """Tests for properties panel helper functions."""
 import pytest
 
+from ui.editor.panels.properties import _looks_like_ref
+
 
 class _FakeBlock:
     def __init__(self, type_name):
@@ -28,3 +30,9 @@ class TestIsPathFieldLogic:
             type_name == "BSLightingShaderProperty" and field_name == "RootMaterial"
         )
         assert matched is False
+
+
+def test_nested_shader_crc_is_not_treated_as_block_reference():
+    assert not _looks_like_ref("Shader Property Data.SF1[0]")
+    assert not _looks_like_ref("Shader Property Data.SF2[3]")
+    assert _looks_like_ref("Shader Property")

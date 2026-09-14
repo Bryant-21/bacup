@@ -1,7 +1,5 @@
-//! `rgdl_to_bodt_default` transform — converts an RGDL DATA field to a
+//! `rgdl_to_bodt_default` transform: converts an RGDL DATA field to a
 //! minimal BODT default payload.
-//!
-//! Python source: `translator.py` lines 477-482.
 //!
 //! The transform ignores the input value entirely and always produces a fixed
 //! `FieldValue::Struct` representing the default BODT body template:
@@ -10,17 +8,8 @@
 //! { "FirstPersonFlags": ["33BODY"], "Flags": [] }
 //! ```
 //!
-//! This mirrors the Python:
-//! ```python
-//! def transform_rgdl_to_bodt_default(value, ctx=None):
-//!     return {"BODT": {"FirstPersonFlags": ["33BODY"], "Flags": []}}
-//! ```
-//!
-//! Note: the Python returns a dict with a top-level "BODT" key; in the Rust
-//! pipeline the field target key is set by the YAML map (`DATA → BODT`),
-//! so the transform only emits the inner struct (without the outer "BODT"
-//! wrapper). The caller is responsible for placing the result in the correct
-//! target field.
+//! The YAML map sets the target key (`DATA → BODT`), so only the inner struct
+//! is emitted; the caller places it in the target field.
 //!
 //! YAML usage (fnv_to_fo4.yaml):
 //! ```yaml

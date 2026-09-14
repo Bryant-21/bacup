@@ -2,7 +2,7 @@
 ; the supported user-log API.
 
 Function SetTrapMainHitEnabled(Bool shouldHit)
-    PhysicalTrapHit hitScript = Self as PhysicalTrapHit
+    PhysicalTrapHit hitScript = (Self as TrapBase) as PhysicalTrapHit
     If hitScript != None
         hitScript.SetCanHit(shouldHit)
     EndIf

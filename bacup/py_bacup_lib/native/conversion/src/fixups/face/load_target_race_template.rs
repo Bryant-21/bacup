@@ -14,12 +14,8 @@ use crate::record::Record;
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Look up the target-game base Race YAML by FormKey and return a stripped
-/// template `Record`. Returns `None` when no template can be loaded — today
-/// this is unconditional.
-///
-/// Callers should treat `None` as "use the source record as a template",
-/// which is the documented fallback path.
+/// Look up the target-game base Race by FormKey as a stripped template. Always
+/// `None` for now; callers use the source record as the template.
 pub fn load_target_race_template(_target_fk: FormKey) -> Option<Record> {
     // TODO: implement DB-backed template loading. Requires SQLite reader
     // for `{target_game}_records.db`, YAML parser with safe_load_hex

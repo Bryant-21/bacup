@@ -261,6 +261,42 @@ def test_fo76_terrain_converts_all_discovered_btd_worldspaces(tmp_path: Path):
     assert progress.completed_items == 2
 
 
+def test_starfield_terrain_dispatches_btds_to_native_fo4_land(tmp_path: Path):
+    from bacup_lib import pipeline
+    from bacup_lib.models import PhaseProgress, TerrainOptions
+
+    source_data = tmp_path / "extracted" / "starfield"
+    native_data = tmp_path / "Starfield" / "Data"
+    btd_path = source_data / "terrain" / "akilacity.btd"
+    btd_path.parent.mkdir(parents=True)
+    btd_path.write_bytes(b"btd")
+
+    class FakeRustRun:
+        def __init__(self):
+            self.params = None
+
+        def run_phase(self, phase, mod_path="", source_extracted_dir="", params=None):
+            self.params = dict(params or {})
+            return {"records_added": 1}
+
+    ctx = _context("starfield", tmp_path)
+    ctx.source_data_dir = source_data
+    ctx.output_plugin_name = "Starfield.esm"
+    ctx.terrain_options = TerrainOptions(fo76_data_dir=str(native_data))
+    ctx._rust_conversion_run = FakeRustRun()
+    runner = _RecordingRunner()
+    progress = PhaseProgress(phase=3, phase_name="Terrain")
+
+    pipeline.convert_terrain(ctx, runner, progress)
+
+    assert ctx._rust_conversion_run.params["source_game"] == "starfield"
+    assert Path(ctx._rust_conversion_run.params["btd_path"]) == btd_path
+    assert ctx._rust_conversion_run.params["worldspace_editor_id"] == "akilacity"
+    assert ctx._rust_conversion_run.params["water_manifest_path"] == ""
+    assert progress.total_items == 1
+    assert progress.completed_items == 1
+
+
 def test_fo76_terrain_delegates_material_writes_to_shared_asset_phase(tmp_path: Path):
     from bacup_lib import pipeline
     from bacup_lib.models import PhaseProgress, TerrainOptions

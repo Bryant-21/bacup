@@ -219,6 +219,92 @@
     }
 
     #[test]
+    fn post_translate_exposes_liberator_race_armor_attach_slot() {
+        let interner = StringInterner::new();
+        let mut record = make_record("RACE", &interner);
+        record.eid = Some(interner.intern(LIBERATOR_RACE_EDITOR_ID));
+        push_field(&mut record, "APPR", FieldValue::List(Vec::new()));
+
+        // Run twice: the slot must be added once, not appended per pass.
+        for _ in 0..2 {
+            Fo76Fo4Hook
+                .post_translate(&mut make_ctx(&interner), &mut record)
+                .unwrap();
+        }
+
+        let appr = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"APPR")
+            .unwrap();
+        let FieldValue::List(items) = &appr.value else {
+            panic!("expected APPR formid list");
+        };
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(
+                    item,
+                    FieldValue::FormKey(form_key)
+                        if form_key.local == FO4_AP_BOT_ARMOR_SLOT1_OBJECT_ID
+                            && interner.resolve(form_key.plugin) == Some(FO4_MASTER_NAME)
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn post_translate_exposes_liberator_race_armor_attach_slot_in_raw_appr() {
+        let interner = StringInterner::new();
+        let mut record = make_record("RACE", &interner);
+        record.eid = Some(interner.intern(LIBERATOR_RACE_EDITOR_ID));
+        // ap_customName, the only slot the FO76 race carries.
+        push_field(
+            &mut record,
+            "APPR",
+            FieldValue::Bytes(SmallVec::from_slice(&0x0047_A264_u32.to_le_bytes())),
+        );
+
+        Fo76Fo4Hook
+            .post_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let appr = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"APPR")
+            .unwrap();
+        let FieldValue::Bytes(bytes) = &appr.value else {
+            panic!("expected raw APPR");
+        };
+        let slots: Vec<u32> = bytes
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect();
+        assert_eq!(slots, vec![0x0047_A264, FO4_AP_BOT_ARMOR_SLOT1_OBJECT_ID]);
+    }
+
+    #[test]
+    fn post_translate_leaves_other_race_attach_slots_alone() {
+        let interner = StringInterner::new();
+        let mut record = make_record("RACE", &interner);
+        record.eid = Some(interner.intern("SomeOtherRace"));
+        push_field(&mut record, "APPR", FieldValue::List(Vec::new()));
+
+        Fo76Fo4Hook
+            .post_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let appr = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"APPR")
+            .unwrap();
+        assert_eq!(appr.value, FieldValue::List(Vec::new()));
+    }
+
+    #[test]
     fn pre_translate_strips_tesla_cannon_receiver_base_model() {
         let interner = StringInterner::new();
         let mut record = make_record("OMOD", &interner);
@@ -329,6 +415,91 @@
         assert!(!sigs.contains(&"MODB"));
         assert!(!sigs.contains(&"MODF"));
         assert!(sigs.contains(&"DATA"));
+    }
+
+    // FO76 hangs the Enclave tint off the RECEIVER rather than a separate paint mod, so the
+    // material-swap heuristic deleted the geometry the whole gun is built from. `WEAP.MODL`
+    // is a geometry-free dummy receiver, so the weapon rendered as nothing at all.
+    #[test]
+    fn pre_translate_keeps_model_fields_for_structural_weapon_omod() {
+        let mut interner = StringInterner::new();
+        let mut record = make_record("OMOD", &mut interner);
+        push_field(
+            &mut record,
+            "MODL",
+            FieldValue::String(interner.intern("Weapons\\Plasma\\PlasmaReceiver.nif")),
+        );
+        push_field(
+            &mut record,
+            "DATA",
+            FieldValue::Struct(vec![
+                (
+                    interner.intern("form_type"),
+                    FieldValue::Uint(u32::from_le_bytes(*b"WEAP") as u64),
+                ),
+                (
+                    interner.intern("attach_point"),
+                    FieldValue::Uint(0x0002_4004), // ap_gun_receiver
+                ),
+                (
+                    interner.intern("properties"),
+                    FieldValue::List(vec![property_row(&interner, 89)]),
+                ),
+            ]),
+        );
+
+        let hook = Fo76Fo4Hook;
+        let mut ctx = make_ctx(&mut interner);
+        hook.pre_translate(&mut ctx, &mut record).unwrap();
+
+        let sigs: Vec<&str> = record
+            .fields
+            .iter()
+            .map(|entry| entry.sig.as_str())
+            .collect();
+        assert!(sigs.contains(&"MODL"), "structural receiver lost its model");
+    }
+
+    // The narrowing must not turn the strip off: an OMOD that really does sit on the weapon
+    // material slot is still the case this heuristic was written for.
+    #[test]
+    fn pre_translate_still_strips_model_fields_for_weapon_material_omod() {
+        let mut interner = StringInterner::new();
+        let mut record = make_record("OMOD", &mut interner);
+        push_field(
+            &mut record,
+            "MODL",
+            FieldValue::String(interner.intern("Weapons\\Plasma\\PlasmaReceiver.nif")),
+        );
+        push_field(
+            &mut record,
+            "DATA",
+            FieldValue::Struct(vec![
+                (
+                    interner.intern("form_type"),
+                    FieldValue::Uint(u32::from_le_bytes(*b"WEAP") as u64),
+                ),
+                (
+                    interner.intern("attach_point"),
+                    FieldValue::Uint(0x0024_A0D8), // ap_WeaponMaterial
+                ),
+                (
+                    interner.intern("properties"),
+                    FieldValue::List(vec![property_row(&interner, 89)]),
+                ),
+            ]),
+        );
+
+        let hook = Fo76Fo4Hook;
+        let mut ctx = make_ctx(&mut interner);
+        hook.pre_translate(&mut ctx, &mut record).unwrap();
+
+        let sigs: Vec<&str> = record
+            .fields
+            .iter()
+            .map(|entry| entry.sig.as_str())
+            .collect();
+        assert!(!sigs.contains(&"MODL"));
     }
 
     #[test]
@@ -516,6 +687,85 @@
             panic!("expected FormKey");
         };
         assert_eq!(fk.local, 0x0037_D0B2);
+    }
+
+    #[test]
+    fn post_translate_dedupes_mapped_omod_target_keywords() {
+        let interner = StringInterner::new();
+        let mut record = make_record("OMOD", &interner);
+        let pa_material = FormKey::parse("18DFCB@Fallout4.esm", &interner).unwrap();
+        let pa_helmet = FormKey::parse("182CD5@Fallout4.esm", &interner).unwrap();
+        push_field(
+            &mut record,
+            "MNAM",
+            FieldValue::List(vec![
+                FieldValue::FormKey(pa_material),
+                FieldValue::FormKey(pa_material),
+                FieldValue::FormKey(pa_helmet),
+            ]),
+        );
+
+        Fo76Fo4Hook
+            .post_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let mnam = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.as_str() == "MNAM")
+            .expect("MNAM");
+        assert_eq!(
+            mnam.value,
+            FieldValue::List(vec![
+                FieldValue::FormKey(pa_material),
+                FieldValue::FormKey(pa_helmet),
+            ])
+        );
+    }
+
+    #[test]
+    fn post_translate_dedupes_raw_armor_keywords_and_syncs_count() {
+        let interner = StringInterner::new();
+        let mut record = make_record("ARMO", &interner);
+        push_field(
+            &mut record,
+            "KSIZ",
+            raw_bytes(&3_u32.to_le_bytes()),
+        );
+        let mut keywords = Vec::new();
+        keywords.extend_from_slice(&0x0018_DFCB_u32.to_le_bytes());
+        keywords.extend_from_slice(&0x0018_DFCB_u32.to_le_bytes());
+        keywords.extend_from_slice(&0x0018_2CD5_u32.to_le_bytes());
+        push_field(&mut record, "KWDA", raw_bytes(&keywords));
+
+        Fo76Fo4Hook
+            .post_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let kwda = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.as_str() == "KWDA")
+            .expect("KWDA");
+        let FieldValue::Bytes(keywords) = &kwda.value else {
+            panic!("expected raw KWDA");
+        };
+        let expected = [
+            0x0018_DFCB_u32.to_le_bytes(),
+            0x0018_2CD5_u32.to_le_bytes(),
+        ]
+        .concat();
+        assert_eq!(keywords.as_slice(), expected.as_slice());
+
+        let ksiz = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.as_str() == "KSIZ")
+            .expect("KSIZ");
+        let FieldValue::Bytes(count) = &ksiz.value else {
+            panic!("expected raw KSIZ");
+        };
+        assert_eq!(u32::from_le_bytes(count[..4].try_into().unwrap()), 2);
     }
 
     #[test]
@@ -805,4 +1055,193 @@
         let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
         assert!(sigs.contains(&"EDID"));
         assert!(!sigs.contains(&"CTDA"));
+    }
+
+    /// `ap_PowerArmor_HeadMod` — the helmet's FO76 paint slot.
+    const FO76_AP_POWER_ARMOR_HEAD_MOD: u32 = 0x0003_DAFC;
+    /// `ap_PowerArmor_BodyMod` — the torso's.
+    const FO76_AP_POWER_ARMOR_BODY_MOD: u32 = 0x0005_5F8C;
+    /// `ap_PowerArmor_Lining` — a child slot the paint grants, not a part root.
+    const FO4_AP_POWER_ARMOR_LINING: u32 = 0x0017_DAA9;
+
+    #[test]
+    fn post_translate_moves_power_armor_paint_to_fo4_paint_slot() {
+        let interner = StringInterner::new();
+        let mut record = make_record("OMOD", &interner);
+        push_field(
+            &mut record,
+            "DATA",
+            FieldValue::Struct(vec![
+                (
+                    interner.intern("form_type"),
+                    FieldValue::Uint(u32::from_le_bytes(*b"ARMO") as u64),
+                ),
+                (
+                    interner.intern("attach_point"),
+                    form_key_value(&interner, FO76_AP_POWER_ARMOR_HEAD_MOD),
+                ),
+                (interner.intern("items"), FieldValue::List(Vec::new())),
+            ]),
+        );
+
+        Fo76Fo4Hook
+            .post_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let data = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"DATA")
+            .unwrap();
+        let FieldValue::Struct(fields) = &data.value else {
+            panic!("expected structured OMOD DATA");
+        };
+        assert!(matches!(
+            named_value_canonical(fields, "attach_point", &interner),
+            Some(FieldValue::FormKey(form_key))
+                if form_key.local == FO4_AP_POWER_ARMOR_PAINT_OBJECT_ID
+                    && interner.resolve(form_key.plugin) == Some(FO4_MASTER_NAME)
+        ));
+    }
+
+    #[test]
+    fn post_translate_moves_power_armor_paint_to_fo4_paint_slot_in_raw_data() {
+        let interner = StringInterner::new();
+        let mut record = make_record("OMOD", &interner);
+        let mut data = raw_omod_data(b"ARMO", &[]);
+        let FieldValue::Bytes(bytes) = &mut data else {
+            panic!("expected raw OMOD DATA");
+        };
+        set_u32_le_at(
+            bytes,
+            OMOD_DATA_ATTACH_POINT_OFFSET,
+            FO76_AP_POWER_ARMOR_BODY_MOD,
+        );
+        push_field(&mut record, "DATA", data);
+
+        Fo76Fo4Hook
+            .post_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let data = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"DATA")
+            .unwrap();
+        let FieldValue::Bytes(bytes) = &data.value else {
+            panic!("expected raw OMOD DATA");
+        };
+        assert_eq!(
+            read_u32_le_at(bytes, OMOD_DATA_ATTACH_POINT_OFFSET),
+            Some(FO4_AP_POWER_ARMOR_PAINT_OBJECT_ID)
+        );
+    }
+
+    #[test]
+    fn post_translate_exposes_fo4_paint_slot_on_power_armor_piece() {
+        let interner = StringInterner::new();
+        let mut record = make_record("ARMO", &interner);
+        push_field(
+            &mut record,
+            "APPR",
+            FieldValue::List(vec![
+                form_key_value(&interner, FO76_AP_POWER_ARMOR_HEAD_MOD),
+                // ap_Armor_SURV_Description, which must survive untouched.
+                form_key_value(&interner, 0x003B_EEFD),
+            ]),
+        );
+
+        Fo76Fo4Hook
+            .post_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let appr = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"APPR")
+            .unwrap();
+        let FieldValue::List(items) = &appr.value else {
+            panic!("expected APPR formid list");
+        };
+        assert!(matches!(
+            &items[0],
+            FieldValue::FormKey(form_key)
+                if form_key.local == FO4_AP_POWER_ARMOR_PAINT_OBJECT_ID
+                    && interner.resolve(form_key.plugin) == Some(FO4_MASTER_NAME)
+        ));
+        assert_eq!(items[1], form_key_value(&interner, 0x003B_EEFD));
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn post_translate_collapses_duplicate_paint_slots_in_raw_appr() {
+        let interner = StringInterner::new();
+        let mut record = make_record("ARMO", &interner);
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&FO76_AP_POWER_ARMOR_HEAD_MOD.to_le_bytes());
+        raw.extend_from_slice(&FO76_AP_POWER_ARMOR_BODY_MOD.to_le_bytes());
+        raw.extend_from_slice(&FO4_AP_POWER_ARMOR_LINING.to_le_bytes());
+        push_field(
+            &mut record,
+            "APPR",
+            FieldValue::Bytes(SmallVec::from_vec(raw)),
+        );
+
+        Fo76Fo4Hook
+            .post_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let appr = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"APPR")
+            .unwrap();
+        let FieldValue::Bytes(bytes) = &appr.value else {
+            panic!("expected raw APPR");
+        };
+        let slots: Vec<u32> = bytes
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            slots,
+            vec![FO4_AP_POWER_ARMOR_PAINT_OBJECT_ID, FO4_AP_POWER_ARMOR_LINING]
+        );
+    }
+
+    #[test]
+    fn post_translate_leaves_non_part_root_attach_points_alone() {
+        let interner = StringInterner::new();
+        let mut record = make_record("OMOD", &interner);
+        push_field(
+            &mut record,
+            "DATA",
+            FieldValue::Struct(vec![
+                (
+                    interner.intern("form_type"),
+                    FieldValue::Uint(u32::from_le_bytes(*b"ARMO") as u64),
+                ),
+                (
+                    interner.intern("attach_point"),
+                    form_key_value(&interner, FO4_AP_POWER_ARMOR_LINING),
+                ),
+            ]),
+        );
+
+        Fo76Fo4Hook
+            .post_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let data = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"DATA")
+            .unwrap();
+        let FieldValue::Struct(fields) = &data.value else {
+            panic!("expected structured OMOD DATA");
+        };
+        assert_eq!(
+            named_value_canonical(fields, "attach_point", &interner),
+            Some(&form_key_value(&interner, FO4_AP_POWER_ARMOR_LINING))
+        );
     }

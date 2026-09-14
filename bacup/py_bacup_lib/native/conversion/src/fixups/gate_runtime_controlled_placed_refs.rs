@@ -47,7 +47,6 @@ const MANUAL_DISABLED_REF_FORM_IDS: &[u32] = &[
     0x0743_CF1C,
     0x073C_006D,
     0x0752_04E4,
-    0x0762_6788,
 ];
 const MANUAL_ENABLED_REF_FORM_IDS: &[u32] = &[0x0785_AD03];
 const ALWAYS_GATED_BASE_EDIDS: &[&str] = &[
@@ -55,7 +54,7 @@ const ALWAYS_GATED_BASE_EDIDS: &[&str] = &[
     "WorkshopCapturePointBorderCylinderHalf512Trigger",
     "WorkshopCapturePointBorderCylinder512Trigger",
 ];
-const NUKED_FLORA_BASE_MARKER: &str = "FloraRad";
+pub(crate) const NUKED_FLORA_BASE_MARKER: &str = "FloraRad";
 const CHALKLETTER_BASE_PREFIX: &str = "ChalkLetter_";
 const CHALKLETTER_GATED_CELL: (i32, i32) = (-26, 22);
 const EXTERIOR_CELL_SIZE: f32 = 4096.0;
@@ -1038,9 +1037,9 @@ mod tests {
         assert!(index.gated_refs.contains(&0x43CF1C));
         assert!(index.gated_refs.contains(&0x3C006D));
         assert!(index.gated_refs.contains(&0x5204E4));
-        assert!(index.gated_refs.contains(&0x626788));
+        assert!(!index.gated_refs.contains(&0x626788));
         assert!(index.manual_enabled_ref_locals.contains(&0x85AD03));
-        assert_eq!(index.manual_disabled_refs, 6);
+        assert_eq!(index.manual_disabled_refs, 5);
         assert_eq!(index.manual_enabled_refs, 1);
     }
 

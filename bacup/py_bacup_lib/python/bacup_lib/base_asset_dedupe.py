@@ -1,10 +1,12 @@
-"""FO76 -> FO4 base-asset dedupe guard helpers."""
+"""Cross-game base-asset dedupe guard helpers."""
 from __future__ import annotations
 
 from bacup_lib.models import AssetRef
 
 DEFAULT_FO76_FO4_RELOCATION_MESH_ROOTS = ("meshes/landscape",)
 DEFAULT_FO76_FO4_NAMESPACE = "FO76"
+DEFAULT_SKYRIMSE_FO4_RELOCATION_MESH_ROOTS = ("meshes/landscape",)
+DEFAULT_SKYRIMSE_FO4_NAMESPACE = "Skyrim"
 
 
 def _normalize_mesh_root(value) -> str:
@@ -21,6 +23,8 @@ def resolve_base_asset_relocation_mesh_roots(
         return roots
     if source_game.lower() == "fo76" and target_game.lower() == "fo4":
         return DEFAULT_FO76_FO4_RELOCATION_MESH_ROOTS
+    if source_game.lower() == "skyrimse" and target_game.lower() == "fo4":
+        return DEFAULT_SKYRIMSE_FO4_RELOCATION_MESH_ROOTS
     return ()
 
 
@@ -34,6 +38,8 @@ def resolve_base_asset_namespace(
         return namespace
     if source_game.lower() == "fo76" and target_game.lower() == "fo4":
         return DEFAULT_FO76_FO4_NAMESPACE
+    if source_game.lower() == "skyrimse" and target_game.lower() == "fo4":
+        return DEFAULT_SKYRIMSE_FO4_NAMESPACE
     return ""
 
 

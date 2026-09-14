@@ -36,6 +36,18 @@ def _native():
 
 
 class TestPathBoundary:
+    def test_output_dependency_sharing_outlives_source_run(self, tmp_path):
+        from bacup_lib.run import ConversionRun
+
+        with ConversionRun.create_new("fo4", "fo4", None, "Output.esm") as target:
+            with ConversionRun.create_new("fo4", "fo4", None, "Source.esm") as source:
+                target.share_output_nif_dependencies(source)
+                target.share_output_nif_dependencies(target)
+            report = target.run_phase("emit_modt_manifest", mod_path=str(tmp_path), params={})
+            assert report["records_changed"] == 0
+            with pytest.raises(Exception, match="unknown.*run|UnknownRun"):
+                target.share_output_nif_dependencies(source)
+
     def test_raw_handle_constructor_is_not_exported(self):
         assert not hasattr(_native()._raw, "conversion_run_create")
         assert not hasattr(_native()._raw, "conversion_run_source_handle")
@@ -201,12 +213,23 @@ class TestPathBoundary:
         with ConversionRun.create_new(
             "fo4", "fo4", None, "Output.esm", config={"mod_path": str(tmp_path)}
         ) as run:
-            plugin_name, rows = _native().conversion_run_script_reference_records(
-                run.id, ["VMAD", "CTDA"]
-            )
+            (
+                plugin_name,
+                rows,
+                counters,
+                candidate_count,
+                alias_records_changed,
+                alias_bindings_changed,
+                warnings,
+            ) = _native().conversion_run_inspect_script_references(run.id)
 
         assert plugin_name == "Output.esm"
         assert rows == []
+        assert counters == (0, 0, 0, 0, 0, 0)
+        assert candidate_count == 0
+        assert alias_records_changed == 0
+        assert alias_bindings_changed == 0
+        assert warnings == []
 
 
 @pytest.mark.skipif(not FIXTURE.exists(), reason=f"fixture not present: {FIXTURE}")

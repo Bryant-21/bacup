@@ -11,7 +11,10 @@ from bacup_lib import _native as bacup_native
 from creation_lib import _native as creation_native
 from creation_lib.build.archive_plan import classify_archive_family
 from creation_lib.build.packer import pack_mod
-from bacup_lib.workflows.unified import finalize_sinks_for_mod
+from bacup_lib.workflows.unified import (
+    finalize_sinks_for_mod,
+    inventory_packable_entries,
+)
 
 bsarchive = creation_native.bsarchive_native
 directxtex = creation_native.directxtex_native
@@ -81,6 +84,29 @@ def archive_listing(path: Path) -> list[str]:
 
 def extracted_all(path: Path) -> dict[str, bytes]:
     return {name: bsarchive.extract_one(str(path), name) for name in archive_listing(path)}
+
+
+def test_root_strings_override_restored_data_strings(tmp_path: Path):
+    mod = tmp_path / "SeventySix"
+    restored = mod / "data" / "strings" / "seventysix_de.dlstrings"
+    restored_only = mod / "data" / "strings" / "seventysix_es.dlstrings"
+    generated = mod / "Strings" / "SeventySix_de.DLSTRINGS"
+    restored.parent.mkdir(parents=True)
+    generated.parent.mkdir(parents=True)
+    restored.write_bytes(b"restored")
+    restored_only.write_bytes(b"restored-only")
+    generated.write_bytes(b"generated")
+
+    entries = inventory_packable_entries(mod)
+    matching = [
+        entry
+        for entry in entries
+        if entry.relative_path.casefold() == "strings/seventysix_de.dlstrings"
+    ]
+
+    assert len(matching) == 1
+    assert matching[0].source_path == generated
+    assert any(entry.source_path == restored_only for entry in entries)
 
 
 def test_join_produces_legacy_identical_archives(tmp_path):
@@ -278,6 +304,77 @@ def test_finalize_external_archive_root_packs_to_target_temp_then_replaces(
     assert final_archive.read_bytes() == b"BA2"
     assert not list(deploy_dir.glob("*.tmp"))
     assert not list(mod.glob("*.ba2"))
+
+
+def test_custom_compression_level_uses_direct_archive_packer(monkeypatch, tmp_path):
+    import bacup_lib.workflows.unified as unified
+
+    mod = tmp_path / "mods" / "SeventySix"
+    meshes = mod / "data" / "Meshes"
+    meshes.mkdir(parents=True)
+    mesh = meshes / "a.nif"
+    mesh.write_bytes(b"nif")
+    calls = []
+
+    class Native:
+        def sinks_streamed(self, _sink_id):
+            return []
+
+        def sinks_add_files(self, _sink_id, items, _workers):
+            return len(items)
+
+        def sinks_abort(self, _sink_id):
+            raise AssertionError("unexpected abort")
+
+        def sinks_cleanup_spills(self, _sink_id):
+            return None
+
+    class Entry:
+        source_path = mesh
+        relative_path = "Meshes/a.nif"
+        size = 3
+
+    class Plan:
+        output_name = "SeventySix - Main.ba2"
+        texture_archive = False
+        entries = (Entry(),)
+
+    def fake_run_native_pack_entries(entries, output_path, game, **kwargs):
+        calls.append((entries, Path(output_path), game, kwargs))
+        Path(output_path).write_bytes(b"BA2")
+
+    monkeypatch.setattr(unified, "load_native_module", lambda: Native())
+    monkeypatch.setattr(unified, "plan_archive_outputs", lambda *a, **k: [Plan()])
+    monkeypatch.setattr(unified, "discover_mod_archives", lambda *a, **k: [])
+    monkeypatch.setattr(
+        unified, "_run_native_pack_entries", fake_run_native_pack_entries
+    )
+    monkeypatch.setattr(
+        unified,
+        "_run_native_pack_plans",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("batch defaults only")),
+    )
+    monkeypatch.setattr(unified, "_validate_archive_size", lambda *a, **k: None)
+
+    unified.finalize_sinks_for_mod(
+        1,
+        mod,
+        mod_name="SeventySix",
+        ba2_compression_level=9,
+        texture_pack_workers=5,
+    )
+
+    assert len(calls) == 1
+    entries, output, game, kwargs = calls[0]
+    assert entries == Plan.entries
+    assert output == mod / "SeventySix - Main.ba2"
+    assert game == "fo4"
+    assert kwargs == {
+        "texture_archive": False,
+        "og": False,
+        "compression_level": 9,
+        "jobs": 5,
+    }
 
 
 def test_join_mixed_streamed_and_reconciled(tmp_path):
@@ -643,70 +740,6 @@ def test_direct_pack_all_covers_lodsettings(tmp_path):
         assert listed == {"lodsettings/appalachia.lod"}
     finally:
         conversion.sinks_drop(sink_id)
-
-
-def test_cache_manifest_write_and_consult(tmp_path):
-    from bacup_lib.workflows.unified import (
-        CacheAssetEntry,
-        consult_cache,
-        params_digest,
-        write_cache_manifest,
-    )
-
-    mod_root = tmp_path / "mods" / "C"
-    (mod_root / "data" / "Textures").mkdir(parents=True)
-    src_dir = tmp_path / "source"
-    src_dir.mkdir()
-    src_a = src_dir / "a_d.dds"
-    src_b = src_dir / "b_d.dds"
-    src_a.write_bytes(b"texture A source")
-    src_b.write_bytes(b"texture B source")
-    out_a = mod_root / "data" / "Textures" / "a_d.dds"
-    out_a.write_bytes(b"converted A")
-    # b's output intentionally MISSING.
-
-    digest = params_digest({"use_gpu": True, "textures": ["ignored-entry-list"]})
-    # The entries list must not affect the digest.
-    assert digest == params_digest({"use_gpu": True})
-    assert digest != params_digest({"use_gpu": False})
-
-    entries = [
-        CacheAssetEntry(str(src_a), "textures", digest, ("Textures/a_d.dds",)),
-        CacheAssetEntry(str(src_b), "textures", digest, ("Textures/b_d.dds",)),
-    ]
-    manifest_path = write_cache_manifest(mod_root, entries)
-    assert manifest_path == mod_root / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["version"] == 1
-    assert manifest["converters"]["textures"] == "1"
-    assert set(manifest["assets"]) == {str(src_a), str(src_b)}
-    rec = manifest["assets"][str(src_a)]
-    assert rec["phase"] == "textures"
-    assert rec["params_digest"] == digest
-    assert rec["outputs"] == ["Textures/a_d.dds"]
-    assert isinstance(rec["blake3"], str) and len(rec["blake3"]) == 64
-    assert manifest["written_at"]
-
-    # Consult: a hits (hash + version + digest match, output exists);
-    # b misses (output absent).
-    skip = consult_cache(manifest_path, entries, mod_root=mod_root)
-    assert skip == {str(src_a)}
-
-    # A changed source byte re-converts.
-    src_a.write_bytes(b"texture A source CHANGED")
-    assert consult_cache(manifest_path, entries, mod_root=mod_root) == set()
-    src_a.write_bytes(b"texture A source")
-    assert consult_cache(manifest_path, entries, mod_root=mod_root) == {str(src_a)}
-
-    # A params-knob change re-converts.
-    other = [
-        CacheAssetEntry(str(src_a), "textures", params_digest({"use_gpu": False}), ("Textures/a_d.dds",)),
-    ]
-    assert consult_cache(manifest_path, other, mod_root=mod_root) == set()
-
-    # A missing output re-converts.
-    out_a.unlink()
-    assert consult_cache(manifest_path, entries, mod_root=mod_root) == set()
 
 
 def test_sidecar_registry_roundtrip(tmp_path):

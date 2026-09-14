@@ -23,15 +23,9 @@ class _Timing:
         pass
 
 
-# NOTE: "Terrain" is intentionally not one of these labels. Task 1 (adding the
-# Terrain archive family to _MAIN_FAMILY_ORDER / _GENERATED_LABEL_BASES in
-# archive_plan.py) has not landed on this branch yet, so a "SeventySix -
-# Terrain.ba2" fixture would silently fail discover_mod_archives's
-# _is_generated_archive_name filter today, for reasons unrelated to this
-# task's swap/discard logic. "Sounds" stands in for "an independent,
-# already-recognized family that must survive an unrelated swap untouched" —
-# once Task 1 lands, Terrain behaves identically (it's not special-cased
-# anywhere in _archives_for_labels/_swap_deploy_archives).
+# "Sounds" is the independent, recognized family that must survive an unrelated
+# swap untouched. Terrain would behave the same; neither _archives_for_labels nor
+# _swap_deploy_archives special-cases it.
 _DEPLOYED_BA2S = (
     "Meshes",
     "Meshes1",

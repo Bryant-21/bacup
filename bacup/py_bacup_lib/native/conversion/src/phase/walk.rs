@@ -139,7 +139,7 @@ impl Phase for WalkPhase {
         )
         .map_err(|e| PhaseError::Internal(format!("walk_dependencies: {e}")))?;
 
-        // Part A — LOD-by-convention discovery. FO76 ships `_lod.nif` meshes that
+        // LOD-by-convention discovery: FO76 ships `_lod.nif` meshes that
         // NO record field references, so the walker never reaches them. For each
         // reached LOD-capable base, derive its `_lod[_N].nif` via the shared rule
         // (`lod_paths`) and append every existing hit plus its material/texture
@@ -164,7 +164,7 @@ impl Phase for WalkPhase {
 }
 
 // ---------------------------------------------------------------------------
-// Part A — LOD-by-convention asset discovery (graph/bounded flows)
+// LOD-by-convention asset discovery (graph/bounded flows)
 // ---------------------------------------------------------------------------
 //
 // Delegates the path rule + closure expansion to `lod_assets` (the SAME single
@@ -253,7 +253,7 @@ mod tests {
     }
 
     /// A reached LOD-capable base whose `_lod.nif` exists on disk gets the LOD
-    /// mesh appended to the asset list (Part A).
+    /// mesh appended to the asset list.
     #[test]
     fn lod_convention_appends_existing_lod_nif() {
         let dir = std::env::temp_dir().join("walk_lod_convention_present");

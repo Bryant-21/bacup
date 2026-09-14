@@ -1,7 +1,4 @@
-//! `translate_effects` transform — clean effect lists for the target game.
-//!
-//! Port of `RecordTranslator._translate_effects` (Python line 1724) and the
-//! dispatch block at Python line 1143.
+//! `translate_effects` transform: clean effect lists for the target game.
 //!
 //! For each effect dict in the list:
 //! - Drop effects with no `BaseEffect` or with a null BaseEffect (`000000:…`).

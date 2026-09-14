@@ -34,9 +34,14 @@ pub struct LodCandidate {
     pub mnam: String,
 }
 
+/// FO76 ships LOD meshes under a `meshes\[dlcNN\]lod\…` directory; Skyrim, FNV
+/// and FO3 keep `foo_lod[_N].nif` beside `foo.nif`. Routing a sibling-convention
+/// game through the FO76 derivation finds nothing, so every base falls back to a
+/// synthesized proxy instead of the game's own LOD mesh.
 pub fn derive_lod_candidates(source_game: Game, modl: &str) -> Vec<LodCandidate> {
     match source_game {
-        Game::SkyrimSe => derive_skyrim_lod_candidates(modl),
+        Game::Skyrim | Game::SkyrimSe => derive_skyrim_lod_candidates(modl),
+        Game::Fnv | Game::Fo3 => derive_sibling_lod_candidates(modl),
         _ => derive_fo76_lod_candidates(modl),
     }
 }
@@ -130,21 +135,40 @@ pub fn derive_fo76_lod_candidates(modl: &str) -> Vec<LodCandidate> {
     out
 }
 
-/// Derive Skyrim's sibling LOD convention. Unlike FO76, Skyrim keeps
-/// `foo_lod[_N].nif` beside `foo.nif` instead of inserting a `LOD` directory.
-pub fn derive_skyrim_lod_candidates(modl: &str) -> Vec<LodCandidate> {
-    let Some(stem) = normalize_skyrim_modl(modl) else {
+/// Derive the sibling LOD convention used by Skyrim, FNV and FO3. Unlike FO76,
+/// these keep `foo_lod[_N].nif` beside `foo.nif` instead of inserting a `LOD`
+/// directory.
+pub fn derive_sibling_lod_candidates(modl: &str) -> Vec<LodCandidate> {
+    let Some(stem) = normalize_sibling_modl(modl) else {
         return Vec::new();
     };
     let mut out = Vec::with_capacity(5);
-    out.push(skyrim_candidate(&stem, 0, false));
+    out.push(sibling_candidate(&stem, 0, false));
     for level in 0..4 {
-        out.push(skyrim_candidate(&stem, level, true));
+        out.push(sibling_candidate(&stem, level, true));
     }
     out
 }
 
-fn normalize_skyrim_modl(modl: &str) -> Option<String> {
+fn derive_skyrim_lod_candidates(modl: &str) -> Vec<LodCandidate> {
+    let mut out = derive_sibling_lod_candidates(modl);
+    let Some(stem) = normalize_sibling_modl(modl) else {
+        return out;
+    };
+    let normalized = stem.to_ascii_lowercase().replace('\\', "/");
+    if normalized.starts_with("landscape/trees/") || normalized.contains("/landscape/trees/") {
+        let mnam = format!("{stem}_LOD_FLAT.nif");
+        out.push(LodCandidate {
+            level: 0,
+            multi: false,
+            source_rel: mnam.to_ascii_lowercase().replace('\\', "/"),
+            mnam,
+        });
+    }
+    out
+}
+
+fn normalize_sibling_modl(modl: &str) -> Option<String> {
     let mut path = modl
         .trim()
         .trim_end_matches('\0')
@@ -161,7 +185,7 @@ fn normalize_skyrim_modl(modl: &str) -> Option<String> {
     (!path.is_empty()).then_some(path)
 }
 
-fn skyrim_candidate(stem: &str, level: usize, multi: bool) -> LodCandidate {
+fn sibling_candidate(stem: &str, level: usize, multi: bool) -> LodCandidate {
     let suffix = if multi {
         format!("_LOD_{level}.nif")
     } else {
@@ -271,9 +295,32 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_candidates_keep_the_full_sibling_namespace() {
+    fn sibling_games_route_away_from_the_fo76_lod_directory() {
+        for game in [Game::Skyrim, Game::SkyrimSe, Game::Fnv, Game::Fo3] {
+            let candidates = derive_lod_candidates(
+                game,
+                "Architecture\\Urban\\DestroyedFacades\\Facade01Corner01.NIF",
+            );
+            assert_eq!(
+                single(&candidates).source_rel,
+                "architecture/urban/destroyedfacades/facade01corner01_lod.nif",
+                "{game:?} must use the sibling convention"
+            );
+        }
+        assert_eq!(
+            single(&derive_lod_candidates(
+                Game::Fo76,
+                "Architecture\\Urban\\DestroyedFacades\\Facade01Corner01.NIF"
+            ))
+            .source_rel,
+            "lod/architecture/urban/destroyedfacades/facade01corner01_lod.nif"
+        );
+    }
+
+    #[test]
+    fn sibling_candidates_keep_the_full_sibling_namespace() {
         let candidates =
-            derive_skyrim_lod_candidates("Meshes/Architecture/Farmhouse/Farmhouse01.NIF");
+            derive_sibling_lod_candidates("Meshes/Architecture/Farmhouse/Farmhouse01.NIF");
         assert_eq!(
             single(&candidates).source_rel,
             "architecture/farmhouse/farmhouse01_lod.nif"
@@ -285,6 +332,30 @@ mod tests {
         assert_eq!(
             multi(&candidates, 3).source_rel,
             "architecture/farmhouse/farmhouse01_lod_3.nif"
+        );
+    }
+
+    #[test]
+    fn skyrim_tree_candidates_include_flat_lod() {
+        let candidates =
+            derive_lod_candidates(Game::SkyrimSe, "DLC01\\Landscape\\Trees\\WinterAspen01.nif");
+        let flat = candidates
+            .iter()
+            .find(|candidate| candidate.source_rel.ends_with("_lod_flat.nif"))
+            .expect("Skyrim flat tree LOD");
+
+        assert_eq!(
+            flat.source_rel,
+            "dlc01/landscape/trees/winteraspen01_lod_flat.nif"
+        );
+        assert_eq!(
+            flat.mnam,
+            "DLC01\\Landscape\\Trees\\WinterAspen01_LOD_FLAT.nif"
+        );
+        assert!(
+            !derive_lod_candidates(Game::SkyrimSe, "Architecture\\Farmhouse\\Farmhouse01.nif")
+                .iter()
+                .any(|candidate| candidate.source_rel.ends_with("_lod_flat.nif"))
         );
     }
 

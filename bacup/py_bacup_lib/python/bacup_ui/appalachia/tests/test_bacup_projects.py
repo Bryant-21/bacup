@@ -18,7 +18,7 @@ class _Settings:
         self.workspaces = {"appalachia": {}}
         self.paths = {
             game: {"root_dir": f"C:/{game}", "extracted_dir": f"C:/{game}/Data"}
-            for game in ("fo4", "fo76", "fnv", "fo3", "skyrimse")
+            for game in ("fo4", "fo76", "fnv", "fo3", "skyrimse", "starfield")
         }
 
     def get_workspace_settings(self, workspace_id):
@@ -37,14 +37,15 @@ def test_bacup_exposes_all_conversion_projects():
     assert _PROJECTS == (
         ("appalachia", "Tales From Appalachia", "fo76:fo4"),
         ("wasteland", "Legends of the Wasteland", "fnvfo3:fo4"),
-        ("north", "Northern Lands", "skyrimse:fo4"),
+        ("north", "Fables of the North", "skyrimse:fo4"),
+        ("stars", "To The Stars", "starfield:fo4"),
     )
     assert _ENABLED_PROJECTS == _PROJECTS
 
     workspace = AppalachiaWorkspace(_Settings())
     workspace.initialize()
 
-    assert len(workspace._regen_panels) == 3
+    assert len(workspace._regen_panels) == 4
     assert {
         project_id: panel.fixed_pair_id
         for project_id, panel in workspace._regen_panels.items()
@@ -52,6 +53,7 @@ def test_bacup_exposes_all_conversion_projects():
         "appalachia": "fo76:fo4",
         "wasteland": "fnvfo3:fo4",
         "north": "skyrimse:fo4",
+        "stars": "starfield:fo4",
     }
 
 
@@ -131,8 +133,10 @@ def test_project_settings_and_status_are_isolated(monkeypatch):
     assert north._phases == []
 
 
-def test_shared_runner_routes_events_only_to_owner(monkeypatch):
+@pytest.mark.parametrize("show_logs", [True, False])
+def test_shared_runner_routes_events_only_to_owner(monkeypatch, show_logs):
     workspace = AppalachiaWorkspace(_Settings())
+    workspace.set_show_logs(show_logs)
     owner_events = []
     other_events = []
     log_events = []
@@ -169,6 +173,56 @@ def test_shared_runner_rejects_concurrent_projects():
         )
 
 
+def test_log_visibility_persists_across_projects_and_restarts(tmp_path):
+    from ui.toolkit.settings import ToolkitSettings
+
+    settings_args = {
+        "path": tmp_path / "bacup-settings.json",
+        "editor_settings_path": tmp_path / "no-editor-settings.json",
+        "variant_id": "appalachia",
+    }
+    settings = ToolkitSettings(**settings_args)
+    workspace = AppalachiaWorkspace(settings)
+    workspace.initialize()
+    assert workspace.show_logs is False
+
+    workspace.set_show_logs(False)
+    workspace._select_project("north")
+    workspace._regen_panel._set_workspace_settings({"workers": 3})
+    assert workspace.show_logs is False
+    settings.save()
+
+    reloaded_settings = ToolkitSettings(**settings_args)
+    reloaded = AppalachiaWorkspace(reloaded_settings)
+    reloaded.initialize()
+    assert reloaded.show_logs is False
+    assert reloaded._active_project_id == "north"
+    assert reloaded._regen_panel.workers == 3
+
+    reloaded.set_show_logs(True)
+    reloaded_settings.save()
+    assert AppalachiaWorkspace(ToolkitSettings(**settings_args)).show_logs is True
+
+
+def test_sidebar_switch_preserves_running_owner_and_saved_selection():
+    settings = _Settings()
+    workspace = AppalachiaWorkspace(settings)
+    workspace.initialize()
+    owner = workspace._regen_panels["appalachia"]
+    workspace.start_conversion_runner(owner, SimpleNamespace(done=False, start=lambda: None))
+    owner._log_panel.handle_event({"type": "log", "level": "INFO", "message": "Owner log"})
+
+    workspace._select_project("north")
+
+    assert workspace._runner_owner is owner
+    assert workspace._regen_panel is workspace._regen_panels["north"]
+    assert workspace._log_panel is workspace._log_panels["north"]
+    assert settings.workspaces["appalachia"]["active_conversion_project"] == "north"
+    assert owner._log_panel._entries[-1] == ("INFO", "Owner log")
+    assert workspace._log_panel._entries == []
+    assert AppalachiaWorkspace(settings)._active_project_id == "north"
+
+
 def test_fixed_projects_resolve_pair_specific_output_plugins(monkeypatch):
     settings = _Settings()
     workspace = SimpleNamespace(_toolkit_settings=settings, _runner=None)
@@ -189,8 +243,8 @@ def test_fixed_projects_resolve_pair_specific_output_plugins(monkeypatch):
 
     wasteland_paths = wasteland.build_paths()
     north_paths = north.build_paths()
-    assert wasteland.generated_plugin_path().name == "FNV_FO3_Merged.esm"
-    assert north.generated_plugin_path().name == "Skyrim_Merged.esm"
+    assert wasteland.generated_plugin_path().name == "FalloutNV.esm"
+    assert north.generated_plugin_path().name == "Skyrim.esm"
     assert wasteland_paths.additional_source_asset_roots == (Path("C:/fo3/Data"),)
     assert north_paths.additional_source_asset_roots == ()
     assert wasteland._required_game_ids() == ("fo4", "fnv", "fo3")
@@ -206,7 +260,7 @@ def test_can_convert_needs_source_extractions_but_not_fo4_extraction():
         fixed_pair_id="fo76:fo4",
         project_id="appalachia",
     )
-    appalachia._steam_installs_ok = lambda: True
+    appalachia._store_installs_ok = lambda: True
 
     assert appalachia.can_convert() is True
 
@@ -222,7 +276,7 @@ def test_wasteland_requires_both_source_asset_extractions():
         fixed_pair_id="fnvfo3:fo4",
         project_id="wasteland",
     )
-    wasteland._steam_installs_ok = lambda: True
+    wasteland._store_installs_ok = lambda: True
 
     assert wasteland.can_convert() is True
 

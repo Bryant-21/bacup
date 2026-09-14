@@ -32,7 +32,7 @@ Event OnActivate(ObjectReference akActionRef)
     If OBJVendingMachineCraneActivateSuccess != None
         OBJVendingMachineCraneActivateSuccess.Play(Self)
     EndIf
-    PlayAnimation(PlayAnim)
+    PlayAnimation(Anim)
     If StageToSetOnAcquireItem > 0 && !W05_MQ_004P_Crane.IsStageDone(StageToSetOnAcquireItem)
         W05_MQ_004P_Crane.SetStage(StageToSetOnAcquireItem)
     EndIf
@@ -49,7 +49,7 @@ EndEvent
 State active
     Event OnBeginState(String asOldState)
         If Is3DLoaded()
-            PlayAnimation(PlayAnim)
+            PlayAnimation(Anim)
         EndIf
     EndEvent
 EndState

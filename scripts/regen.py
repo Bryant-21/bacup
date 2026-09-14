@@ -39,7 +39,11 @@ from bacup_lib.source_pairs import (
     SourcePair,
     get_pair,
 )
-from bacup_lib.lod_settings import load_profile_settings
+from bacup_lib.lod_settings import (
+    available_profiles,
+    cross_game_default_settings,
+    load_profile_settings,
+)
 from bacup_lib.upgrade_manifest import bundled_upgrade_manifest_path
 
 # --- post-step machinery ----------------------------------------------------
@@ -73,6 +77,16 @@ class _TeeStream:
             stream.flush()
 
 
+class _BestEffortConsoleHandler(logging.StreamHandler):
+    def handleError(self, record: logging.LogRecord) -> None:
+        error = sys.exc_info()[1]
+        if isinstance(error, (OSError, UnicodeError)):
+            return
+        if isinstance(error, ValueError) and getattr(self.stream, "closed", False):
+            return
+        super().handleError(record)
+
+
 def _configure_logging(log_path: Path) -> logging.FileHandler:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
@@ -80,7 +94,7 @@ def _configure_logging(log_path: Path) -> logging.FileHandler:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         handlers=[
-            logging.StreamHandler(),
+            _BestEffortConsoleHandler(),
             file_handler,
         ],
         force=True,
@@ -97,6 +111,7 @@ def _install_native_stderr_tee(log_path: Path) -> None:
     scrollback. Python log lines also pass through fd 2 (StreamHandler), so
     this goes to a separate file rather than regen.log to avoid duplicates.
     """
+    import atexit
     import threading
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,20 +122,42 @@ def _install_native_stderr_tee(log_path: Path) -> None:
     os.close(write_fd)
 
     def _pump() -> None:
-        while True:
-            try:
-                chunk = os.read(read_fd, 65536)
-            except OSError:
-                break
-            if not chunk:
-                break
-            try:
-                os.write(original_fd, chunk)
-            except OSError:
-                pass
-            sink.write(chunk)
+        try:
+            while True:
+                try:
+                    chunk = os.read(read_fd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                try:
+                    os.write(original_fd, chunk)
+                except OSError:
+                    pass
+                sink.write(chunk)
+        finally:
+            os.close(read_fd)
+            sink.close()
 
-    threading.Thread(target=_pump, name="native-stderr-tee", daemon=True).start()
+    thread = threading.Thread(target=_pump, name="native-stderr-tee", daemon=True)
+    thread.start()
+
+    closed = False
+
+    def _close() -> None:
+        nonlocal closed
+        if closed:
+            return
+        closed = True
+        try:
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
+        os.dup2(original_fd, 2)
+        thread.join()
+        os.close(original_fd)
+
+    atexit.register(_close)
 
 
 
@@ -205,6 +242,23 @@ def _resolve_fo4_data_dir() -> Path:
     if path is None:
         raise RuntimeError("FO4_DIR is not set in the environment or .env")
     return path / "Data"
+
+
+def _resolve_starfield_extracted_dir() -> Path | None:
+    return _read_env_path("STARFIELD_EXTRACTED_DIR")
+
+
+def _resolve_starfield_data_dir() -> Path:
+    """Starfield's Data directory — `STARFIELD_DATA_DIR`, else `<STARFIELD_DIR>\\Data`."""
+    path = _read_env_path("STARFIELD_DATA_DIR")
+    if path is not None:
+        return path
+    root = _read_env_path("STARFIELD_DIR")
+    if root is None:
+        raise RuntimeError(
+            "STARFIELD_DATA_DIR (or STARFIELD_DIR) is not set in the environment or .env"
+        )
+    return root / "Data"
 
 
 def _resolve_fo4_ck_ini_path() -> Path:
@@ -330,10 +384,8 @@ def _load_lod_settings(
 ) -> dict:
     """Return LOD generation settings for the selected profile."""
     if pair_id != DEFAULT_PAIR_ID:
-        from creation_lib.lod.default_settings import fo4_default_settings
-
         normalized_profile = (profile or "auto").strip().lower().replace("_", "-")
-        if pair_id == "skyrimse:fo4" and normalized_profile == "high-quality":
+        if normalized_profile in available_profiles(pair_id):
             settings = load_profile_settings(
                 _lod_search_roots(),
                 profile=normalized_profile,
@@ -346,24 +398,7 @@ def _load_lod_settings(
                 "use auto or native"
             )
         else:
-            defaults = fo4_default_settings()
-            settings = defaults
-            settings["global"].update(
-                {
-                    "worldspaces": [],
-                    "stride": None,
-                    "southwest_cell": None,
-                    "bounds": None,
-                    "generate_terrain": True,
-                    "generate_objects": True,
-                    "generate_trees": True,
-                }
-            )
-            settings["objects"]["source"] = "records"
-            for key, value in defaults["objects"].items():
-                if key.startswith("fo76_bto_"):
-                    settings["objects"][key] = value
-            settings.setdefault("trees", {})["trees_3d"] = True
+            settings = cross_game_default_settings()
     else:
         settings = load_profile_settings(
             _lod_search_roots(),
@@ -484,8 +519,9 @@ def _resolve_regen_paths(
             else pair.merge.grafted_plugins
         )
         if grafted_names:
+            grafted_data_dir = _resolve_grafted_data_dir(pair)
             merge_grafted_plugin_paths = required_paths(
-                _resolve_grafted_data_dir(pair),
+                grafted_data_dir,
                 grafted_names,
                 data_env=pair.merge.grafted_data_env,
                 dir_env=pair.merge.grafted_dir_env,
@@ -498,23 +534,43 @@ def _resolve_regen_paths(
                     f"{pair.merge.grafted_extracted_env} to the extracted "
                     f"{pair.merge.grafted_game.upper()} asset directory"
                 )
-            additional_source_asset_roots = (grafted_extracted_dir,)
+            assert grafted_data_dir is not None
+            additional_source_asset_roots = (
+                grafted_extracted_dir,
+                grafted_data_dir,
+            )
+
+    # Every shipping pair but one targets FO4. fo4:starfield inverts that, so
+    # its TARGET side resolves against the Starfield install (R2 D0: `.env`
+    # carries STARFIELD_DATA_DIR, with `<STARFIELD_DIR>\Data` as the fallback).
+    # The FO4 CK/INI paths stay as-is: they are consumed only by the FO4 INI
+    # edit step, which this pair never reaches.
+    targets_starfield = pair.target_game == "starfield"
+    if targets_starfield:
+        target_extracted_dir = _resolve_starfield_extracted_dir()
+        target_data_dir = _resolve_starfield_data_dir()
+        target_asset_catalog_name = "starfield_target_assets.sqlite3"
+    else:
+        target_extracted_dir = _resolve_fo4_extracted_dir()
+        target_data_dir = _resolve_fo4_data_dir()
+        target_asset_catalog_name = "fo4_target_assets.sqlite3"
 
     return RegenPaths(
         source_extracted_dir=source_extracted_dir,
         source_data_dir=source_data_dir or source_extracted_dir,
-        target_extracted_dir=_resolve_fo4_extracted_dir(),
-        target_data_dir=_resolve_fo4_data_dir(),
+        target_extracted_dir=target_extracted_dir,
+        target_data_dir=target_data_dir,
         target_ck_ini_path=_resolve_fo4_ck_ini_path(),
         target_custom_ini_path=_resolve_fo4_custom_ini_path(),
         target_game_ini_path=_resolve_fo4_game_ini_path(),
         output_root=REPO_ROOT / "mods" / mod_name,
         mod_name=mod_name,
+        archive_base_name=Path(pair.output_plugin_name).stem,
         resource_dir=_resolve_resource_dir(),
         deploy_data_dir=deploy_data_dir,
         diagnostics_root=diagnostics_root,
         target_asset_catalog_path=(
-            REPO_ROOT / "cache" / "conversion" / "fo4_target_assets.sqlite3"
+            REPO_ROOT / "cache" / "conversion" / target_asset_catalog_name
         ),
         target_asset_cache_dir=(
             REPO_ROOT / "cache" / "conversion" / "target_assets"
@@ -532,12 +588,16 @@ def _args_to_regen_options(args) -> RegenOptions:
         archive_max_bytes=_archive_max_bytes_from_args(args),
         workers=None,
         asset_workers=args.asset_workers,
+        serialize_tracks=bool(getattr(args, "serialize_tracks", True)),
         lod_mode="convert",
         pbr_carry=bool(getattr(args, "pbr_carry", False)),
         texture_landscape_mip_flooding=bool(
             getattr(args, "texture_landscape_mip_flooding", False)
         ),
+        placeholder_audio=bool(getattr(args, "placeholder_audio", False)),
+        terrain_extent_cells=getattr(args, "terrain_extent_cells", None),
         re_use_land=bool(args.re_use_land),
+        records_only=bool(getattr(args, "records_only", False)),
         include_interior=bool(getattr(args, "include_interior", True)),
         carry_interior_previs=bool(getattr(args, "carry_interior_previs", False)),
         records_limit=args.records_limit,
@@ -593,10 +653,6 @@ def run_full_mode(
         os.environ["MODBOX_TRACE_DROPS"] = args.drop_trace
         os.environ["MODBOX_TRACE_DROPS_FILE"] = str(trace_path)
         LOG.info("--drop-trace active (filter=%s) -> %s", args.drop_trace, trace_path)
-    if args.cache:
-        # The lever is plumbed (manifest written every run; consult helpers
-        # tested) but v1 skip-sets are conservative — declared limitation.
-        LOG.info("--cache: consult is v1-conservative (see workflows/unified.py)")
     output_plugin_names = [pair.output_plugin_name]
 
     if getattr(args, "scripts_only", False):
@@ -684,6 +740,8 @@ def run_full_mode(
     build_option_overrides = {
         "exclude_signatures": conv_cli.exclude_signatures_from_args(args),
         "papyrus_compiler": conv_cli.papyrus_compiler_from_args(args),
+        "fnv_quest_slice": bool(args.fnv_quest_slice),
+        "mvp_melee_only": bool(args.melee_only),
         "convert_precombined_nifs": args.convert_precombined_nifs,
         "disable_nif_collision_memo": args.disable_nif_collision_memo,
     }
@@ -703,6 +761,14 @@ def run_full_mode(
             "--re-use-land: reusing prior LAND/NAVM/NAVI cache; terrain & navmesh "
             "regen skipped. Staleness checks are warnings-only (v1)."
         )
+    if args.records_only:
+        LOG.info("--records-only: asset phases and BA2 packing skipped")
+        if not args.re_use_land:
+            LOG.warning(
+                "--records-only without --re-use-land: terrain-owned records "
+                "(LAND/NAVM/NAVI and synthesized worldspace cells) will be "
+                "absent from the output plugin."
+            )
 
     with _progress_runner(log_handler.stream) as runner:
         try:
@@ -715,7 +781,7 @@ def run_full_mode(
                 lod_settings=lod_settings,
                 build_option_overrides=build_option_overrides,
             )
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
             LOG.error("%s", exc)
             return 2
 
@@ -749,7 +815,7 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
     parser = _PairArgumentParser(
         prog="regen.py", description="Unified source-to-FO4 regen driver"
     )
-    # Full-run levers (spec §5a)
+    # Full-run levers
     parser.add_argument(
         "--pair",
         choices=sorted(SOURCE_PAIRS),
@@ -759,8 +825,25 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
         "--mvp",
         action="store_true",
         help=(
-            "Build the FNV/FO3 or Skyrim world-only MVP: no actors, weapons, quests, "
-            "scripts, voice, skeletons, animations, or behaviors."
+            "Build the bounded MVP for the selected conversion pair. Pair-specific "
+            "record and asset admission policies still apply."
+        ),
+    )
+    parser.add_argument(
+        "--melee-only",
+        action="store_true",
+        help=(
+            "With --mvp, emit only audited melee WEAP records and their model, "
+            "material, and texture closure. Creatures and world content are disabled."
+        ),
+    )
+    parser.add_argument(
+        "--fnv-quest-slice",
+        action="store_true",
+        help=(
+            "Enable the explicit FNV quest-slice record families (quests, dialogue, "
+            "Papyrus, placed creatures, and magic). PACK, weapons, and unrelated "
+            "legacy families remain excluded."
         ),
     )
     parser.add_argument(
@@ -819,6 +902,27 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
         default=False,
         help="Use family archive labels such as Meshes and Sounds instead of Main + Textures when possible.",
     )
+    parser.add_argument(
+        "--placeholder-audio",
+        action="store_true",
+        default=False,
+        help=(
+            "fo4:starfield only. Skip the Wwise transcode/bank leg and point the "
+            "output's music/ambience at vanilla Starfield records instead. Required "
+            "until the licence-gated Wwise 2021.1.x authoring toolchain is installed."
+        ),
+    )
+    parser.add_argument(
+        "--terrain-extent-cells",
+        type=_positive_worker_count,
+        default=None,
+        metavar="N",
+        help=(
+            "fo4:starfield only. Crop the synthesized Starfield BTD to an "
+            "origin-centred NxN cell window (e.g. 32) instead of the full measured "
+            "extent. Use to isolate BTD file size from BTD correctness at gate G1."
+        ),
+    )
     parser.add_argument("--records-limit", type=_positive_worker_count)
     parser.add_argument("--max-seconds", type=_positive_worker_count)
     parser.add_argument("--max-asset-failures", type=int, default=None)
@@ -870,7 +974,17 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
         "--export-yaml", dest="export_yaml", action="store_true", default=True
     )
     parser.add_argument("--no-export-yaml", dest="export_yaml", action="store_false")
-    parser.add_argument("--cache", action="store_true")
+    parser.add_argument(
+        "--records-only",
+        dest="records_only",
+        action="store_true",
+        default=False,
+        help=(
+            "Plugin-only run for any pair: translate records and build the ESM "
+            "with every asset phase off and no BA2 packing. Combine with "
+            "--re-use-land to keep terrain-owned records."
+        ),
+    )
     parser.add_argument(
         "--re-use-land",
         dest="re_use_land",
@@ -946,7 +1060,8 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
         default=None,
         metavar="FILTER",
         help=(
-            "Diagnostic: log every subrecord/record the conversion drops to stderr. "
+            "Diagnostic: write dropped subrecord/record events to the run's "
+            "drop_trace.log. "
             "Bare flag traces all drops; pass a filter to narrow, e.g. "
             "--drop-trace FACT:VENC or --drop-trace FACT,QUST. Each line is "
             "'[drop_trace] stage=<...> rec=<SIG>:<id> sub=<SUB> reason=<...>'."
@@ -997,13 +1112,16 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
 
 def _resolve_pair_args(parser: argparse.ArgumentParser, args) -> SourcePair:
     pair = get_pair(args.pair)
+    if getattr(args, "melee_only", False) and not getattr(args, "mvp", False):
+        parser.error("--melee-only requires --mvp")
     if args.mod_name is None:
         args.mod_name = pair.output_mod_name
     if pair.pair_id != DEFAULT_PAIR_ID:
         lod_profile = getattr(args, "lod_profile", "auto")
-        if lod_profile == "performance" or (
-            lod_profile == "high-quality" and pair.pair_id != "skyrimse:fo4"
-        ):
+        if lod_profile in {
+            "high-quality",
+            "performance",
+        } and lod_profile not in available_profiles(pair.pair_id):
             parser.error(
                 f"{pair.pair_id} does not support the {lod_profile} LOD profile"
             )
@@ -1014,12 +1132,124 @@ def _resolve_pair_args(parser: argparse.ArgumentParser, args) -> SourcePair:
                 f"{pair.pair_id} supports only --lod-mode generate or none"
             )
     if getattr(args, "mvp", False):
-        if pair.pair_id not in {"fnvfo3:fo4", "skyrimse:fo4"}:
-            parser.error("--mvp currently supports only fnvfo3:fo4 and skyrimse:fo4")
+        if pair.pair_id not in {
+            "fnvfo3:fo4",
+            "skyrimse:fo4",
+            "fo4:starfield",
+            "starfield:fo4",
+        }:
+            parser.error(
+                "--mvp currently supports only fnvfo3:fo4, skyrimse:fo4, "
+                "fo4:starfield, and starfield:fo4"
+            )
         if not getattr(args, "_lod_mode_explicit", False):
             args.lod_mode = "generate"
         if args.lod_mode not in {"generate", "none"}:
             parser.error("MVP LOD supports only --lod-mode generate or none")
+    if getattr(args, "melee_only", False):
+        if pair.pair_id not in {"fnvfo3:fo4", "skyrimse:fo4"}:
+            parser.error(
+                "--melee-only currently supports only fnvfo3:fo4 and skyrimse:fo4"
+            )
+        if getattr(args, "_lod_mode_explicit", False) and args.lod_mode != "none":
+            parser.error("--melee-only requires --lod-mode none")
+        if getattr(args, "generate_anim_text_data", False) or getattr(
+            args, "anim_text_data_native", False
+        ):
+            parser.error("--melee-only cannot generate AnimTextData")
+        for flag, attr in (
+            ("--no-translate-records", "translate_records"),
+            ("--no-nifs", "convert_nifs"),
+            ("--no-textures", "convert_textures"),
+            ("--no-build-esp", "build_esp"),
+        ):
+            if not getattr(args, attr, True):
+                parser.error(f"--melee-only cannot be combined with {flag}")
+        args.lod_mode = "none"
+    if pair.pair_id == "starfield:fo4" and not getattr(args, "mvp", False):
+        parser.error(
+            "--pair starfield:fo4 converts world-only (exteriors + interiors "
+            "only; no quests/NPCs/actors, plus the Starfield-novel "
+            "planet/space/procgen fence and the WWise-audio fence) — pass --mvp"
+        )
+    if pair.pair_id == "fo4:starfield":
+        # R1 SD-8: Starfield auto-loads only `<Plugin> - Main/Textures/
+        # Voices_<lang>/Localization.ba2` for a mod plugin. Per-family archives
+        # (`- Meshes.ba2`, `- Terrain.ba2`, ...) are NEVER opened by the engine,
+        # so an expanded-archive layout is silent, total content loss.
+        if getattr(args, "expanded_archives", False):
+            parser.error(
+                "--expanded-archives is rejected for --pair fo4:starfield: Starfield "
+                "never auto-loads per-family archives, so the converted meshes, "
+                "terrain, and materials would be silently invisible in-game (R1 SD-8)"
+            )
+        if getattr(args, "lod_mode", "none") not in {"none"}:
+            if getattr(args, "_lod_mode_explicit", False):
+                parser.error(
+                    "fo4:starfield has no LOD pipeline yet; use --lod-mode none"
+                )
+            args.lod_mode = "none"
+        # Without --deploy-to-mo2, regen_pipeline._deploy_post_steps and
+        # _undeploy_main write `runtime_ini_target = paths.target_custom_ini_path`,
+        # which _resolve_regen_paths() always resolves to FO4's Fallout4Custom.ini.
+        # Starfield has no equivalent and needs no INI edit (it auto-loads BA2s by
+        # name suffix). --deploy-to-mo2 sets deploys_to_virtual_data=True, which
+        # skips the INI step and only copies files, so it stays allowed.
+        if not getattr(args, "deploy_to_mo2", None) and (
+            getattr(args, "deploy", False)
+            or getattr(args, "deploy_only", False)
+            or getattr(args, "undeploy", False)
+        ):
+            parser.error(
+                "--deploy/--deploy-only/--undeploy are rejected for --pair "
+                "fo4:starfield: the deploy path still writes Fallout4Custom.ini "
+                "entries, which do nothing for Starfield and would corrupt an "
+                "unrelated FO4 install's INI. Use "
+                "'--deploy-to-mo2 <STARFIELD_DIR>\\Data' instead (it skips INI "
+                "edits and just copies files), or copy mods/<mod_name>/ into "
+                "<STARFIELD_DIR>\\Data by hand."
+            )
+    else:
+        for flag, attr in (
+            ("--placeholder-audio", "placeholder_audio"),
+            ("--terrain-extent-cells", "terrain_extent_cells"),
+        ):
+            if getattr(args, attr, None):
+                parser.error(f"{flag} requires --pair fo4:starfield")
+    if getattr(args, "fnv_quest_slice", False):
+        if pair.pair_id != "fnvfo3:fo4":
+            parser.error("--fnv-quest-slice requires --pair fnvfo3:fo4")
+        if getattr(args, "mvp", False):
+            parser.error("--fnv-quest-slice cannot be combined with --mvp")
+        from bacup_lib.source_pairs import FNV_QUEST_SLICE_RECORD_FORM_IDS
+
+        required_signatures = frozenset(FNV_QUEST_SLICE_RECORD_FORM_IDS)
+        explicit_excludes = frozenset(
+            str(signature).strip().upper()
+            for signature in getattr(args, "exclude_record", ())
+            if str(signature).strip()
+        )
+        conflicts = sorted(required_signatures & explicit_excludes)
+        if conflicts:
+            parser.error(
+                "--fnv-quest-slice cannot exclude required record signatures: "
+                + ", ".join(conflicts)
+            )
+        disabled_required_phases = [
+            flag
+            for enabled, flag in (
+                (getattr(args, "translate_records", True), "--no-translate-records"),
+                (getattr(args, "convert_placed_records", True), "--no-placed-records"),
+                (getattr(args, "convert_scripts", True), "--no-scripts"),
+                (getattr(args, "build_esp", True), "--no-build-esp"),
+            )
+            if not enabled
+        ]
+        if disabled_required_phases:
+            parser.error(
+                "--fnv-quest-slice requires record, placed-record, script, and ESP phases; "
+                "remove " + ", ".join(disabled_required_phases)
+            )
     return pair
 
 

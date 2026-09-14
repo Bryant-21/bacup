@@ -48,10 +48,8 @@ RS01A_MEMBER_NAMES = (
     "fragment_stage_1100_item_00",
     "fragment_stage_9000_item_00",
 )
-IMPLEMENTED_RS01A_MEMBERS = set(RS01A_MEMBER_NAMES) - {
-    "fragment_stage_0000_item_00",
-    "fragment_stage_1100_item_00",
-}
+DEFERRED_RS01A_MEMBERS: set[str] = set()
+IMPLEMENTED_RS01A_MEMBERS = set(RS01A_MEMBER_NAMES) - DEFERRED_RS01A_MEMBERS
 RS01A_SKELETON = """Scriptname Fragments:Quests:QF_RS01A_Contact_003C4C22 Extends Quest hidden
 
 actorvalue Property MQ_OverseerHolotape01Played Auto mandatory
@@ -137,7 +135,7 @@ def test_rs01a_patch_is_member_only_and_supplies_closed_vmad_members():
     }
 
     assert member_names == IMPLEMENTED_RS01A_MEMBERS
-    assert patch.count("; TODO") == 1
+    assert patch.count("; TODO") == 0
     assert not any(
         line.strip().lower().startswith(("scriptname ", "state "))
         for line in lines
@@ -160,10 +158,7 @@ def test_rs01a_synthetic_merge_preserves_deferred_hollow_members_and_is_idempote
     assert all(merged_names.count(name) == 1 for name in RS01A_MEMBER_NAMES)
     for member_name in IMPLEMENTED_RS01A_MEMBERS:
         assert _member_body(merged, member_name) == _member_body(patch, member_name)
-    for member_name in {
-        "fragment_stage_0000_item_00",
-        "fragment_stage_1100_item_00",
-    }:
+    for member_name in DEFERRED_RS01A_MEMBERS:
         assert _member_body(merged, member_name).count("\n") == 1
     assert "actorvalue Property RS01A_Contact_Started Auto mandatory" in merged
     assert _merge_script_method_patches(merged, patch) == merged
@@ -172,6 +167,10 @@ def test_rs01a_synthetic_merge_preserves_deferred_hollow_members_and_is_idempote
 def test_rs01a_closed_stage_contract_is_ordered_and_bounded():
     patch = _script_patch_source(RS01A_SCRIPT)
     assert patch is not None
+
+    stage_0 = _member_body(patch, "fragment_stage_0000_item_00")
+    assert stage_0.index("!IsStageDone(10)") < stage_0.index("SetStage(10)")
+    assert stage_0.count("SetStage(") == 1
 
     stage_150 = _member_body(patch, "fragment_stage_0150_item_00")
     assert stage_150.count("AddItem(") == 1
@@ -191,21 +190,61 @@ def test_rs01a_closed_stage_contract_is_ordered_and_bounded():
         display_call = f"SetObjectiveDisplayed({displayed})"
         assert body.index(complete_call) < body.index(display_call)
 
+    stage_1100 = _member_body(patch, "fragment_stage_1100_item_00")
+    assert "SetValue(RS01A_Contact_Started, 1.0)" in stage_1100
+    assert stage_1100.count("SetObjectiveDisplayed(120)") == 1
+    assert stage_1100.index("!IsObjectiveCompleted(120)") < stage_1100.index(
+        "SetObjectiveDisplayed(120)"
+    )
+    assert "SetStage(" not in stage_1100
+
     stage_165 = _member_body(patch, "fragment_stage_0165_item_00")
     assert stage_165.count(".SendStoryEvent(None, playerRef, playerRef)") == 3
 
     stage_1000 = _member_body(patch, "fragment_stage_1000_item_00")
-    assert stage_1000.index("SetObjectiveCompleted(500)") < stage_1000.index(
-        "RSVP01_Quest.Start()"
+    story_keyword = (
+        'Game.GetFormFromFile(0x003B32EC, "SeventySix.esm") as Keyword'
     )
-    assert stage_1000.index("RSVP01_Quest.Start()") < stage_1000.index(
+    story_send = (
+        "questActiveKeyword.SendStoryEventAndWait(None, playerRef, playerRef)"
+    )
+    convergence_guard = (
+        "RSVP01_Quest.IsRunning() || RSVP01_Quest.IsCompleted()"
+    )
+    assert "RSVP01_Quest.Start()" not in stage_1000
+    assert stage_1000.index("SetObjectiveCompleted(500)") < stage_1000.index(
+        story_keyword
+    )
+    assert stage_1000.index(story_keyword) < stage_1000.index(story_send)
+    assert stage_1000.index(story_send) < stage_1000.index(convergence_guard)
+    assert stage_1000.index(convergence_guard) < stage_1000.index(
         "SetStage(9000)"
     )
+    assert "!RSVP01_Quest.IsRunning()" in stage_1000
+    assert "!RSVP01_Quest.IsCompleted()" in stage_1000
+    assert "&& !IsStageDone(9000)" in stage_1000
 
     stage_9000 = _member_body(patch, "fragment_stage_9000_item_00")
     assert "SetValue(RS01A_Contact_Completed, 1.0)" in stage_9000
-    assert "pW05_MQ_00P_StartKeyword.SendStoryEvent" in stage_9000
+    story_send = (
+        "accepted = pW05_MQ_00P_StartKeyword.SendStoryEventAndWait("
+        "None, playerRef, playerRef)"
+    )
+    initial_success = (
+        "Bool accepted = followOn && "
+        "(followOn.IsRunning() || followOn.IsCompleted())"
+    )
+    final_success = (
+        "accepted = followOn.IsRunning() || followOn.IsCompleted()"
+    )
+    assert story_send in stage_9000
+    assert "pW05_MQ_00P_StartKeyword.SendStoryEvent(" not in stage_9000
+    assert "followOn.Start()" not in stage_9000
     assert "Pco_CondProxy_Photomode_Frame_Faction_Responders01" not in stage_9000
+    assert '0x005698E4, "SeventySix.esm"' in stage_9000
+    assert stage_9000.index(initial_success) < stage_9000.index(story_send)
+    assert stage_9000.index(story_send) < stage_9000.index(final_success)
+    assert stage_9000.count("If !accepted") == 2
 
 
 def test_rs01a_production_merge_is_unique_idempotent_and_native_compiles_for_fo4():
@@ -266,22 +305,19 @@ def test_rs01a_todo_marker_and_status_are_synchronized():
         if line.startswith("RS01A-TODO|")
     ]
 
-    assert len(todo_lines) == 2
+    assert len(todo_lines) == 1
     assert any(
-        "category=EB-CHECKPOINT|members=0000:00,1100:00|" in line
+        "category=EB-CHECKPOINT|members=1100:00|" in line
         for line in todo_lines
     )
-    assert any(
-        "category=ONLINE-RECIPE|members=9000:00|" in line
-        for line in todo_lines
-    )
+    assert all("category=ONLINE-RECIPE" not in line for line in todo_lines)
     assert all("status=deferred" in line for line in todo_lines)
     assert all(
         f"contract={CONTRACT_RELATIVE_PATH}|evidence={CONTRACT_RELATIVE_PATH}|"
         in line
         for line in todo_lines
     )
-    assert patch.count("; TODO") == 1
+    assert patch.count("; TODO") == 0
     contract = CONTRACT_PATH.read_text(encoding="utf-8")
     assert all(member_name in contract for member_name in (
         "Fragment_Stage_0000_Item_00",

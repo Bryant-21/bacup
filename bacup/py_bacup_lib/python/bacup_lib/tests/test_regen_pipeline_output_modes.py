@@ -51,12 +51,19 @@ def test_ba2_creation_tracks_deploy_and_overwrite_is_forced(
     paths = _paths(tmp_path)
     captures: dict[str, object] = {}
     deploy_calls: list[tuple[object, ...]] = []
+    timing_reports: list[object] = []
 
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
     monkeypatch.setattr(regen_pipeline, "_snapshot_land_cache", lambda *_a, **_k: True)
-    monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_payloads_for_outputs", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_materials_for_outputs", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "bacup_lib.target_assets.ensure_target_asset_catalog",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_write_conversion_reports",
+        lambda timing, *_a, **_k: timing_reports.append(timing.to_dict()),
+    )
     monkeypatch.setattr(regen_pipeline, "_deploy_post_steps", lambda *a, **_k: deploy_calls.append(a))
 
     def fake_check_run_invariants(*_args, **kwargs):
@@ -77,6 +84,7 @@ def test_ba2_creation_tracks_deploy_and_overwrite_is_forced(
         paths.output_root.mkdir(parents=True, exist_ok=True)
         (paths.output_root / "SeventySix.esm").write_bytes(b"TES4")
         return SimpleNamespace(
+            summary=SimpleNamespace(),
             run_result=SimpleNamespace(
                 decisions=[],
                 translated_counts={},
@@ -108,6 +116,60 @@ def test_ba2_creation_tracks_deploy_and_overwrite_is_forced(
     assert captures["overwrite_existing"] is True
     assert captures["archive_output_dir"] is None
     assert len(deploy_calls) == expected_deploy_calls
+    events = timing_reports[-1]["events"]
+    names = [event["name"] for event in events]
+    assert names.index("regen_prepare") < names.index("regen_unified_envelope")
+    envelope = next(event for event in events if event["name"] == "regen_unified_envelope")
+    assert envelope["parent"] == "run_full_regen"
+    assert envelope["scope"] == "detail"
+    assert envelope["status"] == "succeeded"
+    assert envelope["elapsed_seconds"] >= 0
+    assert envelope["offset_seconds"] >= 0
+    assert "regen_coverage_report" in names
+    assert ("regen_deep_invariants" in names) is deep_invariants
+    assert ("regen_deploy" in names) is deploy
+
+
+def test_unified_failure_records_once_before_report_and_preserves_exception(
+    monkeypatch, tmp_path
+):
+    paths = _paths(tmp_path)
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
+    monkeypatch.setattr(regen_pipeline, "_snapshot_land_cache", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "bacup_lib.target_assets.ensure_target_asset_catalog",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_write_conversion_reports",
+        lambda timing, *_a, **_k: calls.append(("report", timing.to_dict())),
+    )
+
+    import bacup_lib.workflows.unified as unified
+
+    def fail_unified(*_args, **_kwargs):
+        calls.append(("unified", None))
+        raise RuntimeError("measured unified failure")
+
+    monkeypatch.setattr(unified, "run_unified", fail_unified)
+
+    with pytest.raises(RuntimeError, match="measured unified failure"):
+        regen_pipeline.run_full_regen(
+            paths,
+            RegenOptions(deploy=False, lod_mode="none", deep_invariants=False),
+            phases=PhaseSelection(lod_mode="none"),
+            runner=SimpleNamespace(emit_log=lambda *_a, **_k: None),
+        )
+
+    assert [name for name, _payload in calls] == ["unified", "report"]
+    events = calls[-1][1]["events"]
+    envelopes = [event for event in events if event["name"] == "regen_unified_envelope"]
+    assert len(envelopes) == 1
+    assert envelopes[0]["status"] == "failed"
+    assert envelopes[0]["elapsed_seconds"] >= 0
+    assert envelopes[0]["offset_seconds"] >= 0
 
 
 def test_direct_deploy_archives_packs_to_deploy_data_and_skips_archive_deploy(
@@ -121,8 +183,6 @@ def test_direct_deploy_archives_packs_to_deploy_data_and_skips_archive_deploy(
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
     monkeypatch.setattr(regen_pipeline, "_snapshot_land_cache", lambda *_a, **_k: True)
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_payloads_for_outputs", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_materials_for_outputs", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "bacup_lib.target_assets.ensure_target_asset_catalog",
         lambda *_a, **_k: None,
@@ -253,8 +313,6 @@ def test_write_land_cache_false_skips_cache_snapshots(monkeypatch, tmp_path):
         lambda *a, **_k: run_snapshots.append(a) or True,
     )
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_payloads_for_outputs", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_materials_for_outputs", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_check_run_invariants", lambda *_a, **_k: ([], []))
 
     import bacup_lib.models as models
@@ -299,7 +357,7 @@ def test_write_land_cache_false_skips_cache_snapshots(monkeypatch, tmp_path):
 def test_land_cache_snapshot_saves_through_conversion_run(tmp_path):
     class FakeRun:
         def __init__(self) -> None:
-            self.calls: list[tuple[str, bool, bool]] = []
+            self.calls: list[tuple[str, bool, bool, bool]] = []
 
         def save_target(
             self,
@@ -307,8 +365,16 @@ def test_land_cache_snapshot_saves_through_conversion_run(tmp_path):
             *,
             emit_authoring_yaml: bool,
             run_nvnm_validator: bool,
+            preserve_target_identity: bool,
         ) -> None:
-            self.calls.append((output_path, emit_authoring_yaml, run_nvnm_validator))
+            self.calls.append(
+                (
+                    output_path,
+                    emit_authoring_yaml,
+                    run_nvnm_validator,
+                    preserve_target_identity,
+                )
+            )
             Path(output_path).write_bytes(b"TES4")
 
     run = FakeRun()
@@ -329,6 +395,7 @@ def test_land_cache_snapshot_saves_through_conversion_run(tmp_path):
             str(tmp_path / ".regen_land_cache.esm.tmp"),
             False,
             False,
+            True,
         )
     ]
 
@@ -383,6 +450,43 @@ def test_land_cache_snapshots_and_restores_terrain_assets(tmp_path):
     assert not unrelated_texture.exists()
 
 
+def test_lod_cleanup_preserves_full_resolution_terrain_textures(tmp_path):
+    output_dir = tmp_path / "data"
+    texture_world = output_dir / "Textures" / "Terrain" / "Appalachia"
+    mesh_world = output_dir / "Meshes" / "Terrain" / "Appalachia"
+    other_world = output_dir / "Textures" / "Terrain" / "OtherWorld"
+    lod_settings = output_dir / "LODSettings" / "Appalachia.lod"
+
+    keep = [
+        texture_world / "LForestDirt01_d.dds",
+        texture_world / "LForestDirt01_n.dds",
+    ]
+    remove = [
+        texture_world / "Appalachia.4.0.0.dds",
+        texture_world / "Appalachia.4.0.0_msn.dds",
+        texture_world / "Objects" / "atlas_d.dds",
+        texture_world / "lodgen" / "legacy.dds",
+    ]
+    untouched = other_world / "OtherWorld.4.0.0.dds"
+    for path in [*keep, *remove, untouched, mesh_world / "tile.btr", lod_settings]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture")
+
+    messages: list[tuple[str, str]] = []
+    regen_pipeline._remove_world_lod_outputs(
+        output_dir,
+        "APPALACHIA",
+        lambda level, message: messages.append((level, message)),
+    )
+
+    assert all(path.is_file() for path in keep)
+    assert all(not path.exists() for path in remove)
+    assert untouched.is_file()
+    assert not mesh_world.exists()
+    assert not lod_settings.exists()
+    assert messages and "stale world LOD output(s)" in messages[0][1]
+
+
 def test_reuse_land_restores_cached_assets_before_unified_run(monkeypatch, tmp_path):
     paths = _paths(tmp_path)
     paths.output_root.mkdir(parents=True)
@@ -403,8 +507,6 @@ def test_reuse_land_restores_cached_assets_before_unified_run(monkeypatch, tmp_p
 
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_payloads_for_outputs", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_materials_for_outputs", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_check_run_invariants", lambda *_a, **_k: ([], []))
 
     import bacup_lib.models as models
@@ -458,8 +560,6 @@ def test_resume_from_textures_skips_prior_phases_and_overwrites(monkeypatch, tmp
 
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_payloads_for_outputs", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_materials_for_outputs", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_check_run_invariants", lambda *_a, **_k: ([], []))
 
     import bacup_lib.models as models
@@ -557,8 +657,6 @@ def test_resume_from_lodgen_runs_lod_pack_and_deploy(monkeypatch, tmp_path):
 
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 2)
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_payloads_for_outputs", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_materials_for_outputs", lambda *_a, **_k: None)
 
     def fake_lod(**kwargs):
         captures["lod"] = kwargs
@@ -636,8 +734,6 @@ def test_cross_game_resume_from_lodgen_preserves_layout_and_source_root(
 
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 2)
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_payloads_for_outputs", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_materials_for_outputs", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_run_generate_lod", lambda **kwargs: captures.update(lod=kwargs))
     monkeypatch.setattr(regen_pipeline, "_target_lod_asset_dirs", lambda *_a, **_k: [])
     monkeypatch.setattr(
@@ -700,7 +796,6 @@ def test_resume_from_modt_runs_every_downstream_phase(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 2)
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_existing_outputs", lambda *_a, **_k: order.append("sanitize"))
     monkeypatch.setattr(regen_pipeline, "_run_existing_lodgen", lambda *_a, **_k: order.append("lod"))
     monkeypatch.setattr(
         regen_pipeline,
@@ -760,7 +855,6 @@ def test_resume_from_modt_runs_every_downstream_phase(monkeypatch, tmp_path):
         "offsets",
         "animtext",
         "lod",
-        "sanitize",
         "pack",
         "deploy",
         "cleanup",
@@ -792,7 +886,6 @@ def test_resume_from_offsets_skips_modt_but_rebuilds_tables(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 2)
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_existing_outputs", lambda *_a, **_k: order.append("sanitize"))
     monkeypatch.setattr(
         regen_pipeline,
         "_pack_existing_output",
@@ -829,7 +922,7 @@ def test_resume_from_offsets_skips_modt_but_rebuilds_tables(monkeypatch, tmp_pat
 
     assert result.exit_code == 0
     assert result.deployed is True
-    assert order == ["offsets", "sanitize", "pack", "deploy", "cleanup"]
+    assert order == ["offsets", "pack", "deploy", "cleanup"]
 
 
 def test_resume_from_build_esp_uses_full_rebuild_without_existing_output(

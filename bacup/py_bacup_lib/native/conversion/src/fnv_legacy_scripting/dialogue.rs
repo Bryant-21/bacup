@@ -4,24 +4,54 @@
 
 use std::collections::HashSet;
 
+use encoding_rs::WINDOWS_1252;
 use serde_json::{Value, json};
 
 use super::form_keys::object_id_from_form_key;
-use super::naming::topic_info_fragment_name;
-use super::quest::{extract_first_event_body, field_value, filtered_payload, upsert_field};
-use super::vmad::synthesize_topic_info_vmad;
+use super::naming::{standalone_script_name, topic_info_fragment_name};
+use super::quest::{extract_first_event_body, field_value, filtered_payload};
 use super::voice::{fnv_to_fo4_voice_path, fnv_voice_source_path};
 use super::{FnvScriptContext, TranslateError, translate_to_papyrus};
+
+#[path = "dialogue_ir.rs"]
+pub mod ir;
+pub use ir::{
+    DialogueLowerError, DialogueResponseIr, HostageGreetingProjection, LoweredInfo, LoweredTopic,
+    VoiceManifestRequest, VoiceResolution, lower_dial_topic, lower_hostage_greeting_info_record,
+    lower_hostage_greeting_projection, lower_hostage_greeting_topic, lower_info_record,
+};
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/// A group of DIAL topics sharing the same speaker.
+/// A group of FNV DIAL topics sharing the same owning quest.
 #[derive(Debug, Clone)]
 pub struct DialogueGroup {
-    pub speaker_form_key: String,
+    pub quest_owner_form_key: String,
     pub topics: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InfoFragmentPhase {
+    Begin,
+    End,
+}
+
+impl InfoFragmentPhase {
+    pub fn psc_function_name(self) -> &'static str {
+        match self {
+            Self::Begin => "Fragment_Begin",
+            Self::End => "Fragment_End",
+        }
+    }
+
+    pub fn vmad_flag(self) -> u8 {
+        match self {
+            Self::Begin => 1,
+            Self::End => 2,
+        }
+    }
 }
 
 /// Result of translating one INFO record.
@@ -31,6 +61,8 @@ pub struct TranslatedInfo {
     pub fragment_class_name: Option<String>,
     /// Papyrus `.psc` source text (None when the INFO has no SCTX).
     pub fragment_psc_text: Option<String>,
+    pub fragment_phases: Vec<InfoFragmentPhase>,
+    pub fragment_properties: Vec<InfoFragmentProperty>,
     pub voice_target_path: String,
     pub voice_source_path: String,
     /// LIP sync data is always dropped (not carried across).
@@ -40,20 +72,28 @@ pub struct TranslatedInfo {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InfoFragmentProperty {
+    pub name: String,
+    pub papyrus_type: String,
+    pub source_form_key: String,
+}
+
 // ---------------------------------------------------------------------------
 // group_dial_records
 // ---------------------------------------------------------------------------
 
-/// Group DIAL records by speaker FormKey (QNAM field).
+/// Group FNV DIAL records by every repeated source quest owner (`QSTI`).
 pub fn group_dial_records(dial_records: &[Value]) -> Vec<DialogueGroup> {
     let mut map: indexmap::IndexMap<String, Vec<Value>> = indexmap::IndexMap::new();
     for record in dial_records {
-        let speaker = record_field_str(record, "QNAM");
-        map.entry(speaker).or_default().push(record.clone());
+        for owner in record_field_strings(record, "QSTI") {
+            map.entry(owner).or_default().push(record.clone());
+        }
     }
     map.into_iter()
-        .map(|(speaker_form_key, topics)| DialogueGroup {
-            speaker_form_key,
+        .map(|(quest_owner_form_key, topics)| DialogueGroup {
+            quest_owner_form_key,
             topics,
         })
         .collect()
@@ -104,10 +144,8 @@ pub fn dial_payload(record: &Value) -> Value {
 
 /// Accumulate stripped DIAL payloads onto a `FnvLegacyScriptingContext`.
 ///
-/// Each DIAL record is re-emitted as a payload that drops the legacy
-/// scripting subrecords (`SCTX`/`VTCK`/`VMAD`/`VirtualMachineAdapter`) so
-/// the converted plugin no longer carries FNV-specific dialogue script
-/// hooks.
+/// Each DIAL is re-emitted without its FNV dialogue-script subrecords
+/// (`SCTX`/`VTCK`/`VMAD`/`VirtualMachineAdapter`).
 pub fn accumulate_dial_records(
     ctx: &mut super::FnvLegacyScriptingContext,
     dial_records: &[(Value, String)],
@@ -139,24 +177,34 @@ pub fn translate_info_record(
     let short_form_id = object_id_from_form_key(source_form_key);
 
     // Voice type — VTCK field may be a string or a dict with "voice_type" key.
-    let voice_type = extract_voice_type(record);
+    let resolved_voice_type = extract_voice_type(record);
+    let voice_type = resolved_voice_type
+        .clone()
+        .unwrap_or_else(|| format!("UNRESOLVED_{short_form_id}"));
 
     let voice_target =
         fnv_to_fo4_voice_path(mod_prefix, source_plugin, &voice_type, &short_form_id);
     let voice_source = fnv_voice_source_path(source_plugin, &voice_type, &short_form_id);
 
-    let source = record_field_str_optional(record, "SCTX");
-    let (fragment_class_name, fragment_psc_text) = if let Some(source) = source {
-        let class_name = topic_info_fragment_name(&short_form_id);
-        let ctx = FnvScriptContext::load()
-            .map_err(|e| TranslateError::Semantic(format!("load ctx: {e}")))?;
-        let wrapped = format!("begin GameMode\n{source}\nend\n");
-        let papyrus = translate_to_papyrus(&wrapped, &ctx, &class_name, "TopicInfo")?;
-        let bodies = extract_first_event_body(&papyrus);
-        let psc_text = build_info_psc(&class_name, &bodies);
-        (Some(class_name), Some(psc_text))
+    let scripts = info_script_fragments(record)?;
+    let fragment_properties = info_fragment_properties(record, mod_prefix, &scripts)?;
+    let (fragment_class_name, fragment_psc_text, fragment_phases) = if scripts.is_empty() {
+        (None, None, Vec::new())
     } else {
-        (None, None)
+        let class_name = topic_info_fragment_name(&short_form_id);
+        let ctx =
+            FnvScriptContext::load_for_exact_slice_record("INFO", source_form_key, mod_prefix)
+                .map_err(|e| TranslateError::Semantic(format!("load ctx: {e}")))?;
+        let mut translated = Vec::with_capacity(scripts.len());
+        for (phase, source) in scripts {
+            let normalized_source = normalize_info_fragment_source(&source);
+            let wrapped = format!("begin GameMode\n{normalized_source}\nend\n");
+            let papyrus = translate_to_papyrus(&wrapped, &ctx, &class_name, "TopicInfo")?;
+            translated.push((phase, extract_first_event_body(&papyrus)));
+        }
+        let phases = translated.iter().map(|(phase, _)| *phase).collect();
+        let psc_text = build_info_psc(&class_name, &fragment_properties, &translated);
+        (Some(class_name), Some(psc_text), phases)
     };
 
     let payload = build_info_payload(record, fragment_class_name.as_deref(), strict);
@@ -165,12 +213,22 @@ pub fn translate_info_record(
         source_form_key: source_form_key.to_string(),
         fragment_class_name: fragment_class_name.clone(),
         fragment_psc_text,
+        fragment_phases,
+        fragment_properties,
         voice_target_path: voice_target.clone(),
         voice_source_path: voice_source,
         lip_dropped: true,
         lip_regeneration_target: Some(voice_target),
         authoring_record_payload: Some(payload),
-        warnings: vec![],
+        warnings: resolved_voice_type
+            .is_none()
+            .then(|| {
+                format!(
+                    "INFO {source_form_key} has no resolved target VTYP; voice manifest is unresolved"
+                )
+            })
+            .into_iter()
+            .collect(),
     })
 }
 
@@ -178,19 +236,35 @@ pub fn translate_info_record(
 // PSC builder
 // ---------------------------------------------------------------------------
 
-fn build_info_psc(class_name: &str, body: &str) -> String {
-    let mut out = format!("ScriptName {class_name} extends TopicInfo\n\nFunction Fragment_0()\n");
-    for line in body.lines() {
-        if line.trim().is_empty() {
-            out.push('\n');
-        } else if line.starts_with("    ") {
-            out.push_str(line);
-            out.push('\n');
-        } else {
-            out.push_str(&format!("    {}\n", line.trim_start()));
-        }
+fn build_info_psc(
+    class_name: &str,
+    properties: &[InfoFragmentProperty],
+    fragments: &[(InfoFragmentPhase, String)],
+) -> String {
+    let mut out = format!("ScriptName {class_name} extends TopicInfo\n\n");
+    for property in properties {
+        out.push_str(&format!(
+            "{} Property {} Auto Const\n",
+            property.papyrus_type, property.name
+        ));
     }
-    out.push_str("EndFunction\n");
+    if !properties.is_empty() {
+        out.push('\n');
+    }
+    for (phase, body) in fragments {
+        out.push_str(&format!("Function {}()\n", phase.psc_function_name()));
+        for line in body.lines() {
+            if line.trim().is_empty() {
+                out.push('\n');
+            } else if line.starts_with("    ") {
+                out.push_str(line);
+                out.push('\n');
+            } else {
+                out.push_str(&format!("    {}\n", line.trim_start()));
+            }
+        }
+        out.push_str("EndFunction\n\n");
+    }
     out.trim_end().to_string() + "\n"
 }
 
@@ -198,68 +272,249 @@ fn build_info_psc(class_name: &str, body: &str) -> String {
 // Payload builder
 // ---------------------------------------------------------------------------
 
-fn build_info_payload(record: &Value, fragment_class_name: Option<&str>, _strict: bool) -> Value {
-    let drop_fields: HashSet<&str> = ["SCTX", "VTCK", "VMAD", "VirtualMachineAdapter"]
-        .into_iter()
-        .collect();
-    let mut payload = filtered_payload(record, &drop_fields);
-    if let Some(class_name) = fragment_class_name {
-        let vmad = synthesize_topic_info_vmad(class_name);
-        upsert_field(&mut payload, "VirtualMachineAdapter", vmad);
-    }
-    payload
+fn build_info_payload(record: &Value, _fragment_class_name: Option<&str>, _strict: bool) -> Value {
+    let drop_fields: HashSet<&str> = [
+        "SCHR",
+        "SCDA",
+        "SCTX",
+        "SCRO",
+        "NEXT",
+        "ScriptBegins",
+        "ScriptEnds",
+        "VTCK",
+        "VMAD",
+        "VirtualMachineAdapter",
+    ]
+    .into_iter()
+    .collect();
+    filtered_payload(record, &drop_fields)
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn extract_voice_type(record: &Value) -> String {
+fn extract_voice_type(record: &Value) -> Option<String> {
+    if let Some(resolved) = record
+        .get("__target_voice_folder")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Some(resolved.to_string());
+    }
     if let Some(fields) = record.get("fields").and_then(|f| f.as_array()) {
         for field in fields {
             if let Some(vtck) = field_value(field, "VTCK") {
                 // May be a plain string or a dict with "voice_type" key.
                 if let Some(s) = vtck.as_str() {
-                    return s.to_string();
+                    return Some(s.to_string());
                 }
                 if let Some(obj) = vtck.as_object() {
                     if let Some(vt) = obj.get("voice_type").and_then(|v| v.as_str()) {
-                        return vt.to_string();
-                    }
-                }
-            }
-        }
-    }
-    "MaleEvenToned".to_string()
-}
-
-fn record_field_str(record: &Value, sig: &str) -> String {
-    if let Some(fields) = record.get("fields").and_then(|f| f.as_array()) {
-        for field in fields {
-            if let Some(val) = field_value(field, sig) {
-                if let Some(s) = val.as_str() {
-                    return s.to_string();
-                }
-            }
-        }
-    }
-    String::new()
-}
-
-fn record_field_str_optional(record: &Value, sig: &str) -> Option<String> {
-    if let Some(fields) = record.get("fields").and_then(|f| f.as_array()) {
-        for field in fields {
-            if let Some(val) = field_value(field, sig) {
-                if let Some(s) = val.as_str() {
-                    let s = s.trim();
-                    if !s.is_empty() {
-                        return Some(s.to_string());
+                        return Some(vt.to_string());
                     }
                 }
             }
         }
     }
     None
+}
+
+fn record_field_strings(record: &Value, sig: &str) -> Vec<String> {
+    record
+        .get("fields")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|field| field_value(field, sig).and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+fn info_script_fragments(
+    record: &Value,
+) -> Result<Vec<(InfoFragmentPhase, String)>, TranslateError> {
+    let mut fragments = Vec::new();
+    let Some(fields) = record.get("fields").and_then(Value::as_array) else {
+        return Ok(fragments);
+    };
+    let mut flat_phase = InfoFragmentPhase::Begin;
+    for field in fields {
+        let Some(object) = field.as_object().filter(|object| object.len() == 1) else {
+            continue;
+        };
+        let (signature, value) = object.iter().next().unwrap();
+        let phase = match signature.as_str() {
+            "ScriptBegins" => {
+                flat_phase = InfoFragmentPhase::Begin;
+                Some(flat_phase)
+            }
+            "ScriptEnds" | "NEXT" => {
+                flat_phase = InfoFragmentPhase::End;
+                Some(flat_phase)
+            }
+            "SCHR" => Some(flat_phase),
+            "SCTX" | "EmbeddedScriptSource" => {
+                let source = decode_script_source(value)?;
+                if !source.trim().is_empty() {
+                    fragments.push((flat_phase, source));
+                }
+                None
+            }
+            _ => None,
+        };
+        let Some(phase) = phase else { continue };
+        let mut sources = Vec::new();
+        collect_nested_script_sources(value, &mut sources)?;
+        for source in sources {
+            if !source.trim().is_empty() {
+                fragments.push((phase, source));
+            }
+        }
+    }
+    for phase in [InfoFragmentPhase::Begin, InfoFragmentPhase::End] {
+        if fragments
+            .iter()
+            .filter(|(found, _)| *found == phase)
+            .count()
+            > 1
+        {
+            return Err(TranslateError::Semantic(format!(
+                "INFO contains multiple {:?} result scripts; FO4 has one fragment slot per phase",
+                phase
+            )));
+        }
+    }
+    fragments.sort_by_key(|(phase, _)| phase.vmad_flag());
+    Ok(fragments)
+}
+
+fn normalize_info_fragment_source(source: &str) -> String {
+    let normalized = source
+        .lines()
+        .map(|line| {
+            let parts = line.split_whitespace().collect::<Vec<_>>();
+            if parts.len() == 3
+                && parts[0].eq_ignore_ascii_case("setstage")
+                && parts[1].eq_ignore_ascii_case("VTechatticup")
+            {
+                let indentation = &line[..line.len() - line.trim_start().len()];
+                format!("{indentation}SetStage(VTechatticup, {})", parts[2])
+            } else if parts.len() == 4
+                && parts[0].eq_ignore_ascii_case("set")
+                && parts[1].eq_ignore_ascii_case("VTechatticup.HostageStorVar")
+                && parts[2].eq_ignore_ascii_case("to")
+            {
+                let indentation = &line[..line.len() - line.trim_start().len()];
+                format!("{indentation}SetVTechatticupHostageStorVar({})", parts[3])
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    super::quest::normalize_fragment_command_syntax(&normalized)
+}
+
+fn info_fragment_properties(
+    record: &Value,
+    mod_prefix: &str,
+    scripts: &[(InfoFragmentPhase, String)],
+) -> Result<Vec<InfoFragmentProperty>, TranslateError> {
+    if !scripts.iter().any(|(_, source)| {
+        source
+            .to_ascii_lowercase()
+            .contains("vtechatticup.hostagestorvar")
+    }) {
+        return Ok(Vec::new());
+    }
+    let mut references = Vec::new();
+    if let Some(fields) = record.get("fields") {
+        collect_nested_script_references(fields, &mut references);
+    }
+    references.sort();
+    references.dedup();
+    let source_form_key = references
+        .into_iter()
+        .find(|reference| reference.eq_ignore_ascii_case("11F935:FalloutNV.esm"))
+        .ok_or_else(|| {
+            TranslateError::Semantic(
+                "INFO HostageStorVar result script is missing exact SCRO 11F935:FalloutNV.esm"
+                    .to_string(),
+            )
+        })?;
+    Ok(vec![InfoFragmentProperty {
+        name: "VTechatticup".to_string(),
+        papyrus_type: standalone_script_name(mod_prefix, 0x11FC64),
+        source_form_key,
+    }])
+}
+
+fn collect_nested_script_references(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_nested_script_references(value, output);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(reference) = object.get("SCRO").and_then(script_form_key) {
+                output.push(reference);
+            }
+            for value in object.values() {
+                collect_nested_script_references(value, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn script_form_key(value: &Value) -> Option<String> {
+    if let Some(value) = value.as_str() {
+        return Some(value.to_string());
+    }
+    let reference = value.get("reference").unwrap_or(value);
+    let plugin = reference.get("plugin")?.as_str()?;
+    let local = reference
+        .get("object_id")
+        .or_else(|| reference.get("local"))?
+        .as_str()?;
+    Some(format!("{local}:{plugin}"))
+}
+
+fn collect_nested_script_sources(
+    value: &Value,
+    output: &mut Vec<String>,
+) -> Result<(), TranslateError> {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_nested_script_sources(value, output)?;
+            }
+        }
+        Value::Object(object) => {
+            for (key, value) in object {
+                if matches!(key.as_str(), "SCTX" | "EmbeddedScriptSource") {
+                    output.push(decode_script_source(value)?);
+                } else {
+                    collect_nested_script_sources(value, output)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn decode_script_source(value: &Value) -> Result<String, TranslateError> {
+    if let Some(source) = value.as_str() {
+        return Ok(source.trim_end_matches('\0').to_string());
+    }
+    let bytes = super::quest_ir::raw_bytes(value).ok_or_else(|| {
+        TranslateError::Semantic("INFO SCTX is not a raw-bytes-hex payload".to_string())
+    })?;
+    let (decoded, _, _) = WINDOWS_1252.decode(&bytes);
+    Ok(decoded.trim_end_matches('\0').to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -274,12 +529,14 @@ mod tests {
     fn translate_info_record_no_sctx() {
         let record = json!({
             "eid": "Info1",
+            "__target_voice_folder": "VTechatticupRenolds",
             "fields": []
         });
         let result = translate_info_record(&record, "B21", "FNV.esm", false, "001234:FNV.esm");
         let ti = result.expect("translate ok");
         assert!(ti.fragment_class_name.is_none());
         assert!(ti.fragment_psc_text.is_none());
+        assert!(ti.fragment_phases.is_empty());
         assert!(ti.voice_target_path.contains("FNV.esm"));
         assert!(ti.lip_dropped);
     }
@@ -288,6 +545,7 @@ mod tests {
     fn translate_info_record_with_sctx() {
         let record = json!({
             "eid": "Info2",
+            "__target_voice_folder": "VTechatticupRenolds",
             "fields": [
                 { "SCTX": "set x to 1" },
             ]
@@ -299,17 +557,31 @@ mod tests {
         assert!(class.starts_with("TIF__"));
         let psc = ti.fragment_psc_text.as_ref().unwrap();
         assert!(psc.contains("extends TopicInfo"));
-        assert!(psc.contains("Fragment_0"));
+        assert!(psc.contains("Fragment_Begin"));
+        assert_eq!(ti.fragment_phases, [InfoFragmentPhase::Begin]);
+        let fields = ti
+            .authoring_record_payload
+            .as_ref()
+            .and_then(|payload| payload.get("fields"))
+            .and_then(Value::as_array)
+            .unwrap();
+        assert!(fields.iter().all(|field| {
+            !field
+                .as_object()
+                .is_some_and(|field| field.contains_key("VirtualMachineAdapter"))
+        }));
     }
 
     #[test]
-    fn translate_info_record_voice_type_default() {
+    fn translate_info_record_without_voice_resolution_never_defaults_voice() {
         let record = json!({
             "fields": []
         });
-        let ti =
-            translate_info_record(&record, "B21", "FNV.esm", false, "001234:FNV.esm").expect("ok");
-        assert!(ti.voice_target_path.contains("MaleEvenToned"));
+        let translated = translate_info_record(&record, "B21", "FNV.esm", false, "001234:FNV.esm")
+            .expect("legacy wrapper records unresolved voice metadata");
+        assert!(translated.voice_target_path.contains("UNRESOLVED_001234"));
+        assert!(!translated.voice_target_path.contains("MaleEvenToned"));
+        assert_eq!(translated.warnings.len(), 1);
     }
 
     #[test]
@@ -325,28 +597,132 @@ mod tests {
     }
 
     #[test]
-    fn group_dial_records_groups_by_speaker() {
+    fn group_dial_records_groups_by_repeated_quest_owners() {
         let records = vec![
-            json!({ "fields": [{ "QNAM": "001:FNV.esm" }] }),
-            json!({ "fields": [{ "QNAM": "002:FNV.esm" }] }),
-            json!({ "fields": [{ "QNAM": "001:FNV.esm" }] }),
+            json!({ "fields": [{ "QSTI": "001:FNV.esm" }] }),
+            json!({ "fields": [{ "QSTI": "002:FNV.esm" }] }),
+            json!({ "fields": [{ "QSTI": "001:FNV.esm" }, { "QSTI": "002:FNV.esm" }] }),
         ];
         let groups = group_dial_records(&records);
         assert_eq!(groups.len(), 2);
         let grp1 = groups
             .iter()
-            .find(|g| g.speaker_form_key == "001:FNV.esm")
+            .find(|g| g.quest_owner_form_key == "001:FNV.esm")
             .unwrap();
         assert_eq!(grp1.topics.len(), 2);
+        let grp2 = groups
+            .iter()
+            .find(|g| g.quest_owner_form_key == "002:FNV.esm")
+            .unwrap();
+        assert_eq!(grp2.topics.len(), 2);
     }
 
     #[test]
     fn build_info_psc_format() {
-        let psc = build_info_psc("TIF__001234", "x = 1");
+        let psc = build_info_psc(
+            "TIF__001234",
+            &[],
+            &[(InfoFragmentPhase::End, "x = 1".to_string())],
+        );
         assert!(psc.contains("ScriptName TIF__001234 extends TopicInfo"));
-        assert!(psc.contains("Function Fragment_0()"));
+        assert!(psc.contains("Function Fragment_End()"));
         assert!(psc.contains("    x = 1"));
         assert!(psc.contains("EndFunction"));
+    }
+
+    #[test]
+    fn live_info_130161_preserves_begin_result_script() {
+        let record = json!({
+            "__target_voice_folder": "VTechatticupRenolds",
+            "fields": [{
+                "SCHR": [{
+                    "SCHR": { "RefCount": 1, "CompiledSize": 28 },
+                    "SCTX": { "encoding": "raw-bytes-hex", "hex": "7365747374616765207674656368617474696375702031300D0A736574207674656368617474696375702E486F737461676553746F7256617220746F2032" },
+                    "SCRO": { "reference": { "plugin": "FalloutNV.esm", "object_id": "11F935" } }
+                }]
+            }]
+        });
+        let translated = translate_info_record(
+            &record,
+            "FNV_FO3",
+            "FalloutNV.esm",
+            true,
+            "130161:FalloutNV.esm",
+        )
+        .unwrap();
+        assert_eq!(translated.fragment_phases, [InfoFragmentPhase::Begin]);
+        let psc = translated.fragment_psc_text.as_deref().unwrap();
+        assert!(psc.contains("Function Fragment_Begin()"));
+        assert!(psc.contains("VTechatticup.SetStage(10)"));
+        assert!(psc.contains("VTechatticup.HostageStorVar = 2"));
+        assert!(psc.contains("FNV_FO3_S_11FC64 Property VTechatticup Auto Const"));
+        assert_eq!(
+            translated.fragment_properties,
+            [InfoFragmentProperty {
+                name: "VTechatticup".into(),
+                papyrus_type: "FNV_FO3_S_11FC64".into(),
+                source_form_key: "11F935:FalloutNV.esm".into(),
+            }]
+        );
+        assert!(translated.fragment_properties[0].papyrus_type.len() <= 38);
+        assert!(!psc.contains("Fragment_End"));
+    }
+
+    #[test]
+    fn live_info_134b9b_preserves_end_result_script() {
+        let record = json!({
+            "__target_voice_folder": "VTechatticupRenolds",
+            "fields": [
+                { "SCHR": [{ "SCHR": { "Flags": ["Enabled"] } }] },
+                { "NEXT": [{
+                    "Marker": true,
+                    "SCHR": { "RefCount": 1, "CompiledSize": 28 },
+                    "SCTX": { "encoding": "raw-bytes-hex", "hex": "736574537461676520565465636861747469637570203130300D0A736574207674656368617474696375702E486F737461676553746F7256617220746F2033" },
+                    "SCRO": { "reference": { "plugin": "FalloutNV.esm", "object_id": "11F935" } }
+                }] }
+            ]
+        });
+        let translated = translate_info_record(
+            &record,
+            "FNV_FO3",
+            "FalloutNV.esm",
+            true,
+            "134B9B:FalloutNV.esm",
+        )
+        .unwrap();
+        assert_eq!(translated.fragment_phases, [InfoFragmentPhase::End]);
+        let psc = translated.fragment_psc_text.as_deref().unwrap();
+        assert!(psc.contains("Function Fragment_End()"));
+        assert!(psc.contains("VTechatticup.SetStage(100)"));
+        assert!(psc.contains("VTechatticup.HostageStorVar = 3"));
+        assert!(!psc.contains("Fragment_Begin"));
+    }
+
+    #[test]
+    fn production_flat_info_134b9b_marks_trailing_sctx_as_end() {
+        let record = json!({
+            "__target_voice_folder": "VTechatticupRenolds",
+            "fields": [
+                { "SCHR": { "Flags": ["Enabled"], "RefCount": 0 } },
+                { "NEXT": null },
+                { "SCHR": { "Flags": ["Enabled"], "RefCount": 1, "CompiledSize": 28 } },
+                { "SCDA": { "encoding": "raw-bytes-hex", "hex": "01020304" } },
+                { "SCTX": { "encoding": "raw-bytes-hex", "hex": "736574537461676520565465636861747469637570203130300D0A736574207674656368617474696375702E486F737461676553746F7256617220746F2033" } },
+                { "SCRO": { "reference": { "plugin": "FalloutNV.esm", "object_id": "11F935" } } }
+            ]
+        });
+        let translated = translate_info_record(
+            &record,
+            "FNV_FO3",
+            "FalloutNV.esm",
+            true,
+            "134B9B:FalloutNV.esm",
+        )
+        .unwrap();
+        assert_eq!(translated.fragment_phases, [InfoFragmentPhase::End]);
+        let psc = translated.fragment_psc_text.unwrap();
+        assert!(psc.contains("Function Fragment_End()"));
+        assert!(!psc.contains("Fragment_Begin"));
     }
 
     // -----------------------------------------------------------------------

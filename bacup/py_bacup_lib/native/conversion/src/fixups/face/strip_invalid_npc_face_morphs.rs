@@ -1,41 +1,22 @@
 //! Strip NPC_ morph entries whose index is not valid for the NPC's linked (FO4)
 //! race. Covers two distinct NPC morph subrecords:
 //!
-//! - `Face Morphs` — repeated `FMRI` (u32 index) + `FMRS` (morph values) pairs.
-//!   `FMRI` is an index into the linked RACE's per-gender Face Morphs table
-//!   (xEdit `wbFaceMorphToStr`, validated against `RACE` `FMRI`/`FMRN`).
-//! - `Morph Keys` — `MSDK`, an `array_struct:I` of u32 keys. Each key is
-//!   validated by xEdit `wbMorphValueToStr` against the linked RACE's
-//!   Morph-Group preset indices (`MPPI`) ∪ Morph-Value ids (`MSID`).
+//! - `Face Morphs`: repeated `FMRI` (u32 index) + `FMRS` pairs. `FMRI` indexes
+//!   the RACE's per-gender Face Morphs table (xEdit `wbFaceMorphToStr`, checked
+//!   against RACE `FMRI`/`FMRN`).
+//! - `Morph Keys`: `MSDK` (`array_struct:I`), each key checked by xEdit
+//!   `wbMorphValueToStr` against the RACE's `MPPI` ∪ `MSID`.
 //!
-//! After a FO76→FO4 conversion an NPC's `RNAM` resolves to a FO4 race whose
-//! tables lack the FO76-only indices (and, if a stripped RACE override was
-//! emitted, may carry no table at all). xEdit then reports "… index [N] not
-//! found in <race>" for every such index.
+//! A converted NPC's FO4 race lacks the FO76-only indices, so xEdit reports
+//! "… index [N] not found in <race>". Valid sets come from the race in the
+//! output plugin, else the target masters; an empty table strips everything.
+//! FMRI is checked against the NPC's own sex block: Human/Ghoul tables store a
+//! male then a female block, and merging them passes opposite-sex rows that
+//! xEdit still rejects.
 //!
-//! # What this does
-//! For each output NPC_ carrying FMRI or MSDK morph data:
-//!   1. Resolve `RNAM` → race FormKey.
-//!   2. Read the race's valid-index sets (sex-specific FMRI; and MPPI∪MSID).
-//!      Prefer the race in the output plugin; fall back to the target master
-//!      handles (HumanRace / GhoulRace / LostRace etc. live in `Fallout4.esm`).
-//!   3. Drop each `FMRI` row (and its paired `FMRS`) whose index ∉ the NPC
-//!      sex's FMRI set; filter the `MSDK` u32 array in place, dropping keys ∉
-//!      the morph-key set.
-//!      A race that resolves with an empty table means every index is invalid →
-//!      everything is stripped (an empty valid set drops all).
-//!
-//! When the race can't be resolved/read anywhere (RNAM unresolved or no RACE
-//! record in output or masters), the NPC is left UNTOUCHED — never strip blind.
-//! There is no master-independent floor that can decide validity: FO4 vanilla
-//! RACE FMRI tables carry high chargen morph IDs, so a high index is NOT proof
-//! of a FO76-only morph. The subtle failure mode is sex: Human/Ghoul RACE FMRI
-//! tables are stored as male block then female block. Merging the two blocks
-//! makes opposite-sex morph rows look valid, but xEdit validates against the
-//! NPC sex-specific block and reports every opposite-sex index as "not found".
-//!
-//! Policy: strip, do not remap. There is no safe mapping of a FO76 morph index
-//! onto a different race's table; a wrong index is worse than a missing one.
+//! An unreadable race leaves the NPC untouched, since vanilla FO4 FMRI tables
+//! carry high chargen ids and magnitude proves nothing. Indices are stripped,
+//! never remapped; a wrong index is worse than a missing one.
 
 use crate::fixups::prune_orphaned_records::is_creature_root_sig;
 use crate::fixups::{Fixup, FixupConfig, FixupContext, FixupError, FixupReport};
@@ -111,6 +92,8 @@ impl Fixup for StripInvalidNpcFaceMorphsFixup {
         // pay the race decode once. `None` = race unresolved/unreadable → leave
         // the NPC untouched (never strip blind).
         let mut race_valid: FxHashMap<FormKey, Option<RaceMorphSets>> = FxHashMap::default();
+        let mut replacements = Vec::new();
+        let mut records_dropped = 0;
 
         for fk in &npc_fks {
             let mut record =
@@ -154,26 +137,97 @@ impl Fixup for StripInvalidNpcFaceMorphsFixup {
                     r
                 }
                 _ => {
-                    // Race not readable anywhere (e.g. a vanilla race in a master
-                    // that isn't loaded for this run). Leave the NPC UNTOUCHED:
-                    // there is no master-independent rule that can tell a valid
-                    // high FMRI index (FO4 races carry indices up to 921646279)
-                    // from a FO76-only one, so stripping by magnitude would
-                    // delete valid morphs. Never strip blind.
+                    // Race unreadable (e.g. its master isn't loaded): leave the NPC
+                    // alone. FO4 races carry FMRI indices up to 921646279, so
+                    // stripping by magnitude would delete valid morphs.
                     0
                 }
             };
             if removed > 0 {
-                session
-                    .replace_record(record, target_schema.as_ref(), mapper.interner)
-                    .map_err(|e| FixupError::HandleError(e.to_string()))?;
-                report.records_changed += 1;
-                report.records_dropped += removed;
+                replacements.push(record);
+                records_dropped += removed;
             }
+        }
+
+        if !replacements.is_empty() {
+            let records_changed = u32::try_from(replacements.len()).unwrap_or(u32::MAX);
+            session
+                .replace_records(replacements, target_schema.as_ref(), mapper.interner)
+                .map_err(|e| FixupError::HandleError(e.to_string()))?;
+            report.records_changed += records_changed;
+            report.records_dropped += records_dropped;
         }
 
         Ok(report)
     }
+}
+
+#[cfg(test)]
+fn run_sequential_for_test(
+    session: &mut PluginSession,
+    mapper: &mut FormKeyMapper,
+    config: &FixupConfig,
+) -> Result<FixupReport, FixupError> {
+    let mut report = FixupReport::empty();
+    let target_schema = config
+        .target_schema
+        .clone()
+        .ok_or_else(|| FixupError::Other("missing target schema in fixup config".into()))?;
+    let npc_sig = SigCode::from_str("NPC_").map_err(|e| FixupError::SchemaError(e.to_string()))?;
+    let npc_fks = session
+        .form_keys_of_sig(npc_sig, mapper.interner)
+        .map_err(|e| FixupError::HandleError(e.to_string()))?;
+    let master_handle_ids = config.target_master_handle_ids.clone();
+    let mut race_valid: FxHashMap<FormKey, Option<RaceMorphSets>> = FxHashMap::default();
+
+    for fk in &npc_fks {
+        let mut record = match session.record_decoded(fk, target_schema.as_ref(), mapper.interner) {
+            Ok(record) => record,
+            Err(error) => {
+                report.warnings.push(
+                    mapper
+                        .interner
+                        .intern(&format!("strip_face_morphs_npc_read:{error}")),
+                );
+                continue;
+            }
+        };
+        if !record_has_morph_data(&record) {
+            continue;
+        }
+        let Some(race_fk) = resolve_npc_race(&record) else {
+            continue;
+        };
+        if !race_valid.contains_key(&race_fk) {
+            race_valid.insert(
+                race_fk,
+                read_race_morph_sets(
+                    session,
+                    &race_fk,
+                    target_schema.as_ref(),
+                    &master_handle_ids,
+                    mapper.interner,
+                ),
+            );
+        }
+        let removed = match race_valid.get(&race_fk) {
+            Some(Some(sets)) => {
+                let valid_fmri = sets.fmri_for_npc(&record, &race_fk, mapper.interner);
+                let mut removed = drop_invalid_face_morphs(&mut record, valid_fmri);
+                removed += filter_invalid_morph_keys(&mut record, &sets.morph_keys);
+                removed
+            }
+            _ => 0,
+        };
+        if removed > 0 {
+            session
+                .replace_record(record, target_schema.as_ref(), mapper.interner)
+                .map_err(|error| FixupError::HandleError(error.to_string()))?;
+            report.records_changed += 1;
+            report.records_dropped += removed;
+        }
+    }
+    Ok(report)
 }
 
 /// Valid morph-index sets for one race, as xEdit validates NPC morph data.
@@ -359,16 +413,11 @@ fn npc_sex(record: &Record) -> Option<NpcSex> {
     None
 }
 
-/// Filter the NPC `MSDK` "Morph Keys" array, dropping every u32 key not in
-/// `valid`, AND drop the value at the same position in the parallel `MSDV`
-/// "Morph Values" array. MSDK (`array_struct:I`, u32 keys) and MSDV
-/// (`array_struct:f`, f32 values) are PARALLEL arrays the FO4 engine reads in
-/// lockstep (wbDefinitionsFO4.pas: MSDK keys + MSDV values, same count). If we
-/// drop a key without dropping its paired value the arrays desync — the engine
-/// reads a malformed chunk and CRASHES in TESFile::GetChunkData on load
-/// (NPC [0778814A]). So the drop is position-paired: a key dropped at
-/// index i drops the value at index i; if MSDK ends empty, MSDV ends empty too.
-/// Returns the number of keys removed across all MSDK subrecords.
+/// Drop every `MSDK` key not in `valid`, and the `MSDV` value at the same
+/// position. MSDK (u32 keys) and MSDV (f32 values) are parallel arrays the FO4
+/// engine reads in lockstep (wbDefinitionsFO4.pas); a desync crashes in
+/// `TESFile::GetChunkData` on load (NPC [0778814A]). If MSDK ends empty, so
+/// does MSDV. Returns the number of keys removed across all MSDK subrecords.
 fn filter_invalid_morph_keys(record: &mut Record, valid: &FxHashSet<u32>) -> u32 {
     let (Ok(msdk_sig), Ok(msdv_sig)) = (
         SubrecordSig::from_str("MSDK"),
@@ -523,9 +572,15 @@ fn field_u32(value: &FieldValue) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixups::FixupConfig;
+    use crate::formkey_mapper::{FormKeyMapper, MapperOptions, MapperState};
     use crate::ids::{FormKey, SigCode, SubrecordSig};
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
+    use crate::session::open_session;
     use crate::sym::StringInterner;
+    use esp_authoring_core::plugin_runtime::{
+        plugin_handle_close_native, plugin_handle_new_native, plugin_handle_save_no_py,
+    };
 
     fn make_record(sig_str: &str, interner: &StringInterner) -> Record {
         Record {
@@ -977,5 +1032,240 @@ mod tests {
         let interner = StringInterner::new();
         let npc = make_record("NPC_", &interner);
         assert!(resolve_npc_race(&npc).is_none());
+    }
+
+    #[test]
+    fn session_fixup_batches_face_morph_replacements_and_preserves_compression() {
+        let interner = StringInterner::new();
+        let output = interner.intern("Output.esp");
+        let race_key = FormKey {
+            local: 0x200,
+            plugin: output,
+        };
+        let mut race = make_record("RACE", &interner);
+        race.form_key = race_key;
+        push(&mut race, "FMRI", FieldValue::Uint(1));
+        push(
+            &mut race,
+            "FMRN",
+            FieldValue::String(interner.intern("Valid")),
+        );
+
+        let mut first = make_record("NPC_", &interner);
+        first.form_key.local = 0x100;
+        first.flags = RecordFlags::COMPRESSED;
+        push(&mut first, "RNAM", FieldValue::FormKey(race_key));
+        push(&mut first, "FMRI", FieldValue::Uint(1));
+        push(&mut first, "FMRS", fmrs_bytes());
+        push(&mut first, "FMRI", FieldValue::Uint(2));
+        push(&mut first, "FMRS", fmrs_bytes());
+
+        let mut second = first.clone();
+        second.form_key.local = 0x101;
+        second.flags = RecordFlags::empty();
+
+        let target = plugin_handle_new_native("Output.esp", Some("fo4")).unwrap();
+        let sequential_target = plugin_handle_new_native("Output.esp", Some("fo4")).unwrap();
+        let schema = {
+            let mut session = open_session(target, None).unwrap();
+            let schema = session.schema().unwrap();
+            session
+                .add_record(race.clone(), schema.as_ref(), &interner)
+                .unwrap();
+            session
+                .add_record(first.clone(), schema.as_ref(), &interner)
+                .unwrap();
+            session
+                .add_record(second.clone(), schema.as_ref(), &interner)
+                .unwrap();
+            schema
+        };
+        {
+            let mut session = open_session(sequential_target, None).unwrap();
+            session
+                .add_record(race, schema.as_ref(), &interner)
+                .unwrap();
+            session
+                .add_record(first, schema.as_ref(), &interner)
+                .unwrap();
+            session
+                .add_record(second, schema.as_ref(), &interner)
+                .unwrap();
+        }
+        let mut mapper_state = MapperState::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "Output.esp".into(),
+                preserve_source_ids: true,
+                ..Default::default()
+            },
+        );
+        let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &interner);
+        let mut sequential_mapper_state = MapperState::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "Output.esp".into(),
+                preserve_source_ids: true,
+                ..Default::default()
+            },
+        );
+        let mut sequential_mapper =
+            FormKeyMapper::from_state(&mut sequential_mapper_state, &interner);
+        let config = FixupConfig {
+            target_schema: Some(schema.clone()),
+            ..Default::default()
+        };
+
+        let mut session = open_session(target, None).unwrap();
+        let report = StripInvalidNpcFaceMorphsFixup
+            .run_with_session(&mut session, &mut mapper, &config)
+            .unwrap();
+        assert_eq!(report.records_changed, 2);
+        assert_eq!(report.records_dropped, 2);
+        let first = session
+            .record_decoded(
+                &FormKey {
+                    local: 0x100,
+                    plugin: output,
+                },
+                schema.as_ref(),
+                &interner,
+            )
+            .unwrap();
+        assert_eq!(fmri_values(&first), vec![1]);
+        assert!(first.flags.contains(RecordFlags::COMPRESSED));
+        let second = session
+            .record_decoded(
+                &FormKey {
+                    local: 0x101,
+                    plugin: output,
+                },
+                schema.as_ref(),
+                &interner,
+            )
+            .unwrap();
+        assert_eq!(fmri_values(&second), vec![1]);
+
+        drop(session);
+        let mut sequential_session = open_session(sequential_target, None).unwrap();
+        let sequential_report =
+            run_sequential_for_test(&mut sequential_session, &mut sequential_mapper, &config)
+                .unwrap();
+        sequential_session.flush_pending_effects();
+        drop(sequential_session);
+        assert_eq!(format!("{report:?}"), format!("{sequential_report:?}"));
+        let temp = tempfile::tempdir().unwrap();
+        let batched_path = temp.path().join("batched.esp");
+        let sequential_path = temp.path().join("sequential.esp");
+        plugin_handle_save_no_py(target, batched_path.to_str().unwrap()).unwrap();
+        plugin_handle_save_no_py(sequential_target, sequential_path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            std::fs::read(batched_path).unwrap(),
+            std::fs::read(sequential_path).unwrap()
+        );
+        assert!(plugin_handle_close_native(target));
+        assert!(plugin_handle_close_native(sequential_target));
+    }
+
+    #[test]
+    #[ignore = "representative cold phase benchmark"]
+    fn benchmark_batched_face_morph_repair_against_sequential() {
+        const SAMPLES: usize = 6;
+        for sample in 0..SAMPLES {
+            let mut pair = Vec::new();
+            for sequential in if sample % 2 == 0 {
+                [true, false]
+            } else {
+                [false, true]
+            } {
+                let interner = StringInterner::new();
+                let output = interner.intern("Output.esp");
+                let race_key = FormKey {
+                    local: 0x200,
+                    plugin: output,
+                };
+                let mut records = Vec::with_capacity(50_101);
+                let mut race = make_record("RACE", &interner);
+                race.form_key = race_key;
+                push(&mut race, "FMRI", FieldValue::Uint(1));
+                push(
+                    &mut race,
+                    "FMRN",
+                    FieldValue::String(interner.intern("Valid")),
+                );
+                records.push(race);
+                for index in 0..100u32 {
+                    let mut npc = make_record("NPC_", &interner);
+                    npc.form_key.local = 0x1000 + index;
+                    if index % 3 == 0 {
+                        npc.flags = RecordFlags::COMPRESSED;
+                    }
+                    push(&mut npc, "RNAM", FieldValue::FormKey(race_key));
+                    push(&mut npc, "FMRI", FieldValue::Uint(1));
+                    push(&mut npc, "FMRS", fmrs_bytes());
+                    push(&mut npc, "FMRI", FieldValue::Uint(2));
+                    push(&mut npc, "FMRS", fmrs_bytes());
+                    records.push(npc);
+                }
+                for index in 0..50_000u32 {
+                    let mut npc = make_record("NPC_", &interner);
+                    npc.form_key.local = 0x20_000 + index;
+                    push(
+                        &mut npc,
+                        "EDID",
+                        FieldValue::String(interner.intern(&format!("Background{index}"))),
+                    );
+                    records.push(npc);
+                }
+                let target = plugin_handle_new_native("Output.esp", Some("fo4")).unwrap();
+                let schema = {
+                    let mut session = open_session(target, None).unwrap();
+                    let schema = session.schema().unwrap();
+                    session
+                        .add_records(records, schema.as_ref(), &interner)
+                        .unwrap();
+                    schema
+                };
+                let mut mapper_state = MapperState::new(
+                    [],
+                    MapperOptions {
+                        output_plugin_name: "Output.esp".into(),
+                        preserve_source_ids: true,
+                        ..Default::default()
+                    },
+                );
+                let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &interner);
+                let config = FixupConfig {
+                    target_schema: Some(schema),
+                    ..Default::default()
+                };
+                let started = std::time::Instant::now();
+                let mut session = open_session(target, None).unwrap();
+                let report = if sequential {
+                    run_sequential_for_test(&mut session, &mut mapper, &config).unwrap()
+                } else {
+                    StripInvalidNpcFaceMorphsFixup
+                        .run_with_session(&mut session, &mut mapper, &config)
+                        .unwrap()
+                };
+                session.flush_pending_effects();
+                drop(session);
+                let elapsed = started.elapsed().as_secs_f64();
+                let temp = tempfile::tempdir().unwrap();
+                let output_path = temp.path().join("output.esp");
+                plugin_handle_save_no_py(target, output_path.to_str().unwrap()).unwrap();
+                let bytes = std::fs::read(output_path).unwrap();
+                eprintln!(
+                    "npc_face_morph sample={} mode={} elapsed_ms={:.3} bytes={} report={report:?}",
+                    sample + 1,
+                    if sequential { "sequential" } else { "batched" },
+                    elapsed * 1000.0,
+                    bytes.len(),
+                );
+                pair.push((format!("{report:?}"), bytes));
+                assert!(plugin_handle_close_native(target));
+            }
+            assert_eq!(pair[0], pair[1]);
+        }
     }
 }

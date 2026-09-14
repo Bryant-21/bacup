@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 _log = logging.getLogger("conversion.worldspace_services")
+
 
 def patch_target_worldspace_subrecords(
     *,
@@ -28,10 +30,34 @@ def patch_target_worldspace_subrecords(
     ``source_plugin``, and the result is saved back in place. Returns the number
     of subrecords carried.
     """
+    return patch_target_worldspaces_subrecords(
+        source_plugin=source_plugin,
+        target_plugin_path=target_plugin_path,
+        worldspace_editor_ids=(worldspace_editor_id,),
+        target_game=target_game,
+        seed_source_strings=seed_source_strings,
+    )[0]
+
+
+def patch_target_worldspaces_subrecords(
+    *,
+    source_plugin: Any,
+    target_plugin_path: Path,
+    worldspace_editor_ids: Iterable[str],
+    target_game: str,
+    seed_source_strings: bool = False,
+) -> list[int]:
+    """Carry multiple worldspace headers and save the target plugin once."""
     from creation_lib.esp import Plugin
     from creation_lib.esp.plugin import replace_plugin_with_localized_sidecars
 
+    worldspace_editor_ids = tuple(worldspace_editor_ids)
+    if not worldspace_editor_ids:
+        return []
+
     target_plugin = Plugin.load(target_plugin_path, game=target_game)
+    copied_by_worldspace: list[int] = []
+    changed = False
     try:
         # For a localized cell slice, seed the FULL source string table onto the
         # reloaded handle (which only re-hydrated the referenced subset) and set
@@ -49,49 +75,48 @@ def patch_target_worldspace_subrecords(
                 target_plugin.localized_string_table_types = (
                     source_plugin.localized_string_table_types
                 )
-        result = target_plugin.carry_worldspace_header_from_source(
-            source_plugin,
-            source_worldspace_editor_id=worldspace_editor_id,
-            target_worldspace_editor_id=worldspace_editor_id,
-        )
-        copied = int(result.get("copied", 0))
-        for warning in result.get("warnings", []):
-            _log.warning("WRLD header carry [%s]: %s", worldspace_editor_id, warning)
+        for worldspace_editor_id in worldspace_editor_ids:
+            result = target_plugin.carry_worldspace_header_from_source(
+                source_plugin,
+                source_worldspace_editor_id=worldspace_editor_id,
+                target_worldspace_editor_id=worldspace_editor_id,
+            )
+            copied = int(result.get("copied", 0))
+            copied_by_worldspace.append(copied)
+            for warning in result.get("warnings", []):
+                _log.warning(
+                    "WRLD header carry [%s]: %s", worldspace_editor_id, warning
+                )
 
-        # Carry per-cell max-height (CELL.MHDT) from the coordinate-matched source
-        # cells onto the synthesized exterior cells. Without it, flying actors
-        # (vertibirds) path into terrain. Reuses the open target handle/save.
-        mhdt = target_plugin.sync_cell_max_height_from_source(
-            source_plugin,
-            source_worldspace_editor_id=worldspace_editor_id,
-            target_worldspace_editor_id=worldspace_editor_id,
-        )
-        cells_changed = int(mhdt.get("cells_changed", 0))
-        for warning in mhdt.get("warnings", []):
-            _log.warning("CELL MHDT carry [%s]: %s", worldspace_editor_id, warning)
-        _log.info(
-            "CELL MHDT carry [%s]: %d cells set (source_indexed=%d target_seen=%d "
-            "unmatched=%d malformed_source=%d)",
-            worldspace_editor_id,
-            cells_changed,
-            int(mhdt.get("source_cells_indexed", 0)),
-            int(mhdt.get("target_cells_seen", 0)),
-            int(mhdt.get("unmatched_target_cells", 0)),
-            int(mhdt.get("malformed_source_cells", 0)),
-        )
+            # Carry per-cell max-height (CELL.MHDT) from the coordinate-matched
+            # source cells onto the synthesized exterior cells.
+            mhdt = target_plugin.sync_cell_max_height_from_source(
+                source_plugin,
+                source_worldspace_editor_id=worldspace_editor_id,
+                target_worldspace_editor_id=worldspace_editor_id,
+            )
+            cells_changed = int(mhdt.get("cells_changed", 0))
+            changed = changed or copied > 0 or cells_changed > 0
+            for warning in mhdt.get("warnings", []):
+                _log.warning("CELL MHDT carry [%s]: %s", worldspace_editor_id, warning)
+            _log.info(
+                "CELL MHDT carry [%s]: %d cells set (source_indexed=%d target_seen=%d "
+                "unmatched=%d malformed_source=%d)",
+                worldspace_editor_id,
+                cells_changed,
+                int(mhdt.get("source_cells_indexed", 0)),
+                int(mhdt.get("target_cells_seen", 0)),
+                int(mhdt.get("unmatched_target_cells", 0)),
+                int(mhdt.get("malformed_source_cells", 0)),
+            )
 
-        if copied > 0 or cells_changed > 0:
-            # Save to a sibling temp then atomically replace, rather than saving
-            # in place. plugin_handle_load mmaps the target, and on Windows the
-            # writer cannot overwrite its own mapped section — a direct in-place
-            # save of a large ESM (the full plugin port's ~1.3 GB worldspace)
-            # fails with os error 1224. Writing a new file sidesteps the mmap;
-            # the handle is then closed (dropping the mmap) before the replace.
-            # Harmless for the small cell-slice ESP, which used to save in place.
+        if changed:
+            # Saving through a sibling file avoids replacing the target while
+            # its large memory-mapped handle is still open on Windows.
             tmp_out = f"{os.fspath(target_plugin_path)}.wrldcarry.tmp"
             target_plugin.save(tmp_out)
     finally:
         target_plugin.close()
-    if copied > 0 or cells_changed > 0:
+    if changed:
         replace_plugin_with_localized_sidecars(tmp_out, target_plugin_path)
-    return copied
+    return copied_by_worldspace

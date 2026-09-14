@@ -1,7 +1,6 @@
-//! Materials fold-in: drives the existing materials_native converter with
-//! (a) the relocation union + forced Materials/FO76/... subpaths and (b) the
-//! bCastShadows sanitizer folded in as a bgsm_default_override (so the former
-//! post-hoc rglob pass in regen_fo76.py becomes a no-op for engine outputs).
+//! Materials conversion drives the existing materials_native converter with
+//! the relocation union, forced Materials/FO76/... subpaths, and required
+//! FO4 BGSM defaults.
 //! BGSM/BGEM byte invariants ("\0" empty strings, v22→v2 scale defaults) come
 //! from the shared writers — reused, never reimplemented.
 
@@ -10,12 +9,14 @@ use std::path::{Path, PathBuf};
 
 use materials_native::convert::{
     ConvertMaterialsReport, ConvertMaterialsRequest, Game, MaterialEntry, downgrade_bgem,
-    downgrade_bgsm, repair_missing_fo76_smoothspec_from_specular, run_convert_materials,
+    downgrade_bgsm, repair_missing_fo76_smoothspec_from_specular,
+    run_convert_materials_with_inventory,
 };
 
 pub struct MaterialsEngineParams {
     pub mod_path: PathBuf,
     pub source_extracted: PathBuf,
+    pub source_inventory: Option<std::sync::Arc<crate::source_inventory::SourceAssetInventory>>,
     pub target_extracted: Option<PathBuf>,
     pub target_data_dir: Option<PathBuf>,
     pub source_game: Game,
@@ -28,9 +29,24 @@ pub struct MaterialsEngineParams {
     pub source_materialsdb: Option<PathBuf>,
     pub overwrite_existing: bool,
     pub target_asset_paths: HashSet<String>,
+    /// Data-relative prefixes whose materials deliberately overwrite the target
+    /// game's at the same path instead of being skipped as base-owned.
+    pub base_overwrite_prefixes: Vec<String>,
 }
 
 pub fn run_materials_engine(params: MaterialsEngineParams) -> ConvertMaterialsReport {
+    let inventory_materials = params
+        .convert_all
+        .then(|| {
+            params.source_inventory.as_deref().and_then(|inventory| {
+                enumerate_source_materials_from_inventory(
+                    inventory,
+                    &params.source_extracted,
+                    &["Materials"],
+                )
+            })
+        })
+        .flatten();
     let mut request = ConvertMaterialsRequest {
         materials: params.materials,
         source_game: Some(params.source_game),
@@ -38,14 +54,13 @@ pub fn run_materials_engine(params: MaterialsEngineParams) -> ConvertMaterialsRe
         asset_prefix: "fo76".to_string(), // accepted-for-compat; output unprefixed
         source_materialsdb: params.source_materialsdb,
         overwrite_existing: params.overwrite_existing,
-        // The bCastShadows fold-in: applied to every written BGSM by
-        // write_bgsm -> apply_bgsm_overrides.
         bgsm_default_overrides: vec![("bCastShadows".to_string(), serde_json::json!(true))],
         convert_all: params.convert_all,
         pbr_carry: params.pbr_carry,
         source_path_overrides: crate::material_source_overrides::material_source_overrides()
             .clone(),
         target_asset_paths: params.target_asset_paths,
+        base_overwrite_prefixes: params.base_overwrite_prefixes,
     };
 
     apply_relocation_to_material_request(
@@ -53,12 +68,21 @@ pub fn run_materials_engine(params: MaterialsEngineParams) -> ConvertMaterialsRe
         &params.source_extracted,
         &params.relocation_members,
         &params.namespace,
+        params.source_inventory.as_deref(),
     );
 
     // Source-path overrides are applied inside run_convert_materials so the
     // convert_all enumeration honors them too (request.source_path_overrides).
 
-    run_convert_materials(
+    let enumerated_source_materials = inventory_materials.map(|mut materials| {
+        materials.sort_by(|left, right| {
+            left.source_path
+                .to_lowercase()
+                .cmp(&right.source_path.to_lowercase())
+        });
+        materials
+    });
+    run_convert_materials_with_inventory(
         &params.mod_path,
         &request,
         params.source_game,
@@ -66,6 +90,7 @@ pub fn run_materials_engine(params: MaterialsEngineParams) -> ConvertMaterialsRe
         &params.source_extracted,
         params.target_extracted.as_deref(),
         params.target_data_dir.as_deref(),
+        enumerated_source_materials,
     )
 }
 
@@ -74,6 +99,7 @@ pub(crate) fn apply_relocation_to_material_request(
     source_dir: &Path,
     relocation_members: &HashSet<String>,
     namespace: &str,
+    source_inventory: Option<&crate::source_inventory::SourceAssetInventory>,
 ) {
     if namespace.trim().is_empty() || relocation_members.is_empty() {
         return;
@@ -96,16 +122,22 @@ pub(crate) fn apply_relocation_to_material_request(
         if !abs.is_file() {
             continue;
         }
-        request.materials.push(MaterialEntry {
+        let mut entry = MaterialEntry {
             source_path: member.clone(),
             resolved_path: abs.to_string_lossy().to_string(),
             is_cdb_ref: false,
             output_subpath: Some(crate::relocation::insert_namespace_after_root(
                 member, namespace,
             )),
-            texture_namespace: Some(namespace.to_string()),
+            texture_namespace: None,
             texture_namespace_paths: HashSet::new(),
-        });
+        };
+        entry.texture_namespace_paths =
+            relocated_output_texture_paths(&entry, source_dir, relocation_members, overrides);
+        if !entry.texture_namespace_paths.is_empty() {
+            entry.texture_namespace = Some(namespace.to_string());
+        }
+        request.materials.push(entry);
         existing.insert(member.clone());
     }
 
@@ -117,7 +149,10 @@ pub(crate) fn apply_relocation_to_material_request(
             entry.output_subpath = Some(crate::relocation::insert_namespace_after_root(
                 &key, namespace,
             ));
-            entry.texture_namespace = Some(namespace.to_string());
+            entry.texture_namespace_paths =
+                relocated_output_texture_paths(entry, source_dir, relocation_members, overrides);
+            entry.texture_namespace =
+                (!entry.texture_namespace_paths.is_empty()).then(|| namespace.to_string());
             continue;
         }
         let texture_namespace_paths =
@@ -138,7 +173,16 @@ pub(crate) fn apply_relocation_to_material_request(
     // entries for non-relocated materials whose texture slots must be namespaced,
     // and give them an explicit original output_subpath so the automatic entry is
     // suppressed instead of racing a duplicate write to the same path.
-    for mut entry in enumerate_source_materials_for_relocation(source_dir) {
+    let inventory_entries = source_inventory.and_then(|inventory| {
+        enumerate_source_materials_from_inventory(
+            inventory,
+            source_dir,
+            &["Materials", "materials"],
+        )
+    });
+    for mut entry in
+        inventory_entries.unwrap_or_else(|| enumerate_source_materials_for_relocation(source_dir))
+    {
         let Some(key) = material_member_key(&entry.source_path, source_dir) else {
             continue;
         };
@@ -156,6 +200,32 @@ pub(crate) fn apply_relocation_to_material_request(
         request.materials.push(entry);
         existing.insert(key);
     }
+}
+
+fn enumerate_source_materials_from_inventory(
+    inventory: &crate::source_inventory::SourceAssetInventory,
+    source_dir: &Path,
+    root_names: &[&str],
+) -> Option<Vec<MaterialEntry>> {
+    let mut out = Vec::new();
+    for root_name in root_names {
+        let root = source_dir.join(root_name);
+        let files = inventory.files_if_compatible(&root, &[".bgsm", ".bgem"])?;
+        for path in files {
+            let Ok(rel) = path.strip_prefix(source_dir) else {
+                continue;
+            };
+            out.push(MaterialEntry {
+                source_path: rel.to_string_lossy().replace('\\', "/"),
+                resolved_path: path.to_string_lossy().to_string(),
+                is_cdb_ref: false,
+                output_subpath: None,
+                texture_namespace: None,
+                texture_namespace_paths: HashSet::new(),
+            });
+        }
+    }
+    Some(out)
 }
 
 fn relocated_output_texture_paths(
@@ -525,6 +595,7 @@ mod tests {
         MaterialsEngineParams {
             mod_path: mod_path.to_path_buf(),
             source_extracted: source.to_path_buf(),
+            source_inventory: None,
             target_extracted: None,
             target_data_dir: None,
             source_game: materials_native::convert::Game::Fo76,
@@ -537,6 +608,7 @@ mod tests {
             source_materialsdb: None,
             overwrite_existing: true,
             target_asset_paths: HashSet::new(),
+            base_overwrite_prefixes: Vec::new(),
         }
     }
 
@@ -557,7 +629,6 @@ mod tests {
         let out =
             find_bgsm_under(&tmp.join("mod").join("data").join("Materials")).expect("output bgsm");
         let parsed = bgsm::parse(&std::fs::read(&out).unwrap()).expect("output BGSM must parse");
-        // (1) Sanitizer fold-in (the former regen_fo76.py rglob pass is a no-op here):
         assert!(
             parsed.CastShadows,
             "bCastShadows must be forced true at conversion time"
@@ -598,6 +669,7 @@ mod tests {
             pbr_carry: false,
             source_path_overrides: std::collections::HashMap::new(),
             target_asset_paths: HashSet::new(),
+            base_overwrite_prefixes: Vec::new(),
         };
         materials_native::convert::run_convert_materials(
             &tmp.join("mod_legacy"),
@@ -646,10 +718,17 @@ mod tests {
         run_materials_engine(params);
 
         let fo76_dir = tmp.join("mod").join("data").join("Materials").join("FO76");
+        let output = find_bgsm_under(&fo76_dir).unwrap_or_else(|| {
+            panic!("expected a relocated material under {}", fo76_dir.display())
+        });
+        let parsed = bgsm::parse(&std::fs::read(output).unwrap()).unwrap();
         assert!(
-            find_bgsm_under(&fo76_dir).is_some(),
-            "expected a relocated material under {}",
-            fo76_dir.display()
+            !parsed
+                .DiffuseTexture
+                .replace('\\', "/")
+                .to_ascii_lowercase()
+                .contains("fo76/"),
+            "a relocated material must still reuse texture slots that were exactly deduplicated"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -700,6 +779,58 @@ mod tests {
             namespaced_output.is_file(),
             "expected relocated material at {}",
             namespaced_output.display()
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn relocated_material_namespaces_only_changed_texture_slots() {
+        let tmp = std::env::temp_dir().join("mat_engine_relocated_decal_mixed_textures");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let source = tmp.join("source");
+        let material = source
+            .join("Materials")
+            .join("DLC04")
+            .join("Decals")
+            .join("Parking.bgsm");
+        write_fo76_bgsm_with_textures(
+            &material,
+            "DLC04/Decals/Parking_d.dds",
+            "DLC04/Decals/Parking_n.dds",
+            "DLC04/Decals/Parking_r.dds",
+        );
+
+        let mut params = engine_params(&source, &tmp.join("mod"));
+        params.namespace = "FO76".to_string();
+        params
+            .relocation_members
+            .insert("materials/dlc04/decals/parking.bgsm".to_string());
+        params
+            .relocation_members
+            .insert("textures/dlc04/decals/parking_d.dds".to_string());
+
+        run_materials_engine(params);
+
+        let output = tmp
+            .join("mod")
+            .join("data")
+            .join("Materials")
+            .join("FO76")
+            .join("DLC04")
+            .join("Decals")
+            .join("Parking.bgsm");
+        let parsed = bgsm::parse(&std::fs::read(output).unwrap()).unwrap();
+        assert_eq!(
+            parsed.DiffuseTexture.trim_end_matches('\0'),
+            "FO76/DLC04/Decals/Parking_d.dds"
+        );
+        assert_eq!(
+            parsed.NormalTexture.trim_end_matches('\0'),
+            "DLC04/Decals/Parking_n.dds"
+        );
+        assert_eq!(
+            parsed.SmoothSpecTexture.trim_end_matches('\0'),
+            "DLC04/Decals/Parking_s.dds"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -896,6 +1027,9 @@ mod tests {
         params
             .relocation_members
             .insert("materials/landscape/ground/temp_groundtexture01.bgsm".to_string());
+        params
+            .relocation_members
+            .insert("textures/landscape/ground/forestrocks01_d.dds".to_string());
 
         run_materials_engine(params);
 
@@ -915,5 +1049,35 @@ mod tests {
         assert_eq!(diffuse, "FO76/Landscape/Ground/ForestRocks01_d.dds");
         assert!(!diffuse.to_ascii_lowercase().contains("temp_groundtexture"));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn source_inventory_material_enumeration_matches_direct_walkers() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        for relative in [
+            "Materials/Actors/Nested/body.BGSM",
+            "Materials/Effects/glow.bgem",
+            "Materials/ignore.txt",
+        ] {
+            let path = source.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        let inventory = crate::source_inventory::SourceAssetInventory::default();
+        let direct = enumerate_source_materials_for_relocation(&source);
+        let from_inventory = enumerate_source_materials_from_inventory(
+            &inventory,
+            &source,
+            &["Materials", "materials"],
+        )
+        .unwrap();
+        let project = |entries: Vec<MaterialEntry>| {
+            entries
+                .into_iter()
+                .map(|entry| (entry.source_path, entry.resolved_path))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(project(from_inventory), project(direct));
     }
 }

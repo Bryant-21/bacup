@@ -1,6 +1,8 @@
 Event OnQuestInit()
     Actor player = Game.GetPlayer()
-    If player
+    RemoveAllInventoryEventFilters()
+    If player && TargetTape != None
+        AddInventoryEventFilter(TargetTape)
         RegisterForRemoteEvent(player, "OnItemAdded")
     EndIf
 EndEvent
@@ -10,9 +12,14 @@ Event ObjectReference.OnHolotapePlay(ObjectReference akSender, ObjectReference a
 EndEvent
 
 Event ObjectReference.OnItemAdded(ObjectReference akSender, Form akBaseItem, Int aiItemCount, ObjectReference akItemReference, ObjectReference akSourceContainer)
-    If akSender == Game.GetPlayer() && aiItemCount > 0
+    If akSender == Game.GetPlayer() && akBaseItem == TargetTape && aiItemCount > 0
         ProcessHolotape(akBaseItem as Holotape)
     EndIf
+EndEvent
+
+Event OnQuestShutdown()
+    UnregisterForAllEvents()
+    RemoveAllInventoryEventFilters()
 EndEvent
 
 Holotape Function GetPlayedHolotape(ObjectReference akSender)

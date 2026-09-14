@@ -1,6 +1,7 @@
 """Mod Builder app — business logic for Create, Deploy, Import, Release, Migrate, Spellcheck."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -10,6 +11,7 @@ import zipfile
 from pathlib import Path
 
 from imgui_bundle import imgui
+from creation_lib.ui.widgets.modern import loading_panel
 
 from creation_lib.build.archive_plan import DEFAULT_ARCHIVE_MAX_BYTES, discover_mod_archives, gib_to_bytes
 from creation_lib.core.game_profiles import GAME_PROFILES
@@ -24,7 +26,7 @@ from ui.builder.release_metadata import (
 from app.paths import get_app_root as _get_app_root
 from creation_lib.ui.theme.window_chrome import AsyncWorker
 from creation_lib.ui.widgets import pick_folder
-from ui.tools.imgui_helpers import (
+from creation_lib.ui.widgets.forms import (
     begin_form, end_form, draw_path_row, draw_text_field, draw_combo_field, draw_float_field,
     draw_int_field,
 )
@@ -80,8 +82,10 @@ def _xse_name_for(plugin_dir: str) -> str:
     return "F4SE"
 _PC_RES_OPTIONS = ["No Limit", "4096", "2048", "1024", "512"]
 _PC_RES_VALUES = [0, 4096, 2048, 1024, 512]
-_XBOX_RES_OPTIONS = ["1024", "512"]
-_XBOX_RES_VALUES = [1024, 512]
+_XBOX_RES_OPTIONS = _PC_RES_OPTIONS
+_XBOX_RES_VALUES = _PC_RES_VALUES
+_PS_RES_OPTIONS = _PC_RES_OPTIONS
+_PS_RES_VALUES = _PC_RES_VALUES
 _PLUGIN_TYPES = ["esp", "esm", "esl"]
 _HEADER_FLAG_MASTER = 0x00000001
 _HEADER_FLAG_LOCALIZED = 0x00000080
@@ -428,6 +432,101 @@ def _read_mod_game(mod_dir: str, fallback_game: str) -> str:
     return fallback_game
 
 
+_MOD_SETTINGS_FILE = ".builder.json"
+
+# Deploy- and Release-tab options remembered per mod.
+# Keys map to `self._<key>` on ModBuilderApp.
+_MOD_SETTING_DEFAULTS: dict[str, object] = {
+    "skip_build": False,
+    "skip_pack": False,
+    "skip_papyrus_compile": False,
+    "preserve_xse_inis": False,
+    "esp_only": False,
+    "xbox": False,
+    "ps": False,
+    "expanded_archives": False,
+    "update_fo4_archive_ini": False,
+    "deploy_patches": False,
+    "skip_validation": False,
+    "pc_max_res_idx": 0,
+    "pc_effects_max_res_idx": None,
+    "xbox_max_res_idx": 0,
+    "xbox_effects_max_res_idx": None,
+    "ps_max_res_idx": 0,
+    "ps_effects_max_res_idx": None,
+    "release_localize": False,
+    "release_create_fuz": False,
+    "release_create_xwm": False,
+    "release_previs": False,
+    "release_anim_data": False,
+    "release_xbox": False,
+    "release_ps": False,
+    "release_expanded_archives": False,
+    "release_pc_max_res_idx": 0,
+    "release_pc_effects_max_res_idx": None,
+    "release_xbox_max_res_idx": 0,
+    "release_xbox_effects_max_res_idx": None,
+    "release_ps_max_res_idx": 0,
+    "release_ps_effects_max_res_idx": None,
+    "verified_creation": False,
+}
+
+# Masters every mod may use regardless of Creation status: the game's own
+# plugin, plus Skyrim's Update.esm, which is effectively part of the base game.
+_UNRESTRICTED_EXTRA_MASTERS = {"update.esm"}
+
+
+def _plugin_masters(mod_dir: str) -> list[str]:
+    plugin_yaml = os.path.join(mod_dir, "yaml", "plugin.yaml")
+    if not os.path.isfile(plugin_yaml):
+        return []
+    try:
+        from ruamel.yaml import YAML
+        with open(plugin_yaml, encoding="utf-8") as f:
+            doc = YAML().load(f)
+    except Exception:
+        return []
+    if not isinstance(doc, dict):
+        return []
+    masters = (doc.get("header") or {}).get("masters") or []
+    return [str(master) for master in masters]
+
+
+def _creation_only_masters(mod_dir: str, game: str) -> list[str]:
+    """Masters only a verified Bethesda Creation may depend on: DLC + Creation Club."""
+    from creation_lib.esp.schema.corpus import get_official_allowlist
+
+    official = get_official_allowlist(game)
+    base = {official[0].lower()} if official else set()
+    dlc = {name.lower() for name in official[1:]} - _UNRESTRICTED_EXTRA_MASTERS - base
+    return [
+        master for master in _plugin_masters(mod_dir)
+        if master.lower() in dlc or master.lower().startswith("cc")
+    ]
+
+
+def _read_mod_settings(mod_dir: str) -> dict:
+    path = os.path.join(mod_dir, _MOD_SETTINGS_FILE)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        _log.warning("Ignoring unreadable builder settings: %s", path)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_mod_settings(mod_dir: str, settings: dict) -> None:
+    path = os.path.join(mod_dir, _MOD_SETTINGS_FILE)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2, sort_keys=True)
+    except OSError:
+        _log.warning("Could not save builder settings: %s", path)
+
+
 def _progress_fraction_from_line(line: str) -> float | None:
     match = re.match(r"^\[(\d+)/(\d+)\]", line.strip())
     if match:
@@ -544,8 +643,10 @@ def _archive_ini_values_by_key(
 
 def _archive_label_base(archive_name: str) -> str:
     stem = Path(archive_name).stem
-    if stem.lower().endswith("_xbox"):
-        stem = stem[: -len("_xbox")]
+    for suffix in ("_xbox", "_ps"):
+        if stem.lower().endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
     if " - " not in stem:
         return ""
     label = stem.rsplit(" - ", 1)[1]
@@ -582,7 +683,7 @@ def _unique_archive_names(archive_names: list[str]) -> list[str]:
 def _group_fo4_archive_ini_entries(archive_names: list[str]) -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {key: [] for key in _FO4_MANAGED_ARCHIVE_KEYS}
     for archive_name in _unique_archive_names(archive_names):
-        if Path(archive_name).stem.lower().endswith("_xbox"):
+        if Path(archive_name).stem.lower().endswith(("_xbox", "_ps")):
             continue
         key = _fo4_archive_ini_key_for_archive(archive_name)
         if key is None:
@@ -720,12 +821,6 @@ def _fo4_ini_archive_names_for_mod(
     return _unique_archive_names(archive_names)
 
 
-def _shorten_progress_text(text: str, max_chars: int = 96) -> str:
-    if len(text) <= max_chars:
-        return text
-    return f"{text[:max_chars - 3]}..."
-
-
 class ModBuilderApp:
     """Business logic for the mod builder: mod list, tabs, actions, command runner."""
 
@@ -743,14 +838,19 @@ class ModBuilderApp:
         self._skip_build = False
         self._skip_pack = False
         self._skip_papyrus_compile = False
+        self._preserve_xse_inis = False
         self._esp_only = False
         self._xbox = False
+        self._ps = False
         self._expanded_archives = False
         self._update_fo4_archive_ini = False
+        self._verified_creation = False
         self._pc_max_res_idx = 0  # [No Limit, 4096, 2048, 1024, 512]
         self._pc_effects_max_res_idx: int | None = None
-        self._xbox_max_res_idx = 0  # [1024, 512]
+        self._xbox_max_res_idx = 0
         self._xbox_effects_max_res_idx: int | None = None
+        self._ps_max_res_idx = 0
+        self._ps_effects_max_res_idx: int | None = None
         self._fo4_install_idx = 0  # 0 = primary install; >0 = an extra deploy target
         self._fo4_install_choices: list[dict] = []
         workspace_settings = self._mod_builder_settings()
@@ -781,11 +881,14 @@ class ModBuilderApp:
         self._release_previs = False
         self._release_anim_data = False
         self._release_xbox = False
+        self._release_ps = False
         self._release_expanded_archives = False
         self._release_pc_max_res_idx = 0    # [No Limit, 4096, 2048, 1024, 512]
         self._release_pc_effects_max_res_idx: int | None = None
-        self._release_xbox_max_res_idx = 0  # [1024, 512]
+        self._release_xbox_max_res_idx = 0
         self._release_xbox_effects_max_res_idx: int | None = None
+        self._release_ps_max_res_idx = 0
+        self._release_ps_effects_max_res_idx: int | None = None
         self._current_mod_version = ""
         self._release_version = ""
         self._release_notes = ""
@@ -891,7 +994,9 @@ class ModBuilderApp:
         self._move_archives = bool(value)
         self._update_mod_builder_settings({"move_archives": self._move_archives})
 
-    def _draw_archive_max_size_field(self) -> None:
+    def _draw_archive_max_size_field(self, enabled: bool) -> None:
+        if not enabled:
+            imgui.begin_disabled()
         changed, archive_max_size = draw_float_field(
             "Archive Max",
             self._archive_max_size_gb(),
@@ -900,13 +1005,15 @@ class ModBuilderApp:
             fmt="%.2f",
             min_val=0.01,
         )
-        if imgui.is_item_hovered():
+        if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled.value):
             imgui.set_tooltip(
-                "Maximum BA2/BSA archive size in GiB before splitting.\n"
-                "This setting is shared by Deploy and Release."
+                "Maximum expanded BA2/BSA archive size in GiB before splitting.\n"
+                "Only applies when Expanded BA2s is enabled."
             )
-        if changed:
+        if changed and enabled:
             self._set_archive_max_size_gb(archive_max_size)
+        if not enabled:
+            imgui.end_disabled()
 
     def _asset_workers(self) -> int:
         ws = self._mod_builder_settings()
@@ -1086,7 +1193,14 @@ class ModBuilderApp:
             elif not filtered:
                 imgui.text_disabled("No matches")
             else:
+                drawn_group: int | None = None
                 for idx, mod in filtered:
+                    group = self._mod_group(idx)
+                    if group != drawn_group:
+                        imgui.separator_text(
+                            "Script Extender Plugins" if group == 0 else "Mods"
+                        )
+                        drawn_group = group
                     is_selected = idx == self._selected_mod_idx
                     kind = self._mod_kinds[idx] if idx < len(self._mod_kinds) else "mod"
                     deployed = idx < len(self._mod_deployed) and self._mod_deployed[idx]
@@ -1131,18 +1245,22 @@ class ModBuilderApp:
         if no_mod or self._running:
             imgui.end_disabled()
 
+    def _mod_group(self, idx: int) -> int:
+        kind = self._mod_kinds[idx] if idx < len(self._mod_kinds) else "mod"
+        return 0 if kind in ("xse", "combined") else 1
+
     def _filtered_mods(self) -> list[tuple[int, str]]:
-        """Return the visible mod rows after applying the filter text."""
+        """Return the visible mod rows, grouped by kind then alphabetical."""
         if not self._mod_list:
             return []
         filt = self._mod_filter_text.strip().lower()
-        if not filt:
-            return list(enumerate(self._mod_list))
-        return [
+        rows = [
             (idx, mod)
             for idx, mod in enumerate(self._mod_list)
-            if filt in mod.lower()
+            if not filt or filt in mod.lower()
         ]
+        rows.sort(key=lambda row: (self._mod_group(row[0]), row[1].lower()))
+        return rows
 
     def _draw_release_error_popup(self):
         if self._release_error_popup_open:
@@ -1194,91 +1312,13 @@ class ModBuilderApp:
             imgui.end_popup()
 
     def _draw_loading_overlay(self):
-        """Draw a semi-transparent overlay with a spinner when an operation is running."""
-        if not self._running:
-            return
-
-        win_pos = imgui.get_window_pos()
-        win_size = imgui.get_window_size()
-
-        draw_list = imgui.get_foreground_draw_list()
-
-        # Semi-transparent dim over the entire window
-        bg_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.0, 0.0, 0.0, 0.60))
-        draw_list.add_rect_filled(
-            imgui.ImVec2(win_pos.x, win_pos.y),
-            imgui.ImVec2(win_pos.x + win_size.x, win_pos.y + win_size.y),
-            bg_col,
-        )
-
-        # Spinner character cycles with time
-        t = imgui.get_time()
-        spinner = ["|", "/", "-", "\\"][int(t * 8) % 4]
-        panel_width = min(max(420.0, win_size.x * 0.62), max(260.0, win_size.x - 80.0))
-        pad = 18.0
-        text_chars = max(24, int((panel_width - pad * 2) / 7.0))
-        title = f"{spinner}  {self._loading_label or 'Working...'}"
-        message = _shorten_progress_text(self._progress_message or "Starting...", text_chars)
-        detail_lines = [
-            _shorten_progress_text(line, text_chars)
-            for line in self._progress_lines
-            if line != self._progress_message
-        ][-_PROGRESS_LINE_LIMIT:]
-
-        line_height = imgui.get_text_line_height()
-        row_gap = 8.0
-        bar_height = 10.0
-        panel_height = pad * 2 + line_height * 2 + row_gap
-        if self._progress_fraction is not None:
-            panel_height += bar_height + row_gap
-        if detail_lines:
-            panel_height += row_gap + len(detail_lines) * (line_height + 2.0)
-
-        cx = win_pos.x + (win_size.x - panel_width) * 0.5
-        cy = win_pos.y + (win_size.y - panel_height) * 0.5
-
-        # Panel background behind text
-        panel_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.14, 0.14, 0.16, 1.0))
-        border_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.35, 0.35, 0.40, 1.0))
-        panel_min = imgui.ImVec2(cx, cy)
-        panel_max = imgui.ImVec2(cx + panel_width, cy + panel_height)
-        draw_list.add_rect_filled(
-            panel_min,
-            panel_max,
-            panel_col,
-            6.0,
-        )
-        draw_list.add_rect(
-            panel_min,
-            panel_max,
-            border_col,
-            6.0,
-        )
-
-        text_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.90, 0.90, 0.90, 1.0))
-        muted_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.66, 0.66, 0.70, 1.0))
-        bar_bg_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.24, 0.24, 0.28, 1.0))
-        bar_fill_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.30, 0.62, 0.88, 1.0))
-
-        x = panel_min.x + pad
-        y = panel_min.y + pad
-        draw_list.add_text(imgui.ImVec2(x, y), text_col, _shorten_progress_text(title, text_chars))
-        y += line_height + row_gap
-        draw_list.add_text(imgui.ImVec2(x, y), text_col, message)
-        y += line_height + row_gap
-
-        if self._progress_fraction is not None:
-            fraction = max(0.0, min(self._progress_fraction, 1.0))
-            bar_min = imgui.ImVec2(x, y)
-            bar_max = imgui.ImVec2(panel_max.x - pad, y + bar_height)
-            fill_max = imgui.ImVec2(bar_min.x + (bar_max.x - bar_min.x) * fraction, bar_max.y)
-            draw_list.add_rect_filled(bar_min, bar_max, bar_bg_col, 3.0)
-            draw_list.add_rect_filled(bar_min, fill_max, bar_fill_col, 3.0)
-            y += bar_height + row_gap
-
-        for line in detail_lines:
-            draw_list.add_text(imgui.ImVec2(x, y), muted_col, line)
-            y += line_height + 2.0
+        if self._running:
+            loading_panel(
+                self._loading_label or "Working",
+                self._progress_message or "Starting...",
+                self._progress_fraction,
+                history=self._progress_lines,
+            )
 
     def _draw_delete_popup(self):
         if self._delete_popup_open:
@@ -1571,12 +1611,17 @@ class ModBuilderApp:
 
     def _draw_deploy_tab(self):
         _btn = imgui.ImVec2(-1, 0)
+        settings_before = self._mod_settings_snapshot()
 
         kind = self._selected_mod_kind()
         is_xse_only = kind == "xse"
         has_xse = kind in ("xse", "combined")
 
         self._draw_fo4_install_picker()
+
+        _, self._preserve_xse_inis = imgui.checkbox("Preserve existing XSE INIs", self._preserve_xse_inis)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Keep installed script-extender .ini files. Missing INIs and other files are copied normally.")
 
         if is_xse_only:
             mod = self._selected_mod()
@@ -1613,17 +1658,23 @@ class ModBuilderApp:
             _, self._xbox = imgui.checkbox("Xbox BA2s", self._xbox)
             if imgui.is_item_hovered():
                 imgui.set_tooltip("Also create Xbox-format BA2 archives (_xbox suffix)")
+            _, self._ps = imgui.checkbox("PlayStation BA2s", self._ps)
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "Also create PlayStation-format BA2 archives (_ps suffix).\n"
+                    "XWM is omitted; FUZ voice files are repacked with companion WAV audio."
+                )
             _, self._expanded_archives = imgui.checkbox("Expanded BA2s", self._expanded_archives)
             if imgui.is_item_hovered():
                 imgui.set_tooltip(
                     "Use family archive labels such as Meshes, Sounds, and Scripts.\n"
-                    "Off keeps small mods in Main + Textures when they fit."
+                    "Off always produces Main + Textures without size splitting."
                 )
             changed, move_archives = imgui.checkbox("Move BA2s", self._move_archives)
             if imgui.is_item_hovered():
                 imgui.set_tooltip(
-                    "Move generated BA2/BSA archives into the deploy target instead of copying them.\n"
-                    "Use this to avoid keeping a second archive copy in the mod folder."
+                    "Pack generated BA2/BSA archives directly into the deploy target.\n"
+                    "Existing generated archives for this mod are removed from the target first."
                 )
             if changed:
                 self._set_move_archives(move_archives)
@@ -1643,6 +1694,19 @@ class ModBuilderApp:
             _, self._skip_validation = imgui.checkbox("Skip Validation", self._skip_validation)
             if imgui.is_item_hovered():
                 imgui.set_tooltip("Skip the validation pass before building the .esp")
+            changed, self._verified_creation = imgui.checkbox(
+                "Verified Creation",
+                self._verified_creation,
+            )
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "Mark this mod as a verified Bethesda Creation.\n"
+                    "Only verified Creations may use game DLCs or base Creation Club\n"
+                    "plugins as masters — unverified mods that do are warned on build."
+                )
+            if changed:
+                self._save_mod_settings()
+                self._refresh_mod_display(selected_only=True)
             self._draw_mo2_deploy_option()
 
             imgui.table_set_column_index(1)
@@ -1662,7 +1726,7 @@ class ModBuilderApp:
                 if self._xbox:
                     _, self._xbox_max_res_idx = draw_combo_field("Xbox Max", _XBOX_RES_OPTIONS, self._xbox_max_res_idx)
                     if imgui.is_item_hovered():
-                        imgui.set_tooltip("Max texture dimension for Xbox BA2s")
+                        imgui.set_tooltip("Max texture dimension for Xbox BA2s (0 = no resize)")
                     xbox_effects_idx = self._xbox_effects_max_res_idx if self._xbox_effects_max_res_idx is not None else self._xbox_max_res_idx
                     changed, xbox_effects_idx = draw_combo_field("Xbox Effects", _XBOX_RES_OPTIONS, xbox_effects_idx)
                     if changed:
@@ -1672,7 +1736,27 @@ class ModBuilderApp:
                             "Max texture dimension for Textures/Effects in the Xbox archive.\n"
                             "Use this to compress Xbox effects more than the rest of the texture set."
                         )
-                self._draw_archive_max_size_field()
+                if self._ps:
+                    _, self._ps_max_res_idx = draw_combo_field(
+                        "PS Max", _PS_RES_OPTIONS, self._ps_max_res_idx
+                    )
+                    if imgui.is_item_hovered():
+                        imgui.set_tooltip("Max texture dimension for PlayStation BA2s (0 = no resize)")
+                    ps_effects_idx = (
+                        self._ps_effects_max_res_idx
+                        if self._ps_effects_max_res_idx is not None
+                        else self._ps_max_res_idx
+                    )
+                    changed, ps_effects_idx = draw_combo_field(
+                        "PS Effects", _PS_RES_OPTIONS, ps_effects_idx
+                    )
+                    if changed:
+                        self._ps_effects_max_res_idx = ps_effects_idx
+                    if imgui.is_item_hovered():
+                        imgui.set_tooltip(
+                            "Max texture dimension for Textures/Effects in the PlayStation archive."
+                        )
+                self._draw_archive_max_size_field(self._expanded_archives)
                 self._draw_asset_workers_field()
                 end_form()
 
@@ -1797,6 +1881,9 @@ class ModBuilderApp:
             imgui.end_table()
         if disabled:
             imgui.end_disabled()
+
+        if self._mod_settings_snapshot() != settings_before:
+            self._save_mod_settings()
 
     def _draw_addon_registry_tab(self):
         if self._addon_registry_needs_refresh:
@@ -1959,6 +2046,8 @@ class ModBuilderApp:
             imgui.text_disabled(f"Select the combined [{xse_name}+ESP] entry or a standard mod.")
             return
 
+        settings_before = self._mod_settings_snapshot()
+
         imgui.text_colored(
             imgui.ImVec4(0.67, 0.67, 0.67, 1.0),
             "Package the mod for distribution. Creates a release zip containing the .esp,",
@@ -2008,6 +2097,13 @@ class ModBuilderApp:
                     "Create Xbox-format BA2 archives with tiled textures (_xbox suffix).\n"
                     "Uses xtexconv to tile DDS textures for Xbox hardware."
                 )
+            _, self._release_ps = imgui.checkbox("PlayStation BA2s", self._release_ps)
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "Create PlayStation-format BA2 archives (_ps suffix).\n"
+                    "Textures use GNRL archives with ordinary DDS payloads.\n"
+                    "XWM is omitted; FUZ voice files are repacked with companion WAV audio."
+                )
             _, self._release_expanded_archives = imgui.checkbox(
                 "Expanded BA2s",
                 self._release_expanded_archives,
@@ -2015,13 +2111,14 @@ class ModBuilderApp:
             if imgui.is_item_hovered():
                 imgui.set_tooltip(
                     "Use family archive labels such as Meshes, Sounds, and Scripts.\n"
-                    "Off keeps small mods in Main + Textures when they fit."
+                    "Off always produces Main + Textures without size splitting."
                 )
             _, self._release_create_xwm = imgui.checkbox("Create XWM", self._release_create_xwm)
             if imgui.is_item_hovered():
                 imgui.set_tooltip(
                     "Convert non-voice WAV sound effects to XWM format before packaging.\n"
-                    "WAV files with loop points or cue markers are kept as-is."
+                    "WAV files with loop points or cue markers are kept as-is.\n"
+                    "PlayStation archives keep the WAV and omit the generated XWM."
                 )
             if not is_fo4:
                 imgui.begin_disabled()
@@ -2029,7 +2126,8 @@ class ModBuilderApp:
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled.value):
                 imgui.set_tooltip(
                     "Generate LIP sync + FUZ archives from voice WAVs before packaging.\n"
-                    "Requires dialogue transcript text in YAML responses."
+                    "Requires dialogue transcript text in YAML responses.\n"
+                    "PlayStation copies embed WAV audio instead of XWM."
                     if is_fo4 else "LIP/FUZ generation is only available for Fallout 4 mods"
                 )
             if not is_fo4:
@@ -2092,7 +2190,7 @@ class ModBuilderApp:
                 if self._release_xbox:
                     _, self._release_xbox_max_res_idx = draw_combo_field("Xbox Max", _XBOX_RES_OPTIONS, self._release_xbox_max_res_idx)
                     if imgui.is_item_hovered():
-                        imgui.set_tooltip("Max texture dimension for Xbox BA2s")
+                        imgui.set_tooltip("Max texture dimension for Xbox BA2s (0 = no resize)")
                     release_xbox_effects_idx = (
                         self._release_xbox_effects_max_res_idx
                         if self._release_xbox_effects_max_res_idx is not None
@@ -2108,7 +2206,27 @@ class ModBuilderApp:
                             "Max texture dimension for Textures/Effects in the Xbox archive.\n"
                             "Use this to compress Xbox effects more than the rest of the texture set."
                         )
-                self._draw_archive_max_size_field()
+                if self._release_ps:
+                    _, self._release_ps_max_res_idx = draw_combo_field(
+                        "PS Max", _PS_RES_OPTIONS, self._release_ps_max_res_idx
+                    )
+                    if imgui.is_item_hovered():
+                        imgui.set_tooltip("Max texture dimension for PlayStation BA2s (0 = no resize)")
+                    release_ps_effects_idx = (
+                        self._release_ps_effects_max_res_idx
+                        if self._release_ps_effects_max_res_idx is not None
+                        else self._release_ps_max_res_idx
+                    )
+                    changed, release_ps_effects_idx = draw_combo_field(
+                        "PS Effects", _PS_RES_OPTIONS, release_ps_effects_idx
+                    )
+                    if changed:
+                        self._release_ps_effects_max_res_idx = release_ps_effects_idx
+                    if imgui.is_item_hovered():
+                        imgui.set_tooltip(
+                            "Max texture dimension for Textures/Effects in the PlayStation archive."
+                        )
+                self._draw_archive_max_size_field(self._release_expanded_archives)
                 self._draw_asset_workers_field()
                 end_form()
 
@@ -2216,6 +2334,9 @@ class ModBuilderApp:
                 if imgui.get_scroll_y() >= imgui.get_scroll_max_y() - 10:
                     imgui.set_scroll_here_y(1.0)
         imgui.end_child()
+
+        if self._mod_settings_snapshot() != settings_before:
+            self._save_mod_settings()
 
     def _draw_migrate_tab(self):
         _game_ids = list(GAME_PROFILES.keys())
@@ -2754,10 +2875,10 @@ class ModBuilderApp:
                 metadata = (_xse_plugin_label(mod, kind), _XSE_COLOR)
             else:
                 mod_dir = os.path.join(MODS_DIR, mod)
-                metadata = (
-                    _mod_plugin_type_label(mod_dir, mod),
-                    _mod_plugin_text_color(mod_dir, mod),
-                )
+                label = _mod_plugin_type_label(mod_dir, mod)
+                if _read_mod_settings(mod_dir).get("verified_creation"):
+                    label = f"{label}, Verified"
+                metadata = (label, _mod_plugin_text_color(mod_dir, mod))
             self._mod_display[mod] = metadata
 
     def _refresh_deployed_state(self):
@@ -2786,12 +2907,27 @@ class ModBuilderApp:
         if fraction is not None:
             self._progress_fraction = fraction
 
+    def _mod_settings_snapshot(self) -> dict:
+        return {key: getattr(self, f"_{key}") for key in _MOD_SETTING_DEFAULTS}
+
+    def _load_mod_settings(self):
+        stored = _read_mod_settings(self._selected_mod_dir())
+        for key, default in _MOD_SETTING_DEFAULTS.items():
+            value = stored.get(key, default)
+            setattr(self, f"_{key}", bool(value) if isinstance(default, bool) else value)
+
+    def _save_mod_settings(self):
+        mod_dir = self._selected_mod_dir()
+        if mod_dir and os.path.isdir(mod_dir):
+            _write_mod_settings(mod_dir, self._mod_settings_snapshot())
+
     def _on_mod_changed(self):
         if not self._mod_list or self._selected_mod_idx >= len(self._mod_list):
             self._info_text = "No mod selected"
             return
         mod = self._mod_list[self._selected_mod_idx]
         kind = self._selected_mod_kind()
+        self._load_mod_settings()
 
         if kind == "xse":
             self._on_mod_changed_xse(mod)
@@ -2824,6 +2960,8 @@ class ModBuilderApp:
         parts = [mod]
         if game_label:
             parts.append(game_label)
+        if self._verified_creation:
+            parts.append("Verified Creation")
         if self._current_mod_version:
             parts.append(f"Version: {self._current_mod_version}")
         if has_yaml:
@@ -3120,10 +3258,27 @@ class ModBuilderApp:
 
         self._run_fn(_do, description=f"Building archlist for {mod}")
 
+    def _warn_creation_only_masters(self):
+        """Warn when an unverified mod depends on DLC / Creation Club masters."""
+        if self._verified_creation:
+            return
+        mod_dir = self._selected_mod_dir()
+        if not mod_dir:
+            return
+        restricted = _creation_only_masters(mod_dir, self._get_mod_game())
+        if restricted:
+            _log.warning(
+                "%s masters %s — only a verified Bethesda Creation may depend on "
+                "DLC or Creation Club plugins. Tick 'Verified Creation' if this mod is one.",
+                self._selected_mod(),
+                ", ".join(restricted),
+            )
+
     def _on_build(self):
         mod = self._selected_mod()
         if not mod:
             return
+        self._warn_creation_only_masters()
         game = self._get_mod_game()
         mod_dir = os.path.join(MODS_DIR, mod)
         include_patches = self._deploy_patches
@@ -3193,6 +3348,8 @@ class ModBuilderApp:
         game = self._get_mod_game()
         xse_name = _xse_name_for(os.path.join(MODS_DIR, mod))
 
+        preserve_xse_inis = self._preserve_xse_inis
+
         def _do(on_progress):
             from app.paths import get_app_root, get_resource_dir
             from creation_lib.build.deployer import deploy_mod
@@ -3202,9 +3359,11 @@ class ModBuilderApp:
                 mod, game=game, game_data_dir=game_data,
                 deploy_data_dir=deploy_data,
                 skip_build=True, skip_pack=True,
-                esp_only=False, no_esp=True, xbox=False,
+                esp_only=False, no_esp=True, xbox=False, ps=False,
+                preserve_xse_inis=preserve_xse_inis,
                 pc_max_res=0, pc_effects_max_res=0,
-                xbox_max_res=1024, xbox_effects_max_res=1024,
+                xbox_max_res=0, xbox_effects_max_res=0,
+                ps_max_res=0, ps_effects_max_res=0,
                 patches=None,
                 project_root=get_app_root(),
                 resource_dir=get_resource_dir(),
@@ -3240,11 +3399,14 @@ class ModBuilderApp:
             return
         game = self._get_mod_game()
         is_xse_only = self._selected_mod_kind() == "xse"
+        if not is_xse_only:
+            self._warn_creation_only_masters()
         skip_build = self._skip_build
         skip_pack = self._skip_pack
         skip_papyrus_compile = self._skip_papyrus_compile
         esp_only = self._esp_only
         xbox = self._xbox
+        ps = self._ps
         expanded_archives = self._expanded_archives
         update_fo4_archive_ini = self._update_fo4_archive_ini and not self._deploy_to_mo2
         include_patches = self._deploy_patches
@@ -3252,12 +3414,22 @@ class ModBuilderApp:
         archive_max_bytes = gib_to_bytes(self._archive_max_size_gb())
         archive_workers = self._asset_workers()
         archive_transfer_mode = "move" if self._move_archives else "copy"
+        pack_archives_to_deploy_target = self._move_archives
         pc_res = _PC_RES_VALUES[self._pc_max_res_idx]
         pc_effects_idx = self._pc_effects_max_res_idx if self._pc_effects_max_res_idx is not None else self._pc_max_res_idx
         pc_effects_res = _PC_RES_VALUES[pc_effects_idx]
-        xbox_res = _XBOX_RES_VALUES[self._xbox_max_res_idx] if xbox else 1024
+        xbox_res = _XBOX_RES_VALUES[self._xbox_max_res_idx] if xbox else 0
         xbox_effects_idx = self._xbox_effects_max_res_idx if self._xbox_effects_max_res_idx is not None else self._xbox_max_res_idx
-        xbox_effects_res = _XBOX_RES_VALUES[xbox_effects_idx] if xbox else 1024
+        xbox_effects_res = _XBOX_RES_VALUES[xbox_effects_idx] if xbox else 0
+        ps_res = _PS_RES_VALUES[self._ps_max_res_idx] if ps else 0
+        ps_effects_idx = (
+            self._ps_effects_max_res_idx
+            if self._ps_effects_max_res_idx is not None
+            else self._ps_max_res_idx
+        )
+        ps_effects_res = _PS_RES_VALUES[ps_effects_idx] if ps else 0
+
+        preserve_xse_inis = self._preserve_xse_inis
 
         def _do(on_progress):
             from app.paths import get_app_root, get_resource_dir
@@ -3269,9 +3441,11 @@ class ModBuilderApp:
                 deploy_data_dir=deploy_data,
                 skip_build=skip_build, skip_pack=skip_pack,
                 skip_papyrus_compile=skip_papyrus_compile,
-                esp_only=esp_only, no_esp=is_xse_only, xbox=xbox,
+                esp_only=esp_only, no_esp=is_xse_only, xbox=xbox, ps=ps,
+                preserve_xse_inis=preserve_xse_inis,
                 pc_max_res=pc_res, pc_effects_max_res=pc_effects_res,
                 xbox_max_res=xbox_res, xbox_effects_max_res=xbox_effects_res,
+                ps_max_res=ps_res, ps_effects_max_res=ps_effects_res,
                 skip_validation=skip_validation,
                 patches=None if is_xse_only else (["all"] if include_patches else None),
                 project_root=get_app_root(),
@@ -3280,6 +3454,7 @@ class ModBuilderApp:
                 expanded_archives=expanded_archives,
                 archive_workers=archive_workers,
                 archive_transfer_mode=archive_transfer_mode,
+                pack_archives_to_deploy_target=pack_archives_to_deploy_target,
                 on_progress=on_progress,
             )
             if update_fo4_archive_ini and game == "fo4" and not is_xse_only:
@@ -3398,6 +3573,8 @@ class ModBuilderApp:
         )
         pc_effects_res = _PC_RES_VALUES[pc_effects_idx]
 
+        preserve_xse_inis = self._preserve_xse_inis
+
         def _do(on_progress):
             from app.paths import get_app_root
             from creation_lib.build.loose_deploy import deploy_loose_assets
@@ -3407,6 +3584,7 @@ class ModBuilderApp:
                 mod, game=game, game_data_dir=game_data,
                 deploy_data_dir=deploy_data,
                 skip_build=skip_build,
+                preserve_xse_inis=preserve_xse_inis,
                 skip_papyrus_compile=skip_papyrus_compile,
                 pc_max_res=pc_res,
                 pc_effects_max_res=pc_effects_res,
@@ -3545,10 +3723,13 @@ class ModBuilderApp:
         options = {
             "pc": True,
             "xbox": self._release_xbox,
+            "ps": self._release_ps,
             "pc_max_res": pc_res,
             "pc_effects_max_res": pc_effects_res,
-            "xbox_max_res": 1024,
-            "xbox_effects_max_res": 1024,
+            "xbox_max_res": 0,
+            "xbox_effects_max_res": 0,
+            "ps_max_res": 0,
+            "ps_effects_max_res": 0,
             "archive_max_bytes": gib_to_bytes(self._archive_max_size_gb()),
             "expanded_archives": self._release_expanded_archives,
             "archive_workers": self._asset_workers(),
@@ -3563,6 +3744,15 @@ class ModBuilderApp:
             xbox_effects_res = _XBOX_RES_VALUES[xbox_effects_idx]
             options["xbox_max_res"] = xbox_res
             options["xbox_effects_max_res"] = xbox_effects_res
+        if self._release_ps:
+            ps_res = _PS_RES_VALUES[self._release_ps_max_res_idx]
+            ps_effects_idx = (
+                self._release_ps_effects_max_res_idx
+                if self._release_ps_effects_max_res_idx is not None
+                else self._release_ps_max_res_idx
+            )
+            options["ps_max_res"] = ps_res
+            options["ps_effects_max_res"] = _PS_RES_VALUES[ps_effects_idx]
         return options
 
     def _run_release_esp(self, mod: str, on_done) -> None:
@@ -3643,8 +3833,10 @@ class ModBuilderApp:
         game = self._get_mod_game()
         mod_dir = Path(MODS_DIR) / mod
 
+        preserve_xse_inis = self._preserve_xse_inis
+
         def _do(on_progress):
-            from app.paths import get_db_dir, get_resource_dir
+            from app.paths import get_resource_dir
             from creation_lib.build.deployer import deploy_mod
             from creation_lib.ck.automation import generate_anim_data
 
@@ -3662,9 +3854,10 @@ class ModBuilderApp:
                 skip_pack=False,
                 esp_only=False,
                 no_esp=False,
+                preserve_xse_inis=preserve_xse_inis,
                 xbox=False,
+                ps=False,
                 project_root=PROJECT_ROOT,
-                db_dir=get_db_dir(),
                 resource_dir=get_resource_dir(),
                 on_progress=on_progress,
             )
@@ -3736,6 +3929,7 @@ class ModBuilderApp:
         self._release_log.clear()
         self._release_active = True
         _log.info("=== Release started for %s ===", mod)
+        self._warn_creation_only_masters()
 
         # Clean old archives
         self._release_clean_archives(mod)
@@ -4241,6 +4435,8 @@ class ModBuilderApp:
             labels.append("Localized strings")
         if self._release_xbox:
             labels.append("Xbox BA2 archives")
+        if self._release_ps:
+            labels.append("PlayStation BA2 archives")
         if self._release_expanded_archives:
             labels.append("Expanded BA2 archives")
         if self._release_create_xwm:
@@ -4252,7 +4448,10 @@ class ModBuilderApp:
         if self._release_anim_data:
             labels.append("Anim data generation")
         labels.append(f"PC max texture size: {_PC_RES_OPTIONS[self._release_pc_max_res_idx]}")
-        labels.append(f"Archive max size: {self._archive_max_size_gb():.3f} GiB")
+        if self._release_expanded_archives:
+            labels.append(f"Archive max size: {self._archive_max_size_gb():.3f} GiB")
+        else:
+            labels.append("Archive layout: Main + Textures (no size cap)")
         archive_workers = self._asset_workers()
         labels.append(
             f"Asset workers: {archive_workers if archive_workers > 0 else 'auto'}"
@@ -4271,6 +4470,18 @@ class ModBuilderApp:
                 else self._release_xbox_max_res_idx
             )
             labels.append(f"Xbox effects max texture size: {_XBOX_RES_OPTIONS[xbox_effects_idx]}")
+        if self._release_ps:
+            labels.append(
+                f"PlayStation max texture size: {_PS_RES_OPTIONS[self._release_ps_max_res_idx]}"
+            )
+            ps_effects_idx = (
+                self._release_ps_effects_max_res_idx
+                if self._release_ps_effects_max_res_idx is not None
+                else self._release_ps_max_res_idx
+            )
+            labels.append(
+                f"PlayStation effects max texture size: {_PS_RES_OPTIONS[ps_effects_idx]}"
+            )
         return labels
 
     def _write_release_metadata(

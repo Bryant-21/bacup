@@ -1,9 +1,11 @@
 //! Phase: convert_terrain
 //!
 //! Dispatches terrain conversion by source game:
-//!   - "fo76": routes through terrain_textures::run (two-pass manifest flow)
-//!     so TXST/LTEX/GRAS records are emitted. Requires source_handle_id and
-//!     fo76_data_dir in params for fallback asset reads.
+//!   - "fo76" / "starfield": routes through terrain_textures::run (two-pass
+//!     manifest flow) so TXST/LTEX/GRAS records are emitted. Requires
+//!     source_handle_id and fo76_data_dir in params for fallback asset reads
+//!     (the field name predates Starfield support but is source-game-generic:
+//!     it is just "the source game's Data dir with archives").
 //!   - "fnv" / "fo3" / "skyrimse": skips this phase. Full-plugin LAND is
 //!     emitted by the Rust record translation pass.
 //!
@@ -48,7 +50,7 @@ impl Phase for ConvertTerrainPhase {
         let source_game = ctx.run.source.as_str();
 
         match source_game {
-            "fo76" => run_fo76_btd(ctx),
+            "fo76" | "starfield" => run_btd_terrain(ctx),
             "fnv" | "fo3" | "skyrimse" => {
                 let _ = ctx.run.event_tx.try_send(crate::phase::PhaseEvent::Log {
                     phase: "convert_terrain",
@@ -74,7 +76,7 @@ impl Phase for ConvertTerrainPhase {
     }
 }
 
-fn run_fo76_btd(ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
+fn run_btd_terrain(ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
     for legacy_key in ["source_handle_id", "target_handle_id", "record_output_mode"] {
         if ctx.params.get(legacy_key).is_some() {
             return Err(PhaseError::BadParams(format!(
@@ -83,7 +85,7 @@ fn run_fo76_btd(ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
         }
     }
     let mut opts: crate::terrain_textures::Options = serde_json::from_value(ctx.params.clone())
-        .map_err(|e| PhaseError::BadParams(format!("convert_terrain fo76 params: {e}")))?;
+        .map_err(|e| PhaseError::BadParams(format!("convert_terrain params: {e}")))?;
     opts.source_game = ctx.run.source.as_str().to_owned();
     opts.target_game = ctx.run.target.as_str().to_owned();
     if opts.source_extracted_dir.trim().is_empty() {
@@ -106,9 +108,10 @@ fn run_fo76_btd(ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
     }
 
     if opts.btd_path.is_empty() {
-        return Err(PhaseError::BadParams(
-            "convert_terrain: btd_path is required for fo76 source".to_owned(),
-        ));
+        return Err(PhaseError::BadParams(format!(
+            "convert_terrain: btd_path is required for {} source",
+            opts.source_game
+        )));
     }
 
     if opts.debug_output_dir.is_empty() {
@@ -131,10 +134,7 @@ fn run_fo76_btd(ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
                 opts.source_worldspace_terrain_ids_json.trim().is_empty()
             ),
         );
-        if opts.preserve_source_ids
-            && opts.source_worldspace_authoring_dir.trim().is_empty()
-            && opts.source_worldspace_terrain_ids_json.trim().is_empty()
-        {
+        if should_collect_source_terrain_ids(&opts, ctx.run.source.as_str()) {
             log_terrain_debug(
                 ctx,
                 "convert_terrain: collecting source terrain ids from source handle",
@@ -191,6 +191,27 @@ fn run_fo76_btd(ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
                 ),
             );
         }
+        log_terrain_debug(ctx, "convert_terrain: looking up target WRLD");
+        let target_world_form_id =
+            esp_authoring_core::plugin_runtime::plugin_handle_find_record_object_id_by_editor_id_no_py(
+                ctx.run.target_handle_id,
+                "WRLD",
+                &opts.worldspace_editor_id,
+            )
+            .map_err(|e| PhaseError::Internal(format!("terrain WRLD lookup failed: {e}")))?;
+        if target_world_form_id.is_none()
+            && requires_existing_target_worldspace(ctx.run.source.as_str(), ctx.run.target.as_str())
+        {
+            log_terrain_debug(
+                ctx,
+                format!(
+                    "convert_terrain: skipped {} because no translated target WRLD exists",
+                    opts.worldspace_editor_id
+                ),
+            );
+            return Ok(PhaseReport::default());
+        }
+
         log_terrain_debug(ctx, "convert_terrain: querying next target object id");
         let next_object_id =
             esp_authoring_core::plugin_runtime::plugin_handle_next_available_object_id_no_py(
@@ -201,15 +222,7 @@ fn run_fo76_btd(ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
             ctx,
             format!("convert_terrain: next target object id={next_object_id:06X}"),
         );
-        log_terrain_debug(ctx, "convert_terrain: looking up target WRLD");
-        if let Some(world_form_id) =
-            esp_authoring_core::plugin_runtime::plugin_handle_find_record_object_id_by_editor_id_no_py(
-                ctx.run.target_handle_id,
-                "WRLD",
-                &opts.worldspace_editor_id,
-            )
-            .map_err(|e| PhaseError::Internal(format!("terrain WRLD lookup failed: {e}")))?
-        {
+        if let Some(world_form_id) = target_world_form_id {
             opts.world_form_id = world_form_id;
             opts.first_cell_form_id = next_object_id;
         } else if should_defer_to_preserved_source_ids(&opts) {
@@ -217,9 +230,9 @@ fn run_fo76_btd(ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
             opts.first_cell_form_id = 0;
         } else {
             opts.world_form_id = next_object_id;
-            opts.first_cell_form_id = next_object_id.checked_add(1).ok_or_else(|| {
-                PhaseError::Internal("terrain ID allocation overflow".to_owned())
-            })?;
+            opts.first_cell_form_id = next_object_id
+                .checked_add(1)
+                .ok_or_else(|| PhaseError::Internal("terrain ID allocation overflow".to_owned()))?;
         }
         log_terrain_debug(ctx, "convert_terrain: scanning target used object ids");
         opts.reserved_object_ids =
@@ -301,10 +314,29 @@ fn log_terrain_debug(ctx: &PhaseCtx<'_>, message: impl Into<String>) {
     });
 }
 
+/// Starfield source-grid coordinates aren't in the FO4 frame, so a
+/// source-backed `TerrainIdPlan` built from them would silently produce wrong
+/// CELL EditorIDs (dropping placed refs downstream at merge time, not
+/// erroring). Never collect source terrain IDs for a starfield source — the
+/// plan stays generated (`{World}CellX...Y...`).
+fn should_collect_source_terrain_ids(
+    opts: &crate::terrain_textures::Options,
+    source_game: &str,
+) -> bool {
+    opts.preserve_source_ids
+        && opts.source_worldspace_authoring_dir.trim().is_empty()
+        && opts.source_worldspace_terrain_ids_json.trim().is_empty()
+        && source_game != "starfield"
+}
+
 fn should_defer_to_preserved_source_ids(opts: &crate::terrain_textures::Options) -> bool {
     opts.preserve_source_ids
         && (!opts.source_worldspace_authoring_dir.trim().is_empty()
             || !opts.source_worldspace_terrain_ids_json.trim().is_empty())
+}
+
+fn requires_existing_target_worldspace(source_game: &str, target_game: &str) -> bool {
+    source_game == "starfield" && target_game == "fo4"
 }
 
 fn reserve_generated_object_id_floor(
@@ -358,7 +390,7 @@ mod tests {
     #[test]
     fn fo76_branch_requires_btd_path() {
         // Verify BadParams when btd_path is absent from fo76 params.
-        // We call run_fo76_btd indirectly by constructing a minimal params blob.
+        // We call run_btd_terrain indirectly by constructing a minimal params blob.
         let params = json!({
             "source_game": "fo76",
             "btd_path": "",
@@ -444,6 +476,39 @@ mod tests {
         });
         let opts: crate::terrain_textures::Options = serde_json::from_value(params).unwrap();
         assert!(should_defer_to_preserved_source_ids(&opts));
+    }
+
+    #[test]
+    fn starfield_source_never_collects_source_terrain_ids() {
+        // A starfield-source run must leave source_worldspace_terrain_ids_json
+        // empty so TerrainIdPlan.source_backed stays false and cells get generated
+        // {World}CellX...Y... EditorIDs instead of SF-grid-keyed ones in the FO4 frame.
+        let params = json!({
+            "source_plugin_path": "X:/Starfield/extracted/Starfield.esm",
+            "fo76_data_dir": "X:/Starfield/Data",
+            "btd_path": "X:/Starfield/extracted/terrain/akilacity.btd",
+            "output_authoring_dir": "X:/mods/Starfield_Ported/yaml",
+            "plugin_name": "Starfield_Ported.esm",
+            "worldspace_editor_id": "AkilaCity",
+            "source_min_x": 0,
+            "source_min_y": 0,
+            "source_max_x": 0,
+            "source_max_y": 0,
+            "preserve_source_ids": true,
+        });
+        let opts: crate::terrain_textures::Options = serde_json::from_value(params).unwrap();
+        assert!(opts.source_worldspace_terrain_ids_json.trim().is_empty());
+
+        assert!(!should_collect_source_terrain_ids(&opts, "starfield"));
+        // Same options would have collected ids for fo76 (the pre-existing behavior).
+        assert!(should_collect_source_terrain_ids(&opts, "fo76"));
+    }
+
+    #[test]
+    fn starfield_fo4_terrain_never_synthesizes_worldspaces_rejected_by_the_gate() {
+        assert!(requires_existing_target_worldspace("starfield", "fo4"));
+        assert!(!requires_existing_target_worldspace("fo76", "fo4"));
+        assert!(!requires_existing_target_worldspace("fo4", "starfield"));
     }
 
     #[test]

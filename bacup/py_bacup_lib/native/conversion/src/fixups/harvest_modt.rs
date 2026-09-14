@@ -2,11 +2,10 @@
 //! target masters for every model-bearing converted record whose model path is a
 //! reused vanilla FO4 mesh.
 //!
-//! `MODT` is a deterministic function of the model path, so two records with the
-//! same `MODL` share the same `MODT`. For a reused vanilla mesh the correct
-//! `MODT` already exists on a vanilla record — we copy the opaque bytes keyed by
-//! normalized model path. Paths with no vanilla match get their stale FO76 hash
-//! subrecord dropped (Plan B computes those from the converted mesh later).
+//! `MODT` is a deterministic function of the model path, so the opaque bytes
+//! are copied from a vanilla record keyed by normalized model path. Paths with
+//! no vanilla match lose their stale FO76 hash subrecord; it is computed from
+//! the converted mesh later.
 
 use esp_authoring_core::plugin_runtime::ParsedSubrecord;
 use rustc_hash::FxHashMap;
@@ -359,11 +358,10 @@ impl Fixup for HarvestModtFixup {
         let interner: &StringInterner = mapper.interner;
 
         // ── 1. Build the harvest index from the masters via a SHALLOW raw scan ──
-        // For every model-bearing record we only need two raw subrecords (the
-        // model path and its paired hash); the full authoring-schema decode the
-        // old path ran on every master record was pure waste and the dominant
-        // cost. Candidate signatures and slot pairs come from the FO4 schema;
-        // the per-record scan is read-only, so each signature sweep is parallel.
+        // Each model-bearing record needs only its model path and paired hash,
+        // so raw subrecords are scanned instead of fully decoded. Candidate
+        // signatures and slot pairs come from the FO4 schema; the scan is
+        // read-only, so each signature sweep is parallel.
         let mut index: FxHashMap<String, SmallVec<[u8; 32]>> = FxHashMap::default();
         let mut model_signatures = fo4_model_slots().keys().cloned().collect::<Vec<_>>();
         model_signatures.sort_unstable();

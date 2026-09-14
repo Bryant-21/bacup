@@ -1,15 +1,9 @@
 //! Shared output-plugin reference index + struct-field FK walking helpers.
 //!
-//! Several fixups need to answer "given an output-plugin FormKey, what record
-//! signature does it resolve to?" — reference-type validation
-//! (`validate_reference_target_types`) and the struct-internal FK passes. This
-//! module hosts the single shared builder so the `(local, plugin) → SigCode`
-//! index is defined once.
-//!
-//! It also hosts `validate_struct_fk_fields` — the shared struct-internal FK
-//! validator that drives off `struct_field_layout`, keyed by
-//! `"<SUB>.<field_id>"`, so the fix side and the detect side (validator) agree
-//! on offsets + path-keys by construction.
+//! Hosts the one `(local, plugin) → SigCode` index builder used by
+//! `validate_reference_target_types` and the struct-internal FK passes, and
+//! `validate_struct_fk_fields`, which reads `struct_field_layout` (keyed by
+//! `"<SUB>.<field_id>"`) so the fix and detect sides agree on offsets and path-keys.
 
 use rustc_hash::FxHashMap;
 
@@ -77,25 +71,16 @@ impl StructFkValidateReport {
     }
 }
 
-/// Validate every struct-internal FK field of `record` against the schema's
-/// per-field `formlink_targets`, nulling illegal-type refs where NULL is
-/// allowed. Operates on raw `struct:`-codec subrecord bytes via schema-lead's
-/// `struct_field_layout` (offsets/widths keyed by `"<SUB>.<field_id>"`), so it
-/// reaches the FKs that the decoded-FieldValue walk misses (RACE DATA, MGEF
-/// DATA, IDLE ANAM, COBJ FVPA components, etc.).
+/// Null illegal-type struct-internal FKs of `record` where NULL is allowed,
+/// checked against the schema's per-field `formlink_targets`. Works on raw
+/// `struct:`-codec bytes via `struct_field_layout` (keyed by `"<SUB>.<field_id>"`),
+/// reaching FKs the decoded-FieldValue walk misses (RACE DATA, MGEF DATA, IDLE ANAM,
+/// COBJ FVPA components, ...).
 ///
-/// `encoded_sig_of(raw)` resolves an encoded (master-byte<<24 | local) FormID
-/// to its target record signature, or `None` when it doesn't resolve (dangling
-/// — left to the invalid-target / sweep fixups, not nulled here).
-///
-/// Action per illegal-type struct FK (a struct member cannot be structurally
-/// removed, only nulled):
-/// - `formlink_targets` empty ⇒ unconstrained, skip.
-/// - resolved sig in `formlink_targets` ⇒ legal, skip.
-/// - illegal AND `null_allowed` ⇒ zero the 4 bytes (NULL).
-/// - illegal AND NOT `null_allowed` ⇒ leave + count `left_unfixable` (cannot
-///   null without producing a NULL-where-required error, cannot strip a struct
-///   member; only a retarget would fix it — out of scope here).
+/// `encoded_sig_of(raw)` maps an encoded (master-byte<<24 | local) FormID to its
+/// record signature; `None` (dangling) is left to the invalid-target / sweep fixups.
+/// A struct member can only be nulled, never removed, so an illegal FK in a field
+/// that is not `null_allowed` is left and counted in `left_unfixable`.
 pub fn validate_struct_fk_fields(
     record: &mut Record,
     schema: &AuthoringSchema,
@@ -103,22 +88,14 @@ pub fn validate_struct_fk_fields(
     encoded_sig_of: &dyn Fn(u32) -> Option<SigCode>,
 ) -> StructFkValidateReport {
     let mut report = StructFkValidateReport::default();
-    let record_sig = record.sig.as_str().to_string();
-
-    // Occurrence-agnostic: validate the first struct layout for each subrecord
-    // sig. Multi-occurrence struct subrecords share one layout.
-    let mut handled_sigs: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+    let record_sig = record.sig.as_str();
 
     for entry in record.fields.iter_mut() {
         let FieldValue::Bytes(bytes) = &mut entry.value else {
             continue;
         };
-        let sub_sig = entry.sig.as_str().to_string();
-        if !handled_sigs.insert(sub_sig.clone()) {
-            // Still validate each occurrence's bytes, but only fetch layout once
-            // per sig below; we re-fetch cheaply since it's a Vec lookup.
-        }
-        let layout = schema.struct_field_layout_versioned(&record_sig, &sub_sig, form_version);
+        let sub_sig = entry.sig.as_str();
+        let layout = schema.struct_field_layout_versioned(record_sig, sub_sig, form_version);
         if layout.is_empty() {
             continue;
         }
@@ -170,37 +147,31 @@ impl StructFkRemapReport {
     }
 }
 
-/// Remap every struct-internal FK field of `record` from a source-local id
-/// (master byte 0) to its target-encoded id via `encoded_targets`
-/// (`source_object_id → target-encoded u32`). This is the REMAP counterpart of
-/// `validate_struct_fk_fields`: it fixes FKs the `FormKeyMapper` never reached
-/// because they live in raw `struct:`/`array_struct:` codec bytes (LCEP/ACEP/
-/// LCUN actor/ref, RACE DATA, MGEF DATA, etc.) and so kept their FO76 00-prefix.
+/// Remap struct-internal FKs of `record` from source-local ids (master byte 0) to
+/// target-encoded ids via `encoded_targets` (`source_object_id → target-encoded`).
+/// Counterpart of `validate_struct_fk_fields` for FKs the `FormKeyMapper` never
+/// reached in raw `struct:`/`array_struct:` bytes (LCEP/ACEP/LCUN actor/ref, RACE
+/// DATA, MGEF DATA, ...), which kept their FO76 00-prefix.
 ///
-/// Two paths, by how the subrecord decoded:
-/// - **Bytes path** (opaque `struct:`/`array_struct:` blob): drives off
-///   schema-lead's `struct_field_layout`, iterating each row and remapping the
-///   FK offsets in place. GUARDED: when `source_schema` is supplied and the
-///   FO76 source struct layout for the subrecord DIFFERS from the FO4 target
-///   layout, the byte-offset remap is SKIPPED — remapping at FO4 offsets over a
-///   FO76-laid-out blob smears bytes into wrong fields (the RACE DATA / MGEF
-///   DATA corruption). Leaving a dangling 00-prefix FK is strictly
-///   safer than smearing.
-/// - **List/Struct path** (schema-decoded, e.g. LCEP/LCUN `array_struct` with
-///   `formid` fields → `FieldValue::List` of structs): remaps `FormKey` leaves
-///   directly via `target_by_source_local` (`source local id → target FormKey`).
-///   This is layout-SAFE — no byte-offset math — and covers the FKs that the
-///   Bytes path silently skipped because the value isn't `Bytes`.
+/// - **Bytes path**: walks each `struct_field_layout` row and remaps FK offsets in
+///   place. Skipped when `source_schema` shows the FO76 layout differs from FO4's:
+///   remapping at FO4 offsets over a FO76 blob smears bytes into wrong fields (the
+///   RACE/MGEF DATA corruption), and a dangling 00-prefix FK is safer. Raw index
+///   zero is ambiguous after encoding: a compatible first-master signature proves
+///   target ownership; without master evidence index zero is preserved.
+/// - **List/Struct path** (schema-decoded, e.g. LCEP/LCUN `array_struct`): remaps
+///   `FormKey` leaves via `target_by_source_form_key`, with no byte-offset math.
 pub fn remap_struct_fk_fields(
     record: &mut Record,
     schema: &AuthoringSchema,
     source_schema: Option<&AuthoringSchema>,
     form_version: Option<u16>,
+    first_target_master_sigs: Option<&FxHashMap<u32, SigCode>>,
     encoded_targets: &FxHashMap<u32, u32>,
-    target_by_source_local: &FxHashMap<u32, FormKey>,
+    target_by_source_form_key: &FxHashMap<FormKey, FormKey>,
 ) -> StructFkRemapReport {
     let mut report = StructFkRemapReport::default();
-    if encoded_targets.is_empty() && target_by_source_local.is_empty() {
+    if encoded_targets.is_empty() && target_by_source_form_key.is_empty() {
         return report;
     }
     let record_sig = record.sig.as_str().to_string();
@@ -232,21 +203,39 @@ pub fn remap_struct_fk_fields(
                 if row_size == 0 || bytes.len() % row_size != 0 {
                     continue; // not a clean row layout — skip (don't corrupt)
                 }
-                let fk_offsets: Vec<usize> = layout
+                let fk_fields = layout
                     .iter()
                     .filter(|f| f.width == 4 && !f.formlink_targets.is_empty())
-                    .map(|f| f.offset)
-                    .collect();
-                if fk_offsets.is_empty() {
+                    .collect::<Vec<_>>();
+                if fk_fields.is_empty() {
                     continue;
                 }
                 let row_count = bytes.len() / row_size;
                 for row in 0..row_count {
                     let base = row * row_size;
-                    for off in &fk_offsets {
+                    for field in &fk_fields {
+                        let absolute_offset = base + field.offset;
+                        let Some(slot) = bytes.get(absolute_offset..absolute_offset + 4) else {
+                            continue;
+                        };
+                        let raw = u32::from_le_bytes(slot.try_into().unwrap());
+                        if raw >> 24 == 0 {
+                            let preserve = first_target_master_sigs.is_none_or(|signatures| {
+                                signatures
+                                    .get(&(raw & 0x00FF_FFFF))
+                                    .is_some_and(|signature| {
+                                        field.formlink_targets.iter().any(|target| {
+                                            target.as_str().eq_ignore_ascii_case(signature.as_str())
+                                        })
+                                    })
+                            });
+                            if preserve {
+                                continue;
+                            }
+                        }
                         if crate::fixups::rewrite_raw_object_template_formids::rewrite_formid_at(
                             bytes,
-                            base + off,
+                            absolute_offset,
                             encoded_targets,
                         ) {
                             report.remapped += 1;
@@ -254,21 +243,15 @@ pub fn remap_struct_fk_fields(
                     }
                 }
             }
-            // List/Struct-decoded subrecord (e.g. LCEP/LCUN `array_struct` →
-            // List of Structs): remap nested FormKey leaves the Bytes path can't
-            // reach. RESTRICTED to List/Struct only — a top-level scalar
-            // `FieldValue::FormKey` subrecord (RNAM/ATKR/TPLT/...) was ALREADY
-            // remapped by `mapper.rewrite_record` during translate, which walks
-            // every top-level FormKey field. Re-walking it here with the
-            // plugin-BLIND `target_by_source_local` (keyed by object-id only)
-            // wrongly overwrites a correctly-remapped foreign-master leaf when a
-            // SOURCE record shares that object-id — e.g. an NPC RNAM correctly
-            // pointing at DLCCoast.esm:0247C1 (Gulper race) gets clobbered to
-            // Fallout4.esm:0247C1 (FO76 STAT IndSilo32Top01, a source object at
-            // the same local) → "no race → HumanRace" creature CTD.
+            // List/Struct-decoded subrecord (e.g. LCEP/LCUN `array_struct`): remap
+            // nested FormKey leaves the Bytes path can't reach. Top-level scalar
+            // `FieldValue::FormKey` subrecords (RNAM/ATKR/TPLT/...) were already
+            // remapped by `mapper.rewrite_record` during translate and are skipped,
+            // so a foreign-master leaf is not clobbered when a source record
+            // shares its local.
             list_or_struct @ (FieldValue::List(_) | FieldValue::Struct(_)) => {
-                if !target_by_source_local.is_empty() {
-                    remap_formkey_leaves(list_or_struct, target_by_source_local, &mut report);
+                if !target_by_source_form_key.is_empty() {
+                    remap_formkey_leaves(list_or_struct, target_by_source_form_key, &mut report);
                 }
             }
             _ => {}
@@ -278,22 +261,16 @@ pub fn remap_struct_fk_fields(
     report
 }
 
-/// Whether the FO76 source struct layout for `(record_sig, sub_sig)` differs
-/// from the FO4 `target_layout` such that a byte-offset FK remap is unsafe
-/// (it would rewrite FormIDs at FO4 offsets over source-laid-out bytes and smear
-/// them into wrong fields — the RACE/MGEF DATA corruption).
+/// Whether the FO76 source struct layout for `(record_sig, sub_sig)` differs from
+/// the FO4 `target_layout` enough that a byte-offset FK remap would smear FormIDs
+/// into wrong fields (the RACE/MGEF DATA corruption).
 ///
-/// PRIMARY, self-healing test: compare the ordered (offset, width) of the FK
-/// fields (width-4 fields with a non-empty `formlink_targets`); a mismatch ⇒
-/// skip. This auto-corrects: while the FO76 RACE.DATA codec is wrong (it claims
-/// extra fields vs the real 200-byte disk layout, a schema_forge bug) the FK
-/// offsets differ from FO4's, so we skip and avoid the smear; once schema-lead
-/// fixes the FO76 codec to the true layout, source==target and the remap is
-/// allowed to proceed and fix the legit 00-prefix FKs — no code change here.
-///
-/// FALLBACK deny-list: only consulted when the source layout is UNAVAILABLE
-/// (no source schema, or the source doesn't model this struct), so the known
-/// dangerous structs are still protected when we can't compare.
+/// Primary test: compare the ordered (offset, width) of the FK fields (width 4,
+/// non-empty `formlink_targets`). This self-corrects: the FO76 RACE.DATA codec
+/// claims more fields than the real 200-byte disk layout (a schema_forge bug), so
+/// its FK offsets differ and the remap is skipped; once the codec matches, the remap
+/// runs with no change here. A deny-list protects known dangerous structs when the
+/// source layout is unavailable.
 fn source_struct_layout_diverges(
     source_schema: Option<&AuthoringSchema>,
     record_sig: &str,
@@ -335,18 +312,17 @@ fn source_struct_layout_diverges(
 }
 
 /// Recursively remap `FormKey` leaves inside a List/Struct value: a FK whose
-/// local id is a converted source id (`target_by_source_local`) is rewritten to
-/// its target FormKey. Only source-local ids are touched; FKs already pointing
-/// at converted/foreign records are left alone (their local isn't in the map).
+/// exact source identity is present in `target_by_source_form_key` is rewritten
+/// to its target FormKey. Already-target-master leaves are not source keys.
 fn remap_formkey_leaves(
     value: &mut FieldValue,
-    target_by_source_local: &FxHashMap<u32, FormKey>,
+    target_by_source_form_key: &FxHashMap<FormKey, FormKey>,
     report: &mut StructFkRemapReport,
 ) {
     match value {
         FieldValue::FormKey(fk) => {
             if fk.local != 0 {
-                if let Some(target) = target_by_source_local.get(&fk.local) {
+                if let Some(target) = target_by_source_form_key.get(fk) {
                     if *fk != *target {
                         *fk = *target;
                         report.remapped += 1;
@@ -356,12 +332,12 @@ fn remap_formkey_leaves(
         }
         FieldValue::List(items) => {
             for item in items.iter_mut() {
-                remap_formkey_leaves(item, target_by_source_local, report);
+                remap_formkey_leaves(item, target_by_source_form_key, report);
             }
         }
         FieldValue::Struct(fields) => {
             for (_, v) in fields.iter_mut() {
-                remap_formkey_leaves(v, target_by_source_local, report);
+                remap_formkey_leaves(v, target_by_source_form_key, report);
             }
         }
         _ => {}
@@ -381,6 +357,50 @@ mod tests {
     }
 
     #[test]
+    fn struct_validation_checks_each_raw_occurrence_and_skips_typed_fields() {
+        let interner = StringInterner::new();
+        let schema = crate::schema::AuthoringSchema::for_game("fo4").unwrap();
+        let mut placed = Record::new(
+            SigCode(*b"REFR"),
+            fk(0x0015_781F, "SeventySix.esm", &interner),
+        );
+        for _ in 0..2 {
+            let mut xlkr = vec![0; 8];
+            xlkr[0..4].copy_from_slice(&0x0700_1000_u32.to_le_bytes());
+            xlkr[4..8].copy_from_slice(&0x0700_2000_u32.to_le_bytes());
+            placed.fields.push(crate::record::FieldEntry {
+                sig: crate::ids::SubrecordSig(*b"XLKR"),
+                value: FieldValue::Bytes(smallvec::SmallVec::from_vec(xlkr)),
+            });
+        }
+        placed.fields.push(crate::record::FieldEntry {
+            sig: crate::ids::SubrecordSig(*b"EDID"),
+            value: FieldValue::String(interner.intern("Fixture")),
+        });
+        let resolver = |raw| match raw {
+            0x0700_1000 => Some(SigCode(*b"STAT")),
+            0x0700_2000 => Some(SigCode(*b"ACHR")),
+            _ => None,
+        };
+
+        let report = validate_struct_fk_fields(&mut placed, &schema, None, &resolver);
+
+        assert_eq!(report.nulled, 2);
+        assert_eq!(report.left_unfixable, 0);
+        for entry in &placed.fields[..2] {
+            let FieldValue::Bytes(bytes) = &entry.value else {
+                panic!("XLKR must remain raw bytes")
+            };
+            assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 0);
+            assert_eq!(
+                u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+                0x0700_2000
+            );
+        }
+        assert!(matches!(&placed.fields[2].value, FieldValue::String(_)));
+    }
+
+    #[test]
     fn remap_formkey_leaves_rewrites_nested_source_local_fks() {
         let interner = StringInterner::new();
         // LCEP-shaped: a List of Structs each with two FormKey leaves.
@@ -397,7 +417,7 @@ mod tests {
         ])]);
 
         let mut map = FxHashMap::default();
-        map.insert(0x18116E_u32, tgt_ref); // only the recoverable one has a target
+        map.insert(src_ref, tgt_ref); // only the recoverable one has a target
 
         let mut report = StructFkRemapReport::default();
         remap_formkey_leaves(&mut value, &map, &mut report);
@@ -422,14 +442,123 @@ mod tests {
     }
 
     #[test]
+    fn struct_remap_preserves_compatible_first_master_refs_on_local_collision() {
+        let interner = StringInterner::new();
+        let schema = crate::schema::AuthoringSchema::for_game("fo4").unwrap();
+        let mut pack = Record::new(SigCode(*b"PACK"), fk(0x1231B6, "FalloutNV.esm", &interner));
+        let mut pkcu = Vec::new();
+        pkcu.extend_from_slice(&7_u32.to_le_bytes());
+        pkcu.extend_from_slice(&0x0000_2CE0_u32.to_le_bytes());
+        pkcu.extend_from_slice(&2_u32.to_le_bytes());
+        pack.fields.push(crate::record::FieldEntry {
+            sig: crate::ids::SubrecordSig(*b"PKCU"),
+            value: FieldValue::Bytes(smallvec::SmallVec::from_vec(pkcu)),
+        });
+
+        let mut info = Record::new(SigCode(*b"INFO"), fk(0x130161, "FalloutNV.esm", &interner));
+        let mut trda = vec![0_u8; 20];
+        trda[0..4].copy_from_slice(&0x000F_A847_u32.to_le_bytes());
+        info.fields.push(crate::record::FieldEntry {
+            sig: crate::ids::SubrecordSig(*b"TRDA"),
+            value: FieldValue::Bytes(smallvec::SmallVec::from_vec(trda)),
+        });
+
+        let encoded_targets =
+            FxHashMap::from_iter([(0x0000_2CE0, 0x0700_2CE0), (0x000F_A847, 0x070F_A847)]);
+        let first_master_sigs = FxHashMap::from_iter([
+            (0x0000_2CE0, SigCode(*b"PACK")),
+            (0x000F_A847, SigCode(*b"KYWD")),
+        ]);
+        let source_to_target = FxHashMap::default();
+
+        for record in [&mut pack, &mut info] {
+            let report = remap_struct_fk_fields(
+                record,
+                &schema,
+                Some(&schema),
+                Some(131),
+                Some(&first_master_sigs),
+                &encoded_targets,
+                &source_to_target,
+            );
+            assert_eq!(report.remapped, 0);
+        }
+        let FieldValue::Bytes(pkcu) = &pack.fields[0].value else {
+            panic!("PKCU must remain raw bytes")
+        };
+        assert_eq!(
+            u32::from_le_bytes(pkcu[4..8].try_into().unwrap()),
+            0x0000_2CE0
+        );
+        let FieldValue::Bytes(trda) = &info.fields[0].value else {
+            panic!("TRDA must remain raw bytes")
+        };
+        assert_eq!(
+            u32::from_le_bytes(trda[0..4].try_into().unwrap()),
+            0x000F_A847
+        );
+    }
+
+    #[test]
+    fn struct_remap_still_rewrites_first_master_local_with_incompatible_type() {
+        let interner = StringInterner::new();
+        let schema = crate::schema::AuthoringSchema::for_game("fo4").unwrap();
+        let mut record = Record::new(SigCode(*b"INFO"), fk(0x130161, "FalloutNV.esm", &interner));
+        let mut trda = vec![0_u8; 20];
+        trda[0..4].copy_from_slice(&0x000F_A847_u32.to_le_bytes());
+        record.fields.push(crate::record::FieldEntry {
+            sig: crate::ids::SubrecordSig(*b"TRDA"),
+            value: FieldValue::Bytes(smallvec::SmallVec::from_vec(trda)),
+        });
+        let report = remap_struct_fk_fields(
+            &mut record,
+            &schema,
+            Some(&schema),
+            Some(131),
+            Some(&FxHashMap::from_iter([(0x000F_A847, SigCode(*b"REFR"))])),
+            &FxHashMap::from_iter([(0x000F_A847, 0x070F_A847)]),
+            &FxHashMap::default(),
+        );
+
+        assert_eq!(report.remapped, 1);
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("TRDA must remain raw bytes")
+        };
+        assert_eq!(
+            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            0x070F_A847
+        );
+
+        let FieldValue::Bytes(bytes) = &mut record.fields[0].value else {
+            unreachable!()
+        };
+        bytes[0..4].copy_from_slice(&0x000F_A847_u32.to_le_bytes());
+        let report = remap_struct_fk_fields(
+            &mut record,
+            &schema,
+            Some(&schema),
+            Some(131),
+            None,
+            &FxHashMap::from_iter([(0x000F_A847, 0x070F_A847)]),
+            &FxHashMap::default(),
+        );
+        assert_eq!(report.remapped, 0);
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            unreachable!()
+        };
+        assert_eq!(
+            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            0x000F_A847
+        );
+    }
+
+    #[test]
     fn remap_struct_fk_fields_does_not_clobber_top_level_scalar_formkey() {
-        // A top-level scalar `formid` subrecord
-        // (e.g. NPC_ RNAM) already correctly remapped to a foreign DLC master
-        // must NOT be re-walked by the plugin-blind `target_by_source_local`,
-        // even when a SOURCE record shares its object-id. Here RNAM points at
+        // A top-level scalar `formid` subrecord (e.g. NPC_ RNAM) already remapped
+        // to a foreign DLC master must not be re-walked by the source-keyed map,
+        // even when a source record shares its object-id. Here RNAM points at
         // DLCCoast.esm:0247C1 (the Gulper race); the source had a STAT at the
-        // same local 0247C1 → Fallout4.esm:0247C1. The fix restricts the
-        // List/Struct leaf-walk to List/Struct values, leaving scalars alone.
+        // same local 0247C1 → Fallout4.esm:0247C1.
         let interner = StringInterner::new();
         let schema = crate::schema::AuthoringSchema::for_game("fo4").expect("fo4 schema");
 
@@ -445,8 +574,8 @@ mod tests {
             value: FieldValue::FormKey(correct),
         }];
 
-        let mut target_by_source_local = FxHashMap::default();
-        target_by_source_local.insert(0x0247C1_u32, wrong);
+        let mut target_by_source_form_key = FxHashMap::default();
+        target_by_source_form_key.insert(fk(0x0247C1, "Source.esm", &interner), wrong);
         let encoded: FxHashMap<u32, u32> = FxHashMap::default();
 
         let report = remap_struct_fk_fields(
@@ -454,8 +583,9 @@ mod tests {
             &schema,
             None,
             Some(131),
+            None,
             &encoded,
-            &target_by_source_local,
+            &target_by_source_form_key,
         );
 
         assert_eq!(
@@ -473,7 +603,7 @@ mod tests {
     fn remap_formkey_leaves_skips_null_and_unmapped() {
         let interner = StringInterner::new();
         let mut value = FieldValue::FormKey(fk(0, "Fallout4.esm", &interner));
-        let map: FxHashMap<u32, FormKey> = FxHashMap::default();
+        let map: FxHashMap<FormKey, FormKey> = FxHashMap::default();
         let mut report = StructFkRemapReport::default();
         remap_formkey_leaves(&mut value, &map, &mut report);
         assert_eq!(report.remapped, 0);

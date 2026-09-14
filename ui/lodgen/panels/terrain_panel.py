@@ -45,7 +45,7 @@ def draw(app) -> None:
     imgui.separator()
 
     # Per-level tabs
-    opened, _ = imgui.begin_tab_bar("##lodgen_terrain_levels")
+    opened = imgui.begin_tab_bar("##lodgen_terrain_levels")
     if opened:
         levels = t.get("levels", [])
         for i, label in enumerate(_LEVEL_LABELS):

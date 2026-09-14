@@ -1,19 +1,13 @@
 //! `PluginSession<'a>` — a typed, held-lock write scope for fixup execution.
 //!
-//! A session is constructed once per fixup `run` invocation. It holds the
-//! global plugin store lock for its lifetime, exposing record-level
-//! operations as methods. Each write records a `WriteEffect` into a
-//! pending queue; the `Drop` impl applies them in order.
-//!
-//! Lifecycle:
-//!   1. `open_session(target_id, source_id)` — acquires the lock.
-//!   2. Fixup calls `session.form_keys_of_sig(...)`, `session.record_mut(...)`,
-//!      `session.record(...)`, etc.
-//!   3. Session drops → pending effects applied to `slot.sections`.
+//! One session per fixup `run`. `open_session(target_id, source_id)` takes the
+//! global plugin store lock for the session's lifetime. Each write queues a
+//! `WriteEffect`; `Drop` applies them to `slot.sections` in order.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, MutexGuard};
 
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
@@ -28,20 +22,24 @@ use crate::source_read::{
 };
 use crate::sym::{StringInterner, Sym};
 use crate::target_write::{
-    add_record_in_slot, encode_record_for_slot, replace_record_contents_in_slot,
-    replace_record_in_slot, replace_records_contents_in_slot, replace_records_in_slot_batch,
+    PreparedRecordBatch, add_record_in_slot, commit_prepared_record_batch_in_slot,
+    encode_record_for_slot, quest_parent_form_id_from_record, replace_record_contents_in_slot,
+    replace_record_in_slot, replace_records_contents_in_slot,
+    replace_records_contents_in_slot_preserving_prefix, replace_records_in_slot_batch,
 };
 use bytes::Bytes;
 use encoding_rs::WINDOWS_1252;
 use esp_authoring_core::plugin_runtime::{
-    CoreSection, FormIdPathsSection, NativePluginSlot, ParsedGroup, ParsedItem, ParsedRecord,
-    ParsedSubrecord, RecordPath, RecordsSection, WriteEffect, effective_subrecords_for_record,
-    ensure_core_section, ensure_form_id_paths_section, ensure_records_section,
+    CoreSection, FormIdPathsSection, FormKey as IndexedFormKey, NativePluginSlot, ParsedGroup,
+    ParsedItem, ParsedRecord, ParsedSubrecord, RecordPath, RecordsSection, WriteEffect,
+    effective_subrecords_for_record, ensure_core_section, ensure_form_id_paths_section,
+    ensure_records_section, iter_referenced_form_ids_from_subrecords, normalize_form_key,
     plugin_handle_store_ref, record_index_entry_by_form_key,
 };
 
 const SERIAL_THRESHOLD: usize = 64;
 const CELL_CHILD_GROUP: i32 = 6;
+const QUEST_CHILD_GROUP: i32 = 10;
 
 #[derive(Debug)]
 pub enum SessionError {
@@ -70,8 +68,15 @@ pub struct PluginSession<'store> {
     source_id: Option<u64>,
     target_form_id_cache: FxHashMap<FormKey, u32>,
     target_cached_signatures: FxHashSet<SigCode>,
+    target_encoded_signatures: Option<EncodedTargetSignatures>,
     pending_target_effects: SmallVec<[WriteEffect; 4]>,
     panicked: bool,
+}
+
+struct EncodedTargetSignatures {
+    masters: Vec<String>,
+    core: Arc<CoreSection>,
+    signatures: Arc<FxHashMap<u32, SigCode>>,
 }
 
 pub struct ReadView<'a> {
@@ -104,6 +109,121 @@ pub struct HandleRawScan<'a> {
 }
 
 impl HandleRawScan<'_> {
+    pub fn referencing_form_keys_by_query(
+        &self,
+        queries: &[String],
+    ) -> HashMap<String, Vec<String>> {
+        let own_plugin = self.slot.parsed.plugin_name.as_str();
+        let masters = self.slot.parsed.header.masters.as_slice();
+        let own_index = (masters.len() & 0xFF) as u32;
+        let mut queries_by_raw = FxHashMap::<u32, Vec<String>>::default();
+        for query in queries {
+            let Some(form_key) = normalize_form_key(query) else {
+                continue;
+            };
+            let object_id = form_key.object_id & 0x00FF_FFFF;
+            if form_key.plugin.eq_ignore_ascii_case(own_plugin) {
+                queries_by_raw
+                    .entry((own_index << 24) | object_id)
+                    .or_default()
+                    .push(query.clone());
+                queries_by_raw
+                    .entry(0xFF00_0000 | object_id)
+                    .or_default()
+                    .push(query.clone());
+                continue;
+            }
+            if let Some(index) = masters
+                .iter()
+                .position(|master| master.eq_ignore_ascii_case(&form_key.plugin))
+            {
+                queries_by_raw
+                    .entry(((index as u32) << 24) | object_id)
+                    .or_default()
+                    .push(query.clone());
+            }
+        }
+        let schema = self.slot.parsed.game.as_deref().and_then(|game| {
+            esp_authoring_core::plugin_runtime::compiled_schema_for_game(game).ok()
+        });
+        let entries = self
+            .core
+            .by_signature_form_keys
+            .values()
+            .flatten()
+            .filter_map(|form_key| self.core.by_form_key.get(form_key))
+            .collect::<Vec<_>>();
+        let matches = entries
+            .par_iter()
+            .filter_map(|entry| {
+                self.with_record(entry.raw_form_id, |record| {
+                    let subrecords = effective_subrecords_for_record(record);
+                    let mut matched_queries = iter_referenced_form_ids_from_subrecords(
+                        record.signature.as_str(),
+                        &subrecords,
+                        schema.as_deref(),
+                    )
+                    .into_iter()
+                    .filter_map(|(_, raw_form_id)| queries_by_raw.get(&raw_form_id))
+                    .flatten()
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                    for subrecord in subrecords
+                        .iter()
+                        .filter(|subrecord| subrecord.signature.as_str() == "VMAD")
+                    {
+                        let _ = visit_vmad_form_ids(
+                            &subrecord.data,
+                            record.signature.as_str(),
+                            &mut |raw_form_id| {
+                                if let Some(queries) = queries_by_raw.get(&raw_form_id) {
+                                    matched_queries.extend(queries.iter().cloned());
+                                }
+                            },
+                        );
+                    }
+                    (!matched_queries.is_empty())
+                        .then(|| (entry.form_key.render(), matched_queries))
+                })
+                .flatten()
+            })
+            .collect::<Vec<_>>();
+        let mut result = queries
+            .iter()
+            .cloned()
+            .map(|query| (query, Vec::new()))
+            .collect::<HashMap<_, _>>();
+        for (referencing, matched_queries) in matches {
+            for query in matched_queries {
+                result.entry(query).or_default().push(referencing.clone());
+            }
+        }
+        for values in result.values_mut() {
+            values.sort_unstable_by_key(|value| value.to_ascii_lowercase());
+            values.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+        }
+        result
+    }
+
+    pub fn record_metadata_by_form_key(&self, form_key: &str) -> Option<(u32, String, String)> {
+        let entry = record_index_entry_by_form_key(&self.core, form_key)?;
+        Some((
+            entry.raw_form_id,
+            entry.signature.to_string(),
+            entry.form_key.render(),
+        ))
+    }
+
+    pub fn with_record_context<R>(
+        &self,
+        raw_form_id: u32,
+        f: impl FnOnce(&ParsedRecord, &[String], &str) -> R,
+    ) -> Option<R> {
+        let masters = self.slot.parsed.header.masters.as_slice();
+        let plugin_name = self.slot.parsed.plugin_name.as_str();
+        self.with_record(raw_form_id, |record| f(record, masters, plugin_name))
+    }
+
     /// Raw form_ids of every record whose signature is `sig`, in the same order
     /// (and with the same empty-plugin skip) as
     /// [`PluginSession::form_keys_of_sig_in_handle`].
@@ -123,6 +243,13 @@ impl HandleRawScan<'_> {
             .collect()
     }
 
+    /// EditorIDs of records whose raw FormID sits at mod index 0, keyed by
+    /// object id.
+    ///
+    /// SOURCE HANDLES ONLY. A target handle carries its masters, so its own
+    /// records sit above them and the mod-index filter below drops every one of
+    /// them — the map comes back empty and any caller keying off it silently
+    /// does nothing. Decode the records and read `Record::eid` for a target.
     pub fn own_editor_ids(&self) -> FxHashMap<u32, String> {
         self.core
             .by_form_key
@@ -207,6 +334,7 @@ pub fn open_session<'store>(
         source_id,
         target_form_id_cache: FxHashMap::default(),
         target_cached_signatures: FxHashSet::default(),
+        target_encoded_signatures: None,
         pending_target_effects: SmallVec::new(),
         panicked: false,
     })
@@ -244,6 +372,75 @@ impl<'store> PluginSession<'store> {
             .keys()
             .filter_map(|sig| SigCode::from_str(sig.as_str()).ok())
             .collect())
+    }
+
+    pub(crate) fn encoded_target_record_signatures(
+        &mut self,
+        target_masters: &[String],
+    ) -> Arc<FxHashMap<u32, SigCode>> {
+        if self.pending_target_effects.iter().any(|effect| {
+            matches!(
+                effect,
+                WriteEffect::RecordsAddedOrRemoved | WriteEffect::MastersChanged
+            )
+        }) {
+            self.flush_pending_effects();
+        }
+        let core = ensure_core_section(self.target_slot_mut());
+        if let Some(cached) = &self.target_encoded_signatures {
+            if cached.masters == target_masters && Arc::ptr_eq(&cached.core, &core) {
+                return Arc::clone(&cached.signatures);
+            }
+        }
+
+        let mut signatures =
+            FxHashMap::with_capacity_and_hasher(core.by_form_key.len(), Default::default());
+        for (signature, keys) in &core.by_signature_form_keys {
+            let Ok(signature) = SigCode::from_str(signature.as_str()) else {
+                continue;
+            };
+            let mut seen_raw_form_ids = FxHashSet::default();
+            let mut last_plugin: Option<(&str, usize)> = None;
+            for key in keys {
+                if key.plugin.is_empty() {
+                    continue;
+                }
+                let Some(entry) = core.by_form_key.get(key) else {
+                    continue;
+                };
+                if !seen_raw_form_ids.insert(entry.raw_form_id) {
+                    continue;
+                }
+                let encoded = if key.object_id == 0 {
+                    0
+                } else {
+                    let plugin: &str = &key.plugin;
+                    let load_index = match last_plugin {
+                        Some((name, index)) if name == plugin => index,
+                        _ => {
+                            let index = target_masters
+                                .iter()
+                                .position(|master| master.eq_ignore_ascii_case(plugin))
+                                .unwrap_or(target_masters.len());
+                            last_plugin = Some((plugin, index));
+                            index
+                        }
+                    };
+                    if load_index > u8::MAX as usize || key.object_id > 0x00FF_FFFF {
+                        continue;
+                    }
+                    ((load_index as u32) << 24) | key.object_id
+                };
+                signatures.insert(encoded, signature);
+            }
+        }
+        let signatures = Arc::new(signatures);
+        self.target_encoded_signatures = Some(EncodedTargetSignatures {
+            masters: target_masters.to_vec(),
+            core,
+            signatures: Arc::clone(&signatures),
+        });
+        signatures
     }
 
     pub fn record_decoded(
@@ -296,6 +493,17 @@ impl<'store> PluginSession<'store> {
         })
     }
 
+    pub(crate) fn handle_load_order(
+        &self,
+        handle_id: u64,
+    ) -> Result<(&[String], &str), SessionError> {
+        let slot = self
+            .store_guard
+            .get(&handle_id)
+            .ok_or(SessionError::HandleNotFound(handle_id))?;
+        Ok((&slot.parsed.header.masters, &slot.parsed.plugin_name))
+    }
+
     pub fn source_record_decoded(
         &mut self,
         fk: &FormKey,
@@ -340,6 +548,19 @@ impl<'store> PluginSession<'store> {
             .map(|entry| entry.signature.to_string()))
     }
 
+    pub fn referencing_form_keys_by_query_in_handle(
+        &mut self,
+        handle_id: u64,
+        queries: &[String],
+    ) -> Result<HashMap<String, Vec<String>>, SessionError> {
+        if queries.is_empty() {
+            return Ok(HashMap::new());
+        }
+        Ok(self
+            .handle_raw_scan(handle_id)?
+            .referencing_form_keys_by_query(queries))
+    }
+
     pub fn local_object_ids_in_handle(
         &mut self,
         handle_id: u64,
@@ -355,6 +576,30 @@ impl<'store> PluginSession<'store> {
             .filter_map(|entry| {
                 let object_id = entry.form_key.object_id;
                 (object_id != 0 && object_id <= 0x00FF_FFFF).then_some(object_id)
+            })
+            .collect())
+    }
+
+    pub fn own_record_signatures_in_handle(
+        &mut self,
+        handle_id: u64,
+    ) -> Result<FxHashMap<u32, SigCode>, SessionError> {
+        let slot = self
+            .store_guard
+            .get_mut(&handle_id)
+            .ok_or(SessionError::HandleNotFound(handle_id))?;
+        let plugin_name = slot.parsed.plugin_name.clone();
+        let core = ensure_core_section(slot);
+        Ok(core
+            .by_form_key
+            .values()
+            .filter_map(|entry| {
+                if !entry.form_key.plugin.eq_ignore_ascii_case(&plugin_name) {
+                    return None;
+                }
+                let object_id = entry.form_key.object_id;
+                let signature = SigCode::from_str(entry.signature.as_str()).ok()?;
+                (object_id != 0 && object_id <= 0x00FF_FFFF).then_some((object_id, signature))
             })
             .collect())
     }
@@ -376,6 +621,12 @@ impl<'store> PluginSession<'store> {
     }
 
     pub(crate) fn record_effect(&mut self, effect: WriteEffect) {
+        if matches!(
+            effect,
+            WriteEffect::RecordsAddedOrRemoved | WriteEffect::MastersChanged
+        ) {
+            self.target_encoded_signatures = None;
+        }
         if let (
             Some(WriteEffect::RecordContents { form_ids: tail_ids }),
             WriteEffect::RecordContents { form_ids },
@@ -405,7 +656,13 @@ impl<'store> PluginSession<'store> {
     fn invalidate_target_indexes_after_structural_write(&mut self) {
         self.target_form_id_cache.clear();
         self.target_cached_signatures.clear();
+        self.target_encoded_signatures = None;
         self.target_slot_mut().invalidate_sections();
+    }
+
+    pub(crate) fn refresh_target_read_indexes(&mut self) {
+        self.flush_pending_effects();
+        self.invalidate_target_indexes_after_structural_write();
     }
 
     /// Return every FormKey of `sig` in the target plugin. Caches the core
@@ -702,6 +959,93 @@ impl<'store> PluginSession<'store> {
         Ok(changed)
     }
 
+    pub fn rewrite_placed_leveled_reference(
+        &mut self,
+        fk: &FormKey,
+        expected_name_raw: u32,
+        replacement_name_raw: u32,
+        xlib_raw: Option<u32>,
+    ) -> Result<bool, SessionError> {
+        let raw_form_id = self.raw_form_id_for_form_key(fk)?;
+        let changed = {
+            let record = self.record_mut(raw_form_id)?;
+            let Some(name_index) = record
+                .subrecords
+                .iter()
+                .position(|subrecord| subrecord.signature.as_str() == "NAME")
+            else {
+                return Ok(false);
+            };
+            let name = &record.subrecords[name_index].data;
+            if name.len() < 4
+                || u32::from_le_bytes([name[0], name[1], name[2], name[3]]) != expected_name_raw
+            {
+                return Ok(false);
+            }
+
+            let replacement_name = replacement_name_raw.to_le_bytes();
+            let mut changed = name.as_ref() != replacement_name;
+            if changed {
+                record.subrecords[name_index].data = Bytes::copy_from_slice(&replacement_name);
+            }
+
+            match xlib_raw {
+                Some(xlib_raw) => {
+                    let xlib = xlib_raw.to_le_bytes();
+                    let xlib_indices = record
+                        .subrecords
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, subrecord)| {
+                            (subrecord.signature.as_str() == "XLIB").then_some(index)
+                        })
+                        .collect::<SmallVec<[usize; 2]>>();
+                    let canonical = xlib_indices.as_slice() == [name_index + 1]
+                        && record.subrecords[name_index + 1].data.as_ref() == xlib;
+                    if !canonical {
+                        record
+                            .subrecords
+                            .retain(|subrecord| subrecord.signature.as_str() != "XLIB");
+                        let name_index = record
+                            .subrecords
+                            .iter()
+                            .position(|subrecord| subrecord.signature.as_str() == "NAME")
+                            .expect("NAME was validated above");
+                        record.subrecords.insert(
+                            name_index + 1,
+                            ParsedSubrecord {
+                                signature: SmolStr::new("XLIB"),
+                                data: Bytes::copy_from_slice(&xlib),
+                                semantic_type: None,
+                            },
+                        );
+                        changed = true;
+                    }
+                }
+                None => {
+                    let before = record.subrecords.len();
+                    record
+                        .subrecords
+                        .retain(|subrecord| subrecord.signature.as_str() != "XLIB");
+                    changed |= before != record.subrecords.len();
+                }
+            }
+
+            if changed {
+                record.raw_payload = None;
+            }
+            changed
+        };
+
+        if changed {
+            self.target_slot_mut().clear_record_count_cache();
+            self.record_effect(WriteEffect::RecordContents {
+                form_ids: smallvec::smallvec![raw_form_id],
+            });
+        }
+        Ok(changed)
+    }
+
     /// Patch the raw bytes of EVERY subrecord of `fk` whose signature is `sig`,
     /// invoking `f(&mut buf)` per occurrence (returning whether it mutated). Unlike
     /// `patch_subrecord_bytes` (first match only), this visits all occurrences —
@@ -810,6 +1154,33 @@ impl<'store> PluginSession<'store> {
         Ok(replaced)
     }
 
+    pub fn replace_records_contents_preserving_prefix(
+        &mut self,
+        records: Vec<Record>,
+        schema: &AuthoringSchema,
+        interner: &StringInterner,
+    ) -> Result<usize, SessionError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        let outcome = replace_records_contents_in_slot_preserving_prefix(
+            self.target_slot_mut(),
+            records,
+            schema,
+            interner,
+        );
+        let replaced = outcome.applied_form_ids.len();
+        if !outcome.applied_form_ids.is_empty() {
+            self.record_effect(WriteEffect::RecordContents {
+                form_ids: outcome.applied_form_ids,
+            });
+        }
+        if let Some(error) = outcome.error {
+            return Err(SessionError::Other(error.to_string()));
+        }
+        Ok(replaced)
+    }
+
     pub fn add_record(
         &mut self,
         record: Record,
@@ -845,6 +1216,150 @@ impl<'store> PluginSession<'store> {
         self.invalidate_target_indexes_after_structural_write();
         self.record_effect(WriteEffect::RecordsAddedOrRemoved);
         Ok(inserted)
+    }
+
+    /// Add records under their parent QUST's quest-child groups, in one pass.
+    ///
+    /// `add_records` (via `ensure_top_group_and_add`) would put a DIAL/SCEN in a
+    /// top-level group; xEdit then shows it at plugin root and the game never ties
+    /// it to the quest. The parent quest is read from the record (DIAL
+    /// `QSTI`/`QNAM`, SCEN `PNAM`); records whose quest is absent from the output
+    /// are skipped, so the count can be below `records.len()`.
+    ///
+    /// Batched because the per-record `esp_authoring_core` entry point walks the
+    /// whole tree twice and every structural insert invalidates the target read
+    /// indexes, which is quadratic for thousands of records.
+    pub fn add_quest_child_records(
+        &mut self,
+        records: Vec<Record>,
+        schema: &AuthoringSchema,
+        interner: &StringInterner,
+    ) -> Result<usize, SessionError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        let inserted = {
+            let slot = self.target_slot_mut();
+            let mut encoded: Vec<(u32, ParsedRecord)> = Vec::with_capacity(records.len());
+            let mut next_object_id = slot.parsed.header.next_object_id & 0x00FF_FFFF;
+            for record in records {
+                let Some(parsed) = encode_record_for_slot(slot, record, schema, interner)
+                    .map_err(|err| SessionError::Other(err.to_string()))?
+                else {
+                    continue;
+                };
+                let Some(parent_quest_form_id) = quest_parent_form_id_from_record(&parsed) else {
+                    continue;
+                };
+                if parent_quest_form_id == 0 {
+                    continue;
+                }
+                let object_id = parsed.form_id & 0x00FF_FFFF;
+                if object_id != 0 && object_id >= next_object_id {
+                    next_object_id = object_id + 1;
+                }
+                encoded.push((parent_quest_form_id, parsed));
+            }
+            if encoded.is_empty() {
+                return Ok(0);
+            }
+            slot.parsed.header.next_object_id = next_object_id & 0x00FF_FFFF;
+
+            let header_size = slot.parsed.header_size;
+            let Some(quest_group) =
+                find_top_group_mut_in_items(&mut slot.parsed.root_items, b"QUST")
+            else {
+                return Ok(0);
+            };
+
+            // One walk of the QUST top group instead of one per record: which
+            // quests exist, and where their child groups already sit.
+            let mut quest_positions: FxHashMap<[u8; 4], usize> = FxHashMap::default();
+            let mut child_group_positions: FxHashMap<[u8; 4], usize> = FxHashMap::default();
+            for (index, item) in quest_group.children.iter().enumerate() {
+                match item {
+                    ParsedItem::Record(record) if record.signature.as_str() == "QUST" => {
+                        quest_positions.insert(record.form_id.to_le_bytes(), index);
+                    }
+                    ParsedItem::Group(group) if group.group_type == QUEST_CHILD_GROUP => {
+                        child_group_positions.insert(group.label, index);
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut inserted = 0usize;
+            let mut pending: FxHashMap<[u8; 4], Vec<ParsedRecord>> = FxHashMap::default();
+            for (parent_quest_form_id, parsed) in encoded {
+                let label = parent_quest_form_id.to_le_bytes();
+                if !quest_positions.contains_key(&label)
+                    && !child_group_positions.contains_key(&label)
+                {
+                    continue;
+                }
+                pending.entry(label).or_default().push(parsed);
+            }
+
+            // Existing groups first: appending to them cannot shift any index.
+            let mut fresh_groups: Vec<([u8; 4], Vec<ParsedRecord>)> = Vec::new();
+            for (label, batch) in pending {
+                match child_group_positions.get(&label) {
+                    Some(&index) => {
+                        let ParsedItem::Group(group) = &mut quest_group.children[index] else {
+                            continue;
+                        };
+                        inserted += batch.len();
+                        group
+                            .children
+                            .extend(batch.into_iter().map(ParsedItem::Record));
+                    }
+                    None => fresh_groups.push((label, batch)),
+                }
+            }
+            // Then the new groups, back to front, so each insert leaves the
+            // still-unused quest positions ahead of it untouched.
+            fresh_groups.sort_by_key(|(label, _)| {
+                std::cmp::Reverse(quest_positions.get(label).copied().unwrap_or(usize::MAX))
+            });
+            for (label, batch) in fresh_groups {
+                let Some(&quest_index) = quest_positions.get(&label) else {
+                    continue;
+                };
+                inserted += batch.len();
+                quest_group.children.insert(
+                    quest_index + 1,
+                    ParsedItem::Group(ParsedGroup {
+                        label,
+                        group_type: QUEST_CHILD_GROUP,
+                        tail: Bytes::from(vec![0u8; header_size.saturating_sub(16)]),
+                        children: batch.into_iter().map(ParsedItem::Record).collect(),
+                    }),
+                );
+            }
+
+            if inserted > 0 {
+                slot.clear_record_count_cache();
+            }
+            inserted
+        };
+
+        if inserted > 0 {
+            self.invalidate_target_indexes_after_structural_write();
+            self.record_effect(WriteEffect::RecordsAddedOrRemoved);
+        }
+        Ok(inserted)
+    }
+
+    pub(crate) fn commit_prepared_record_batch(&mut self, batch: PreparedRecordBatch) -> usize {
+        let inserted = batch.len();
+        if inserted == 0 {
+            return 0;
+        }
+        commit_prepared_record_batch_in_slot(self.target_slot_mut(), batch);
+        self.invalidate_target_indexes_after_structural_write();
+        self.record_effect(WriteEffect::RecordsAddedOrRemoved);
+        inserted
     }
 
     pub fn insert_placed_child_into_cell_group(
@@ -904,12 +1419,10 @@ impl<'store> PluginSession<'store> {
     }
 
     pub fn remove_records(&mut self, fks: &[FormKey]) -> Result<usize, SessionError> {
-        // Batched single-traversal removal. The per-id `remove_record_from_items`
-        // loop was O(ids × whole tree) — placed refs live deep under WRLD/CELL
-        // groups, so large drop lists (e.g. resolve_placed_leveled_bases) turned
-        // quadratic. One DFS pass removing the first match per queued id is
-        // outcome-identical: DFS visits records in the same order the per-id
-        // scans did, and a multiset count preserves duplicate-id semantics.
+        // One DFS pass removes the first match per queued id. Placed refs sit deep
+        // under WRLD/CELL groups, so a per-id tree scan goes quadratic on large drop
+        // lists (e.g. resolve_placed_leveled_bases). DFS order and the multiset
+        // count give the same result as per-id removal, duplicate ids included.
         let mut pending: std::collections::HashMap<u32, usize> =
             std::collections::HashMap::with_capacity(fks.len());
         for fk in fks {
@@ -1056,6 +1569,30 @@ impl<'store> PluginSession<'store> {
 
         self.target_form_id_cache.insert(*fk, raw_form_id);
         Ok(raw_form_id)
+    }
+
+    pub(crate) fn indexed_raw_form_id_and_signature(
+        &mut self,
+        fk: &FormKey,
+        interner: &StringInterner,
+    ) -> Result<(u32, SigCode), SessionError> {
+        let plugin = interner
+            .resolve(fk.plugin)
+            .ok_or_else(|| SessionError::RecordNotFound(format!("{fk:?}")))?;
+        let indexed_fk = IndexedFormKey::new(Arc::from(plugin), fk.local);
+        let (raw_form_id, signature) = {
+            let slot = self.target_slot_mut();
+            let core = ensure_core_section(slot);
+            let entry = core
+                .by_form_key
+                .get(&indexed_fk)
+                .ok_or_else(|| SessionError::RecordNotFound(format!("{fk:?}")))?;
+            (entry.raw_form_id, entry.signature.clone())
+        };
+        let signature = SigCode::from_str(signature.as_str())
+            .map_err(|err| SessionError::Other(err.to_string()))?;
+        self.target_form_id_cache.insert(*fk, raw_form_id);
+        Ok((raw_form_id, signature))
     }
 
     pub(crate) fn parent_cell_form_id_for_record(
@@ -1266,6 +1803,16 @@ fn parent_cell_form_id_from_path(items: &[ParsedItem], path: &RecordPath) -> Opt
     parent_cell
 }
 
+fn find_top_group_mut_in_items<'a>(
+    items: &'a mut [ParsedItem],
+    label: &[u8; 4],
+) -> Option<&'a mut ParsedGroup> {
+    items.iter_mut().find_map(|item| match item {
+        ParsedItem::Group(group) if group.group_type == 0 && group.label == *label => Some(group),
+        _ => None,
+    })
+}
+
 fn find_cell_child_group_mut_in_items(
     items: &mut [ParsedItem],
     cell_form_id: u32,
@@ -1377,6 +1924,239 @@ fn remove_record_from_items(items: &mut Vec<ParsedItem>, form_id: u32) -> bool {
     false
 }
 
+struct VmadCursor<'a> {
+    data: &'a [u8],
+    offset: usize,
+}
+
+impl VmadCursor<'_> {
+    fn advance(&mut self, amount: usize) -> Option<()> {
+        let next = self.offset.checked_add(amount)?;
+        if next > self.data.len() {
+            return None;
+        }
+        self.offset = next;
+        Some(())
+    }
+
+    fn read_u8(&mut self) -> Option<u8> {
+        let value = *self.data.get(self.offset)?;
+        self.offset += 1;
+        Some(value)
+    }
+
+    fn read_u16(&mut self) -> Option<u16> {
+        let bytes = self.data.get(self.offset..self.offset.checked_add(2)?)?;
+        self.offset += 2;
+        Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn read_u32(&mut self) -> Option<u32> {
+        let bytes = self.data.get(self.offset..self.offset.checked_add(4)?)?;
+        self.offset += 4;
+        Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn read_i32(&mut self) -> Option<i32> {
+        self.read_u32().map(|value| value as i32)
+    }
+
+    fn skip_string(&mut self) -> Option<()> {
+        let length = self.read_u16()? as usize;
+        self.advance(length)
+    }
+}
+
+fn visit_vmad_form_ids(
+    data: &[u8],
+    record_signature: &str,
+    visitor: &mut impl FnMut(u32),
+) -> Option<()> {
+    let mut cursor = VmadCursor { data, offset: 0 };
+    let version = cursor.read_u16()?;
+    let object_format = cursor.read_u16()?;
+    let script_count = cursor.read_u16()? as usize;
+    if version == 0 || !matches!(object_format, 1 | 2) {
+        return None;
+    }
+    for _ in 0..script_count {
+        visit_vmad_script(&mut cursor, object_format, visitor)?;
+    }
+    if cursor.offset == data.len() {
+        return Some(());
+    }
+    match record_signature {
+        "INFO" | "PACK" | "SCEN" => {
+            cursor.advance(2)?;
+            visit_vmad_script(&mut cursor, object_format, visitor)
+        }
+        "PERK" | "TERM" => {
+            cursor.advance(1)?;
+            visit_vmad_script(&mut cursor, object_format, visitor)
+        }
+        "QUST" => visit_vmad_quest_fragments(&mut cursor, object_format, visitor),
+        _ => Some(()),
+    }
+}
+
+fn visit_vmad_quest_fragments(
+    cursor: &mut VmadCursor<'_>,
+    object_format: u16,
+    visitor: &mut impl FnMut(u32),
+) -> Option<()> {
+    cursor.advance(1)?;
+    let fragment_count = cursor.read_u16()? as usize;
+    let script_name_length = cursor.read_u16()? as usize;
+    if script_name_length > 0 {
+        cursor.advance(script_name_length)?;
+        cursor.advance(1)?;
+        let property_count = cursor.read_u16()? as usize;
+        for _ in 0..property_count {
+            visit_vmad_property(cursor, object_format, visitor)?;
+        }
+    }
+    for _ in 0..fragment_count {
+        cursor.advance(9)?;
+        cursor.skip_string()?;
+        cursor.skip_string()?;
+    }
+    let alias_count = cursor.read_u16()? as usize;
+    for _ in 0..alias_count {
+        visit_vmad_object(cursor, object_format, visitor)?;
+        cursor.advance(2)?;
+        let alias_object_format = cursor.read_u16()?;
+        let alias_script_count = cursor.read_u16()? as usize;
+        for _ in 0..alias_script_count {
+            visit_vmad_script(cursor, alias_object_format, visitor)?;
+        }
+    }
+    Some(())
+}
+
+fn visit_vmad_script(
+    cursor: &mut VmadCursor<'_>,
+    object_format: u16,
+    visitor: &mut impl FnMut(u32),
+) -> Option<()> {
+    cursor.skip_string()?;
+    cursor.advance(1)?;
+    let property_count = cursor.read_u16()? as usize;
+    for _ in 0..property_count {
+        visit_vmad_property(cursor, object_format, visitor)?;
+    }
+    Some(())
+}
+
+fn visit_vmad_property(
+    cursor: &mut VmadCursor<'_>,
+    object_format: u16,
+    visitor: &mut impl FnMut(u32),
+) -> Option<()> {
+    cursor.skip_string()?;
+    let property_type = cursor.read_u8()?;
+    cursor.advance(1)?;
+    visit_vmad_property_value(cursor, property_type, object_format, visitor)
+}
+
+fn visit_vmad_property_value(
+    cursor: &mut VmadCursor<'_>,
+    property_type: u8,
+    object_format: u16,
+    visitor: &mut impl FnMut(u32),
+) -> Option<()> {
+    match property_type {
+        0 | 6 => Some(()),
+        1 => visit_vmad_object(cursor, object_format, visitor),
+        2 => cursor.skip_string(),
+        3 | 4 => cursor.advance(4),
+        5 => cursor.advance(1),
+        7 => visit_vmad_struct(cursor, object_format, visitor),
+        11 => {
+            let count = cursor.read_i32()?;
+            if count < 0 {
+                return None;
+            }
+            for _ in 0..count {
+                visit_vmad_object(cursor, object_format, visitor)?;
+            }
+            Some(())
+        }
+        12 => {
+            let count = cursor.read_i32()?;
+            if count < 0 {
+                return None;
+            }
+            for _ in 0..count {
+                cursor.skip_string()?;
+            }
+            Some(())
+        }
+        13 | 14 => {
+            let count = cursor.read_i32()?;
+            if count < 0 {
+                return None;
+            }
+            cursor.advance((count as usize).checked_mul(4)?)
+        }
+        15 => {
+            let count = cursor.read_i32()?;
+            if count < 0 {
+                return None;
+            }
+            cursor.advance(count as usize)
+        }
+        16 => cursor.advance(4),
+        17 => {
+            let count = cursor.read_i32()?;
+            if count < 0 {
+                return None;
+            }
+            for _ in 0..count {
+                visit_vmad_struct(cursor, object_format, visitor)?;
+            }
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+fn visit_vmad_struct(
+    cursor: &mut VmadCursor<'_>,
+    object_format: u16,
+    visitor: &mut impl FnMut(u32),
+) -> Option<()> {
+    let member_count = cursor.read_i32()?;
+    if member_count < 0 {
+        return None;
+    }
+    for _ in 0..member_count {
+        cursor.skip_string()?;
+        let member_type = cursor.read_u8()?;
+        cursor.advance(1)?;
+        visit_vmad_property_value(cursor, member_type, object_format, visitor)?;
+    }
+    Some(())
+}
+
+fn visit_vmad_object(
+    cursor: &mut VmadCursor<'_>,
+    object_format: u16,
+    visitor: &mut impl FnMut(u32),
+) -> Option<()> {
+    let raw_form_id = if object_format == 2 {
+        cursor.advance(4)?;
+        cursor.read_u32()?
+    } else {
+        let raw_form_id = cursor.read_u32()?;
+        cursor.advance(4)?;
+        raw_form_id
+    };
+    if raw_form_id != 0 {
+        visitor(raw_form_id);
+    }
+    Some(())
+}
+
 fn decode_editor_id(data: &[u8]) -> String {
     let mut end = data.len();
     while end > 0 && data[end - 1] == 0 {
@@ -1395,8 +2175,8 @@ mod tests {
     use crate::record::{FieldEntry, FieldValue, RecordFlags};
     use crate::schema::AuthoringSchema;
     use esp_authoring_core::plugin_runtime::{
-        ParsedGroup, ParsedSubrecord, ensure_assets_section, ensure_refs_section,
-        plugin_handle_debug_section_loaded_native, plugin_handle_new_native,
+        ParsedGroup, ParsedSubrecord, build_vmad_bytes_from_payload, ensure_assets_section,
+        ensure_refs_section, plugin_handle_debug_section_loaded_native, plugin_handle_new_native,
     };
     use rayon::prelude::*;
     use smallvec::SmallVec;
@@ -1738,6 +2518,224 @@ mod tests {
         assert_eq!(fks[0].local, 0x800);
     }
 
+    fn legacy_encoded_signatures(
+        session: &mut PluginSession,
+        masters: &[String],
+    ) -> FxHashMap<u32, SigCode> {
+        use crate::fixups::rewrite_raw_object_template_formids::encode_target_form_id;
+        let interner = StringInterner::new();
+        let mut signatures = FxHashMap::default();
+        for sig in session.target_signatures().unwrap() {
+            for fk in session.form_keys_of_sig(sig, &interner).unwrap() {
+                if let Some(encoded) = encode_target_form_id(fk, &interner, masters) {
+                    signatures.insert(encoded, sig);
+                }
+            }
+        }
+        signatures
+    }
+
+    #[test]
+    fn encoded_signatures_match_legacy_for_masters_aliases_and_duplicate_ids() {
+        for game in ["fo76", "skyrimse", "fnv", "fo3", "fo4"] {
+            let handle = load_fixture_with_weap().unwrap();
+            let mut session = open_session(handle, None).unwrap();
+            let slot = session.target_slot_mut();
+            slot.parsed.game = Some(game.to_string());
+            slot.parsed.header.masters = vec!["Fallout4.esm".into(), "DlcRobot.esm".into()];
+            let ParsedItem::Group(group) = &mut slot.parsed.root_items[0] else {
+                panic!()
+            };
+            let template = group.children[0].clone();
+            group.children.clear();
+            for (raw, sig) in [
+                (0, "TES4"),
+                (0x800, "MISC"),
+                (0x0100_0800, "STAT"),
+                (0x0200_0800, "REFR"),
+                (0xFF00_0800, "REFR"),
+                (0x0200_0800, "REFR"),
+                (0x0300_0801, "ACHR"),
+                (0xFF00_0802, "WEAP"),
+                (0x0100_0803, "STAT"),
+            ] {
+                let ParsedItem::Record(mut record) = template.clone() else {
+                    panic!()
+                };
+                record.form_id = raw;
+                record.signature = sig.into();
+                group.children.push(ParsedItem::Record(record));
+            }
+            slot.invalidate_sections();
+            for masters in [
+                vec![],
+                vec!["fallout4.ESM".into(), "dlcROBOT.esm".into()],
+                vec!["DlcRobot.esm".into(), "Fallout4.esm".into()],
+                (0..257).map(|i| format!("Master{i}.esm")).collect(),
+            ] {
+                let expected = legacy_encoded_signatures(&mut session, &masters);
+                let actual = session.encoded_target_record_signatures(&masters);
+                assert_eq!(*actual, expected, "{game}: {masters:?}");
+                let repeated = session.encoded_target_record_signatures(&masters);
+                assert!(Arc::ptr_eq(&actual, &repeated));
+            }
+            drop(session);
+            assert!(esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle));
+        }
+    }
+
+    #[test]
+    fn encoded_signatures_survive_body_edits_and_invalidate_on_identity_changes() {
+        let handle = load_fixture_with_weap().unwrap();
+        let mut session = open_session(handle, None).unwrap();
+        let first = session.encoded_target_record_signatures(&[]);
+        session.record_mut(0x800).unwrap().subrecords[1].data = Bytes::from_static(&[9, 8, 7, 6]);
+        session.record_effect(WriteEffect::RecordContents {
+            form_ids: smallvec::smallvec![0x800],
+        });
+        session.flush_pending_effects();
+        assert!(Arc::ptr_eq(
+            &first,
+            &session.encoded_target_record_signatures(&[])
+        ));
+        session.record_effect(WriteEffect::HeaderOnly);
+        session.flush_pending_effects();
+        assert!(Arc::ptr_eq(
+            &first,
+            &session.encoded_target_record_signatures(&[])
+        ));
+
+        let mut added = session.record(0x800).unwrap().clone();
+        added.form_id = 0x801;
+        added.signature = "STAT".into();
+        session
+            .target_slot_mut()
+            .parsed
+            .root_items
+            .push(ParsedItem::Record(added));
+        session.record_effect(WriteEffect::RecordsAddedOrRemoved);
+        let inserted = session.encoded_target_record_signatures(&[]);
+        assert!(!Arc::ptr_eq(&first, &inserted));
+        assert_eq!(inserted.get(&0x801).unwrap().as_str(), "STAT");
+
+        let interner = StringInterner::new();
+        let fk = FormKey::parse("000800@SessionTest.esp", &interner).unwrap();
+        assert!(session.remove_record(&fk).unwrap());
+        let removed = session.encoded_target_record_signatures(&[]);
+        assert!(!removed.contains_key(&0x800));
+        assert_eq!(*removed, legacy_encoded_signatures(&mut session, &[]));
+
+        session.target_slot_mut().parsed.header.masters = vec!["Fallout4.esm".into()];
+        session.record_effect(WriteEffect::MastersChanged);
+        let masters = session.target_masters().to_vec();
+        let remastered = session.encoded_target_record_signatures(&masters);
+        assert!(!Arc::ptr_eq(&removed, &remastered));
+        assert_eq!(
+            *remastered,
+            legacy_encoded_signatures(&mut session, &masters)
+        );
+
+        session.target_slot_mut().invalidate_sections();
+        let refreshed = session.encoded_target_record_signatures(&masters);
+        assert!(!Arc::ptr_eq(&remastered, &refreshed));
+        assert_eq!(*refreshed, *remastered);
+        drop(session);
+        assert!(esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle));
+    }
+
+    #[test]
+    #[ignore = "requires PLACED_INDEX_CORPUS and optional PLACED_INDEX_REPORT"]
+    fn encoded_signatures_match_complete_plugin_corpus() {
+        use crate::run::OwnedPluginHandle;
+        let path = std::path::PathBuf::from(std::env::var_os("PLACED_INDEX_CORPUS").unwrap());
+        let handle = OwnedPluginHandle::load(&path, "fo4", None).unwrap();
+        let mut session = open_session(handle.id(), None).unwrap();
+        let masters = session.target_masters().to_vec();
+        let _ = session.target_signatures().unwrap();
+        let started = std::time::Instant::now();
+        let expected = legacy_encoded_signatures(&mut session, &masters);
+        let legacy_seconds = started.elapsed().as_secs_f64();
+        let started = std::time::Instant::now();
+        let actual = session.encoded_target_record_signatures(&masters);
+        let build_seconds = started.elapsed().as_secs_f64();
+        assert_eq!(*actual, expected);
+        let started = std::time::Instant::now();
+        for _ in 0..10 {
+            assert!(Arc::ptr_eq(
+                &actual,
+                &session.encoded_target_record_signatures(&masters)
+            ));
+        }
+        let reuse_seconds = started.elapsed().as_secs_f64() / 10.;
+        let mut entries: Vec<_> = actual.iter().collect();
+        entries.sort_by_key(|(raw, _)| **raw);
+        let mut digest = blake3::Hasher::new();
+        for (raw, sig) in entries {
+            digest.update(&raw.to_le_bytes());
+            digest.update(&sig.0);
+        }
+        let report = serde_json::json!({
+            "plugin": path, "entries": actual.len(), "identical": true,
+            "legacy_seconds": legacy_seconds, "build_seconds": build_seconds,
+            "reuse_seconds": reuse_seconds, "digest": digest.finalize().to_hex().to_string(),
+        });
+        eprintln!("{report}");
+        if let Some(path) = std::env::var_os("PLACED_INDEX_REPORT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn indexed_record_identity_distinguishes_same_local_id_across_plugins() {
+        let handle = plugin_handle_new_native("SessionExactIndex.esp", Some("fo4")).unwrap();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle).unwrap();
+            slot.parsed.header.masters = vec!["Fallout4.esm".to_string()];
+            slot.parsed.root_items = vec![
+                ParsedItem::Record(ParsedRecord {
+                    signature: SmolStr::new("MISC"),
+                    form_id: 0x0000_0800,
+                    flags: 0,
+                    version_control: 0,
+                    form_version: None,
+                    version2: None,
+                    subrecords: Vec::new(),
+                    raw_payload: None,
+                    parse_error: None,
+                }),
+                ParsedItem::Record(ParsedRecord {
+                    signature: SmolStr::new("WEAP"),
+                    form_id: 0x0100_0800,
+                    flags: 0,
+                    version_control: 0,
+                    form_version: None,
+                    version2: None,
+                    subrecords: Vec::new(),
+                    raw_payload: None,
+                    parse_error: None,
+                }),
+            ];
+            slot.invalidate_sections();
+        }
+        let interner = StringInterner::new();
+        let own_fk = FormKey::parse("000800@SessionExactIndex.esp", &interner).unwrap();
+        let master_fk = FormKey::parse("000800@Fallout4.esm", &interner).unwrap();
+        let mut session = open_session(handle, None).unwrap();
+
+        let own = session
+            .indexed_raw_form_id_and_signature(&own_fk, &interner)
+            .unwrap();
+        let master = session
+            .indexed_raw_form_id_and_signature(&master_fk, &interner)
+            .unwrap();
+
+        assert_eq!(own, (0x0100_0800, SigCode::from_str("WEAP").unwrap()));
+        assert_eq!(master, (0x0000_0800, SigCode::from_str("MISC").unwrap()));
+        assert!(session.target_cached_signatures.is_empty());
+        assert_eq!(session.target_form_id_cache.len(), 2);
+    }
+
     #[test]
     fn record_mut_returns_record_by_form_id() {
         let Some(handle) = load_fixture_with_weap() else {
@@ -1858,6 +2856,96 @@ mod tests {
                 .data
                 .as_ref(),
             b"SessionWeap0\0"
+        );
+    }
+
+    #[test]
+    fn rewrite_placed_leveled_reference_upserts_and_removes_xlib() {
+        let Some(handle) = load_fixture_with_cell_child_group() else {
+            return;
+        };
+        let interner = StringInterner::new();
+        let fk = FormKey::parse("000801@SessionCellTest.esp", &interner).unwrap();
+        let original_list = 0x0100_1000_u32;
+        let dummy = 0x0009_28C8_u32;
+        let leveled_list = 0x0100_2000_u32;
+        let concrete = 0x000A_BCDE_u32;
+
+        let mut session = open_session(handle, None).unwrap();
+        session.record_mut(0x0000_0801).unwrap().subrecords.extend([
+            ParsedSubrecord {
+                signature: SmolStr::new("XLIB"),
+                data: Bytes::copy_from_slice(&0x0100_3000_u32.to_le_bytes()),
+                semantic_type: None,
+            },
+            ParsedSubrecord {
+                signature: SmolStr::new("NAME"),
+                data: Bytes::copy_from_slice(&original_list.to_le_bytes()),
+                semantic_type: None,
+            },
+            ParsedSubrecord {
+                signature: SmolStr::new("XLIB"),
+                data: Bytes::copy_from_slice(&0x0100_4000_u32.to_le_bytes()),
+                semantic_type: None,
+            },
+        ]);
+
+        assert!(
+            session
+                .rewrite_placed_leveled_reference(&fk, original_list, dummy, Some(leveled_list))
+                .unwrap()
+        );
+        assert!(
+            !session
+                .rewrite_placed_leveled_reference(&fk, dummy, dummy, Some(leveled_list))
+                .unwrap(),
+            "reapplying the same runtime layout is idempotent"
+        );
+        let record = session.record(0x0000_0801).unwrap();
+        let name_index = record
+            .subrecords
+            .iter()
+            .position(|subrecord| subrecord.signature.as_str() == "NAME")
+            .unwrap();
+        assert_eq!(
+            record.subrecords[name_index].data.as_ref(),
+            &dummy.to_le_bytes()
+        );
+        assert_eq!(record.subrecords[name_index + 1].signature.as_str(), "XLIB");
+        assert_eq!(
+            record
+                .subrecords
+                .iter()
+                .filter(|subrecord| subrecord.signature.as_str() == "XLIB")
+                .count(),
+            1
+        );
+        assert_eq!(
+            record.subrecords[name_index + 1].data.as_ref(),
+            &leveled_list.to_le_bytes()
+        );
+
+        assert!(
+            session
+                .rewrite_placed_leveled_reference(&fk, dummy, concrete, None)
+                .unwrap()
+        );
+        let record = session.record(0x0000_0801).unwrap();
+        assert!(
+            record
+                .subrecords
+                .iter()
+                .all(|subrecord| subrecord.signature.as_str() != "XLIB")
+        );
+        assert_eq!(
+            record
+                .subrecords
+                .iter()
+                .find(|subrecord| subrecord.signature.as_str() == "NAME")
+                .unwrap()
+                .data
+                .as_ref(),
+            &concrete.to_le_bytes()
         );
     }
 
@@ -2485,6 +3573,166 @@ mod tests {
             .unwrap();
         assert_eq!(decoded.form_key, fks[0]);
         assert_eq!(decoded.sig, SigCode::from_str("WEAP").unwrap());
+    }
+
+    #[test]
+    fn targeted_reference_scan_returns_only_matching_carriers() {
+        let Some(handle) = plugin_handle_new_native("TargetedRefs.esp", Some("fo4")).ok() else {
+            return;
+        };
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle).unwrap();
+            slot.parsed.root_items = vec![
+                ParsedItem::Group(ParsedGroup {
+                    label: *b"KYWD",
+                    group_type: 0,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(ParsedRecord {
+                        signature: SmolStr::new("KYWD"),
+                        form_id: 0x0000_0800,
+                        flags: 0,
+                        version_control: 0,
+                        form_version: None,
+                        version2: None,
+                        subrecords: Vec::new(),
+                        raw_payload: None,
+                        parse_error: None,
+                    })],
+                }),
+                ParsedItem::Group(ParsedGroup {
+                    label: *b"REFR",
+                    group_type: 0,
+                    tail: Bytes::new(),
+                    children: vec![
+                        ParsedItem::Record(ParsedRecord {
+                            signature: SmolStr::new("REFR"),
+                            form_id: 0x0000_0801,
+                            flags: 0,
+                            version_control: 0,
+                            form_version: None,
+                            version2: None,
+                            subrecords: vec![ParsedSubrecord {
+                                signature: SmolStr::new("NAME"),
+                                data: Bytes::copy_from_slice(&0x0000_0800_u32.to_le_bytes()),
+                                semantic_type: None,
+                            }],
+                            raw_payload: None,
+                            parse_error: None,
+                        }),
+                        ParsedItem::Record(ParsedRecord {
+                            signature: SmolStr::new("REFR"),
+                            form_id: 0x0000_0802,
+                            flags: 0,
+                            version_control: 0,
+                            form_version: None,
+                            version2: None,
+                            subrecords: Vec::new(),
+                            raw_payload: None,
+                            parse_error: None,
+                        }),
+                    ],
+                }),
+            ];
+            slot.invalidate_sections();
+        }
+
+        let mut session = open_session(handle, None).unwrap();
+        let query = "TargetedRefs.esp:000800".to_string();
+        let matches = session
+            .referencing_form_keys_by_query_in_handle(handle, std::slice::from_ref(&query))
+            .unwrap();
+
+        drop(session);
+        assert_eq!(matches[&query], vec!["TargetedRefs.esp:000801"]);
+        assert!(!plugin_handle_debug_section_loaded_native(handle, "refs").unwrap());
+    }
+
+    #[test]
+    fn targeted_reference_scan_finds_vmad_property_carriers() {
+        let Some(handle) = plugin_handle_new_native("TargetedVmad.esp", Some("fo4")).ok() else {
+            return;
+        };
+        let vmad = build_vmad_bytes_from_payload(
+            &serde_json::json!({
+                "Version": 6,
+                "Object Format": 2,
+                "Scripts": [{
+                    "ScriptName": "B21:StoryEventOnActivate",
+                    "Flags": 0,
+                    "Properties": [{
+                        "propertyName": "StoryEventKeyword",
+                        "Type": "Object",
+                        "Flags": 1,
+                        "Value": {
+                            "Alias": -1,
+                            "FormID": {
+                                "reference": {
+                                    "plugin": "TargetedVmad.esp",
+                                    "object_id": "000800"
+                                }
+                            }
+                        }
+                    }]
+                }]
+            }),
+            &[],
+            "TargetedVmad.esp",
+        )
+        .unwrap();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle).unwrap();
+            slot.parsed.root_items = vec![
+                ParsedItem::Group(ParsedGroup {
+                    label: *b"KYWD",
+                    group_type: 0,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(ParsedRecord {
+                        signature: SmolStr::new("KYWD"),
+                        form_id: 0x0000_0800,
+                        flags: 0,
+                        version_control: 0,
+                        form_version: None,
+                        version2: None,
+                        subrecords: Vec::new(),
+                        raw_payload: None,
+                        parse_error: None,
+                    })],
+                }),
+                ParsedItem::Group(ParsedGroup {
+                    label: *b"REFR",
+                    group_type: 0,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(ParsedRecord {
+                        signature: SmolStr::new("REFR"),
+                        form_id: 0x0000_0801,
+                        flags: 0,
+                        version_control: 0,
+                        form_version: None,
+                        version2: None,
+                        subrecords: vec![ParsedSubrecord {
+                            signature: SmolStr::new("VMAD"),
+                            data: Bytes::from(vmad),
+                            semantic_type: None,
+                        }],
+                        raw_payload: None,
+                        parse_error: None,
+                    })],
+                }),
+            ];
+            slot.invalidate_sections();
+        }
+
+        let mut session = open_session(handle, None).unwrap();
+        let query = "TargetedVmad.esp:000800".to_string();
+        let matches = session
+            .referencing_form_keys_by_query_in_handle(handle, std::slice::from_ref(&query))
+            .unwrap();
+
+        drop(session);
+        assert_eq!(matches[&query], vec!["TargetedVmad.esp:000801"]);
+        assert!(!plugin_handle_debug_section_loaded_native(handle, "refs").unwrap());
     }
 
     #[test]

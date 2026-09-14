@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Once;
 
 use bytes::Bytes;
 use esp_authoring_core::plugin_runtime::{
@@ -6,6 +7,29 @@ use esp_authoring_core::plugin_runtime::{
     plugin_handle_close_native, plugin_handle_new_native, plugin_handle_save_no_py,
     plugin_handle_store_ref,
 };
+use pyo3::Python;
+
+fn initialize_python_for_tests() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        if std::env::var_os("PYTHONHOME").is_none() {
+            if let Some(home) = std::env::var_os("VIRTUAL_ENV")
+                .and_then(|venv| {
+                    std::fs::read_to_string(std::path::Path::new(&venv).join("pyvenv.cfg")).ok()
+                })
+                .and_then(|cfg| {
+                    cfg.lines()
+                        .find_map(|line| line.strip_prefix("home = ").map(str::to_string))
+                })
+            {
+                unsafe {
+                    std::env::set_var("PYTHONHOME", home);
+                }
+            }
+        }
+        Python::initialize();
+    });
+}
 
 pub(crate) fn edid_sub(edid: &str) -> ParsedSubrecord {
     let mut data = edid.as_bytes().to_vec();
@@ -51,6 +75,7 @@ pub(crate) fn write_test_plugin_with_masters(
     masters: Vec<String>,
     records: Vec<ParsedRecord>,
 ) -> PathBuf {
+    initialize_python_for_tests();
     let path = dir.join(name);
     let handle = plugin_handle_new_native(name, Some(game)).expect("new test plugin");
     {
@@ -73,6 +98,7 @@ pub(crate) fn write_test_plugin_items(
     masters: Vec<String>,
     items: Vec<ParsedItem>,
 ) -> PathBuf {
+    initialize_python_for_tests();
     let path = dir.join(name);
     let handle = plugin_handle_new_native(name, Some(game)).expect("new test plugin");
     {

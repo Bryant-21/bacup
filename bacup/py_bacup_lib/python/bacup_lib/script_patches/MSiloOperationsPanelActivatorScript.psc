@@ -9,7 +9,10 @@ EndEvent
 State intact
     Event OnDestructionStageChanged(Int aiOldStage, Int aiCurrentStage)
         If aiCurrentStage > aiOldStage
-            ResolveOperations().HandlePanelDestroyed(Self)
+            MSiloQuestScript_Operations operations = ResolveOperations()
+            If operations != None
+                operations.HandlePanelDestroyed(Self)
+            EndIf
             GoToState("destroyed")
         EndIf
     EndEvent
@@ -17,8 +20,8 @@ EndState
 
 MSiloQuestScript_Operations Function ResolveOperations()
     Quest managerQuest = Game.GetFormFromFile(0x003D72E6, "SeventySix.esm") as Quest
-    If managerQuest != None && !managerQuest.IsRunning()
-        managerQuest.Start()
+    If managerQuest == None || !managerQuest.IsRunning()
+        Return None
     EndIf
     MSiloQuestScript_Operations operations = managerQuest as MSiloQuestScript_Operations
     operations.Initialize()

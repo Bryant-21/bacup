@@ -9,6 +9,7 @@ from imgui_bundle import imgui
 from creation_lib.ui.widgets.user_guide import UserGuide
 from creation_lib.ui.shell import BaseWorkspace, make_window
 from ui.tools.base import BaseTool
+from creation_lib.ui.widgets.modern import action_button, semantic_color
 
 _log = logging.getLogger("toolkit.tool_workspace")
 
@@ -88,18 +89,18 @@ class ToolWorkspace(BaseWorkspace):
             imgui.spacing()
             imgui.separator()
             imgui.progress_bar(tool._progress, imgui.ImVec2(-1, 0), tool._status_msg)
-            if imgui.button(f"Cancel##{self.id}"):
+            if action_button(f"Cancel##{self.id}"):
                 tool._cancel_requested = True
         if tool._error_msg:
             imgui.spacing()
-            imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(1.0, 0.3, 0.3, 1.0))
+            imgui.push_style_color(imgui.Col_.text, semantic_color("error"))
             imgui.text_wrapped(tool._error_msg)
             imgui.pop_style_color()
             if imgui.small_button(f"Dismiss##{self.id}"):
                 tool._error_msg = ""
         if tool._result_msg and not tool._running:
             imgui.spacing()
-            imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(0.3, 1.0, 0.3, 1.0))
+            imgui.push_style_color(imgui.Col_.text, semantic_color("success"))
             imgui.text_wrapped(tool._result_msg)
             imgui.pop_style_color()
 

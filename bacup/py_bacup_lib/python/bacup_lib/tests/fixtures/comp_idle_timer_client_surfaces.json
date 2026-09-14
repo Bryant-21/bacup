@@ -1,0 +1,41 @@
+{
+  "retail": {
+    "archive_member": "scripts/client/comp_idletimerscript.pex",
+    "byte_size": 663,
+    "sha256": "0218E1DFFCF8A5255402FB1486839CE9B6B5BF314AC43AD76F740E24F33E6DFF"
+  },
+  "playtest": {
+    "archive_member": "scripts/client/comp_idletimerscript.pex",
+    "byte_size": 663,
+    "sha256": "81FB77E23A87953C3FB0680772A4FC32C5CBCFB2270674F73B888BAEA9046704"
+  },
+  "logical_surface": {
+    "object_name": "COMP_IdleTimerScript",
+    "parent": "Actor",
+    "is_const": true,
+    "auto_state": "",
+    "guard_count": 0,
+    "debug_function_count": 0,
+    "state_function_count": 0,
+    "properties": {
+      "COMP_IdleChatterTimeMin": "globalvariable",
+      "COMP_IdleChatterTimeMax": "globalvariable",
+      "IdleChatterTimeMin": "actorvalue",
+      "IdleChatterTimeMax": "actorvalue"
+    },
+    "forbidden_symbols": [
+      "oninit",
+      "onload",
+      "oncellload",
+      "oncellattach",
+      "onreset",
+      "ontimer",
+      "starttimer",
+      "setvalue",
+      "getvalue",
+      "evaluatepackage",
+      "randomfloat",
+      "randomint"
+    ]
+  }
+}

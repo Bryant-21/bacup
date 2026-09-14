@@ -1,5 +1,5 @@
 Function ApplySiloState()
-    DefaultMultiStateActivator stateController = Self as DefaultMultiStateActivator
+    DefaultMultiStateActivator stateController = (Self as ObjectReference) as DefaultMultiStateActivator
     If stateController == None || stateController.AnimationStates == None || SiloStateGlobal == None
         Return
     EndIf

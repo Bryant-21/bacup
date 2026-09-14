@@ -50,6 +50,7 @@ pub fn write_converted_materials(
             material_game(source_game)?,
             Game::Fo4,
         );
+        bgsm_data.CastShadows = true;
 
         // Rewrite BGSM texture slots relative to the textures root.
         let prefix = texture_prefix_for_bgsm(&bundle.output_prefix);
@@ -142,6 +143,7 @@ fn has_glow(bgsm: &bgsm::BgsmData) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain_textures::manifest::TextureBundle;
 
     #[test]
     fn texture_prefix_omits_textures_root() {
@@ -160,5 +162,38 @@ mod tests {
     fn bgsm_slot_path_uses_forward_slashes() {
         assert_eq!(bgsm_slot_path("terrain\\x.dds"), "terrain/x.dds");
         assert_eq!(bgsm_slot_path("terrain/x.dds"), "terrain/x.dds");
+    }
+
+    #[test]
+    fn converted_terrain_material_casts_shadows() {
+        let temp = tempfile::tempdir().expect("terrain material fixture");
+        let source = temp.path().join("source.bgsm");
+        let mut material = bgsm::BgsmData::default();
+        material.header.signature = bgsm::BGSM_SIGNATURE;
+        material.header.version = 20;
+        material.CastShadows = false;
+        fs::write(&source, bgsm::write(&material)).expect("write source BGSM");
+
+        let manifest = TextureManifest {
+            textures: vec![TextureBundle {
+                source_ltex_editor_id: "TestTerrain".to_owned(),
+                output_prefix: "textures/fo76/terrain/TestTerrain".to_owned(),
+                output_material_path: Some("Landscape/Ground/TestTerrain.bgsm".to_owned()),
+                source_material_path: "Landscape/Ground/TestTerrain.bgsm".to_owned(),
+                source_material_file: source.to_string_lossy().into_owned(),
+                ..TextureBundle::default()
+            }],
+        };
+
+        assert_eq!(
+            write_converted_materials(&manifest, &temp.path().join("mod"), "fo76"),
+            Ok(1)
+        );
+        let output = temp
+            .path()
+            .join("mod/data/materials/Landscape/Ground/TestTerrain.bgsm");
+        let converted = bgsm::parse(&fs::read(output).expect("read converted BGSM"))
+            .expect("parse converted BGSM");
+        assert!(converted.CastShadows);
     }
 }

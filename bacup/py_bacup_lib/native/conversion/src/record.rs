@@ -97,24 +97,19 @@ impl Record {
         }
     }
 
-    /// Reconcile the `CITC` (condition item count) subrecord with the number of
-    /// `CTDA`/`CTDT` conditions actually present.
+    /// Reconcile each `CITC` (condition item count) with the `CTDA`/`CTDT`
+    /// conditions actually present. Returns whether any `CITC` changed.
     ///
-    /// Condition-dropping passes remove `CTDA` subrecords with `Vec::retain`
-    /// but leave `CITC` at its original value. FO4 then reads the stale
-    /// overcount and evaluates a phantom condition off uninitialized memory —
-    /// e.g. a region-music `MUST` track whose FO76-only condition was stripped
-    /// crashes the audio-manager update (null deref) when the track plays.
-    /// No-op on records without a `CITC`. Returns whether any `CITC` changed.
+    /// Condition-dropping passes `retain` away `CTDA`s but leave `CITC`. FO4
+    /// then evaluates phantom conditions off uninitialized memory; e.g. a
+    /// region-music `MUST` track whose FO76-only condition was stripped
+    /// null-derefs in the audio-manager update when it plays.
     ///
-    /// Each `CITC` counts ONLY the conditions in its own group — the
-    /// `CTDA`/`CTDT` rows that immediately follow it (interleaved `CIS1`/`CIS2`
-    /// parameter strings are skipped, not counted), up to the next non-condition
-    /// subrecord. A record can hold several independent groups: a `SCEN` carries
-    /// a per-action `CITC` plus phase conditions that belong to no `CITC`. A
-    /// record-wide `CTDA` total would wrongly inflate every `CITC` — e.g. a SCEN
-    /// action with zero conditions inherits the phase `CTDA` count, and FO4 then
-    /// reads phantom conditions off the following action and crashes.
+    /// Each `CITC` counts only its own group: the `CTDA`/`CTDT` rows right after
+    /// it (skipping interleaved `CIS1`/`CIS2`), up to the next non-condition
+    /// subrecord. A `SCEN` has per-action `CITC`s plus phase conditions under no
+    /// `CITC`; a record-wide total would give a zero-condition action the phase
+    /// count, and FO4 would read phantom conditions off the next action and crash.
     pub(crate) fn sync_condition_count(&mut self) -> bool {
         let len = self.fields.len();
         let mut changed = false;

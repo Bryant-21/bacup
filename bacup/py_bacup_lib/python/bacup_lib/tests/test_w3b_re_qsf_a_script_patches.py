@@ -17,8 +17,8 @@ from creation_lib.pex.native_runtime import compile_psc
 REPO_ROOT = Path(__file__).resolve().parents[5]
 SOURCE_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 
-# Section A -- Assault family. Every active row hands off to the native FO4 base
-# REAssaultQuestScript sibling VMAD script (contracts/w3b-re-qsf-a.md Section A).
+# Assault family. Every active row hands off to the native FO4 base
+# REAssaultQuestScript sibling VMAD script (contracts/w3b-re-qsf-a.md).
 ASSAULT_PATCH_CASES: dict[str, tuple[str, ...]] = {
     "Fragments:Quests:QF_W05_RE_AssaultAF01_0055DE89": (
         "reAssault.InitAssault()", "reAssault.StartAssault()",
@@ -83,7 +83,7 @@ ASSAULT_PATCH_CASES: dict[str, tuple[str, ...]] = {
 }
 
 # Rows carrying a second stage-1000 log entry (Fragment_Stage_1000_Item_01), per the
-# contract's Section A table -- everything except BB02/ZW13/ZW14/ZW16.
+# contract's Assault table -- everything except BB02/ZW13/ZW14/ZW16.
 ASSAULT_TWO_TERMINAL_ITEMS = {
     "Fragments:Quests:QF_W05_RE_AssaultAF01_0055DE89",
     "Fragments:Quests:QF_W05_RE_AssaultZW03_00569D82",
@@ -105,7 +105,7 @@ ASSAULT_BASE_MEMBERS = {
     "fragment_stage_1000_item_00",
 }
 
-# Section B -- Camp/Cryptid/Eavesdrop family (contracts/w3b-re-qsf-a.md Section B).
+# Camp/Cryptid/Eavesdrop family (contracts/w3b-re-qsf-a.md).
 # B1: MobCamp/static tableau -- stage 10 does ClutterMarker toggle + scene-start
 # (no separate trigger stage exists); stage 1000 is an evidenced-empty terminal.
 B1_PATCH_CASES: dict[str, tuple[str, ...]] = {

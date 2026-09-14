@@ -16,6 +16,9 @@ Function UnregisterCombatantEvents()
 	UnregisterForRemoteEvent(selfRef, "OnCombatStateChanged")
 	UnregisterForAnimationEvent(selfRef, animEventAoEAttackStart)
 	UnregisterForAnimationEvent(selfRef, animEventTeleportStart)
+	UnregisterForAnimationEvent(selfRef, "AttackEnd")
+	UnregisterForAnimationEvent(selfRef, "AttackStop")
+	UnregisterForAnimationEvent(selfRef, "AttackInterrupt")
 EndFunction
 
 Function StartAoEWeaponTimer(Float afDelayMin, Float afDelayMax)
@@ -55,6 +58,9 @@ Event Actor.OnCombatStateChanged(Actor akSender, Actor akTarget, Int aeCombatSta
 		StartAoEWeaponTimer(InitialAoEAttackTimeMin, InitialAoEAttackTimeMax)
 	Else
 		CancelTimer(weaponAoEEquipTimerID)
+		UnregisterForAnimationEvent(selfRef, "AttackEnd")
+		UnregisterForAnimationEvent(selfRef, "AttackStop")
+		UnregisterForAnimationEvent(selfRef, "AttackInterrupt")
 		If AoEAttackWeapon != None
 			selfRef.UnequipItem(AoEAttackWeapon, False, True)
 		EndIf
@@ -67,6 +73,13 @@ Event OnAnimationEvent(ObjectReference akSource, String asEventName)
 	EndIf
 
 	If asEventName == animEventAoEAttackStart
+		RegisterForAnimationEvent(selfRef, "AttackEnd")
+		RegisterForAnimationEvent(selfRef, "AttackStop")
+		RegisterForAnimationEvent(selfRef, "AttackInterrupt")
+	ElseIf asEventName == "AttackEnd" || asEventName == "AttackStop" || asEventName == "AttackInterrupt"
+		UnregisterForAnimationEvent(selfRef, "AttackEnd")
+		UnregisterForAnimationEvent(selfRef, "AttackStop")
+		UnregisterForAnimationEvent(selfRef, "AttackInterrupt")
 		If AoEAttackWeapon != None
 			selfRef.UnequipItem(AoEAttackWeapon, False, True)
 		EndIf
@@ -94,7 +107,7 @@ Event OnEffectFinish(Actor akTarget, Actor akCaster)
 	CancelTimerGameTime(sunriseTimerID)
 	UnregisterCombatantEvents()
 	If selfRef != None && !selfRef.IsDead() && AoEAttackWeapon != None
-		selfRef.EquipItem(AoEAttackWeapon, False, True)
+		selfRef.UnequipItem(AoEAttackWeapon, False, True)
 	EndIf
 	selfRef = None
 EndEvent

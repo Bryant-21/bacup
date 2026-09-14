@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use indexmap::IndexMap;
+use nif_core_native::convert_file::{ConvertFileOptions, convert_nif_file};
 use nif_core_native::model::{NifBlock, NifFile, NifValue};
 use rayon::prelude::*;
 use serde::Serialize;
@@ -167,8 +168,13 @@ impl Phase for SynthesizeObjectLodPhase {
             .collect::<HashSet<_>>()
             .len();
         let started = std::time::Instant::now();
-        let generated =
-            generate_proxy_candidates(&pending, &mod_path, &source_dir, conversion_workers)?;
+        let generated = generate_proxy_candidates(
+            &pending,
+            &mod_path,
+            &source_dir,
+            source_game,
+            conversion_workers,
+        )?;
         let mut proxy_timing = ProxyGenerationTiming::default();
         for result in &generated {
             proxy_timing.merge(result.timing);
@@ -1406,12 +1412,13 @@ fn resolve_lod_slots(
         fill_missing_lod_slots(&mut slots);
     }
     if !any {
-        if let Some(c) = candidates.iter().find(|c| !c.multi) {
+        for c in candidates.iter().filter(|c| !c.multi) {
             if lod_source_exists(source_dir, &c.source_rel) {
                 for slot in &mut slots {
                     *slot = Some(c.mnam.clone());
                 }
                 any = true;
+                break;
             }
         }
     }
@@ -1571,34 +1578,28 @@ fn generate_proxy_candidates(
     candidates: &[ProxyCandidate],
     mod_path: &Path,
     source_dir: &Path,
+    source_game: Game,
     conversion_workers: Option<usize>,
 ) -> Result<Vec<ProxyGenerationResult>, PhaseError> {
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
-    if let Some(workers) = conversion_workers {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(workers)
-            .build()
-            .map_err(|e| PhaseError::Internal(format!("synthesize_object_lod workers: {e}")))?;
-        Ok(pool.install(|| {
-            candidates
-                .par_iter()
-                .map(|candidate| generate_proxy_candidate_assets(candidate, mod_path, source_dir))
-                .collect()
-        }))
-    } else {
-        Ok(candidates
+    crate::worker_pool::install(conversion_workers, || {
+        candidates
             .par_iter()
-            .map(|candidate| generate_proxy_candidate_assets(candidate, mod_path, source_dir))
-            .collect())
-    }
+            .map(|candidate| {
+                generate_proxy_candidate_assets(candidate, mod_path, source_dir, source_game)
+            })
+            .collect()
+    })
+    .map_err(|e| PhaseError::Internal(format!("synthesize_object_lod workers: {e}")))
 }
 
 fn generate_proxy_candidate_assets(
     candidate: &ProxyCandidate,
     mod_path: &Path,
     source_dir: &Path,
+    source_game: Game,
 ) -> ProxyGenerationResult {
     let mut warnings = Vec::new();
     let mut timing = ProxyGenerationTiming::default();
@@ -1606,16 +1607,16 @@ fn generate_proxy_candidate_assets(
     let output_source_path = mnam_abs_path_from_mod_root(mod_path, &candidate.source_mnam);
     let extracted_source_path = mnam_abs_path(source_dir, &candidate.source_mnam);
     timing.source_path_probes += 1;
-    let source_path = if output_source_path.is_file() {
-        Some(output_source_path)
+    let source = if output_source_path.is_file() {
+        Some((output_source_path, false))
     } else {
         timing.source_path_probes += 1;
         extracted_source_path
             .is_file()
-            .then_some(extracted_source_path)
+            .then_some((extracted_source_path, true))
     };
     timing.source_resolution = started.elapsed();
-    let Some(source_path) = source_path else {
+    let Some((source_path, requires_conversion)) = source else {
         warnings.push(format!(
             "{:06X}: source proxy model missing {}",
             candidate.form_id & 0x00ff_ffff,
@@ -1630,9 +1631,15 @@ fn generate_proxy_candidate_assets(
     };
 
     let started = Instant::now();
-    timing.nif_loads = 1;
-    let source_nif = match NifFile::load(source_path.clone()) {
-        Ok(nif) => nif,
+    timing.nif_loads = if requires_conversion { 2 } else { 1 };
+    let (source_nif, conversion_warnings) = match load_proxy_source_nif(
+        &source_path,
+        requires_conversion,
+        source_game,
+        mod_path,
+        source_dir,
+    ) {
+        Ok(result) => result,
         Err(err) => {
             timing.nif_probe = started.elapsed();
             warnings.push(format!(
@@ -1648,6 +1655,13 @@ fn generate_proxy_candidate_assets(
             };
         }
     };
+    warnings.extend(conversion_warnings.into_iter().map(|warning| {
+        format!(
+            "{:06X}: source proxy conversion {}: {warning}",
+            candidate.form_id & 0x00ff_ffff,
+            source_path.display()
+        )
+    }));
     timing.nif_probe = started.elapsed();
 
     let started = Instant::now();
@@ -1665,6 +1679,20 @@ fn generate_proxy_candidate_assets(
             profile.lock_border[output.level],
             profile.allow_sloppy[output.level],
         );
+        if stats.invalid_shapes > 0 {
+            timing.emission = started.elapsed();
+            warnings.push(format!(
+                "{:06X}: source proxy model has out-of-range triangle indices {}",
+                candidate.form_id & 0x00ff_ffff,
+                source_path.display()
+            ));
+            return ProxyGenerationResult {
+                generated: None,
+                assets_written,
+                warnings,
+                timing,
+            };
+        }
         if stats.inline_shapes == 0 {
             timing.emission = started.elapsed();
             warnings.push(format!(
@@ -1731,6 +1759,52 @@ fn generate_proxy_candidate_assets(
     }
 }
 
+fn load_proxy_source_nif(
+    source_path: &Path,
+    requires_conversion: bool,
+    source_game: Game,
+    mod_path: &Path,
+    source_dir: &Path,
+) -> Result<(NifFile, Vec<String>), String> {
+    if !requires_conversion {
+        return NifFile::load(source_path.to_path_buf())
+            .map(|nif| (nif, Vec::new()))
+            .map_err(|error| error.to_string());
+    }
+
+    let temp_dir = tempfile::Builder::new()
+        .prefix("modkit_object_lod_")
+        .tempdir()
+        .map_err(|error| error.to_string())?;
+    let converted_path = temp_dir.path().join("source.nif");
+    let material_output_dir =
+        (source_game == Game::SkyrimSe).then(|| mod_path.join("data").join("Materials"));
+    let options = ConvertFileOptions {
+        source_material_dir: Some(source_dir.to_path_buf()),
+        material_source_overrides: crate::material_source_overrides::material_source_overrides()
+            .clone(),
+        ..Default::default()
+    };
+    let report = convert_nif_file(
+        source_path,
+        &converted_path,
+        source_game.as_str(),
+        Game::Fo4.as_str(),
+        material_output_dir.as_deref(),
+        &options,
+    )
+    .map_err(|error| error.to_string())?;
+    if !report.errors.is_empty() {
+        return Err(report.errors.join("; "));
+    }
+    if !report.supported || !converted_path.is_file() {
+        return Err("source-to-FO4 NIF conversion produced no output".to_string());
+    }
+    NifFile::load(converted_path)
+        .map(|nif| (nif, report.warnings))
+        .map_err(|error| error.to_string())
+}
+
 fn proxy_decimation_profile(source_mnam: &str) -> ProxyDecimationProfile {
     if is_structure_proxy_model_path(source_mnam) {
         STRUCTURE_PROXY_DECIMATION_PROFILE
@@ -1777,6 +1851,7 @@ fn normalize_proxy_model_path(source_mnam: &str) -> String {
 #[derive(Default)]
 struct ProxyDecimationStats {
     inline_shapes: usize,
+    invalid_shapes: usize,
     shapes_simplified: usize,
     triangles_before: usize,
     triangles_after: usize,
@@ -1801,14 +1876,17 @@ fn decimate_nif_inline_geometry(
         stats.inline_shapes += 1;
         stats.triangles_before += geometry.triangles.len();
         let before = geometry.triangles.len();
-        let simplified = simplify_indices(
+        let Some(simplified) = simplify_indices(
             &geometry,
             ratio,
             max_triangles_per_shape,
             target_error,
             lock_border,
             allow_sloppy,
-        );
+        ) else {
+            stats.invalid_shapes += 1;
+            continue;
+        };
         if simplified.len() >= 3 && simplified.len() < before.saturating_mul(3) {
             if rewrite_inline_geometry(block, &simplified) {
                 stats.shapes_simplified += 1;
@@ -1891,17 +1969,23 @@ fn simplify_indices(
     target_error: f32,
     lock_border: bool,
     allow_sloppy: bool,
-) -> Vec<u32> {
+) -> Option<Vec<u32>> {
     let indices = flatten_indices(&geometry.triangles);
+    if indices
+        .iter()
+        .any(|&index| index as usize >= geometry.positions.len())
+    {
+        return None;
+    }
     if ratio <= 0.0 || ratio >= 1.0 || indices.len() < 12 {
-        return indices;
+        return Some(indices);
     }
     let target_triangles = (((geometry.triangles.len() as f32) * ratio).ceil() as usize)
         .min(max_triangles_per_shape)
         .max(4);
     let target_indices = target_triangles.saturating_mul(3);
     if target_indices >= indices.len() {
-        return indices;
+        return Some(indices);
     }
 
     let adapter = meshopt::VertexDataAdapter::new(
@@ -1959,7 +2043,7 @@ fn simplify_indices(
             out = sloppy;
         }
     }
-    out
+    Some(out)
 }
 
 fn vertex_attributes(geometry: &InlineGeometry) -> (Vec<f32>, Vec<f32>, usize) {
@@ -2368,14 +2452,18 @@ mod tests {
         write_full_model_fixture_at(mnam_abs_path_from_mod_root(root, rel), grid)
     }
 
-    fn write_source_full_model_fixture(root: &Path, rel: &str, grid: usize) -> PathBuf {
-        write_full_model_fixture_at(mnam_abs_path(root, rel), grid)
+    fn write_source_full_model_fixture(root: &Path, rel: &str, grid: usize, game: &str) -> PathBuf {
+        write_full_model_fixture_for_game_at(mnam_abs_path(root, rel), grid, game)
     }
 
     fn write_full_model_fixture_at(path: PathBuf, grid: usize) -> PathBuf {
+        write_full_model_fixture_for_game_at(path, grid, "fo4")
+    }
+
+    fn write_full_model_fixture_for_game_at(path: PathBuf, grid: usize, game: &str) -> PathBuf {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
 
-        let mut nif = NifFile::new("fo4");
+        let mut nif = NifFile::new(game);
         let shape_id = nif.add_block("BSTriShape", None);
         nif.blocks[0].set_field("Num Children", NifValue::UInt(1));
         nif.blocks[0].set_field(
@@ -2444,7 +2532,7 @@ mod tests {
         let source_root = tmp.path().join("source");
         let mod_root = tmp.path().join("mod");
         let model = r"Architecture\Whiterun\WRWallGate.nif";
-        write_source_full_model_fixture(&source_root, model, 8);
+        write_source_full_model_fixture(&source_root, model, 8, "skyrimse");
 
         let form_id = 0x0001_2345;
         let source = stat_record_with_flags(form_id, model, FLAG_HAS_DISTANT_LOD);
@@ -2474,10 +2562,14 @@ mod tests {
                 .all(|output| { output.mnam.starts_with(r"LOD\Generated\SkyrimSE\STAT\") })
         );
 
-        let result = generate_proxy_candidate_assets(&pending[0], &mod_root, &source_root);
+        let result =
+            generate_proxy_candidate_assets(&pending[0], &mod_root, &source_root, Game::SkyrimSe);
         assert_eq!(result.assets_written, 4, "{result:?}");
         assert!(result.generated.is_some(), "{result:?}");
         assert!(result.warnings.is_empty(), "{result:?}");
+        for output in &pending[0].outputs {
+            assert_fo4_header(&mnam_abs_path_from_mod_root(&mod_root, &output.mnam));
+        }
     }
 
     #[test]
@@ -2489,7 +2581,8 @@ mod tests {
             generated_proxy_candidate(&record, r"Architecture\SkiResort\SkiResort.nif", true)
                 .expect("candidate");
 
-        let result = generate_proxy_candidate_assets(&candidate, tmp.path(), tmp.path());
+        let result =
+            generate_proxy_candidate_assets(&candidate, tmp.path(), tmp.path(), Game::Fo76);
 
         assert_eq!(result.assets_written, 4, "{result:?}");
         assert!(result.generated.is_some(), "{result:?}");
@@ -2504,6 +2597,45 @@ mod tests {
     }
 
     #[test]
+    fn generated_proxy_candidate_rejects_out_of_range_triangle_indices() {
+        let tmp = tempfile::tempdir().unwrap();
+        let model = r"Architecture\SkiResort\InvalidTriangles.nif";
+        let source = write_full_model_fixture(tmp.path(), model, 2);
+        let mut nif = NifFile::load(source).unwrap();
+        let shape = nif
+            .blocks
+            .iter_mut()
+            .find(|block| block.type_name == "BSTriShape")
+            .unwrap();
+        let mut triangles = match shape.get_field("Triangles").unwrap() {
+            NifValue::Array(triangles) => triangles.clone(),
+            _ => panic!("fixture triangles must be an array"),
+        };
+        let first = match &mut triangles[0] {
+            NifValue::Struct(fields) => fields,
+            _ => panic!("fixture triangle must be a struct"),
+        };
+        first.insert("v1".to_string(), NifValue::UInt(u16::MAX as u64));
+        shape.set_field("Triangles", NifValue::Array(triangles));
+        nif.save(None).unwrap();
+
+        let record = stat_record(0x0000_bc2a, model);
+        let candidate = generated_proxy_candidate(&record, model, true).unwrap();
+        let result =
+            generate_proxy_candidate_assets(&candidate, tmp.path(), tmp.path(), Game::Fo76);
+
+        assert_eq!(result.assets_written, 0, "{result:?}");
+        assert!(result.generated.is_none(), "{result:?}");
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("out-of-range triangle indices")),
+            "{result:?}"
+        );
+    }
+
+    #[test]
     fn generated_structure_proxy_uses_lockborder_far_profile() {
         let tmp = tempfile::tempdir().unwrap();
         let source =
@@ -2513,7 +2645,8 @@ mod tests {
             generated_proxy_candidate(&record, r"Architecture\SkiResort\SkiResort.nif", true)
                 .expect("candidate");
 
-        let result = generate_proxy_candidate_assets(&candidate, tmp.path(), tmp.path());
+        let result =
+            generate_proxy_candidate_assets(&candidate, tmp.path(), tmp.path(), Game::Fo76);
 
         assert_eq!(result.assets_written, 4, "{result:?}");
         let profile = proxy_decimation_profile(r"Architecture\SkiResort\SkiResort.nif");
@@ -2545,19 +2678,27 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let source_root = tmp.path().join("source");
         let mod_root = tmp.path().join("mod");
-        write_source_full_model_fixture(&source_root, r"Architecture\SkiResort\SkiResort.nif", 8);
+        write_source_full_model_fixture(
+            &source_root,
+            r"Architecture\SkiResort\SkiResort.nif",
+            8,
+            "fo76",
+        );
         let record = stat_record(0x0000_bc2a, r"Architecture\SkiResort\SkiResort.nif");
         let candidate =
             generated_proxy_candidate(&record, r"Architecture\SkiResort\SkiResort.nif", true)
                 .expect("candidate");
 
-        let result = generate_proxy_candidate_assets(&candidate, &mod_root, &source_root);
+        let result =
+            generate_proxy_candidate_assets(&candidate, &mod_root, &source_root, Game::Fo76);
 
         assert_eq!(result.assets_written, 4, "{result:?}");
         assert!(result.generated.is_some(), "{result:?}");
         assert!(result.warnings.is_empty(), "{result:?}");
         for output in &candidate.outputs {
-            assert!(mnam_abs_path_from_mod_root(&mod_root, &output.mnam).is_file());
+            let output_path = mnam_abs_path_from_mod_root(&mod_root, &output.mnam);
+            assert!(output_path.is_file());
+            assert_fo4_header(&output_path);
         }
     }
 
@@ -2603,7 +2744,8 @@ mod tests {
         let candidate = generated_proxy_candidate(&record, r"Landscape\Trees\Stump01.nif", true)
             .expect("candidate");
 
-        let result = generate_proxy_candidate_assets(&candidate, tmp.path(), tmp.path());
+        let result =
+            generate_proxy_candidate_assets(&candidate, tmp.path(), tmp.path(), Game::Fo76);
 
         assert_eq!(result.assets_written, 4, "{result:?}");
         let source_tris = total_inline_triangles(&source);
@@ -2738,23 +2880,58 @@ mod tests {
         let form_id = 0x0001_3000;
         let source = tree_record(form_id, model);
         let source_hints = collect_source_lod_hints(&[ParsedItem::Record(source)], tmp.path());
-        let mut target = tree_record(form_id, model);
+        let target = tree_record(form_id, model);
+        let mut ready = Vec::new();
         let mut pending = Vec::new();
 
-        let changed = synthesize_record(
-            &mut target,
+        collect_virtual_lod_base(
+            &target,
             tmp.path(),
             tmp.path(),
             &source_hints,
+            &HashSet::new(),
             Game::SkyrimSe,
+            &mut ready,
             &mut pending,
         );
 
-        assert!(!changed);
+        assert!(ready.is_empty());
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].signature, "TREE");
         assert_eq!(pending[0].form_id, form_id);
         assert!(pending[0].set_base_flag);
+    }
+
+    #[test]
+    fn skyrim_tree_uses_flat_lod_sibling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let model = r"Landscape\Trees\TreePineForest01.nif";
+        let flat_lod = r"Landscape\Trees\TreePineForest01_LOD_FLAT.nif";
+        write_mnam_source_file(tmp.path(), flat_lod);
+        let form_id = 0x0001_3000;
+        let source = tree_record(form_id, model);
+        let source_hints = collect_source_lod_hints(&[ParsedItem::Record(source)], tmp.path());
+        let target = tree_record(form_id, model);
+        let mut ready = Vec::new();
+        let mut pending = Vec::new();
+
+        collect_virtual_lod_base(
+            &target,
+            tmp.path(),
+            tmp.path(),
+            &source_hints,
+            &HashSet::new(),
+            Game::SkyrimSe,
+            &mut ready,
+            &mut pending,
+        );
+
+        assert!(pending.is_empty());
+        assert_eq!(ready.len(), 1);
+        assert_eq!(
+            ready[0].slots,
+            std::array::from_fn(|_| Some(flat_lod.to_string()))
+        );
     }
 
     fn write_mnam_source_file(source_dir: &Path, mnam: &str) {
@@ -2774,6 +2951,14 @@ mod tests {
         let nif = NifFile::load(path.to_path_buf())
             .unwrap_or_else(|err| panic!("load generated NIF {}: {err}", path.display()));
         nif.blocks.iter().map(count_inline_triangles).sum()
+    }
+
+    fn assert_fo4_header(path: &Path) {
+        let nif = NifFile::load(path.to_path_buf())
+            .unwrap_or_else(|err| panic!("load generated NIF {}: {err}", path.display()));
+        assert_eq!(nif.header.version, (20, 2, 0, 7), "{}", path.display());
+        assert_eq!(nif.header.user_version, 12, "{}", path.display());
+        assert_eq!(nif.header.bs_version, 130, "{}", path.display());
     }
 
     fn grid_geometry(grid: usize) -> (Vec<NifValue>, Vec<NifValue>) {

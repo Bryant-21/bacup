@@ -1,19 +1,16 @@
 //! FO76→FO4 vendor-dialogue enablement (post-copy).
 //!
-//! FO76/Skyrim vendors trade from the faction's Vendor flag alone; FO4 instead
-//! requires a "Let's trade" dialogue topic that runs the vanilla
-//! `VendorInfoScript` (`OnEnd` → `ShowBarterMenu`). That topic ships in a
-//! companion plugin (`B21_VendorDialogue.esp`, master = the converted output)
-//! gated on `GetInFaction(B21_VendorDialogueFaction)`. This pass puts that gate
-//! faction and its members into the converted output so the companion can find
-//! them:
-//!   1. synthesize FACT `B21_VendorDialogueFaction`;
-//!   2. enroll every NPC that belongs to a vendor faction (a FACT carrying
-//!      `VENC`, the merchant container) into it.
+//! FO76/Skyrim vendors trade from the faction's Vendor flag alone; FO4 requires a
+//! "Let's trade" topic running the vanilla `VendorInfoScript` (`OnEnd` →
+//! `ShowBarterMenu`). That topic ships in a companion plugin
+//! (`B21_VendorDialogue.esp`, master = the converted output) gated on
+//! `GetInFaction(B21_VendorDialogueFaction)`. This pass synthesizes that FACT in the
+//! output and enrolls every NPC of a vendor faction (a FACT carrying `VENC`, the
+//! merchant container).
 //!
-//! Runs as a free function (NOT a registry `Fixup`) AFTER `repair_placed_child_refs`
-//! has finalized `FACT.VENC` — the merchant container is a placed-child REFR
-//! re-inserted post-fixups, so `VENC` is only reliably present that late.
+//! A free function, not a registry `Fixup`: it runs after `repair_placed_child_refs`
+//! finalizes `FACT.VENC`, whose merchant container is a placed-child REFR
+//! re-inserted after the fixups.
 
 mod build;
 

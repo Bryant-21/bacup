@@ -1,20 +1,16 @@
 //! Env-gated drop tracing for the conversion pipeline.
 //!
-//! When a subrecord, field, reference, or whole record is dropped/nulled at an
-//! instrumented choke point, this records one line so a regen run can show
-//! *exactly* where data is lost — instead of inferring it from the diff between
-//! the source and converted record.
+//! Each instrumented choke point that drops or nulls a subrecord, field,
+//! reference, or record logs one line, so a regen shows where data is lost.
 //!
-//! Output goes to a **log file**, never the console, and the hot path is
-//! **non-blocking**: each trace `send`s its line over a channel to a single
-//! background writer thread that owns the file. The parallel conversion workers
-//! never contend on a stderr/file lock. Zero overhead when disabled (one cached
-//! `OnceLock` read returns `None` and every call returns early).
+//! Lines go to a log file, never the console. Each trace sends its line over a
+//! channel to one background writer thread, so workers never contend on a lock.
+//! When disabled, every call returns after one atomic load.
 //!
-//! Driven by env vars (set for you by `regen.py --drop-trace`):
-//!   * `MODBOX_TRACE_DROPS`      — filter (required to enable). `1`/`all`, or
+//! Env vars (set by `regen.py --drop-trace`):
+//!   * `MODBOX_TRACE_DROPS`: filter, required to enable. `1`/`all`, or
 //!     comma-separated `SIG` / `SIG:SUB` rules, e.g. `FACT:VENC` or `FACT,QUST`.
-//!   * `MODBOX_TRACE_DROPS_FILE` — output path (default `drop_trace.log` in cwd).
+//!   * `MODBOX_TRACE_DROPS_FILE`: output path (default `drop_trace.log` in cwd).
 //!
 //! Line format:
 //! ```text
@@ -24,7 +20,8 @@
 use crossbeam_channel::{Sender, unbounded};
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{OnceLock, RwLock};
 
 enum Filter {
     All,
@@ -35,7 +32,17 @@ enum Filter {
 
 struct DropTrace {
     filter: Filter,
-    sender: Sender<String>,
+    sender: Option<Sender<String>>,
+    writer: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for DropTrace {
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+    }
 }
 
 fn parse_filter(raw: &str) -> Option<Filter> {
@@ -69,26 +76,54 @@ fn parse_filter(raw: &str) -> Option<Filter> {
     }
 }
 
-fn state() -> Option<&'static DropTrace> {
-    static S: OnceLock<Option<DropTrace>> = OnceLock::new();
-    S.get_or_init(|| {
-        let filter = parse_filter(&std::env::var("MODBOX_TRACE_DROPS").ok()?)?;
-        let path = std::env::var("MODBOX_TRACE_DROPS_FILE")
-            .unwrap_or_else(|_| "drop_trace.log".to_string());
-        let file = match File::create(&path) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("[drop_trace] cannot open {path}: {e}; drop tracing disabled");
-                return None;
-            }
-        };
+static ENABLED: AtomicBool = AtomicBool::new(false);
+static INITIALIZED: OnceLock<()> = OnceLock::new();
+static STATE: OnceLock<RwLock<Option<DropTrace>>> = OnceLock::new();
 
-        // Detach the writer for the process lifetime (the JoinHandle is only
-        // needed by tests, which drive `start_writer` directly).
-        let (sender, _handle) = start_writer(file).ok()?;
-        Some(DropTrace { filter, sender })
-    })
-    .as_ref()
+fn state() -> &'static RwLock<Option<DropTrace>> {
+    STATE.get_or_init(|| RwLock::new(None))
+}
+
+fn configure_inner(filter: Option<&str>, output_path: Option<&str>) -> Result<bool, String> {
+    ENABLED.store(false, Ordering::Release);
+    let next = match filter.and_then(parse_filter) {
+        Some(filter) => {
+            let path = output_path.unwrap_or("drop_trace.log");
+            let file =
+                File::create(path).map_err(|error| format!("cannot open {path}: {error}"))?;
+            let (sender, writer) =
+                start_writer(file).map_err(|error| format!("cannot start writer: {error}"))?;
+            Some(DropTrace {
+                filter,
+                sender: Some(sender),
+                writer: Some(writer),
+            })
+        }
+        None => None,
+    };
+    let enabled = next.is_some();
+    *state()
+        .write()
+        .map_err(|_| "drop trace state lock poisoned".to_string())? = next;
+    ENABLED.store(enabled, Ordering::Release);
+    Ok(enabled)
+}
+
+fn initialize_from_env() {
+    INITIALIZED.get_or_init(|| {
+        let Some(filter) = std::env::var("MODBOX_TRACE_DROPS").ok() else {
+            return;
+        };
+        let path = std::env::var("MODBOX_TRACE_DROPS_FILE").ok();
+        if let Err(error) = configure_inner(Some(&filter), path.as_deref()) {
+            eprintln!("[drop_trace] {error}; drop tracing disabled");
+        }
+    });
+}
+
+pub fn configure(filter: Option<&str>, output_path: Option<&str>) -> Result<bool, String> {
+    INITIALIZED.get_or_init(|| ());
+    configure_inner(filter, output_path)
 }
 
 /// Spawn the background writer that owns `file` and drains lines until every
@@ -123,7 +158,8 @@ fn start_writer(file: File) -> std::io::Result<(Sender<String>, std::thread::Joi
 /// that would otherwise cost time in the hot path when tracing is off.
 #[inline]
 pub fn enabled() -> bool {
-    state().is_some()
+    initialize_from_env();
+    ENABLED.load(Ordering::Acquire)
 }
 
 fn matches(f: &Filter, record_sig: &str, sub_sig: &str) -> bool {
@@ -138,13 +174,11 @@ fn matches(f: &Filter, record_sig: &str, sub_sig: &str) -> bool {
     }
 }
 
-/// Object-ids under active investigation for the FO76→FO4 DLC-inherited-keyword
-/// delinkage — OMOD paints/mods appearing on unrelated weapons because the
-/// weapon-family keyword reference is lost (all FO4 DLC masters end up
-/// `used=false`). Trace sites gate on `is_dlc_kw_watched` so a regen with
-/// `MODBOX_TRACE_DROPS=1` surfaces ONLY this reference's lifecycle across the
-/// mapper + every null/drop choke point. See memory
-/// `reference_fo76fo4_omod_wrong_weapon_dlc_keyword_delinkage`.
+/// Object ids traced for the FO76→FO4 DLC-inherited-keyword delinkage: OMOD
+/// paints show on unrelated weapons when the weapon-family keyword reference is
+/// lost (all FO4 DLC masters end up `used=false`). Trace sites gate on
+/// `is_dlc_kw_watched`, so `MODBOX_TRACE_DROPS=1` shows only this reference's
+/// path through the mapper and the null/drop choke points.
 pub const DLC_KW_WATCHED_LOCALS: &[u32] = &[
     0x0011_3855, // FO76 DLC04_ma_HandmadeAssaultRifle — family keyword (source)
     0x0003_3B61, // DLCNukaWorld DLC04_ma_HandmadeAssaultRifle — family keyword (FO4 target)
@@ -166,14 +200,23 @@ pub fn is_dlc_kw_watched(local: u32) -> bool {
 /// writer thread; never touches disk on the calling thread.
 #[inline]
 pub fn trace(stage: &str, record_sig: &str, local: u32, sub_sig: &str, reason: &str) {
-    let Some(s) = state() else {
+    initialize_from_env();
+    if !ENABLED.load(Ordering::Acquire) {
+        return;
+    }
+    let Ok(state) = state().read() else {
+        return;
+    };
+    let Some(s) = state.as_ref() else {
         return;
     };
     if matches(&s.filter, record_sig, sub_sig) {
         // Channel is unbounded → send never blocks the conversion worker.
-        let _ = s.sender.send(format!(
-            "[drop_trace] stage={stage} rec={record_sig}:{local:06X} sub={sub_sig} reason={reason}"
-        ));
+        if let Some(sender) = s.sender.as_ref() {
+            let _ = sender.send(format!(
+                "[drop_trace] stage={stage} rec={record_sig}:{local:06X} sub={sub_sig} reason={reason}"
+            ));
+        }
     }
 }
 
@@ -226,5 +269,29 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "[drop_trace] one\n[drop_trace] two\n"
         );
+    }
+
+    #[test]
+    fn configure_can_enable_disable_and_change_output_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.log");
+        let second = dir.path().join("second.log");
+
+        configure(Some("1"), first.to_str()).unwrap();
+        trace("one", "FACT", 1, "VENC", "first");
+        configure(Some("QUST"), second.to_str()).unwrap();
+        trace("two", "FACT", 2, "VENC", "filtered");
+        trace("two", "QUST", 3, "CNAM", "second");
+        configure(None, None).unwrap();
+
+        assert!(
+            std::fs::read_to_string(&first)
+                .unwrap()
+                .contains("reason=first")
+        );
+        let second_text = std::fs::read_to_string(&second).unwrap();
+        assert!(!second_text.contains("reason=filtered"));
+        assert!(second_text.contains("reason=second"));
+        assert!(!enabled());
     }
 }

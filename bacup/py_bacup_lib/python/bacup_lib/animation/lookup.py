@@ -22,20 +22,14 @@ def is_grip_keyword(editor_id: str) -> bool:
 def _is_fallback_path(path: str, *, weapon_name: str | None = None) -> bool:
     """Return True if this path should be INCLUDED (is NOT a generic fallback).
 
-    Even weapon-specific keywords include generic fallback dirs in their
-    AnimationPaths (Common, Paired, Player, etc.).  Filter those out —
-    we only want dirs that actually contain weapon-specific animations.
+    Weapon-specific keywords still list generic dirs (Common, Paired, Player, ...)
+    in AnimationPaths. Only paths under the shared human/power-armor trees are
+    filtered; creature ``/animations`` dirs (actors/Snallygaster/animations) always pass.
 
-    Creature-specific paths (actors/Snallygaster/animations) always pass
-    because their ``/animations`` dir IS the creature-specific content.
-    Only paths under the shared human/power-armor trees are filtered.
-
-    When *weapon_name* is provided, applies positive-match filtering under
-    shared actor trees: the path must contain a segment matching the weapon
-    name (case-insensitive).  This rejects wrong-weapon directories that
-    FO76 bundles into the same Race subgraph entry (e.g., GammaGun paths
-    when converting GaussPistol).  Race-specific subdirs (Player/, Synth/)
-    are allowed if they're nested under a matching weapon folder.
+    With *weapon_name*, a path under a shared tree must contain a segment matching
+    the weapon name (case-insensitive). This rejects wrong-weapon dirs FO76 bundles
+    into the same Race subgraph entry (e.g. GammaGun paths for GaussPistol). Race
+    subdirs (Player/, Synth/) pass when nested under a matching weapon folder.
     """
     lower = path.lower().replace("\\", "/")
 

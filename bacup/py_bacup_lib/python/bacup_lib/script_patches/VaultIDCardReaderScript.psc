@@ -1,0 +1,2 @@
+Function UpdateNetworkState(Bool isClientUpdateOnLoad)
+EndFunction

@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from bacup_lib.workflows.unified import (
-    CONVERTER_VERSIONS,
     _UnifiedRecordRuntime,
     _augment_fo76_to_fo4_script_skeleton,
     _fo76_to_fo4_script_type,
@@ -37,12 +36,11 @@ PARENT_SOURCE_DIR = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "
 DEPLOYED_SCRIPTS_DIR = REPO_ROOT / "mods" / "SeventySix" / "data" / "Scripts"
 CACHE_DECLARATION = "ObjectReference ShutdownReferenceCache"
 
-# PATCH_CASES: every script this shard's contract covers. Only the base carries a
-# patch file (bacup_lib/script_patches/DefaultAliasInventoryManagement.psc) -- the
-# variants A-M and Wastelanders' W05_InventoryScriptJ/W05_Inventory_ScriptK are pure
-# `Extends DefaultAliasInventoryManagement` shells with zero own members, so they
-# inherit the base patch's behavior verbatim (contract A.1, A.7; approved condition
-# (c): "no per-variant patch files -- declaration-only inheritance is the design").
+# Only the base carries a patch file
+# (bacup_lib/script_patches/DefaultAliasInventoryManagement.psc). Variants A-M and
+# Wastelanders' W05_InventoryScriptJ/W05_Inventory_ScriptK are pure
+# `Extends DefaultAliasInventoryManagement` shells with no members of their own, so
+# they inherit the base patch; there are no per-variant patch files by design.
 PATCH_CASES = (SCRIPT_NAME,)
 
 
@@ -193,10 +191,6 @@ def test_cache_declaration_rejects_property_and_member_collisions(collision: str
         _augment_fo76_to_fo4_script_skeleton(SCRIPT_NAME, conflicting)
 
 
-def test_script_converter_cache_version_covers_skeleton_augmentation():
-    assert CONVERTER_VERSIONS["scripts"] == "3"
-
-
 def test_patch_declares_no_states_beyond_the_hollow_skeleton():
     # The skeleton declares '' and 'checking' (FO76's own two states, both empty in
     # source); the merger cannot safely introduce a new one.
@@ -210,15 +204,14 @@ def test_patch_declares_no_states_beyond_the_hollow_skeleton():
 
 
 def test_and_keyword_property_is_never_read():
-    """Regression guard for the coordinator-approved A.9.1 resolution: the property
-    is stored (compiles, preserves VMAD binding) but never branches on -- reading it
-    anywhere would mean either dead code (if the branch can't be reached) or a silent
-    reintroduction of the intersection semantics that no native FO4 API can express."""
+    """The property is stored (compiles, keeps the VMAD binding) but never read: no
+    native FO4 API expresses the AND-ed keyword intersection, so any read is either
+    dead code or fakes those semantics."""
     assert "RequiredItemsUseANDedKeywords" not in _code_only(_patch_source())
 
 
 def test_text_replacement_properties_are_never_read():
-    """A.4: no verified FO4 text-replacement API: the properties compile but the
+    """There is no verified FO4 text-replacement API: the properties compile but the
     patch must not pretend to wire them."""
     patch = _code_only(_patch_source())
     assert "ItemCountTextVar" not in patch
@@ -247,7 +240,7 @@ def test_stop_managing_flag_gates_evaluation_and_added_removal():
 
 def test_alias_shutdown_uses_the_real_fo4_event_name():
     # Alias.OnAliasShutdown, not a Quest-level OnQuestShutdown (which is never
-    # delivered to an alias) -- contract A.9.3.
+    # delivered to an alias).
     patch = _patch_source()
     assert "Event OnAliasShutdown()" in patch
     assert "OnQuestShutdown" not in patch

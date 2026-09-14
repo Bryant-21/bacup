@@ -121,9 +121,8 @@ class ViewportInteract:
     def _update_drag_state(self, now_using: bool) -> None:
         """Rising/falling edge on gizmo.is_using() → begin_drag / end_drag.
 
-        Extracted from handle_input() so the edge detection is (a) testable
-        without an imgui context and (b) guaranteed to run every frame,
-        independent of whether the gizmo produced a new matrix.
+        Kept out of handle_input() so it is testable without an imgui context
+        and runs every frame, whether or not the gizmo produced a new matrix.
         """
         if now_using and not self._gizmo_was_using:
             # Drag just started — take one undo snapshot for the whole drag.

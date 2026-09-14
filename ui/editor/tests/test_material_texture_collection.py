@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch
 
 from creation_lib.renderer.fo4_material import FO4MaterialBackend
 from creation_lib.renderer.material_pipeline import (
+    _extract_shader_params,
+    _get_fo76_texture_array_paths,
     _get_texture_paths,
     _parse_bgsm,
     _resolve_texture_path,
@@ -98,6 +100,104 @@ def test_collect_nif_texture_paths_uses_legacy_properties_array(monkeypatch):
 
     assert str(Path("C:/fake") / "legacy_props_d.dds") in result
     assert str(Path("C:/fake") / "legacy_props_n.dds") in result
+
+
+def test_get_texture_paths_reads_nested_fo76_texture_set():
+    nif = MagicMock()
+    shader = MagicMock()
+    tex_set = MagicMock()
+    shader.get_field.side_effect = lambda key: {
+        "Shader Property Data": {"Texture Set": 2},
+    }.get(key)
+    textures = [""] * 11
+    textures[0] = r"textures\lod\object_d.dds"
+    textures[1] = r"textures\lod\object_n.dds"
+    textures[9] = r"textures\lod\object_r.dds"
+    textures[10] = r"textures\lod\object_l.dds"
+    tex_set.get_field.side_effect = lambda key: {
+        "Textures": textures,
+    }.get(key)
+    nif.get_block.side_effect = lambda block_id: {2: tex_set}.get(block_id)
+
+    paths = _get_texture_paths(
+        nif, shader, "BSLightingShaderProperty", [], None
+    )
+
+    assert paths["diffuse"] == r"textures\lod\object_d.dds"
+    assert paths["normal"] == r"textures\lod\object_n.dds"
+    assert paths["reflectivity"] == r"textures\lod\object_r.dds"
+    assert paths["lighting"] == r"textures\lod\object_l.dds"
+
+
+def test_get_fo76_texture_array_paths_maps_bto_slots():
+    shader = MagicMock()
+    arrays = [{"Texture Array": []} for _ in range(11)]
+    arrays[0]["Texture Array"] = ["", "object_d.dds"]
+    arrays[1]["Texture Array"] = ["", "object_n.dds"]
+    arrays[9]["Texture Array"] = ["", "object_r.dds"]
+    arrays[10]["Texture Array"] = ["", "object_l.dds"]
+    shader.get_field.side_effect = lambda key: {
+        "Shader Property Data": {
+            "Has Texture Arrays": 1,
+            "Texture Arrays": arrays,
+        },
+    }.get(key)
+
+    assert _get_fo76_texture_array_paths(shader, 1) == {
+        "diffuse": "object_d.dds",
+        "normal": "object_n.dds",
+        "reflectivity": "object_r.dds",
+        "lighting": "object_l.dds",
+    }
+
+
+def test_extract_shader_params_reads_nested_fo76_values():
+    shader = MagicMock()
+    shader.get_field.side_effect = lambda key: {
+        "Shader Property Data": {
+            "SF1": [442246519, 2262553490],
+            "UV Scale": {"u": 2.0, "v": 3.0},
+            "UV Offset": {"u": 0.25, "v": 0.5},
+            "Smoothness": 0.35,
+            "Specular Strength": 1.5,
+            "Fresnel Power": 4.0,
+            "Grayscale to Palette Scale": 0.75,
+            "Emissive Color": {"r": 0.1, "g": 0.2, "b": 0.3},
+            "Emissive Multiple": 2.0,
+        },
+    }.get(key)
+
+    params = _extract_shader_params(shader)
+
+    assert params["spec_glossiness"] == 0.35
+    assert tuple(params["uv_scale_offset"]) == (2.0, 3.0, 0.25, 0.5)
+    assert params["greyscale_color"] is True
+    assert params["has_emit"] is True
+
+
+def test_collect_nif_texture_paths_includes_texture_array_overrides(monkeypatch):
+    nif = MagicMock()
+    nif.blocks = []
+    monkeypatch.setattr(
+        "creation_lib.renderer.material_pipeline._resolve_texture_path",
+        lambda path_str, texture_dirs, ba2_mgr: Path("C:/fake")
+        / Path(path_str).name,
+    )
+
+    result = collect_nif_texture_paths(
+        nif,
+        [],
+        None,
+        extra_texture_paths=[
+            {
+                "diffuse": r"textures\lod\object_d.dds",
+                "normal": r"textures\lod\object_n.dds",
+            }
+        ],
+    )
+
+    assert str(Path("C:/fake") / "object_d.dds") in result
+    assert str(Path("C:/fake") / "object_n.dds") in result
 
 
 def test_collect_nif_material_paths_includes_loose_bgsm(monkeypatch):

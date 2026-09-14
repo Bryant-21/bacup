@@ -1,34 +1,21 @@
 //! Strip source-game-only annotation events from converted .hkx files.
 //!
-
-//!
-//! # What this does
-//! Walks every `.hkx` file under `ctx.mod_path/meshes/` and strips or renames
-//! annotation events that are FO76-only using a built-in allowlist.  Only
-//! `hkaSplineCompressedAnimation` and `hkaInterleavedUncompressedAnimation`
-//! objects are touched — their `annotationTracks[*].annotations` arrays are
-//! filtered.  `hkbBehaviorGraphStringData.eventNames` is intentionally left
-//! untouched because those entries are referenced by index.
-//!
-//! # Event mapping (simplified, embedded)
-//! Rather than loading the EventMapper YAML at runtime (which would require
-//! an additional file dependency), we embed the FO76→FO4 event-name rules:
-//! - Events whose names begin with `FO76_` are dropped.
-//! - Events in `FO76_DROP_EVENTS` are dropped.
-//! - All others pass through unchanged.
-//!
-//! This is a conservative port — the full EventMapper YAML path is a TODO for
-//! when the runtime data-loading story is settled (see TODO(C.4.1) below).
-//!
-//! # FixupReport mapping
-//! `records_changed` = number of .hkx files that had at least one annotation
-//! dropped or renamed.
+//! Filters `annotationTracks[*].annotations` in `hkaSplineCompressedAnimation`
+//! and `hkaInterleavedUncompressedAnimation` objects under
+//! `ctx.mod_path/meshes/`: events starting with `FO76_` or listed in
+//! `FO76_DROP_EVENTS` are dropped; all others pass through.
+//! `hkbBehaviorGraphStringData.eventNames` is left alone because its entries
+//! are referenced by index. `records_changed` counts files with at least one
+//! annotation dropped or renamed.
 
 use std::path::{Path, PathBuf};
 
 use havok_native::hkx::read_packfile;
 use havok_native::hkx::types::HkxValue;
 
+use crate::fixups::havok::postprocess_scan::{
+    contains_animation_class, contains_ascii_case_insensitive,
+};
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::full_plugin::{AssetPhaseFlags, FixupScope};
@@ -41,8 +28,8 @@ use crate::session::PluginSession;
 /// FO76-only annotation event names that have no FO4 equivalent and should be
 /// dropped from converted animation tracks.
 ///
-/// TODO(C.4.1): replace with full EventMapper YAML load once a runtime data
-/// path is available in FixupContext.
+/// TODO: replace with the full EventMapper YAML load once FixupContext has a
+/// runtime data path.
 const FO76_DROP_EVENTS: &[&str] = &[
     "FO76_WeaponAttackStart",
     "FO76_WeaponAttackStop",
@@ -102,15 +89,29 @@ impl Fixup for StripSourceGameEventsFixup {
 // ---------------------------------------------------------------------------
 
 pub fn strip_source_game_events_in_mod_path(mod_path: &Path) -> Result<FixupReport, FixupError> {
+    strip_source_game_events_impl(mod_path, true)
+}
+
+#[cfg(test)]
+pub(crate) fn strip_source_game_events_without_prefilter_in_mod_path(
+    mod_path: &Path,
+) -> Result<FixupReport, FixupError> {
+    strip_source_game_events_impl(mod_path, false)
+}
+
+fn strip_source_game_events_impl(
+    mod_path: &Path,
+    use_prefilter: bool,
+) -> Result<FixupReport, FixupError> {
     let mut files_changed = 0u32;
     for meshes_root in mesh_roots_for_mod_path(mod_path) {
-        walk_hkx_files(
-            &meshes_root,
-            &mut |hkx_path| match process_strip_events(hkx_path) {
-                Ok(true) => files_changed += 1,
-                Ok(false) | Err(_) => {}
-            },
-        );
+        walk_hkx_files(&meshes_root, &mut |hkx_path| match process_strip_events(
+            hkx_path,
+            use_prefilter,
+        ) {
+            Ok(true) => files_changed += 1,
+            Ok(false) | Err(_) => {}
+        });
     }
     Ok(FixupReport {
         records_changed: files_changed,
@@ -136,8 +137,16 @@ fn mesh_roots_for_mod_path(mod_path: &Path) -> Vec<PathBuf> {
 // ---------------------------------------------------------------------------
 
 /// Returns `true` if the file was modified (had events dropped/renamed).
-fn process_strip_events(hkx_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+fn process_strip_events(
+    hkx_path: &Path,
+    use_prefilter: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let data = std::fs::read(hkx_path)?;
+    if use_prefilter
+        && (!contains_ascii_case_insensitive(&data, b"fo76_") || !contains_animation_class(&data))
+    {
+        return Ok(false);
+    }
     let mut hkx = read_packfile(&data)?;
 
     let mut changed = false;

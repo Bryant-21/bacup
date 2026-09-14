@@ -1,6 +1,7 @@
 """Controls overlay — semi-transparent HUD showing navigation controls."""
 
 from imgui_bundle import imgui
+from creation_lib.ui.widgets.modern import scaled, semantic_color
 
 
 class ControlsOverlay:
@@ -72,7 +73,8 @@ class ControlsOverlay:
 
         # Position in bottom-right of the VIEWPORT only (not the whole window)
         # Use the viewport's imgui content region, not its full extent
-        pad = 16
+        scale = scaled(1)
+        pad = 16 * scale
         vp_pos = getattr(self.app, '_viewport_pos', None)
         vp_size = getattr(self.app, '_viewport_size', None)
         if vp_pos is not None and vp_size is not None:
@@ -83,9 +85,15 @@ class ControlsOverlay:
             anchor_x = io.display_size.x
             anchor_y = io.display_size.y
 
-        panel_w = 240
+        small_font = getattr(self.app, 'small_font', None)
+        if small_font:
+            imgui.push_font(small_font, small_font.legacy_size * self._FONT_SCALE)
+        rows = controls + shortcuts
+        padding_x = imgui.get_style().window_padding.x
+        key_column = padding_x + max(imgui.calc_text_size(key).x for key, _ in rows) + 16 * scale
+        panel_w = max(240 * scale, key_column + max(imgui.calc_text_size(action).x for _, action in rows) + padding_x)
         # Use last frame's actual height for accurate positioning; fall back to estimate
-        panel_h = self._last_h if self._last_h > 0 else (len(controls) + len(shortcuts) + 3) * 20 + 16
+        panel_h = self._last_h if self._last_h > 0 else ((len(controls) + len(shortcuts) + 3) * 20 + 16) * scale
 
         # Clamp so overlay stays inside the viewport bounds
         pos_x = anchor_x - panel_w - pad
@@ -109,30 +117,26 @@ class ControlsOverlay:
             | imgui.WindowFlags_.no_docking.value
         )
 
-        small_font = getattr(self.app, 'small_font', None)
-        if small_font:
-            imgui.push_font(small_font, small_font.legacy_size * self._FONT_SCALE)
-
         expanded, _ = imgui.begin("##controls_overlay", True, flags)
         self._last_h = imgui.get_window_size().y
         if expanded:
             # Navigation header
             style_label = nav.capitalize() if nav != '3dsmax' else '3ds Max'
-            imgui.text_colored(imgui.ImVec4(0.7, 0.85, 1.0, 1.0), f"Navigation ({style_label})")
+            imgui.text_colored(semantic_color("text"), f"Navigation ({style_label})")
             imgui.separator()
 
             for key, action in controls:
-                imgui.text_colored(imgui.ImVec4(0.9, 0.9, 0.6, 1.0), key)
-                imgui.same_line(150)
+                imgui.text_colored(semantic_color("accent"), key)
+                imgui.same_line(key_column)
                 imgui.text(action)
 
             imgui.spacing()
-            imgui.text_colored(imgui.ImVec4(0.7, 0.85, 1.0, 1.0), "Shortcuts")
+            imgui.text_colored(semantic_color("text"), "Shortcuts")
             imgui.separator()
 
             for key, action in shortcuts:
-                imgui.text_colored(imgui.ImVec4(0.9, 0.9, 0.6, 1.0), key)
-                imgui.same_line(150)
+                imgui.text_colored(semantic_color("accent"), key)
+                imgui.same_line(key_column)
                 imgui.text(action)
 
         imgui.end()

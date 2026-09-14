@@ -20,6 +20,7 @@ const SLOT_35_RIGHT_HAND: u8 = 35;
 const BIPED_SLOT_34_LEFT_HAND: u64 = 1 << (SLOT_34_LEFT_HAND - 30);
 const BIPED_SLOT_35_RIGHT_HAND: u64 = 1 << (SLOT_35_RIGHT_HAND - 30);
 const HAND_SLOT_MASK: u64 = BIPED_SLOT_34_LEFT_HAND | BIPED_SLOT_35_RIGHT_HAND;
+const ARMO_RECORD_FLAG_NON_PLAYABLE: u32 = 0x0000_0004;
 const BARE_HUMAN_HAND_ADDONS: &[u32] = &[0x000D6C, 0x01D980, 0x0316C7];
 const BARE_GHOUL_HAND_ADDON: u32 = 0x0EAFBA;
 const GHOUL_RACE: u32 = 0x0EAFB6;
@@ -27,6 +28,7 @@ const LEGACY_ARMOR_BMDT_CODEC: &str = "struct:I,B,B,B,B";
 const LEGACY_ARMOR_DATA_CODEC: &str = "struct:i,i,f";
 const SYNTHETIC_ARMOR_ADDON_PLUGIN: &str = "__legacy_armor_addon__";
 const FO4_HUMAN_RACE_LOCAL: u32 = 0x0001_3746;
+const FACE_MODEL_SLOTS: &[u8] = &[30, 31, 42, 43, 46];
 
 #[derive(Default)]
 struct HandAddonIndex {
@@ -529,6 +531,12 @@ fn build_synthetic_armor_addon(
     models: &ArmorActorModels,
     interner: &StringInterner,
 ) -> Record {
+    let has_face_model = target_armor.fields.iter().any(|entry| {
+        entry.sig.as_str() == "BOD2"
+            && FACE_MODEL_SLOTS
+                .iter()
+                .any(|slot| value_has_slot(&entry.value, *slot, interner))
+    });
     let editor_suffix = target_armor
         .eid
         .and_then(|editor_id| interner.resolve(editor_id))
@@ -570,12 +578,24 @@ fn build_synthetic_armor_addon(
             sig: SubrecordSig::from_str("MOD2").expect("MOD2 signature"),
             value: FieldValue::String(interner.intern(model)),
         });
+        if has_face_model {
+            addon.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("MO2F").expect("MO2F signature"),
+                value: FieldValue::Uint(1),
+            });
+        }
     }
     if let Some(model) = &models.female {
         addon.fields.push(FieldEntry {
             sig: SubrecordSig::from_str("MOD3").expect("MOD3 signature"),
             value: FieldValue::String(interner.intern(model)),
         });
+        if has_face_model {
+            addon.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("MO3F").expect("MO3F signature"),
+                value: FieldValue::Uint(1),
+            });
+        }
     }
     addon
 }
@@ -910,7 +930,9 @@ fn collect_mixed_hand_addon_strip_candidates(
     protected_candidates: &mut FxHashSet<FormKey>,
     interner: &StringInterner,
 ) {
-    if !record_allows_human_hand_slots(record, interner) {
+    if record.flags.bits() & ARMO_RECORD_FLAG_NON_PLAYABLE != 0
+        || !record_allows_human_hand_slots(record, interner)
+    {
         return;
     }
 
@@ -1005,7 +1027,7 @@ pub fn ensure_ghoul_hand_addon_for_ghoul_capable_armo(
         return false;
     }
 
-    insert_addon_entry(record, ghoul_hand_addon)
+    insert_addon_entry_before_bare_human_hands(record, ghoul_hand_addon, interner)
 }
 
 fn record_has_hand_bod2(record: &Record, interner: &StringInterner) -> bool {
@@ -1281,6 +1303,42 @@ fn insert_addon_entry(record: &mut Record, addon_fk: FormKey) -> bool {
         .last()
         .unwrap_or(record.fields.len());
 
+    insert_addon_entry_at(record, addon_fk, indx_sig, modl_sig, insert_at)
+}
+
+fn insert_addon_entry_before_bare_human_hands(
+    record: &mut Record,
+    addon_fk: FormKey,
+    interner: &StringInterner,
+) -> bool {
+    let indx_sig = match SubrecordSig::from_str("INDX") {
+        Ok(sig) => sig,
+        Err(_) => return false,
+    };
+    let modl_sig = match SubrecordSig::from_str("MODL") {
+        Ok(sig) => sig,
+        Err(_) => return false,
+    };
+    let Some(human_hands_index) = record.fields.iter().position(|entry| {
+        entry.sig == modl_sig && value_references_bare_human_hand_addon(&entry.value, interner)
+    }) else {
+        return false;
+    };
+    let insert_at = human_hands_index
+        .checked_sub(1)
+        .filter(|index| record.fields[*index].sig == indx_sig)
+        .unwrap_or(human_hands_index);
+
+    insert_addon_entry_at(record, addon_fk, indx_sig, modl_sig, insert_at)
+}
+
+fn insert_addon_entry_at(
+    record: &mut Record,
+    addon_fk: FormKey,
+    indx_sig: SubrecordSig,
+    modl_sig: SubrecordSig,
+    insert_at: usize,
+) -> bool {
     record.fields.insert(
         insert_at,
         FieldEntry {
@@ -1642,8 +1700,8 @@ mod tests {
     fn builds_synthetic_legacy_arma_with_proto_model_routing() {
         let interner = StringInterner::new();
         let source_fk = make_fk("104C23", "FalloutNV.esm", &interner);
-        let addon_fk = make_fk("A00001", "FNV_FO3_Merged.esm", &interner);
-        let mut armor = make_record("ARMO", make_fk("104C23", "FNV_FO3_Merged.esm", &interner));
+        let addon_fk = make_fk("A00001", "FalloutNV.esm", &interner);
+        let mut armor = make_record("ARMO", make_fk("104C23", "FalloutNV.esm", &interner));
         armor.eid = Some(interner.intern("OutfitBennySuit"));
         push_field(&mut armor, "BOD2", FieldValue::Uint(1 << 6));
         let models = ArmorActorModels {
@@ -1690,6 +1748,51 @@ mod tests {
                 .find(|field| field.sig.as_str() == "RNAM")
                 .and_then(|field| first_formkey_from_value(&field.value)),
             Some(make_fk("013746", "Fallout4.esm", &interner))
+        );
+    }
+
+    #[test]
+    fn synthetic_legacy_headwear_marks_actor_models_as_face_bone_models() {
+        let interner = StringInterner::new();
+        let source_fk = make_fk("1083E0", "FalloutNV.esm", &interner);
+        let addon_fk = make_fk("A00001", "FalloutNV.esm", &interner);
+        let mut armor = make_record("ARMO", make_fk("1083E0", "FalloutNV.esm", &interner));
+        armor.eid = Some(interner.intern("CowboyHat02"));
+        push_field(
+            &mut armor,
+            "BOD2",
+            FieldValue::Uint((1 << (30 - 30)) | (1 << (46 - 30))),
+        );
+        let models = ArmorActorModels {
+            male: Some("armor\\headgear\\cowboyhat\\CowboyHat2.nif".into()),
+            female: Some("armor\\headgear\\cowboyhat\\CowboyHat2F.nif".into()),
+        };
+
+        let addon = build_synthetic_armor_addon(addon_fk, source_fk, &armor, &models, &interner);
+
+        assert_eq!(
+            addon
+                .fields
+                .iter()
+                .filter(|field| matches!(field.sig.as_str(), "MOD2" | "MO2F" | "MOD3" | "MO3F"))
+                .map(|field| (field.sig.as_str(), field.value.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "MOD2",
+                    FieldValue::String(
+                        interner.intern("armor\\headgear\\cowboyhat\\CowboyHat2.nif")
+                    ),
+                ),
+                ("MO2F", FieldValue::Uint(1)),
+                (
+                    "MOD3",
+                    FieldValue::String(
+                        interner.intern("armor\\headgear\\cowboyhat\\CowboyHat2F.nif")
+                    ),
+                ),
+                ("MO3F", FieldValue::Uint(1)),
+            ]
         );
     }
 
@@ -1857,7 +1960,7 @@ mod tests {
     fn session_synthesis_preserves_bipl_addons_and_covers_actor_models() {
         let interner = StringInterner::new();
         let source_name = "FalloutNV.esm";
-        let target_name = "FNV_FO3_Merged.esm";
+        let target_name = "FalloutNV.esm";
         let source_handle = plugin_handle_new_native(source_name, Some("fnv")).unwrap();
         let target_handle = plugin_handle_new_native(target_name, Some("fo4")).unwrap();
         plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
@@ -1996,7 +2099,7 @@ mod tests {
     fn session_synthesis_covers_fo3_male_only_actor_model() {
         let interner = StringInterner::new();
         let source_name = "Fallout3.esm";
-        let target_name = "FNV_FO3_Merged.esm";
+        let target_name = "FalloutNV.esm";
         let source_handle = plugin_handle_new_native(source_name, Some("fo3")).unwrap();
         let target_handle = plugin_handle_new_native(target_name, Some("fo4")).unwrap();
         plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
@@ -2079,12 +2182,12 @@ mod tests {
     #[test]
     fn expands_legacy_bipl_list_into_direct_arma_rows() {
         let interner = StringInterner::new();
-        let list = make_fk("1649E0", "FNV_FO3_Merged.esm", &interner);
-        let male = make_fk("1649DF", "FNV_FO3_Merged.esm", &interner);
-        let female = make_fk("1649DE", "FNV_FO3_Merged.esm", &interner);
+        let list = make_fk("1649E0", "FalloutNV.esm", &interner);
+        let male = make_fk("1649DF", "FalloutNV.esm", &interner);
+        let female = make_fk("1649DE", "FalloutNV.esm", &interner);
         let mut lists = FxHashMap::default();
         lists.insert(list, vec![male, female]);
-        let mut armo = make_record("ARMO", make_fk("1649DD", "FNV_FO3_Merged.esm", &interner));
+        let mut armo = make_record("ARMO", make_fk("1649DD", "FalloutNV.esm", &interner));
         push_field(&mut armo, "INDX", FieldValue::Uint(0));
         push_field(&mut armo, "MODL", FieldValue::FormKey(list));
 
@@ -2106,9 +2209,9 @@ mod tests {
     #[test]
     fn omits_non_arma_members_from_legacy_addon_list() {
         let interner = StringInterner::new();
-        let arma = make_fk("01D980", "FNV_FO3_Merged.esm", &interner);
+        let arma = make_fk("01D980", "FalloutNV.esm", &interner);
         let not_arma = make_fk("000007", "Fallout4.esm", &interner);
-        let mut flst = make_record("FLST", make_fk("01D981", "FNV_FO3_Merged.esm", &interner));
+        let mut flst = make_record("FLST", make_fk("01D981", "FalloutNV.esm", &interner));
         push_field(&mut flst, "LNAM", FieldValue::FormKey(arma));
         push_field(&mut flst, "LNAM", FieldValue::FormKey(not_arma));
         let valid = FxHashSet::from_iter([arma]);
@@ -2299,6 +2402,59 @@ mod tests {
     }
 
     #[test]
+    fn nonplayable_twin_does_not_protect_mixed_body_addon_from_playable_uniform() {
+        let interner = StringInterner::new();
+        let body_fk = make_fk("787E52", "SeventySix.esm", &interner);
+        let gloves_fk = make_fk("7AC69F", "SeventySix.esm", &interner);
+
+        let mut body_addon = make_record("ARMA", body_fk);
+        push_bod2_tokens(
+            &mut body_addon,
+            &["33BODY", "34LHand", "35RHand"],
+            &interner,
+        );
+        let mut gloves_addon = make_record("ARMA", gloves_fk);
+        push_bod2_tokens(&mut gloves_addon, &["34LHand", "35RHand"], &interner);
+
+        let mut index = HandAddonIndex::default();
+        index_arma_record(body_fk, &body_addon, &interner, &mut index, true);
+        index_arma_record(gloves_fk, &gloves_addon, &interner, &mut index, true);
+
+        let mut playable = make_record("ARMO", make_fk("787E5A", "SeventySix.esm", &interner));
+        push_bod2_tokens(&mut playable, &["33BODY", "34LHand", "35RHand"], &interner);
+        push_rnam(&mut playable, 0x013746, "Fallout4.esm", &interner);
+        push_addon(&mut playable, body_fk);
+        push_addon(&mut playable, gloves_fk);
+
+        let mut nonplayable = make_record("ARMO", make_fk("787E59", "SeventySix.esm", &interner));
+        nonplayable.flags =
+            crate::record::RecordFlags::from_bits_retain(ARMO_RECORD_FLAG_NON_PLAYABLE);
+        push_bod2_tokens(
+            &mut nonplayable,
+            &["33BODY", "34LHand", "35RHand"],
+            &interner,
+        );
+        push_rnam(&mut nonplayable, 0x013746, "Fallout4.esm", &interner);
+        push_addon(&mut nonplayable, body_fk);
+
+        let mut strip_candidates = FxHashSet::default();
+        let mut protected_candidates = FxHashSet::default();
+        for armo in [&playable, &nonplayable] {
+            collect_mixed_hand_addon_strip_candidates(
+                armo,
+                &index.hand_only_addons,
+                &index.mixed_hand_addons,
+                &mut strip_candidates,
+                &mut protected_candidates,
+                &interner,
+            );
+        }
+
+        assert!(strip_candidates.contains(&body_fk));
+        assert!(!protected_candidates.contains(&body_fk));
+    }
+
+    #[test]
     fn prunes_naked_hands_when_another_addon_owns_hand_slots() {
         let interner = StringInterner::new();
         let resident_addon = make_fk("0E5083", "Fallout4.esm", &interner);
@@ -2349,7 +2505,7 @@ mod tests {
         ));
         assert_eq!(
             addon_formkeys(&armo),
-            vec![responder_jumpsuit, naked_hands, naked_ghoul_hands]
+            vec![responder_jumpsuit, naked_ghoul_hands, naked_hands]
         );
         assert_eq!(addon_index_count(&armo), 3);
         assert!(!prune_redundant_human_hand_addons(

@@ -91,6 +91,7 @@ def test_fo76_lod_keeps_configured_appalachia_worldspace():
     prepared = regen_pipeline._prepare_lod_generation_settings(
         RegenOptions(lod_mode="generate"),
         {
+            "_pair_id": "fo76:fo4",
             "global": {"worldspaces": ["APPALACHIA"], "stride": 128},
             "objects": {"source": "records"},
         },
@@ -110,7 +111,7 @@ def test_fo76_lod_keeps_configured_appalachia_worldspace():
 
 
 def test_cross_game_lod_discovers_from_fresh_output_plugin(tmp_path, monkeypatch):
-    working_esm = tmp_path / "FNV_FO3_Merged.esm"
+    working_esm = tmp_path / "FalloutNV.esm"
     working_esm.write_bytes(b"TES4")
     calls = []
 

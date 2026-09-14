@@ -1,27 +1,22 @@
 //! PyO3 boundary for the conversion module.
-//!
-//! Exposes:
-//! - `conversion_run_create`         — create a `ConversionRun`, return its run ID.
-//! - `conversion_run_drop`           — drop a `ConversionRun` by ID.
-//! - `conversion_run_drain_decisions` — drain and return decisions as compact rows.
-//! - `conversion_run_drain_warnings`  — drain and return warnings as Python list of str.
-//! - `conversion_run_translate_all`   — translate every record in the source plugin.
 
 use crate::full_plugin::{AssetPhaseFlags, WarningPolicy};
 use crate::ids::SigCode;
 use crate::record::{FieldValue, Record};
 use crate::run::{
-    OwnedPluginHandle, OwnedRunHandles, RunConfig, RunError, RunParams, TargetMode,
-    TargetRecordPreflightRow, TranslateStats, create_owned_run, create_run, drop_run, with_run,
+    LegacyMusicTrackRow, MvpRecordExceptionRow, OwnedPluginHandle, OwnedRunHandles, RunConfig,
+    RunError, RunParams, TargetMode, TargetRecordPreflightRow, TranslateStats, create_owned_run,
+    create_run, drop_run, with_run,
 };
 use crate::source_read::{form_key_to_read_str, iter_form_keys_of_sig, read_record};
 use crate::sym::StringInterner;
 use crate::target_write::NavmeshFinalizeStats;
 use crate::target_write::diagnose_navmesh_links_in_slot_native;
 use crate::translator::Game;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyList};
+use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
 use rayon::prelude::*;
 use serde_json::Value;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -47,9 +42,11 @@ fn run_with_panic_catch<R>(label: &'static str, f: impl FnOnce() -> PyResult<R>)
     }
 }
 
-fn conversion_worker_count(run_id: u64) -> Result<Option<usize>, RunError> {
+fn conversion_worker_count(run_id: u64) -> Result<usize, RunError> {
     with_run(run_id, |run| {
-        Ok::<Option<usize>, RunError>(run.config.conversion_workers.filter(|workers| *workers > 0))
+        Ok::<usize, RunError>(crate::worker_pool::normalized_worker_count(
+            run.config.conversion_workers,
+        ))
     })
 }
 
@@ -58,28 +55,32 @@ fn with_conversion_worker_pool<R: Send>(
     label: &'static str,
     operation: impl FnOnce() -> Result<R, RunError> + Send,
 ) -> Result<R, RunError> {
-    let Some(workers) = conversion_worker_count(run_id)? else {
-        return operation();
-    };
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(workers)
-        .build()
-        .map_err(|err| RunError::InvalidConfig(format!("{label}: rayon pool error: {err}")))?;
-    pool.install(operation)
+    let workers = conversion_worker_count(run_id)?;
+    crate::worker_pool::install(Some(workers), operation)
+        .map_err(|err| RunError::InvalidConfig(format!("{label}: rayon pool error: {err}")))?
+}
+
+#[pyfunction(name = "conversion_configure_drop_trace", signature = (filter=None, output_path=None))]
+fn configure_drop_trace_py(filter: Option<&str>, output_path: Option<&str>) -> PyResult<bool> {
+    crate::drop_trace::configure(filter, output_path).map_err(PyRuntimeError::new_err)
 }
 
 #[pyfunction(name = "conversion_diagnose_navmesh_links")]
+#[pyo3(signature = (plugin_path, game, workers=None))]
 pub fn diagnose_navmesh_links_py<'py>(
     py: Python<'py>,
     plugin_path: &str,
     game: &str,
+    workers: Option<usize>,
 ) -> PyResult<Bound<'py, PyAny>> {
     run_with_panic_catch("conversion_diagnose_navmesh_links", || {
         use pyo3::IntoPyObjectExt;
         let plugin_path = PathBuf::from(plugin_path);
         let game = game.to_string();
         let stats = py
-            .detach(move || diagnose_navmesh_links_for_path(&plugin_path, &game))
+            .detach(move || {
+                diagnose_navmesh_links_for_path_with_workers(&plugin_path, &game, workers)
+            })
             .map_err(PyValueError::new_err)?;
         let out = PyList::empty(py);
         out.append(stats.navmeshes_seen)?;
@@ -104,9 +105,20 @@ fn diagnose_navmesh_links_for_path(
     plugin_path: &Path,
     game: &str,
 ) -> Result<NavmeshFinalizeStats, String> {
-    let handle =
-        OwnedPluginHandle::load(plugin_path, game, None).map_err(|error| error.to_string())?;
-    diagnose_navmesh_links_in_slot_native(handle.id()).map_err(|error| error.to_string())
+    diagnose_navmesh_links_for_path_with_workers(plugin_path, game, None)
+}
+
+fn diagnose_navmesh_links_for_path_with_workers(
+    plugin_path: &Path,
+    game: &str,
+    workers: Option<usize>,
+) -> Result<NavmeshFinalizeStats, String> {
+    crate::worker_pool::install(workers, || {
+        let handle =
+            OwnedPluginHandle::load(plugin_path, game, None).map_err(|error| error.to_string())?;
+        diagnose_navmesh_links_in_slot_native(handle.id()).map_err(|error| error.to_string())
+    })
+    .map_err(|error| format!("navmesh diagnostic rayon pool: {error}"))?
 }
 
 /// Parse a "PluginName:XXXXXX" form_key string into a `conversion::ids::FormKey`.
@@ -157,18 +169,59 @@ fn field_value_string(value: &FieldValue, interner: &StringInterner) -> Option<S
     }
 }
 
-fn field_value_scalar_text(value: &FieldValue, interner: &StringInterner) -> Option<String> {
+const SKYRIM_WEAP_DNAM_SIZE: usize = 100;
+const FNV_WEAP_DNAM_SIZE: usize = 204;
+const FO3_WEAP_DNAM_SIZE: usize = 136;
+const LEGACY_WEAP_DNAM_ANIMATION_TYPE_OFFSET: usize = 0;
+const LEGACY_WEAP_DNAM_ANIMATION_TYPE_WIDTH: usize = 4;
+
+fn raw_weapon_animation_type(bytes: &[u8], source_game: Game) -> Option<u32> {
+    if matches!(source_game, Game::Skyrim | Game::SkyrimSe) {
+        if bytes.len() != SKYRIM_WEAP_DNAM_SIZE {
+            return None;
+        }
+        let value = u32::from(bytes[0]);
+        return (value <= 9).then_some(value);
+    }
+
+    let (expected_size, maximum_value) = match source_game {
+        Game::Fnv => (FNV_WEAP_DNAM_SIZE, 13),
+        Game::Fo3 => (FO3_WEAP_DNAM_SIZE, 12),
+        _ => return None,
+    };
+    if bytes.len() != expected_size {
+        return None;
+    }
+    let end = LEGACY_WEAP_DNAM_ANIMATION_TYPE_OFFSET
+        .checked_add(LEGACY_WEAP_DNAM_ANIMATION_TYPE_WIDTH)?;
+    let value = u32::from_le_bytes(
+        bytes
+            .get(LEGACY_WEAP_DNAM_ANIMATION_TYPE_OFFSET..end)?
+            .try_into()
+            .ok()?,
+    );
+    (value <= maximum_value).then_some(value)
+}
+
+fn field_value_scalar_text(
+    value: &FieldValue,
+    interner: &StringInterner,
+    source_game: Game,
+) -> Option<String> {
     match value {
         FieldValue::String(sym) => interner.resolve(*sym).map(str::to_string),
         FieldValue::Int(value) => Some(value.to_string()),
         FieldValue::Uint(value) => Some(value.to_string()),
         FieldValue::Float(value) => Some(value.to_string()),
         FieldValue::Bool(value) => Some(value.to_string()),
+        FieldValue::Bytes(bytes) => {
+            raw_weapon_animation_type(bytes, source_game).map(|value| value.to_string())
+        }
         FieldValue::Struct(fields) => fields.iter().find_map(|(key, value)| {
             let key = interner.resolve(*key).unwrap_or_default();
             let normalized = key.to_ascii_lowercase();
             if normalized.contains("animationtype") || normalized == "animtype" {
-                field_value_scalar_text(value, interner)
+                field_value_scalar_text(value, interner, source_game)
             } else {
                 None
             }
@@ -177,36 +230,82 @@ fn field_value_scalar_text(value: &FieldValue, interner: &StringInterner) -> Opt
     }
 }
 
-fn classify_weapon_role(anim_type: &str) -> String {
-    if anim_type.trim() == "1" {
-        return "melee".to_string();
-    }
-    let text = anim_type.trim().to_ascii_lowercase();
-    if text.is_empty() {
+fn classify_weapon_role(anim_type: &str, source_game: Game) -> String {
+    let raw = anim_type.trim();
+    if raw.is_empty() {
         return String::new();
     }
-    if text.contains("melee") || text == "unarmed" || text == "handtohand" {
+
+    if let Ok(value) = raw.parse::<u64>() {
+        let is_melee = match source_game {
+            Game::Fnv | Game::Fo3 => value <= 2,
+            Game::Skyrim | Game::SkyrimSe | Game::Fo4 | Game::Fo76 => value <= 6,
+            _ => value == 1,
+        };
+        return if is_melee { "melee" } else { "gun" }.to_string();
+    }
+
+    let normalized = raw
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    if normalized.contains("melee")
+        || matches!(
+            normalized.as_str(),
+            "unarmed"
+                | "handtohand"
+                | "onehandsword"
+                | "onehanddagger"
+                | "onehandaxe"
+                | "onehandmace"
+                | "twohandsword"
+                | "twohandaxe"
+        )
+    {
         "melee".to_string()
     } else {
         "gun".to_string()
     }
 }
 
+type LegacyWeaponMetadataRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BulkMeleeWeaponMetadataRow {
+    legacy: LegacyWeaponMetadataRow,
+    status: String,
+    policy: String,
+    target_profile: String,
+    source_family: String,
+    world_model: String,
+    first_person_model: String,
+    first_person_resolution: String,
+    lowering_drops: Vec<String>,
+    rejection_reason: String,
+}
+
+enum WeaponMetadataRows {
+    Legacy(Vec<LegacyWeaponMetadataRow>),
+    BulkMelee(Vec<BulkMeleeWeaponMetadataRow>),
+}
+
 fn weapon_metadata_from_record(
     source_form_key: String,
     record: &Record,
     interner: &StringInterner,
-) -> (
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-) {
+    source_game: Game,
+) -> LegacyWeaponMetadataRow {
     let editor_id = record
         .eid
         .and_then(|eid| interner.resolve(eid))
@@ -236,14 +335,15 @@ fn weapon_metadata_from_record(
             "AMMO" => has_ammo = true,
             "DATA" | "DNAM" => {
                 if anim_type.is_empty() {
-                    anim_type = field_value_scalar_text(&field.value, interner).unwrap_or_default();
+                    anim_type = field_value_scalar_text(&field.value, interner, source_game)
+                        .unwrap_or_default();
                 }
             }
             _ => {}
         }
     }
 
-    let role = classify_weapon_role(&anim_type);
+    let role = classify_weapon_role(&anim_type, source_game);
     let ammo_decision = if has_ammo { "unknown" } else { "no_ammo_field" };
     (
         source_form_key,
@@ -256,6 +356,49 @@ fn weapon_metadata_from_record(
         ammo_decision.to_string(),
         anim_type,
     )
+}
+
+fn bulk_melee_weapon_metadata_from_receipt(
+    legacy: LegacyWeaponMetadataRow,
+    receipt: &crate::phase::mvp_melee::MvpMeleeReceipt,
+    interner: &StringInterner,
+) -> BulkMeleeWeaponMetadataRow {
+    use crate::phase::mvp_melee::MvpMeleeDisposition;
+
+    let rejection_reason = match &receipt.disposition {
+        MvpMeleeDisposition::Admitted => String::new(),
+        MvpMeleeDisposition::Rejected(reason) => reason.code().to_string(),
+    };
+    let resolve_model = |model: Option<crate::sym::Sym>| {
+        model
+            .and_then(|model| interner.resolve(model))
+            .unwrap_or_default()
+            .to_string()
+    };
+    BulkMeleeWeaponMetadataRow {
+        legacy,
+        status: receipt.disposition.code().to_string(),
+        policy: receipt.policy.to_string(),
+        target_profile: receipt
+            .target_profile
+            .map(|profile| profile.code())
+            .unwrap_or_default()
+            .to_string(),
+        source_family: receipt
+            .source_family
+            .map(|family| family.code())
+            .unwrap_or_default()
+            .to_string(),
+        world_model: resolve_model(receipt.world_model),
+        first_person_model: resolve_model(receipt.first_person_model),
+        first_person_resolution: receipt.first_person_resolution.code().to_string(),
+        lowering_drops: receipt
+            .drops
+            .iter()
+            .map(|reason| reason.code().to_string())
+            .collect(),
+        rejection_reason,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +543,25 @@ fn legacy_pack_origins_from_value(
         .collect()
 }
 
+fn legacy_runtime_origins_from_value(
+    config: &Value,
+) -> PyResult<Vec<crate::merge_sources::LegacyRuntimeOriginRow>> {
+    config
+        .get("legacy_runtime_origins")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .cloned()
+        .map(|value| {
+            serde_json::from_value(value).map_err(|error| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid legacy_runtime_origins row: {error}"
+                ))
+            })
+        })
+        .collect()
+}
+
 fn legacy_pack_counts_from_value(
     config: &Value,
     key: &str,
@@ -415,11 +577,29 @@ fn legacy_pack_counts_from_value(
         .map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("invalid {key}: {error}")))
 }
 
+fn legacy_music_tracks_from_value(config: &Value) -> PyResult<Vec<LegacyMusicTrackRow>> {
+    config
+        .get("legacy_music_tracks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .cloned()
+        .map(|value| {
+            serde_json::from_value(value).map_err(|error| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid legacy_music_tracks row: {error}"
+                ))
+            })
+        })
+        .collect()
+}
+
 fn config_from_json(config_json: &str) -> PyResult<RunConfig> {
     let config = config_object_from_json(config_json)?;
     let strict_mapper = bool_from_value(&config, "strict_mapper", false);
     let use_base_game_assets = bool_from_value(&config, "use_base_game_assets", false);
     let preserve_source_ids = bool_from_value(&config, "preserve_source_ids", false);
+    let overwrite_existing = bool_from_value(&config, "overwrite_existing", false);
     let output_plugin_name = config
         .get("output_plugin_name")
         .and_then(Value::as_str)
@@ -437,13 +617,24 @@ fn config_from_json(config_json: &str) -> PyResult<RunConfig> {
         strict_mapper,
         use_base_game_assets,
         preserve_source_ids,
+        overwrite_existing,
         generated_object_id_floor: optional_u32(&config, "generated_object_id_floor").unwrap_or(0),
         output_plugin_name,
         is_whole_plugin,
         root_sig,
         mod_path,
         source_extracted_dir,
+        additional_source_asset_roots: string_list_from_value(
+            &config,
+            "additional_source_asset_roots",
+        )
+        .into_iter()
+        .map(PathBuf::from)
+        .collect(),
+        legacy_music_tracks: legacy_music_tracks_from_value(&config)?,
         target_extracted_dir: optional_path(&config, "target_extracted_dir"),
+        // Derived during the run from the target asset store, never supplied.
+        target_membership_root: None,
         target_data_dir: optional_path(&config, "target_data_dir"),
         target_asset_catalog_path: optional_path(&config, "target_asset_catalog_path"),
         target_asset_cache_dir: optional_path(&config, "target_asset_cache_dir"),
@@ -462,8 +653,21 @@ fn config_from_json(config_json: &str) -> PyResult<RunConfig> {
             &config,
             "base_asset_relocation_mesh_roots",
         ),
+        base_overwrite_prefixes: string_list_from_value(&config, "base_overwrite_prefixes"),
         projected_navmesh_offset,
         skip_record_signatures: string_list_from_value(&config, "skip_record_signatures"),
+        mvp_record_exceptions: config
+            .get("mvp_record_exceptions")
+            .cloned()
+            .map(serde_json::from_value::<Vec<MvpRecordExceptionRow>>)
+            .transpose()
+            .map_err(|error| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid mvp_record_exceptions: {error}"
+                ))
+            })?
+            .unwrap_or_default(),
+        mvp_melee_only: bool_from_value(&config, "mvp_melee_only", false),
         defer_placed_child_ref_class: bool_from_value(
             &config,
             "defer_placed_child_ref_class",
@@ -483,6 +687,23 @@ fn config_from_json(config_json: &str) -> PyResult<RunConfig> {
             "legacy_pack_provenance_required",
             false,
         ),
+        legacy_runtime_origins: legacy_runtime_origins_from_value(&config)?,
+        fnv_quest_slice: bool_from_value(&config, "fnv_quest_slice", false),
+        fnv_quest_slice_records: config
+            .get("fnv_quest_slice_records")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid fnv_quest_slice_records: {error}"
+                ))
+            })?
+            .unwrap_or_default(),
+        fnv_force_greet_donor_form_key: config
+            .get("fnv_force_greet_donor_form_key")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -520,7 +741,14 @@ pub fn merge_sources_py(py: Python<'_>, opts_json: &str) -> PyResult<String> {
         let opts: crate::merge_sources::MergeOptions = serde_json::from_str(opts_json)
             .map_err(|error| PyValueError::new_err(format!("invalid merge options: {error}")))?;
         let report = py
-            .detach(move || crate::merge_sources::run(&opts))
+            .detach(move || {
+                crate::worker_pool::install(opts.conversion_workers, || {
+                    crate::merge_sources::run(&opts)
+                })
+                .map_err(|error| {
+                    crate::merge_sources::MergeError::Load(format!("merge rayon pool: {error}"))
+                })?
+            })
             .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
         serde_json::to_string(&report)
             .map_err(|error| PyRuntimeError::new_err(format!("serialize merge report: {error}")))
@@ -568,25 +796,6 @@ pub fn collect_lod_closures_py<'py>(
 // ---------------------------------------------------------------------------
 // ConversionRun lifecycle PyO3 functions
 // ---------------------------------------------------------------------------
-
-/// Private Rust-only constructor retained for focused native tests.
-pub(crate) fn create_run_from_handles(
-    source: Game,
-    target: Game,
-    source_handle_id: u64,
-    target_handle_id: u64,
-    master_handle_ids: Vec<u64>,
-    config: RunConfig,
-) -> Result<u64, RunError> {
-    create_run(RunParams {
-        source,
-        target,
-        source_handle_id,
-        target_handle_id,
-        master_handle_ids,
-        config,
-    })
-}
 
 fn parse_game(value: &str, role: &str) -> PyResult<Game> {
     Game::from_str(value)
@@ -672,124 +881,133 @@ pub fn create_run_from_paths_py(
         let target = parse_game(target_game, "target")?;
         let is_new = target_plugin_name.is_some();
         let mut config = config_from_json(config_json)?;
+        let worker_count = config.conversion_workers;
         py.detach(move || {
-            let source_handle = source_plugin_path
-                .as_deref()
-                .map(|path| {
-                    OwnedPluginHandle::load(
-                        Path::new(path),
-                        source.as_str(),
-                        source_strings_dir.as_deref().map(Path::new),
-                    )
-                })
-                .transpose()?;
-            if is_new && source == Game::Fo76 && config.generated_object_id_floor == 0 {
-                if let Some(source_handle) = source_handle.as_ref() {
-                    let max =
-                        esp_authoring_core::plugin_runtime::plugin_handle_max_object_id_no_py(
-                            source_handle.id(),
+            crate::worker_pool::install(worker_count, move || {
+                let source_handle = source_plugin_path
+                    .as_deref()
+                    .map(|path| {
+                        OwnedPluginHandle::load(
+                            Path::new(path),
+                            source.as_str(),
+                            source_strings_dir.as_deref().map(Path::new),
                         )
-                        .map_err(RunError::InvalidConfig)?;
-                    if max != 0 {
-                        let requested = max.saturating_add(0x0010_0000);
-                        let aligned = requested.saturating_add(0x000F_FFFF) & !0x000F_FFFF;
-                        config.generated_object_id_floor = if aligned <= 0x00FF_FFFF {
-                            aligned
-                        } else if max < 0x00FF_FFFF {
-                            max + 1
-                        } else {
-                            return Err(RunError::InvalidConfig(
-                                "FO76 source plugin has no remaining local FormID space"
-                                    .to_string(),
-                            ));
-                        };
+                    })
+                    .transpose()?;
+                if is_new && source == Game::Fo76 && config.generated_object_id_floor == 0 {
+                    if let Some(source_handle) = source_handle.as_ref() {
+                        let max =
+                            esp_authoring_core::plugin_runtime::plugin_handle_max_object_id_no_py(
+                                source_handle.id(),
+                            )
+                            .map_err(RunError::InvalidConfig)?;
+                        if max != 0 {
+                            let requested = max.saturating_add(0x0010_0000);
+                            let aligned = requested.saturating_add(0x000F_FFFF) & !0x000F_FFFF;
+                            config.generated_object_id_floor = if aligned <= 0x00FF_FFFF {
+                                aligned
+                            } else if max < 0x00FF_FFFF {
+                                max + 1
+                            } else {
+                                return Err(RunError::InvalidConfig(
+                                    "FO76 source plugin has no remaining local FormID space"
+                                        .to_string(),
+                                ));
+                            };
+                        }
                     }
                 }
-            }
 
-            let (target_handle, default_target_path, is_new) = if let Some(plugin_name) =
-                target_plugin_name.as_deref()
-            {
-                let default_path = config
-                    .mod_path
-                    .as_deref()
-                    .unwrap_or_else(|| Path::new(""))
-                    .join(plugin_name);
-                (
-                    OwnedPluginHandle::new(plugin_name, target.as_str()),
-                    default_path,
-                    true,
-                )
-            } else {
-                let path = PathBuf::from(target_plugin_path.as_deref().expect("validated mode"));
-                (
-                    OwnedPluginHandle::load(&path, target.as_str(), None)?,
-                    path,
-                    false,
-                )
-            };
+                let (target_handle, default_target_path, is_new) =
+                    if let Some(plugin_name) = target_plugin_name.as_deref() {
+                        let default_path = config
+                            .mod_path
+                            .as_deref()
+                            .unwrap_or_else(|| Path::new(""))
+                            .join(plugin_name);
+                        (
+                            OwnedPluginHandle::new(plugin_name, target.as_str()),
+                            default_path,
+                            true,
+                        )
+                    } else {
+                        let path =
+                            PathBuf::from(target_plugin_path.as_deref().expect("validated mode"));
+                        (
+                            OwnedPluginHandle::load(&path, target.as_str(), None)?,
+                            path,
+                            false,
+                        )
+                    };
 
-            if is_new
-                && target_plugin_name
-                    .as_deref()
-                    .is_some_and(|name| name.to_ascii_lowercase().ends_with(".esm"))
-            {
-                mark_master_target(target_handle.id())?;
-            }
-            if is_new && let Some(source_handle) = source_handle.as_ref() {
-                seed_target_localization(source_handle.id(), target_handle.id(), source, target)?;
-            }
-
-            let mut masters = Vec::with_capacity(master_plugin_paths.len());
-            let mut master_names = Vec::with_capacity(master_plugin_paths.len());
-            for master_path in &master_plugin_paths {
-                let path = Path::new(master_path);
-                let master_name = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or_else(|| {
-                        RunError::InvalidConfig(format!(
-                            "master path has no filename: {}",
-                            path.display()
-                        ))
-                    })?
-                    .to_string();
-                let size = std::fs::metadata(path).ok().map(|metadata| metadata.len());
-                if is_new {
-                    esp_authoring_core::plugin_runtime::plugin_handle_add_master_no_py(
-                        target_handle.id(),
-                        &master_name,
-                        size,
-                    )
-                    .map_err(RunError::InvalidConfig)?;
+                if is_new
+                    && target_plugin_name
+                        .as_deref()
+                        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".esm"))
+                {
+                    mark_master_target(target_handle.id())?;
                 }
-                master_names.push(master_name);
-                masters.push(OwnedPluginHandle::load_index(path, target.as_str())?);
-            }
-            config.target_master_names = master_names;
-            if config.output_plugin_name.is_empty() {
-                config.output_plugin_name = default_target_path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("Output.esp")
-                    .to_string();
-            }
-            create_owned_run(
-                source,
-                target,
-                config,
-                OwnedRunHandles {
-                    source: source_handle,
-                    target: target_handle,
-                    masters,
-                },
-                default_target_path,
-                if is_new {
-                    TargetMode::CreateNew
-                } else {
-                    TargetMode::OpenExisting
-                },
-            )
+                if is_new && let Some(source_handle) = source_handle.as_ref() {
+                    seed_target_localization(
+                        source_handle.id(),
+                        target_handle.id(),
+                        source,
+                        target,
+                    )?;
+                }
+
+                let mut masters = Vec::with_capacity(master_plugin_paths.len());
+                let mut master_names = Vec::with_capacity(master_plugin_paths.len());
+                for master_path in &master_plugin_paths {
+                    let path = Path::new(master_path);
+                    let master_name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(|| {
+                            RunError::InvalidConfig(format!(
+                                "master path has no filename: {}",
+                                path.display()
+                            ))
+                        })?
+                        .to_string();
+                    let size = std::fs::metadata(path).ok().map(|metadata| metadata.len());
+                    if is_new {
+                        esp_authoring_core::plugin_runtime::plugin_handle_add_master_no_py(
+                            target_handle.id(),
+                            &master_name,
+                            size,
+                        )
+                        .map_err(RunError::InvalidConfig)?;
+                    }
+                    master_names.push(master_name);
+                    masters.push(OwnedPluginHandle::load_index(path, target.as_str())?);
+                }
+                config.target_master_names = master_names;
+                if config.output_plugin_name.is_empty() {
+                    config.output_plugin_name = default_target_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Output.esp")
+                        .to_string();
+                }
+                create_owned_run(
+                    source,
+                    target,
+                    config,
+                    OwnedRunHandles {
+                        source: source_handle,
+                        target: target_handle,
+                        masters,
+                    },
+                    default_target_path,
+                    if is_new {
+                        TargetMode::CreateNew
+                    } else {
+                        TargetMode::OpenExisting
+                    },
+                )
+            })
+            .map_err(|error| RunError::InvalidConfig(format!("create run rayon pool: {error}")))?
         })
         .map_err(run_error_to_py)
     })
@@ -806,72 +1024,217 @@ pub fn set_target_description_py(py: Python<'_>, run_id: u64, text: &str) -> PyR
     })
 }
 
-#[pyfunction(name = "conversion_run_script_reference_records")]
-pub fn script_reference_records_py<'py>(
+#[pyfunction(name = "conversion_run_inspect_script_references")]
+pub fn inspect_script_references_py<'py>(
     py: Python<'py>,
     run_id: u64,
-    subrecord_signatures: Vec<String>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    use pyo3::IntoPyObjectExt;
-
-    let (target_handle, plugin_name) = py.detach(move || {
+    let total_started = std::time::Instant::now();
+    let (target_handle, plugin_name, apply_fo76_aliases) = py.detach(move || {
         with_run(run_id, |run| {
-            Ok::<_, RunError>((run.target_handle_id, run.config.output_plugin_name.clone()))
+            run.script_reference_state = None;
+            Ok::<_, RunError>((
+                run.target_handle_id,
+                run.config.output_plugin_name.clone(),
+                run.source == Game::Fo76 && run.target == Game::Fo4,
+            ))
         })
         .map_err(run_error_to_py)
     })?;
+    let scan_started = std::time::Instant::now();
     let form_ids =
         esp_authoring_core::plugin_runtime::plugin_handle_record_form_ids_with_subrecords_native(
             py,
             target_handle,
-            subrecord_signatures,
+            vec!["VMAD".to_string(), "CTDA".to_string()],
         )?;
-    let rows = PyList::empty(py);
-    for form_id in form_ids {
-        let Some((form_id, signature, editor_id)) =
-            esp_authoring_core::plugin_runtime::plugin_handle_record_summary_native(
+    let scan_elapsed = scan_started.elapsed();
+    let inspect_started = std::time::Instant::now();
+    let inspection = crate::script_references::inspect_script_references(
+        form_ids,
+        &plugin_name,
+        apply_fo76_aliases,
+        |form_id| {
+            let Some((form_id, signature, editor_id)) =
+                esp_authoring_core::plugin_runtime::plugin_handle_record_summary_native(
+                    py,
+                    target_handle,
+                    form_id,
+                )
+                .map_err(|error| error.to_string())?
+            else {
+                return Ok(None);
+            };
+            let Some(subrecords) =
+                esp_authoring_core::plugin_runtime::plugin_handle_record_subrecords_native(
+                    py,
+                    target_handle,
+                    form_id,
+                )
+                .map_err(|error| error.to_string())?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(crate::script_references::ScriptRecord {
+                form_id,
+                signature,
+                editor_id: editor_id.unwrap_or_default(),
+                subrecords,
+            }))
+        },
+        |form_id, subrecords| {
+            esp_authoring_core::plugin_runtime::plugin_handle_set_record_subrecords_native(
                 py,
                 target_handle,
                 form_id,
-            )?
-        else {
-            continue;
-        };
-        let Some(subrecords) =
-            esp_authoring_core::plugin_runtime::plugin_handle_record_subrecords_native(
-                py,
-                target_handle,
-                form_id,
-            )?
-        else {
-            continue;
-        };
-        let authoring =
-            esp_authoring_core::plugin_runtime::plugin_handle_read_authoring_record_native(
-                target_handle,
-                form_id,
-            )?;
-        rows.append((form_id, signature, editor_id, subrecords, authoring))?;
-    }
-    (plugin_name, rows).into_bound_py_any(py)
+                subrecords,
+            )
+            .map_err(|error| error.to_string())
+        },
+    )
+    .map_err(PyRuntimeError::new_err)?;
+    let inspect_elapsed = inspect_started.elapsed();
+    let crate::script_references::ScriptReferenceInspection {
+        references,
+        state,
+        counters,
+        alias_records_changed,
+        alias_bindings_changed,
+        warnings,
+    } = inspection;
+    let candidate_count = state.candidate_count();
+    py.detach(move || {
+        with_run(run_id, |run| {
+            run.script_reference_state = Some(state);
+            Ok::<_, RunError>(())
+        })
+        .map_err(run_error_to_py)
+    })?;
+    let reference_rows = references
+        .into_iter()
+        .map(|reference| {
+            (
+                reference.script_name,
+                reference.variable_name,
+                reference.form_key,
+                reference.form_id,
+                reference.record_sig,
+                reference.editor_id,
+                reference.kind.to_string(),
+                reference.condition_inferred,
+            )
+        })
+        .collect::<Vec<_>>();
+    eprintln!(
+        "[script_reference_timing] total_ms={} scan_index_ms={} inspect_ms={} rows={} vmad_rows={} ctda_rows={} subrecords={} raw_bytes={} authoring_bytes=0",
+        total_started.elapsed().as_millis(),
+        scan_elapsed.as_millis(),
+        inspect_elapsed.as_millis(),
+        counters.native_rows,
+        counters.vmad_rows,
+        counters.ctda_rows,
+        counters.subrecords,
+        counters.raw_bytes,
+    );
+    (
+        plugin_name,
+        reference_rows,
+        (
+            counters.native_rows,
+            counters.vmad_rows,
+            counters.ctda_rows,
+            counters.subrecords,
+            counters.raw_bytes,
+            0usize,
+        ),
+        candidate_count,
+        alias_records_changed,
+        alias_bindings_changed,
+        warnings,
+    )
+        .into_bound_py_any(py)
 }
 
-#[pyfunction(name = "conversion_run_set_record_subrecords")]
-pub fn set_record_subrecords_py(
-    py: Python<'_>,
+#[pyfunction(name = "conversion_run_reconcile_script_references")]
+pub fn reconcile_script_references_py<'py>(
+    py: Python<'py>,
     run_id: u64,
-    form_id: u32,
-    subrecords: Vec<(String, Vec<u8>, Option<String>)>,
-) -> PyResult<bool> {
-    let target_handle = py.detach(move || {
-        with_run(run_id, |run| Ok::<_, RunError>(run.target_handle_id)).map_err(run_error_to_py)
+    resolution_evidence: Vec<(String, String, String, Option<String>)>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let (target_handle, state) = py.detach(move || {
+        with_run(run_id, |run| {
+            let state = run.script_reference_state.take().ok_or_else(|| {
+                RunError::InvalidConfig(
+                    "script references must be inspected before reconciliation".to_string(),
+                )
+            })?;
+            Ok::<_, RunError>((run.target_handle_id, state))
+        })
+        .map_err(run_error_to_py)
     })?;
-    esp_authoring_core::plugin_runtime::plugin_handle_set_record_subrecords_native(
-        py,
-        target_handle,
-        form_id,
-        subrecords,
+    let evidence = resolution_evidence
+        .into_iter()
+        .map(|(script_key, script_name, status, pex_path)| {
+            crate::script_references::ScriptResolutionEvidence {
+                script_key,
+                script_name,
+                status,
+                pex_path,
+            }
+        })
+        .collect::<Vec<_>>();
+    let reconciled = crate::script_references::reconcile_script_references(
+        &state,
+        evidence,
+        |form_id, subrecords| {
+            esp_authoring_core::plugin_runtime::plugin_handle_set_record_subrecords_native(
+                py,
+                target_handle,
+                form_id,
+                subrecords,
+            )
+            .map_err(|error| error.to_string())
+        },
+    );
+    let result = match reconciled {
+        Ok(result) => result,
+        Err(message) => {
+            py.detach(move || {
+                with_run(run_id, |run| {
+                    run.script_reference_state = Some(state);
+                    Ok::<_, RunError>(())
+                })
+                .map_err(run_error_to_py)
+            })?;
+            return Err(PyRuntimeError::new_err(message));
+        }
+    };
+    let parse_failures = result
+        .parse_failures
+        .into_iter()
+        .map(|failure| {
+            (
+                failure.script_key,
+                failure.script_name,
+                failure.pex_path,
+                failure.message,
+            )
+        })
+        .collect::<Vec<_>>();
+    (
+        result.stripped_conditions,
+        result.stripped_vmad,
+        result.changed_records,
+        result.invalid_condition_count,
+        result.vmad_notes,
+        result.unreached_reward_notes,
+        result.invalid_condition_notes,
+        parse_failures,
+        result.pex_member_requests,
+        result.pex_member_distinct_paths,
+        result.pex_member_cache_hits,
     )
+        .into_bound_py_any(py)
 }
 
 #[pyfunction(name = "conversion_run_apply_placed_record_position_offset")]
@@ -931,6 +1294,25 @@ pub fn release_source_handle_py(py: Python<'_>, run_id: u64) -> PyResult<bool> {
     })
 }
 
+#[pyfunction(name = "conversion_run_share_output_nif_dependencies")]
+pub fn share_output_nif_dependencies_py(
+    py: Python<'_>,
+    source_run_id: u64,
+    target_run_id: u64,
+) -> PyResult<()> {
+    py.detach(move || {
+        let dependencies = with_run(source_run_id, |run| {
+            Ok::<_, RunError>(run.output_nif_dependencies.clone())
+        })
+        .map_err(run_error_to_py)?;
+        with_run(target_run_id, |run| {
+            run.output_nif_dependencies = dependencies;
+            Ok::<_, RunError>(())
+        })
+        .map_err(run_error_to_py)
+    })
+}
+
 #[pyfunction(name = "conversion_run_release_master_handles")]
 pub fn release_master_handles_py(py: Python<'_>, run_id: u64) -> PyResult<usize> {
     py.detach(move || {
@@ -942,63 +1324,80 @@ pub fn release_master_handles_py(py: Python<'_>, run_id: u64) -> PyResult<usize>
 }
 
 #[pyfunction(name = "conversion_run_save_target")]
-#[pyo3(signature = (run_id, output_path=None, emit_authoring_yaml=false, run_nvnm_validator=true))]
+#[pyo3(signature = (
+    run_id,
+    output_path=None,
+    emit_authoring_yaml=false,
+    run_nvnm_validator=true,
+    preserve_target_identity=false
+))]
 pub fn save_target_py(
     py: Python<'_>,
     run_id: u64,
     output_path: Option<String>,
     emit_authoring_yaml: bool,
     run_nvnm_validator: bool,
+    preserve_target_identity: bool,
 ) -> PyResult<()> {
     run_with_panic_catch("conversion_run_save_target", || {
         py.detach(move || {
-            with_run(run_id, |run| {
-                let output_path = output_path
-                    .map(PathBuf::from)
-                    .or_else(|| run.default_target_path.clone())
-                    .ok_or_else(|| {
-                        RunError::InvalidConfig("run has no default target path".into())
-                    })?;
-                if run.target_mode == TargetMode::CreateNew {
-                    crate::plugin_header::normalize_target_plugin_header(
-                        run.target_handle_id,
-                        run.target.as_str(),
-                    )?;
-                }
-                if let Some(parent) = output_path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|error| {
-                        RunError::InvalidConfig(format!("create output directory: {error}"))
-                    })?;
-                }
-                esp_authoring_core::plugin_runtime::plugin_handle_save_no_py(
-                    run.target_handle_id,
-                    &output_path.to_string_lossy(),
-                )
-                .map_err(RunError::InvalidConfig)?;
-                if emit_authoring_yaml {
-                    let yaml_dir = run
-                        .config
-                        .mod_path
-                        .clone()
-                        .or_else(|| output_path.parent().map(Path::to_path_buf))
-                        .unwrap_or_default()
-                        .join("yaml");
-                    esp_authoring_core::plugin_runtime::export_authoring_dir_from_handle_no_py(
-                        run.target_handle_id,
-                        &yaml_dir,
-                        "yaml",
-                    )
+            with_conversion_worker_pool(run_id, "conversion_run_save_target", || {
+                with_run(run_id, |run| {
+                    let output_path = output_path
+                        .map(PathBuf::from)
+                        .or_else(|| run.default_target_path.clone())
+                        .ok_or_else(|| {
+                            RunError::InvalidConfig("run has no default target path".into())
+                        })?;
+                    if run.target_mode == TargetMode::CreateNew {
+                        crate::plugin_header::normalize_target_plugin_header(
+                            run.target_handle_id,
+                            run.target.as_str(),
+                        )?;
+                    }
+                    if let Some(parent) = output_path.parent() {
+                        std::fs::create_dir_all(parent).map_err(|error| {
+                            RunError::InvalidConfig(format!("create output directory: {error}"))
+                        })?;
+                    }
+                    let output_path_text = output_path.to_string_lossy();
+                    if preserve_target_identity {
+                        esp_authoring_core::plugin_runtime::plugin_handle_save_preserving_identity_no_py(
+                            run.target_handle_id,
+                            &output_path_text,
+                        )
+                    } else {
+                        esp_authoring_core::plugin_runtime::plugin_handle_save_no_py(
+                            run.target_handle_id,
+                            &output_path_text,
+                        )
+                    }
                     .map_err(RunError::InvalidConfig)?;
-                }
-                if run_nvnm_validator {
-                    crate::phase::build_esp::emit_navmesh_validation_warnings(
-                        run.target_handle_id,
-                        "save_target",
-                        &run.event_tx,
-                    )
-                    .map_err(RunError::InvalidConfig)?;
-                }
-                Ok::<_, RunError>(())
+                    if emit_authoring_yaml {
+                        let yaml_dir = run
+                            .config
+                            .mod_path
+                            .clone()
+                            .or_else(|| output_path.parent().map(Path::to_path_buf))
+                            .unwrap_or_default()
+                            .join("yaml");
+                        esp_authoring_core::plugin_runtime::export_authoring_dir_from_handle_no_py(
+                            run.target_handle_id,
+                            &yaml_dir,
+                            "yaml",
+                        )
+                        .map_err(RunError::InvalidConfig)?;
+                    }
+                    if run_nvnm_validator {
+                        crate::phase::build_esp::emit_navmesh_validation_warnings(
+                            run.target_handle_id,
+                            "save_target",
+                            &run.event_tx,
+                        )
+                        .map_err(RunError::InvalidConfig)?;
+                    }
+                    Ok::<_, RunError>(())
+                })
             })
             .map_err(run_error_to_py)
         })
@@ -1015,10 +1414,7 @@ pub fn drop_run_py(py: Python<'_>, run_id: u64) -> PyResult<()> {
     })
 }
 
-/// Drain all accumulated decisions from the run and return them as a Python list.
-///
-/// Each entry is `(kind, message)`.
-/// After this call the run's decision buffer is empty.
+/// Drain the run's accumulated decisions as a list of `(kind, message)`.
 ///
 /// Raises RuntimeError if the run ID is unknown.
 #[pyfunction(name = "conversion_run_drain_decisions")]
@@ -1083,11 +1479,9 @@ pub fn drain_warnings_py<'py>(py: Python<'py>, run_id: u64) -> PyResult<Bound<'p
 // Memory-reduction helpers
 // ---------------------------------------------------------------------------
 
-/// Release the FK remap state (MapperState) from a `ConversionRun`.
-///
-/// Safe to call after fixups complete — the mapper is not needed
-/// by asset phases or ESP serialisation.  Frees the source→target FormID
-/// map and EID index, reducing RSS by ~1–3 GB for a full FO76 plugin.
+/// Release the run's `MapperState` (source→target FormID map and EID index),
+/// ~1-3 GB of RSS for a full FO76 plugin. Call only after fixups; asset phases
+/// and ESP serialization don't use the mapper.
 ///
 /// Raises RuntimeError if the run ID is unknown.
 #[pyfunction(name = "conversion_run_release_remap_state")]
@@ -1107,14 +1501,10 @@ pub fn release_remap_state_py(py: Python<'_>, run_id: u64) -> PyResult<()> {
 // Progress callback and record-translation entry points
 // ---------------------------------------------------------------------------
 
-/// Set (or clear) a Python progress callback on an existing `ConversionRun`.
+/// Set, or clear with `None`, a Python progress callback on a `ConversionRun`.
 ///
-/// The callback signature: `def callback(records_processed: int) -> bool`.
-/// Return `False` from the callback to cancel translation.
-///
-/// Pass `None` to clear a previously-set callback.
-///
-/// Raises RuntimeError if the run ID is unknown.
+/// Signature: `def callback(records_processed: int) -> bool`; return `False`
+/// to cancel translation. Raises RuntimeError if the run ID is unknown.
 #[pyfunction(name = "conversion_run_set_progress_callback")]
 #[pyo3(signature = (run_id, cb=None))]
 pub fn set_progress_callback_py(
@@ -1135,22 +1525,15 @@ pub fn set_progress_callback_py(
 
 /// Translate all records from the source plugin into the target plugin.
 ///
-/// Arguments:
-///   run_id (int) — run ID returned by `conversion_run_create`.
-///   progress_callback (callable | None) — optional `(records_processed: int) -> bool`.
-///     Called every 1000 records. Return `False` to cancel.
-///     If not supplied, any callback previously set via
-///     `conversion_run_set_progress_callback` is used instead.
+/// `progress_callback(records_processed) -> bool` runs every 1000 records;
+/// return `False` to cancel. Without it, the callback set by
+/// `conversion_run_set_progress_callback` is used.
 ///
-/// Returns a dict with keys:
-///   "records_translated" (int)
-///   "records_dropped"    (int)
-///   "records_deferred"   (int)
-///   "records_failed"     (int)
-///   "by_signature"       (dict[str, dict[str, int]])
+/// Returns a dict: `records_translated`, `records_dropped`, `records_deferred`,
+/// `records_failed` (int) and `by_signature` (dict[str, dict[str, int]]).
 ///
-/// Raises RuntimeError if the run ID is unknown, a fatal error occurs, or
-/// translation is cancelled (message: "translation cancelled").
+/// Raises RuntimeError for an unknown run ID, a fatal error, or cancellation
+/// ("translation cancelled").
 #[pyfunction(name = "conversion_run_translate_all")]
 #[pyo3(signature = (run_id, progress_callback=None))]
 pub fn translate_all_py<'py>(
@@ -1184,29 +1567,21 @@ pub fn translate_all_py<'py>(
 pub fn preflight_legacy_packs_py(py: Python<'_>, run_id: u64) -> PyResult<()> {
     run_with_panic_catch("conversion_run_preflight_legacy_packs", || {
         py.detach(move || {
-            with_run(run_id, |run| run.preflight_legacy_packs_from_handle())
-                .map_err(run_error_to_py)
+            with_conversion_worker_pool(run_id, "conversion_run_preflight_legacy_packs", || {
+                with_run(run_id, |run| run.preflight_legacy_packs_from_handle())
+            })
+            .map_err(run_error_to_py)
         })
     })
 }
 
-/// Translate a bounded list of source FormKeys into the target plugin.
+/// Translate only the given source FormKeys (the dependency-graph walker's
+/// subset) into the target plugin.
 ///
-/// Caller passes the FormKeys reached by the dependency-graph walker so the
-/// Rust translator stays scoped to that subset instead of iterating the whole
-/// source plugin.
-///
-/// Arguments:
-///   run_id (int) — run ID returned by `conversion_run_create`.
-///   form_keys (list[str]) — list of FormKey strings ("XXXXXX@Plugin.esm"
-///     or "Plugin.esm:XXXXXX"; both formats accepted).
-///   progress_callback (callable | None) — same semantics as translate_all.
-///
-/// Returns the same dict shape as `conversion_run_translate_all`.
-///
-/// FormKeys that can't be parsed are counted as `records_failed` with a
-/// "bad_form_key:" warning; FormKeys not present in the source plugin
-/// generate a "read_error:" warning per the existing per-record path.
+/// `form_keys` accepts `"XXXXXX@Plugin.esm"` or `"Plugin.esm:XXXXXX"`.
+/// `progress_callback` and the returned dict match `conversion_run_translate_all`.
+/// Unparseable FormKeys count as `records_failed` with a `bad_form_key:` warning;
+/// FormKeys missing from the source plugin get a `read_error:` warning.
 #[pyfunction(name = "conversion_run_translate_records")]
 #[pyo3(signature = (run_id, form_keys, progress_callback=None))]
 pub fn translate_records_py<'py>(
@@ -1265,9 +1640,9 @@ pub fn translate_records_py<'py>(
 
 /// Return scalar WEAP metadata needed by Python asset orchestration.
 ///
-/// This intentionally exposes only scalar metadata. Rust reads the source WEAP
-/// records and returns model path strings, role/ammo summaries, and identity
-/// fields.
+/// Rust reads source WEAP records and preserves the legacy nine-field rows.
+/// After a successful bulk-melee phase, an empty FormKey request returns the
+/// phase's cached receipts as an optional nine-field tail.
 #[pyfunction(name = "conversion_run_weapon_metadata")]
 pub fn weapon_metadata_py<'py>(
     py: Python<'py>,
@@ -1280,20 +1655,48 @@ pub fn weapon_metadata_py<'py>(
             input_fks.push(item.extract()?);
         }
 
-        let rows: Vec<(
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-        )> = py.detach(move || {
+        let rows = py.detach(move || {
             with_run(run_id, |run| {
                 let weap_sig = SigCode::from_str("WEAP")
                     .map_err(|e| RunError::InvalidConfig(format!("WEAP signature: {e}")))?;
+                if input_fks.is_empty() && !run.bulk_melee_v1_receipts().is_empty() {
+                    let receipts = run.bulk_melee_v1_receipts().to_vec();
+                    let mut out = Vec::with_capacity(receipts.len());
+                    for receipt in receipts {
+                        let source_key =
+                            form_key_to_read_str(&receipt.source_form_key, &run.interner);
+                        if source_key.is_empty() {
+                            return Err(RunError::InvalidConfig(format!(
+                                "bulk melee receipt has unresolved source FormKey {:06X}",
+                                receipt.source_form_key.local
+                            )));
+                        }
+                        let record = read_record(
+                            run.source_handle_id,
+                            &source_key,
+                            &run.schema_source,
+                            &run.interner,
+                        )
+                        .map_err(RunError::from)?;
+                        if record.sig != weap_sig {
+                            return Err(RunError::InvalidConfig(format!(
+                                "bulk melee receipt source is not WEAP: {source_key}"
+                            )));
+                        }
+                        let legacy = weapon_metadata_from_record(
+                            source_key,
+                            &record,
+                            &run.interner,
+                            run.source,
+                        );
+                        out.push(bulk_melee_weapon_metadata_from_receipt(
+                            legacy,
+                            &receipt,
+                            &run.interner,
+                        ));
+                    }
+                    return Ok::<_, RunError>(WeaponMetadataRows::BulkMelee(out));
+                }
                 let form_keys = if input_fks.is_empty() {
                     iter_form_keys_of_sig(run.source_handle_id, weap_sig, &run.interner)
                         .map_err(RunError::from)?
@@ -1331,16 +1734,47 @@ pub fn weapon_metadata_py<'py>(
                         source_key,
                         &record,
                         &run.interner,
+                        run.source,
                     ));
                 }
-                Ok::<_, RunError>(out)
+                Ok::<_, RunError>(WeaponMetadataRows::Legacy(out))
             })
             .map_err(run_error_to_py)
         })?;
 
         let out = PyList::empty(py);
-        for row in rows {
-            out.append(row)?;
+        match rows {
+            WeaponMetadataRows::Legacy(rows) => {
+                for row in rows {
+                    out.append(row)?;
+                }
+            }
+            WeaponMetadataRows::BulkMelee(rows) => {
+                for row in rows {
+                    let legacy = row.legacy;
+                    let values = vec![
+                        legacy.0.into_py_any(py)?,
+                        legacy.1.into_py_any(py)?,
+                        legacy.2.into_py_any(py)?,
+                        legacy.3.into_py_any(py)?,
+                        legacy.4.into_py_any(py)?,
+                        legacy.5.into_py_any(py)?,
+                        legacy.6.into_py_any(py)?,
+                        legacy.7.into_py_any(py)?,
+                        legacy.8.into_py_any(py)?,
+                        row.status.into_py_any(py)?,
+                        row.policy.into_py_any(py)?,
+                        row.target_profile.into_py_any(py)?,
+                        row.source_family.into_py_any(py)?,
+                        row.world_model.into_py_any(py)?,
+                        row.first_person_model.into_py_any(py)?,
+                        row.first_person_resolution.into_py_any(py)?,
+                        row.lowering_drops.into_py_any(py)?,
+                        row.rejection_reason.into_py_any(py)?,
+                    ];
+                    out.append(PyTuple::new(py, values)?)?;
+                }
+            }
         }
         Ok(out)
     })
@@ -1366,6 +1800,47 @@ fn fnv_legacy_result_to_pyraw<'py>(
     for intent in &result.vmad_intents {
         vmad_list.append((&intent.target_form_key, &intent.script_class_name))?;
     }
+    let generated_psc_list = PyList::empty(py);
+    for generated in &result.generated_psc_classes {
+        let row = PyDict::new(py);
+        row.set_item("class_name", &generated.class_name)?;
+        row.set_item("relative_source_path", &generated.relative_source_path)?;
+        row.set_item("kind", &generated.kind)?;
+        row.set_item("required", generated.required)?;
+        generated_psc_list.append(row)?;
+    }
+    if result.quest_runtime_component_plans.len() != result.quest_runtime_expected_receipts.len() {
+        return Err(PyValueError::new_err(
+            "FNV quest runtime component plan/receipt counts differ",
+        ));
+    }
+    let quest_runtime_components = result
+        .quest_runtime_component_plans
+        .iter()
+        .zip(&result.quest_runtime_expected_receipts)
+        .map(|(plan, receipt)| {
+            let target_root = plan
+                .mappings
+                .iter()
+                .find(|mapping| mapping.source == plan.root_quest)
+                .map(|mapping| mapping.target.clone())
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "FNV quest runtime component {} has no root mapping",
+                        plan.component_id
+                    ))
+                })?;
+            Ok(serde_json::json!({
+                "component_id": plan.component_id,
+                "source_root": plan.root_quest,
+                "target_root": target_root,
+                "provenance": plan.provenance,
+                "start_disposition": plan.start_disposition,
+                "inbound_producers": plan.inbound_producers,
+                "start_routes": receipt.routes,
+            }))
+        })
+        .collect::<PyResult<Vec<_>>>()?;
     let out = PyList::empty(py);
     out.append(result.translated_scripts.len())?;
     out.append(result.translated_quests.len())?;
@@ -1380,6 +1855,17 @@ fn fnv_legacy_result_to_pyraw<'py>(
     out.append(lip_list)?;
     out.append(vmad_list)?;
     out.append(result.vmad_attached_in_rust)?;
+    out.append(generated_psc_list)?;
+    out.append(
+        serde_json::to_value(&result.voice_manifest)
+            .map_err(|error| PyValueError::new_err(format!("voice manifest: {error}")))?
+            .to_string(),
+    )?;
+    out.append(
+        serde_json::to_string(&quest_runtime_components).map_err(|error| {
+            PyValueError::new_err(format!("FNV quest runtime components: {error}"))
+        })?,
+    )?;
     out.into_bound_py_any(py)
 }
 
@@ -1410,20 +1896,57 @@ pub fn fnv_legacy_scripting_from_run_py<'py>(
     })
 }
 
-/// Return mapped target FormKeys for the given source FormKeys.
+#[pyfunction(name = "conversion_run_fnv_reconcile_compiled_scripts")]
+pub fn fnv_reconcile_compiled_scripts_py<'py>(
+    py: Python<'py>,
+    run_id: u64,
+    compiled_scripts: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    run_with_panic_catch("conversion_run_fnv_reconcile_compiled_scripts", || {
+        let rows = compiled_scripts.cast::<PyList>()?;
+        let mut evidence = Vec::with_capacity(rows.len());
+        for item in rows.iter() {
+            let row = item.cast::<PyDict>()?;
+            let class_name = row
+                .get_item("class_name")?
+                .ok_or_else(|| PyValueError::new_err("missing class_name"))?
+                .extract::<String>()?;
+            let relative_pex_path = row
+                .get_item("relative_pex_path")?
+                .ok_or_else(|| PyValueError::new_err("missing relative_pex_path"))?
+                .extract::<String>()?;
+            let compiled_success = row
+                .get_item("compiled_success")?
+                .ok_or_else(|| PyValueError::new_err("missing compiled_success"))?
+                .extract::<bool>()?;
+            evidence.push(crate::fnv_legacy_scripting::vmad::CompiledScriptEvidence {
+                class_name,
+                relative_pex_path,
+                compiled_success,
+            });
+        }
+        let (intents, attached, fragment_bindings_attached, fragment_bindings_expected) = py
+            .detach(move || {
+                with_run(run_id, |run| {
+                    run.reconcile_fnv_compiled_scripts(&evidence)
+                        .map_err(crate::run::RunError::from)
+                })
+                .map_err(run_error_to_py)
+            })?;
+        let result = PyDict::new(py);
+        result.set_item("intents_built", intents.len())?;
+        result.set_item("vmad_attached", attached)?;
+        result.set_item("fragment_bindings_attached", fragment_bindings_attached)?;
+        result.set_item("fragment_bindings_expected", fragment_bindings_expected)?;
+        Ok(result.into_any())
+    })
+}
+
+/// Mapped target FormKeys for `source_form_keys`, as a parallel list with
+/// `None` for unmapped keys. The run must still be alive.
 ///
-/// For each input
-/// `source_form_key` return the corresponding target form key.
-///
-/// Returns a list of `Option[str]` parallel to `source_form_keys`. `None`
-/// indicates the source FK was not mapped by the Rust translate phase (the
-/// caller decides what to do with the missing mapping).
-///
-/// Reads the mapper state from the run; the run must still be alive (use
-/// before `conversion_run_drop`).
-///
-/// Form-key strings use the Python "OBJID:Plugin" rendering convention
-/// (matches `RecordNode.form_key` and `FormKeyMapper.mappings` keys).
+/// Keys use the Python "OBJID:Plugin" form (as in `RecordNode.form_key` and
+/// `FormKeyMapper.mappings`).
 #[pyfunction(name = "conversion_run_target_form_keys")]
 pub fn target_form_keys_py<'py>(
     py: Python<'py>,
@@ -1544,7 +2067,10 @@ pub fn apply_registry_mappings_py(
             map.insert(k, v);
         }
         py.detach(move || {
-            with_run(run_id, |run| run.apply_registry_mappings(&map)).map_err(run_error_to_py)
+            with_conversion_worker_pool(run_id, "conversion_run_apply_registry_mappings", || {
+                with_run(run_id, |run| run.apply_registry_mappings(&map))
+            })
+            .map_err(run_error_to_py)
         })
     })
 }
@@ -1631,6 +2157,10 @@ fn pipeline_report_to_pyraw<'py>(
             r.items_failed,
             r.warnings,
             r.elapsed_ms,
+            r.phase_report
+                .as_ref()
+                .map(|phase| phase_report_to_pyraw(py, phase))
+                .transpose()?,
         ))?;
     }
     let counters = PyList::empty(py);
@@ -1666,6 +2196,204 @@ pub fn terrain_texture_jobs_json_py(py: Python<'_>, run_id: u64) -> PyResult<Str
     })
 }
 
+#[pyfunction(name = "conversion_run_story_manager_route_seed_json")]
+pub fn story_manager_route_seed_json_py(py: Python<'_>, run_id: u64) -> PyResult<String> {
+    run_with_panic_catch("conversion_run_story_manager_route_seed_json", || {
+        let report = py.detach(|| {
+            with_run(run_id, |run| {
+                Ok::<_, RunError>(run.story_manager_route_seed.clone())
+            })
+            .map_err(run_error_to_py)
+        })?;
+        serde_json::to_string(&report).map_err(|err| PyRuntimeError::new_err(err.to_string()))
+    })
+}
+
+#[pyfunction(name = "conversion_run_skyrim_minimal_quest_candidates_json")]
+pub fn skyrim_minimal_quest_candidates_json_py(py: Python<'_>, run_id: u64) -> PyResult<String> {
+    run_with_panic_catch(
+        "conversion_run_skyrim_minimal_quest_candidates_json",
+        || {
+            py.detach(move || {
+                with_run(run_id, |run| {
+                    run.skyrim_minimal_quest_candidate_manifest_json()
+                })
+                .map_err(run_error_to_py)
+            })
+        },
+    )
+}
+
+#[pyfunction(name = "conversion_run_install_skyrim_minimal_quest_actions")]
+pub fn install_skyrim_minimal_quest_actions_py(
+    py: Python<'_>,
+    run_id: u64,
+    class_prefix: String,
+    requests_json: String,
+) -> PyResult<()> {
+    run_with_panic_catch(
+        "conversion_run_install_skyrim_minimal_quest_actions",
+        || {
+            py.detach(move || {
+                let requests = serde_json::from_str::<
+                    Vec<crate::skyrimse_fo4_runtime::planner::SkyrimMinimalQuestActionRequest>,
+                >(&requests_json)
+                .map_err(|error| {
+                    run_error_to_py(RunError::InvalidConfig(format!(
+                        "parse Skyrim minimal quest actions: {error}"
+                    )))
+                })?;
+                with_run(run_id, |run| {
+                    run.install_skyrim_minimal_quest_actions(&class_prefix, requests)
+                })
+                .map_err(run_error_to_py)
+            })
+        },
+    )
+}
+
+#[pyfunction(name = "conversion_run_emit_skyrim_minimal_quest_psc_manifest_json")]
+pub fn emit_skyrim_minimal_quest_psc_manifest_json_py(
+    py: Python<'_>,
+    run_id: u64,
+    mod_path: String,
+) -> PyResult<String> {
+    run_with_panic_catch(
+        "conversion_run_emit_skyrim_minimal_quest_psc_manifest_json",
+        || {
+            py.detach(move || {
+                with_run(run_id, |run| {
+                    run.emit_skyrim_minimal_quest_psc_manifest_json(Path::new(&mod_path))
+                })
+                .map_err(run_error_to_py)
+            })
+        },
+    )
+}
+
+#[pyfunction(name = "conversion_run_reconcile_skyrim_minimal_quest_compiler_evidence")]
+pub fn reconcile_skyrim_minimal_quest_compiler_evidence_py(
+    py: Python<'_>,
+    run_id: u64,
+    evidence_json: String,
+) -> PyResult<u32> {
+    run_with_panic_catch(
+        "conversion_run_reconcile_skyrim_minimal_quest_compiler_evidence",
+        || {
+            py.detach(move || {
+                let evidence = serde_json::from_str::<
+                    Vec<crate::skyrimse_fo4_runtime::papyrus::SkyrimPscCompilerEvidence>,
+                >(&evidence_json)
+                .map_err(|error| {
+                    run_error_to_py(RunError::InvalidConfig(format!(
+                        "parse Skyrim quest compiler evidence: {error}"
+                    )))
+                })?;
+                with_run(run_id, |run| {
+                    run.reconcile_skyrim_minimal_quest_compiler_evidence(evidence)
+                })
+                .map_err(run_error_to_py)
+            })
+        },
+    )
+}
+
+#[pyfunction(name = "conversion_run_skyrim_quest_runtime_asset_requirements_json")]
+pub fn skyrim_quest_runtime_asset_requirements_json_py(
+    py: Python<'_>,
+    run_id: u64,
+) -> PyResult<String> {
+    run_with_panic_catch(
+        "conversion_run_skyrim_quest_runtime_asset_requirements_json",
+        || {
+            py.detach(move || {
+                with_run(run_id, |run| {
+                    run.skyrim_quest_runtime_asset_requirements_json()
+                })
+                .map_err(run_error_to_py)
+            })
+        },
+    )
+}
+
+#[pyfunction(name = "conversion_run_install_skyrim_quest_runtime_asset_manifest_json")]
+pub fn install_skyrim_quest_runtime_asset_manifest_json_py(
+    py: Python<'_>,
+    run_id: u64,
+    manifest_json: String,
+) -> PyResult<String> {
+    run_with_panic_catch(
+        "conversion_run_install_skyrim_quest_runtime_asset_manifest_json",
+        || {
+            py.detach(move || {
+                with_run(run_id, |run| {
+                    run.install_skyrim_quest_runtime_asset_manifest_json(&manifest_json)
+                })
+                .map_err(run_error_to_py)
+            })
+        },
+    )
+}
+
+#[pyfunction(name = "conversion_run_reconcile_skyrim_quest_runtime_asset_copy_receipt_json")]
+pub fn reconcile_skyrim_quest_runtime_asset_copy_receipt_json_py(
+    py: Python<'_>,
+    run_id: u64,
+    receipt_json: String,
+) -> PyResult<u32> {
+    run_with_panic_catch(
+        "conversion_run_reconcile_skyrim_quest_runtime_asset_copy_receipt_json",
+        || {
+            py.detach(move || {
+                with_run(run_id, |run| {
+                    run.reconcile_skyrim_quest_runtime_asset_copy_receipt_json(&receipt_json)
+                })
+                .map_err(run_error_to_py)
+            })
+        },
+    )
+}
+
+#[pyfunction(name = "conversion_run_quest_runtime_inventory_json")]
+#[pyo3(signature = (
+    run_id,
+    source_pex_roots,
+    target_pex_roots,
+    patch_source_root,
+    addition_scripts,
+    unsupported_manifest,
+    script_conversion_enabled
+))]
+pub fn quest_runtime_inventory_json_py(
+    py: Python<'_>,
+    run_id: u64,
+    source_pex_roots: Vec<String>,
+    target_pex_roots: Vec<String>,
+    patch_source_root: String,
+    addition_scripts: Vec<String>,
+    unsupported_manifest: String,
+    script_conversion_enabled: bool,
+) -> PyResult<String> {
+    run_with_panic_catch("conversion_run_quest_runtime_inventory_json", || {
+        py.detach(move || {
+            let options = crate::quest_runtime_inventory::QuestRuntimeInventoryOptions {
+                source_pex_roots: source_pex_roots.into_iter().map(Into::into).collect(),
+                target_pex_roots: target_pex_roots.into_iter().map(Into::into).collect(),
+                patch_source_root: patch_source_root.into(),
+                addition_scripts,
+                unsupported_manifest: unsupported_manifest.into(),
+                script_conversion_enabled,
+            };
+            let report = with_run(run_id, |run| {
+                Ok::<_, RunError>(run.quest_runtime_inventory(&options))
+            })
+            .map_err(run_error_to_py)?;
+            serde_json::to_string_pretty(&report)
+                .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+        })
+    })
+}
+
 pub(crate) fn hash_files_blake3_core(
     paths: &[String],
     workers: Option<usize>,
@@ -1691,14 +2419,8 @@ pub(crate) fn hash_files_blake3_core(
             .map(hash_one)
             .collect::<Result<Vec<_>, _>>()
     };
-    match workers.filter(|w| *w > 0) {
-        Some(w) => rayon::ThreadPoolBuilder::new()
-            .num_threads(w)
-            .build()
-            .map_err(|e| format!("rayon pool: {e}"))?
-            .install(hash_all),
-        None => hash_all(),
-    }
+    crate::worker_pool::install(workers, hash_all)
+        .map_err(|error| format!("rayon pool: {error}"))?
 }
 
 /// Batch blake3 of files (hex digests, input order) — the cache manifest
@@ -1815,14 +2537,8 @@ pub fn sinks_add_files_py(
                     .collect();
                 Ok(added?.into_iter().filter(|a| *a).count())
             };
-            let result = match workers.filter(|w| *w > 0) {
-                Some(w) => rayon::ThreadPoolBuilder::new()
-                    .num_threads(w)
-                    .build()
-                    .map_err(|e| PyRuntimeError::new_err(format!("rayon pool: {e}")))?
-                    .install(add_all),
-                None => add_all(),
-            };
+            let result = crate::worker_pool::install(workers, add_all)
+                .map_err(|e| PyRuntimeError::new_err(format!("rayon pool: {e}")))?;
             result.map_err(PyRuntimeError::new_err)
         })
     })
@@ -1832,12 +2548,14 @@ pub fn sinks_add_files_py(
 /// planner's PlannedArchive flag; `ordered_rels_json` = JSON array of the
 /// planned entries' relative paths.
 #[pyfunction(name = "sinks_finalize_archive")]
+#[pyo3(signature = (sink_id, output_path, texture_archive, ordered_rels_json, workers=None))]
 pub fn sinks_finalize_archive_py(
     py: Python<'_>,
     sink_id: u64,
     output_path: &str,
     texture_archive: bool,
     ordered_rels_json: &str,
+    workers: Option<usize>,
 ) -> PyResult<()> {
     run_with_panic_catch("sinks_finalize_archive", || {
         let rels: Vec<String> = serde_json::from_str(ordered_rels_json)
@@ -1849,8 +2567,11 @@ pub fn sinks_finalize_archive_py(
                 return Err(PyRuntimeError::new_err("sink has no BA2 writer"));
             };
             let rel_refs: Vec<&str> = rels.iter().map(String::as_str).collect();
-            ba2.finalize_archive(&output, texture_archive, &rel_refs)
-                .map_err(PyRuntimeError::new_err)
+            crate::worker_pool::install(workers, || {
+                ba2.finalize_archive(&output, texture_archive, &rel_refs)
+            })
+            .map_err(|error| PyRuntimeError::new_err(format!("rayon pool: {error}")))?
+            .map_err(PyRuntimeError::new_err)
         })
     })
 }
@@ -1945,6 +2666,7 @@ fn dispatch_params_from_json(params_json: &str) -> PyResult<DispatchParams> {
         .and_then(Value::as_str)
         .map(str::to_string);
     let params = object.get("params").cloned().unwrap_or(Value::Null);
+    skin_policy_from_phase_params(&params).map_err(PyValueError::new_err)?;
     Ok(DispatchParams {
         mod_path: PathBuf::from(mod_path),
         source_extracted_dir: PathBuf::from(source_extracted_dir),
@@ -1952,6 +2674,25 @@ fn dispatch_params_from_json(params_json: &str) -> PyResult<DispatchParams> {
         target_data_dir: target_data_dir.map(PathBuf::from),
         params,
     })
+}
+
+pub(crate) fn skin_policy_from_phase_params(
+    params: &Value,
+) -> Result<nif_core_native::skin::LegacySkinPolicy, String> {
+    use nif_core_native::skin::LegacySkinPolicy;
+
+    match params.get("skin_policy") {
+        None | Some(Value::Null) => Ok(LegacySkinPolicy::TranslateSkeleton),
+        Some(Value::String(value)) if value == "translate_skeleton" => {
+            Ok(LegacySkinPolicy::TranslateSkeleton)
+        }
+        Some(Value::String(value)) if value == "preserve_source_rig" => {
+            Ok(LegacySkinPolicy::PreserveSourceRig)
+        }
+        Some(value) => Err(format!(
+            "invalid skin_policy {value}; expected 'translate_skeleton' or 'preserve_source_rig'"
+        )),
+    }
 }
 
 #[pyfunction(name = "conversion_run_phase")]
@@ -1968,16 +2709,9 @@ pub fn run_phase_py<'py>(
                 let worker_count = conversion_worker_count(run_id)
                     .map_err(|e| phase::PhaseError::Internal(format!("{e}")))?;
                 let run_phase = || phase::run_phase(run_id, &phase, dispatch);
-                let Some(workers) = worker_count else {
-                    return run_phase();
-                };
-                let pool = rayon::ThreadPoolBuilder::new()
-                    .num_threads(workers)
-                    .build()
-                    .map_err(|err| {
-                        phase::PhaseError::Internal(format!("rayon pool error: {err}"))
-                    })?;
-                pool.install(run_phase)
+                crate::worker_pool::install(Some(worker_count), run_phase).map_err(|err| {
+                    phase::PhaseError::Internal(format!("rayon pool error: {err}"))
+                })?
             })
             .map_err(|e| match e {
                 phase::PhaseError::Cancelled => PyRuntimeError::new_err("cancelled"),
@@ -2051,13 +2785,12 @@ pub fn list_phases_py<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
 
 /// Post-copy repair of the deferred placed-ref-target class.
 ///
-/// Runs the authoritative LCTN LCUN/LCEP/ACEP resolution over the conversion
-/// run's in-memory output plugin AFTER the FO76→FO4 phase-6 cell-slice copy +
-/// cell-location sync re-insert the exterior placed children. Keeps every ref
-/// whose target is now present; nulls (LCUN: drops the row in lockstep) any still
-/// absent. Pairs with the pre-copy deferral gated by
-/// `RunConfig::defer_placed_child_ref_class`; a no-op when the class was not
-/// deferred. Returns `{ "records_changed": int }`.
+/// Runs the LCTN LCUN/LCEP/ACEP resolution over the run's output plugin after
+/// the FO76→FO4 phase-6 cell-slice copy and cell-location sync re-insert the
+/// exterior placed children. Keeps refs whose target now exists and nulls the
+/// rest (LCUN drops the row in lockstep). No-op unless
+/// `RunConfig::defer_placed_child_ref_class` deferred the class. Returns the
+/// number of records changed.
 #[pyfunction(name = "conversion_run_repair_placed_child_refs")]
 pub fn repair_placed_child_refs_py<'py>(py: Python<'py>, run_id: u64) -> PyResult<u32> {
     run_with_panic_catch("conversion_run_repair_placed_child_refs", || {
@@ -2204,14 +2937,8 @@ fn prepare_anim_text_data_assets_for_paths(
     target_cache_dir: &Path,
     target_overlay_dir: Option<&Path>,
 ) -> Result<String, String> {
-    let target_handle = OwnedPluginHandle::load(Path::new(target_plugin_path), game, None)
-        .map_err(|error| error.to_string())?;
-    let base_race_handles = base_race_plugin_paths
-        .iter()
-        .map(|path| {
-            OwnedPluginHandle::load(Path::new(path), game, None).map_err(|error| error.to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let (target_handle, base_race_handles) =
+        load_anim_text_data_plugins(target_plugin_path, game, base_race_plugin_paths)?;
     let base_race_handle_ids = base_race_handles
         .iter()
         .map(OwnedPluginHandle::id)
@@ -2229,6 +2956,232 @@ fn prepare_anim_text_data_assets_for_paths(
         src_meshes_root,
     )
     .map(|path| path.to_string_lossy().into_owned())
+}
+
+fn load_anim_text_data_plugins(
+    target_plugin_path: &str,
+    game: &str,
+    base_race_plugin_paths: &[String],
+) -> Result<(OwnedPluginHandle, Vec<OwnedPluginHandle>), String> {
+    let target_handle = OwnedPluginHandle::load(Path::new(target_plugin_path), game, None)
+        .map_err(|error| error.to_string())?;
+    let base_race_handles = base_race_plugin_paths
+        .iter()
+        .map(|path| {
+            OwnedPluginHandle::load(Path::new(path), game, None).map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((target_handle, base_race_handles))
+}
+
+fn decode_anim_text_data_inputs(
+    target_handle: &OwnedPluginHandle,
+    base_race_handles: &[OwnedPluginHandle],
+) -> Result<ck_native::anim_text_data::race_decode::DecodedAnimInputs, String> {
+    let store = esp_authoring_core::plugin_runtime::plugin_handle_store_ref()
+        .lock()
+        .map_err(|_| "plugin handle store lock poisoned".to_string())?;
+    let target = store
+        .get(&target_handle.id())
+        .ok_or_else(|| "AnimText target plugin handle is missing".to_string())?;
+    let base_plugins = base_race_handles
+        .iter()
+        .map(|handle| {
+            store
+                .get(&handle.id())
+                .map(|slot| &slot.parsed)
+                .ok_or_else(|| "AnimText base plugin handle is missing".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    ck_native::anim_text_data::race_decode::subgraph_inputs_from_parsed_plugins(
+        &target.parsed,
+        &base_plugins,
+    )
+}
+
+struct AnimTextAssetPreparation {
+    target_data_dir: PathBuf,
+    target_catalog_path: PathBuf,
+    target_cache_dir: PathBuf,
+    target_overlay_dir: Option<PathBuf>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_creature_anim_text_contract_inputs(
+    contract_json: &str,
+    target_plugin_path: &str,
+    game: &str,
+    base_race_plugin_paths: &[String],
+    src_meshes_root: &Path,
+    out_meshes_root: &Path,
+    base_meshes_root: Option<&Path>,
+    mod_prefix: Option<&str>,
+) -> Result<(), String> {
+    let payload = serde_json::from_str::<Value>(contract_json)
+        .map_err(|error| format!("invalid creature AnimText contract: {error}"))?;
+    let path_matches = |field: &str, expected: &Path| {
+        payload
+            .get(field)
+            .and_then(Value::as_str)
+            .is_none_or(|actual| Path::new(actual) == expected)
+    };
+    if !path_matches("plugin_path", Path::new(target_plugin_path)) {
+        return Err("creature AnimText contract plugin_path does not match request".to_string());
+    }
+    if payload
+        .get("game")
+        .and_then(Value::as_str)
+        .is_some_and(|actual| !actual.eq_ignore_ascii_case(game))
+    {
+        return Err("creature AnimText contract game does not match request".to_string());
+    }
+    if let Some(actual) = payload
+        .get("base_plugin_paths")
+        .and_then(Value::as_array)
+        .and_then(|paths| paths.iter().map(Value::as_str).collect::<Option<Vec<_>>>())
+        && (actual.len() != base_race_plugin_paths.len()
+            || actual
+                .iter()
+                .zip(base_race_plugin_paths)
+                .any(|(actual, expected)| Path::new(actual) != Path::new(expected)))
+    {
+        return Err(
+            "creature AnimText contract base_plugin_paths do not match request".to_string(),
+        );
+    }
+    if !path_matches("source_meshes_root", src_meshes_root) {
+        return Err(
+            "creature AnimText contract source_meshes_root does not match request".to_string(),
+        );
+    }
+    if !path_matches("output_meshes_root", out_meshes_root) {
+        return Err(
+            "creature AnimText contract output_meshes_root does not match request".to_string(),
+        );
+    }
+    if payload
+        .get("base_meshes_root")
+        .and_then(Value::as_str)
+        .map(Path::new)
+        != base_meshes_root
+    {
+        return Err(
+            "creature AnimText contract base_meshes_root does not match request".to_string(),
+        );
+    }
+    if payload.get("mod_prefix").and_then(Value::as_str) != mod_prefix {
+        return Err("creature AnimText contract mod_prefix does not match request".to_string());
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_anim_text_data_for_paths(
+    target_plugin_path: &str,
+    game: &str,
+    base_race_plugin_paths: &[String],
+    src_meshes_root: &Path,
+    out_meshes_root: &Path,
+    base_meshes_root: Option<&Path>,
+    asset_preparation: Option<&AnimTextAssetPreparation>,
+    mod_prefix: Option<&str>,
+    creature_contract_json: Option<&str>,
+    workers: Option<usize>,
+    mut progress: impl FnMut(&str) + Send,
+) -> Result<(u32, Option<String>), String> {
+    if let Some(contract_json) = creature_contract_json {
+        validate_creature_anim_text_contract_inputs(
+            contract_json,
+            target_plugin_path,
+            game,
+            base_race_plugin_paths,
+            src_meshes_root,
+            out_meshes_root,
+            base_meshes_root,
+            mod_prefix,
+        )?;
+    }
+    let (target_handle, base_race_handles) =
+        load_anim_text_data_plugins(target_plugin_path, game, base_race_plugin_paths)?;
+    let base_race_handle_ids = base_race_handles
+        .iter()
+        .map(OwnedPluginHandle::id)
+        .collect::<Vec<_>>();
+    let prepared_base_meshes_root = if let Some(preparation) = asset_preparation {
+        let store = crate::target_assets::TargetAssetStore::open_shared(
+            &preparation.target_data_dir,
+            &preparation.target_catalog_path,
+            &preparation.target_cache_dir,
+            preparation.target_overlay_dir.as_deref(),
+        )?;
+        Some(crate::target_assets::prepare_anim_text_data_assets(
+            &store,
+            target_handle.id(),
+            &base_race_handle_ids,
+            src_meshes_root,
+        )?)
+    } else {
+        base_meshes_root.map(Path::to_path_buf)
+    };
+    let run = move || {
+        if let Some(contract_json) = creature_contract_json {
+            let mut selection_subgraphs = Vec::new();
+            let receipt = ck_native::anim_text_data::creature_closure::generate_creature_anim_text_closure_with_decoder(
+                contract_json,
+                prepared_base_meshes_root.clone(),
+                &mut progress,
+                |_| {
+                    let decoded =
+                        decode_anim_text_data_inputs(&target_handle, &base_race_handles)?;
+                    selection_subgraphs = decoded.subgraphs.clone();
+                    drop(base_race_handles);
+                    drop(target_handle);
+                    Ok(decoded)
+                },
+            )?;
+            // The closure receipt validates AnimationFileData/AnimEventInfo, which this does not change.
+            crate::fixups::creature::player_fear::write_selection_timing(
+                &selection_subgraphs, src_meshes_root, out_meshes_root,
+            )?;
+            let written = serde_json::from_str::<Value>(&receipt)
+                .map_err(|error| format!("invalid native creature AnimText receipt: {error}"))?
+                .get("written")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| {
+                    "native creature AnimText receipt has no valid written count".to_string()
+                })?;
+            Ok((written, Some(receipt)))
+        } else {
+            let decoded = decode_anim_text_data_inputs(&target_handle, &base_race_handles)?;
+            drop(base_race_handles);
+            drop(target_handle);
+            let inputs = ck_native::anim_text_data::emit::AnimTextDataInputs::from(decoded);
+            let report = ck_native::anim_text_data::emit::generate_anim_text_data_with_progress(
+                &inputs,
+                src_meshes_root,
+                out_meshes_root,
+                prepared_base_meshes_root.as_deref(),
+                mod_prefix,
+                &mut progress,
+            )?;
+            crate::fixups::creature::player_fear::write_selection_timing(
+                &inputs.subgraphs, src_meshes_root, out_meshes_root,
+            )?;
+            Ok((report.written, None))
+        }
+    };
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(workers.filter(|workers| *workers > 0).unwrap_or(1))
+        .build()
+        .map_err(|error| {
+            if creature_contract_json.is_some() {
+                format!("creature AnimText rayon pool: {error}")
+            } else {
+                format!("AnimTextData rayon pool: {error}")
+            }
+        })?
+        .install(run)
 }
 
 #[pyfunction(name = "conversion_prepare_anim_text_data_assets")]
@@ -2278,6 +3231,88 @@ pub fn prepare_anim_text_data_assets_py(
     })
 }
 
+#[pyfunction(name = "conversion_generate_anim_text_data")]
+#[pyo3(signature = (
+    target_plugin_path,
+    game,
+    base_race_plugin_paths,
+    src_meshes_root,
+    out_meshes_root,
+    base_meshes_root=None,
+    target_data_dir=None,
+    target_catalog_path=None,
+    target_cache_dir=None,
+    target_overlay_dir=None,
+    mod_prefix=None,
+    creature_contract_json=None,
+    progress_callback=None,
+    workers=None
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn generate_anim_text_data_py(
+    py: Python<'_>,
+    target_plugin_path: &str,
+    game: &str,
+    base_race_plugin_paths: Vec<String>,
+    src_meshes_root: &str,
+    out_meshes_root: &str,
+    base_meshes_root: Option<&str>,
+    target_data_dir: Option<&str>,
+    target_catalog_path: Option<&str>,
+    target_cache_dir: Option<&str>,
+    target_overlay_dir: Option<&str>,
+    mod_prefix: Option<&str>,
+    creature_contract_json: Option<&str>,
+    progress_callback: Option<Py<PyAny>>,
+    workers: Option<usize>,
+) -> PyResult<(u32, Option<String>)> {
+    run_with_panic_catch("conversion_generate_anim_text_data", || {
+        let asset_preparation = match (target_data_dir, target_catalog_path, target_cache_dir) {
+            (Some(data), Some(catalog), Some(cache)) => Some(AnimTextAssetPreparation {
+                target_data_dir: PathBuf::from(data),
+                target_catalog_path: PathBuf::from(catalog),
+                target_cache_dir: PathBuf::from(cache),
+                target_overlay_dir: target_overlay_dir.map(PathBuf::from),
+            }),
+            (None, None, None) => None,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "AnimText target asset preparation requires data, catalog, and cache paths",
+                ));
+            }
+        };
+        let target_plugin_path = target_plugin_path.to_string();
+        let game = game.to_string();
+        let src_meshes_root = PathBuf::from(src_meshes_root);
+        let out_meshes_root = PathBuf::from(out_meshes_root);
+        let base_meshes_root = base_meshes_root.map(PathBuf::from);
+        let mod_prefix = mod_prefix.map(str::to_string);
+        let creature_contract_json = creature_contract_json.map(str::to_string);
+        py.detach(move || {
+            generate_anim_text_data_for_paths(
+                &target_plugin_path,
+                &game,
+                &base_race_plugin_paths,
+                &src_meshes_root,
+                &out_meshes_root,
+                base_meshes_root.as_deref(),
+                asset_preparation.as_ref(),
+                mod_prefix.as_deref(),
+                creature_contract_json.as_deref(),
+                workers,
+                move |message| {
+                    if let Some(callback) = progress_callback.as_ref() {
+                        Python::attach(|py| {
+                            let _ = callback.call1(py, (message,));
+                        });
+                    }
+                },
+            )
+            .map_err(PyRuntimeError::new_err)
+        })
+    })
+}
+
 #[pyfunction(name = "conversion_run_synthesize_vendor_dialogue")]
 #[pyo3(signature = (run_id))]
 pub fn synthesize_vendor_dialogue_py<'py>(py: Python<'py>, run_id: u64) -> PyResult<u32> {
@@ -2297,7 +3332,9 @@ pub fn synthesize_vendor_dialogue_py<'py>(py: Python<'py>, run_id: u64) -> PyRes
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<crate::source_inventory::PySourceAssetInventory>()?;
     m.add_class::<crate::target_assets::PyTargetAssetStore>()?;
+    m.add_function(wrap_pyfunction!(configure_drop_trace_py, m)?)?;
     m.add_function(wrap_pyfunction!(crate::target_assets::build_catalog_py, m)?)?;
     m.add_function(wrap_pyfunction!(
         crate::target_assets::catalog_schema_version_py,
@@ -2309,12 +3346,13 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(collect_lod_closures_py, m)?)?;
     m.add_function(wrap_pyfunction!(create_run_from_paths_py, m)?)?;
     m.add_function(wrap_pyfunction!(set_target_description_py, m)?)?;
-    m.add_function(wrap_pyfunction!(script_reference_records_py, m)?)?;
-    m.add_function(wrap_pyfunction!(set_record_subrecords_py, m)?)?;
+    m.add_function(wrap_pyfunction!(inspect_script_references_py, m)?)?;
+    m.add_function(wrap_pyfunction!(reconcile_script_references_py, m)?)?;
     m.add_function(wrap_pyfunction!(apply_placed_record_position_offset_py, m)?)?;
     m.add_function(wrap_pyfunction!(sync_cell_regions_from_source_py, m)?)?;
     m.add_function(wrap_pyfunction!(sync_cell_locations_from_lctn_py, m)?)?;
     m.add_function(wrap_pyfunction!(release_source_handle_py, m)?)?;
+    m.add_function(wrap_pyfunction!(share_output_nif_dependencies_py, m)?)?;
     m.add_function(wrap_pyfunction!(release_master_handles_py, m)?)?;
     m.add_function(wrap_pyfunction!(save_target_py, m)?)?;
     m.add_function(wrap_pyfunction!(drop_run_py, m)?)?;
@@ -2327,6 +3365,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(translate_records_py, m)?)?;
     m.add_function(wrap_pyfunction!(weapon_metadata_py, m)?)?;
     m.add_function(wrap_pyfunction!(fnv_legacy_scripting_from_run_py, m)?)?;
+    m.add_function(wrap_pyfunction!(fnv_reconcile_compiled_scripts_py, m)?)?;
     m.add_function(wrap_pyfunction!(target_form_keys_py, m)?)?;
     m.add_function(wrap_pyfunction!(form_key_map_py, m)?)?;
     m.add_function(wrap_pyfunction!(apply_registry_mappings_py, m)?)?;
@@ -2337,6 +3376,36 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cancel_py, m)?)?;
     m.add_function(wrap_pyfunction!(list_phases_py, m)?)?;
     m.add_function(wrap_pyfunction!(terrain_texture_jobs_json_py, m)?)?;
+    m.add_function(wrap_pyfunction!(story_manager_route_seed_json_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        skyrim_minimal_quest_candidates_json_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        install_skyrim_minimal_quest_actions_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        emit_skyrim_minimal_quest_psc_manifest_json_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        reconcile_skyrim_minimal_quest_compiler_evidence_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        skyrim_quest_runtime_asset_requirements_json_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        install_skyrim_quest_runtime_asset_manifest_json_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        reconcile_skyrim_quest_runtime_asset_copy_receipt_json_py,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(quest_runtime_inventory_json_py, m)?)?;
     m.add_function(wrap_pyfunction!(hash_files_blake3_py, m)?)?;
     m.add_function(wrap_pyfunction!(sinks_create_py, m)?)?;
     m.add_function(wrap_pyfunction!(sinks_attach_run_py, m)?)?;
@@ -2367,6 +3436,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(synthesize_sky_regions_py, m)?)?;
     m.add_function(wrap_pyfunction!(synthesize_vendor_dialogue_py, m)?)?;
     m.add_function(wrap_pyfunction!(prepare_anim_text_data_assets_py, m)?)?;
+    m.add_function(wrap_pyfunction!(generate_anim_text_data_py, m)?)?;
     Ok(())
 }
 
@@ -2379,10 +3449,53 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use esp_authoring_core::plugin_runtime::{
-        ParsedRecord, ParsedSubrecord, insert_parsed_record_in_slot, plugin_handle_store_ref,
+        ParsedItem, ParsedRecord, ParsedSubrecord, insert_parsed_record_in_slot,
+        plugin_handle_store_ref,
     };
     use smol_str::SmolStr;
     use std::sync::Once;
+
+    #[test]
+    fn phase_params_parse_only_supported_skin_policies() {
+        let base = |params: Value| {
+            serde_json::json!({
+                "mod_path": "X:/mod",
+                "source_extracted_dir": "X:/source",
+                "params": params,
+            })
+            .to_string()
+        };
+
+        let default = dispatch_params_from_json(&base(serde_json::json!({}))).unwrap();
+        assert_eq!(
+            skin_policy_from_phase_params(&default.params).unwrap(),
+            nif_core_native::skin::LegacySkinPolicy::TranslateSkeleton
+        );
+
+        let translated = dispatch_params_from_json(&base(serde_json::json!({
+            "skin_policy": "translate_skeleton"
+        })))
+        .unwrap();
+        assert_eq!(
+            skin_policy_from_phase_params(&translated.params).unwrap(),
+            nif_core_native::skin::LegacySkinPolicy::TranslateSkeleton
+        );
+
+        let preserved = dispatch_params_from_json(&base(serde_json::json!({
+            "skin_policy": "preserve_source_rig"
+        })))
+        .unwrap();
+        assert_eq!(
+            skin_policy_from_phase_params(&preserved.params).unwrap(),
+            nif_core_native::skin::LegacySkinPolicy::PreserveSourceRig
+        );
+
+        let error = skin_policy_from_phase_params(&serde_json::json!({
+            "skin_policy": "guess"
+        }))
+        .unwrap_err();
+        assert!(error.contains("invalid skin_policy"));
+    }
 
     fn write_empty_plugin(dir: &Path, name: &str, game: &str) -> PathBuf {
         let path = dir.join(name);
@@ -2395,6 +3508,189 @@ mod tests {
         .expect("save plugin");
         assert!(esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle));
         path
+    }
+
+    fn test_vmad(names: &[&str]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&6i16.to_le_bytes());
+        bytes.extend_from_slice(&2i16.to_le_bytes());
+        bytes.extend_from_slice(&(names.len() as u16).to_le_bytes());
+        for name in names {
+            bytes.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(name.as_bytes());
+            bytes.extend_from_slice(&[0, 0, 0]);
+        }
+        bytes
+    }
+
+    fn take_test_record(items: &mut Vec<ParsedItem>, form_id: u32) -> Option<ParsedRecord> {
+        let mut index = 0;
+        while index < items.len() {
+            match &mut items[index] {
+                ParsedItem::Record(record) if record.form_id == form_id => {
+                    let ParsedItem::Record(record) = items.remove(index) else {
+                        unreachable!()
+                    };
+                    return Some(record);
+                }
+                ParsedItem::Group(group) => {
+                    if let Some(record) = take_test_record(&mut group.children, form_id) {
+                        return Some(record);
+                    }
+                }
+                ParsedItem::Record(_) => {}
+            }
+            index += 1;
+        }
+        None
+    }
+
+    fn test_record_vmad(items: &[ParsedItem], form_id: u32) -> Option<Vec<u8>> {
+        for item in items {
+            match item {
+                ParsedItem::Record(record) if record.form_id == form_id => {
+                    return record
+                        .subrecords
+                        .iter()
+                        .find(|subrecord| subrecord.signature.as_str() == "VMAD")
+                        .map(|subrecord| subrecord.data.to_vec());
+                }
+                ParsedItem::Group(group) => {
+                    if let Some(bytes) = test_record_vmad(&group.children, form_id) {
+                        return Some(bytes);
+                    }
+                }
+                ParsedItem::Record(_) => {}
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn script_reconcile_api_restores_state_after_partial_write_for_retry() {
+        Python::initialize();
+        let source = esp_authoring_core::plugin_runtime::plugin_handle_new_native(
+            "Source.esm",
+            Some("fo76"),
+        )
+        .unwrap();
+        let target = esp_authoring_core::plugin_runtime::plugin_handle_new_native(
+            "ScriptRetry.esp",
+            Some("fo4"),
+        )
+        .unwrap();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&target).unwrap();
+            for (form_id, editor_id) in [(0x800, "First"), (0x801, "Second")] {
+                insert_parsed_record_in_slot(
+                    slot,
+                    ParsedRecord {
+                        signature: SmolStr::new("PERK"),
+                        form_id,
+                        flags: 0,
+                        version_control: 0,
+                        form_version: None,
+                        version2: None,
+                        subrecords: vec![
+                            ParsedSubrecord {
+                                signature: SmolStr::new("EDID"),
+                                data: Bytes::from(format!("{editor_id}\0")),
+                                semantic_type: None,
+                            },
+                            ParsedSubrecord {
+                                signature: SmolStr::new("VMAD"),
+                                data: Bytes::from(test_vmad(&["Broken", "Working"])),
+                                semantic_type: Some("PERK".to_string()),
+                            },
+                        ],
+                        raw_payload: None,
+                        parse_error: None,
+                    },
+                );
+            }
+        }
+        let run_id = create_run(RunParams {
+            source: Game::Fo76,
+            target: Game::Fo4,
+            source_handle_id: source,
+            target_handle_id: target,
+            master_handle_ids: Vec::new(),
+            config: RunConfig {
+                output_plugin_name: "ScriptRetry.esp".to_string(),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let evidence = vec![
+            (
+                "broken".to_string(),
+                "Broken".to_string(),
+                "compile_failed".to_string(),
+                None,
+            ),
+            (
+                "working".to_string(),
+                "Working".to_string(),
+                "target".to_string(),
+                None,
+            ),
+        ];
+
+        Python::attach(|py| {
+            inspect_script_references_py(py, run_id).unwrap();
+            let removed = {
+                let mut store = plugin_handle_store_ref().lock().unwrap();
+                let slot = store.get_mut(&target).unwrap();
+                let removed = take_test_record(&mut slot.parsed.root_items, 0x801).unwrap();
+                slot.invalidate_sections();
+                removed
+            };
+            let error = reconcile_script_references_py(py, run_id, evidence.clone())
+                .err()
+                .expect("missing second record must fail after the first write");
+            assert!(
+                error
+                    .to_string()
+                    .contains("unknown record form_id: 00000801")
+            );
+            with_run(run_id, |run| {
+                assert!(run.script_reference_state.is_some());
+                Ok::<_, RunError>(())
+            })
+            .unwrap();
+
+            {
+                let mut store = plugin_handle_store_ref().lock().unwrap();
+                let slot = store.get_mut(&target).unwrap();
+                insert_parsed_record_in_slot(slot, removed);
+                slot.invalidate_sections();
+            }
+            reconcile_script_references_py(py, run_id, evidence).unwrap();
+            with_run(run_id, |run| {
+                assert!(run.script_reference_state.is_none());
+                Ok::<_, RunError>(())
+            })
+            .unwrap();
+        });
+
+        let store = plugin_handle_store_ref().lock().unwrap();
+        for form_id in [0x800, 0x801] {
+            let vmad = test_record_vmad(&store[&target].parsed.root_items, form_id).unwrap();
+            assert!(
+                !vmad
+                    .windows(b"Broken".len())
+                    .any(|bytes| bytes == b"Broken")
+            );
+            assert!(
+                vmad.windows(b"Working".len())
+                    .any(|bytes| bytes == b"Working")
+            );
+        }
+        drop(store);
+        drop_run(run_id).unwrap();
+        assert!(esp_authoring_core::plugin_runtime::plugin_handle_close_native(source));
+        assert!(esp_authoring_core::plugin_runtime::plugin_handle_close_native(target));
     }
 
     #[test]
@@ -2448,6 +3744,115 @@ mod tests {
             .lock()
             .unwrap();
         assert!(!store.contains_key(&handle_id));
+    }
+
+    #[test]
+    fn anim_text_decode_uses_retained_plugins_after_paths_are_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = write_empty_plugin(tmp.path(), "Target.esp", "fo4");
+        let base = write_empty_plugin(tmp.path(), "Fallout4.esm", "fo4");
+        let target_path = target.to_string_lossy().into_owned();
+        let base_path = base.to_string_lossy().into_owned();
+        let (target_handle, base_handles) =
+            load_anim_text_data_plugins(&target_path, "fo4", std::slice::from_ref(&base_path))
+                .unwrap();
+
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_file(&base).unwrap();
+        let decoded = decode_anim_text_data_inputs(&target_handle, &base_handles).unwrap();
+
+        assert_eq!(decoded.target_plugin_name, "Target.esp");
+        assert_eq!(decoded.race_record_count, 0);
+        drop(base_handles);
+        drop(target_handle);
+        assert!(!store_contains_path(&target));
+        assert!(!store_contains_path(&base));
+    }
+
+    #[test]
+    fn anim_text_generation_releases_plugins_before_progress_and_after_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = write_empty_plugin(tmp.path(), "Target.esp", "fo4");
+        let base = write_empty_plugin(tmp.path(), "Fallout4.esm", "fo4");
+        let target_path = target.to_string_lossy().into_owned();
+        let base_path = base.to_string_lossy().into_owned();
+        let source_meshes = tmp.path().join("source").join("Meshes");
+        std::fs::create_dir_all(&source_meshes).unwrap();
+        let output_file = tmp.path().join("output-file");
+        std::fs::write(&output_file, b"not a directory").unwrap();
+        let mut progress_seen = false;
+
+        let result = generate_anim_text_data_for_paths(
+            &target_path,
+            "fo4",
+            std::slice::from_ref(&base_path),
+            &source_meshes,
+            &output_file,
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            |_| {
+                progress_seen = true;
+                assert!(!store_contains_path(&target));
+                assert!(!store_contains_path(&base));
+            },
+        );
+
+        assert!(progress_seen);
+        assert!(result.is_err());
+        assert!(!store_contains_path(&target));
+        assert!(!store_contains_path(&base));
+    }
+
+    #[test]
+    fn anim_text_contract_mismatch_precedes_plugin_load_and_asset_prep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = write_empty_plugin(tmp.path(), "Target.esp", "fo4");
+        let base = write_empty_plugin(tmp.path(), "Fallout4.esm", "fo4");
+        let target_path = target.to_string_lossy().into_owned();
+        let base_path = base.to_string_lossy().into_owned();
+        let meshes = tmp.path().join("Meshes");
+        let preparation = AnimTextAssetPreparation {
+            target_data_dir: tmp.path().to_path_buf(),
+            target_catalog_path: tmp.path().join("missing-catalog.sqlite3"),
+            target_cache_dir: tmp.path().join("cache"),
+            target_overlay_dir: None,
+        };
+        let contract = serde_json::json!({
+            "plugin_path": tmp.path().join("Other.esp"),
+            "game": "fo4",
+            "base_plugin_paths": [&base_path],
+            "source_meshes_root": &meshes,
+            "output_meshes_root": &meshes,
+            "base_meshes_root": null,
+            "mod_prefix": null,
+        })
+        .to_string();
+
+        let error = generate_anim_text_data_for_paths(
+            &target_path,
+            "fo4",
+            std::slice::from_ref(&base_path),
+            &meshes,
+            &meshes,
+            None,
+            Some(&preparation),
+            None,
+            Some(&contract),
+            Some(1),
+            |_| {},
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "creature AnimText contract plugin_path does not match request"
+        );
+        assert!(!store_contains_path(&target));
+        assert!(!store_contains_path(&base));
+        assert!(!preparation.target_cache_dir.exists());
     }
 
     fn store_contains_path(path: &Path) -> bool {
@@ -2595,12 +4000,88 @@ mod tests {
         });
     }
 
-    // NOTE: A full `run_with_panic_catch` test requires `Python::with_gil`, which
-    // needs the `auto-initialize` pyo3 feature. That feature is incompatible with
-    // `extension-module` (used by this crate), so we cannot call it here without
-    // the embedded Python runtime. The test below instead verifies the underlying
-    // `catch_unwind` mechanic — the same logic that `run_with_panic_catch` wraps —
-    // to confirm that panics are caught and their payloads are extractable.
+    #[test]
+    fn fnv_result_serializes_component_provenance_and_start_route() {
+        use crate::quest_runtime::{
+            DependencyClosure, GraftProvenance, QuestRecordKey, QuestRuntimeAdmission,
+            QuestRuntimeComponentPlan, QuestRuntimeExpectedReceipt, QuestSemanticPlan,
+            QuestSourceGame, SourceProvenance, SourceTargetFormMapping, StartDisposition,
+            StartRouteReceipt,
+        };
+        use std::collections::BTreeSet;
+
+        initialize_python_for_tests();
+        Python::attach(|py| {
+            let root = QuestRecordKey::new("QUST", "11F935@FalloutNV.esm");
+            let target = QuestRecordKey::new("QUST", "21F935@Converted.esp");
+            let route = StartRouteReceipt {
+                route_id: "fnvfo3:start:fo3:fallout3.esm:012f935:autostart".to_string(),
+                quest: target.clone(),
+                producer_evidence_id: "autostart:21F935@Converted.esp".to_string(),
+                node_chain: Vec::new(),
+            };
+            let receipt = QuestRuntimeExpectedReceipt {
+                routes: BTreeSet::from([route]),
+                ..Default::default()
+            };
+            let plan = QuestRuntimeComponentPlan {
+                component_id: "fnv:falloutnv.esm:11f935".to_string(),
+                root_quest: root.clone(),
+                provenance: SourceProvenance {
+                    game: QuestSourceGame::Fo3,
+                    source_plugin: "Fallout3.esm".to_string(),
+                    graft: Some(GraftProvenance {
+                        source_plugin: "ThePitt.esm".to_string(),
+                        source_form_key: "012F935@Fallout3.esm".to_string(),
+                        graft_form_key: root.form_key.clone(),
+                    }),
+                },
+                owned_records: vec![root.clone()],
+                shared_records: BTreeSet::new(),
+                dependencies: DependencyClosure::default(),
+                source_topology: BTreeSet::new(),
+                target_topology: BTreeSet::new(),
+                mappings: vec![SourceTargetFormMapping {
+                    source: root,
+                    target: target.clone(),
+                }],
+                semantics: QuestSemanticPlan::default(),
+                scripts: BTreeSet::new(),
+                fragments: BTreeSet::new(),
+                psc: BTreeSet::new(),
+                vmad: BTreeSet::new(),
+                assets: BTreeSet::new(),
+                inbound_producers: BTreeSet::new(),
+                start_disposition: Some(StartDisposition::Autostart),
+                admission: QuestRuntimeAdmission::Supported,
+                expected_receipt: receipt.clone(),
+            };
+            let result = crate::fnv_legacy_scripting::FnvLegacyScriptingResult {
+                quest_runtime_component_plans: vec![plan],
+                quest_runtime_expected_receipts: vec![receipt],
+                ..Default::default()
+            };
+
+            let raw = fnv_legacy_result_to_pyraw(py, &result).unwrap();
+            let rows = raw.cast::<PyList>().unwrap();
+            let serialized = rows
+                .get_item(rows.len() - 1)
+                .unwrap()
+                .extract::<String>()
+                .unwrap();
+            let components: Value = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(components[0]["provenance"]["game"], "fo3");
+            assert_eq!(components[0]["target_root"]["form_key"], target.form_key);
+            assert_eq!(
+                components[0]["start_routes"][0]["producer_evidence_id"],
+                "autostart:21F935@Converted.esp"
+            );
+        });
+    }
+
+    // `run_with_panic_catch` needs `Python::with_gil`, which needs pyo3's
+    // `auto-initialize` feature, incompatible with this crate's
+    // `extension-module`. These tests cover the `catch_unwind` mechanic it wraps.
     #[test]
     fn catch_unwind_captures_str_payload() {
         let result = catch_unwind(AssertUnwindSafe(|| -> i32 { panic!("intentional panic") }));
@@ -2653,15 +4134,33 @@ mod tests {
                 "is_whole_plugin": true,
                 "mod_path": "X:/mods/SeventySix",
                 "source_extracted_dir": "X:/extracted/fo76",
+                "additional_source_asset_roots": ["X:/extracted/fo3", "X:/Fallout3/Data"],
+                "legacy_music_tracks": [{
+                    "legacy_relative_path": "Explore/Explore_01.mp3",
+                    "source_path": "X:/FalloutNV/Data/Music/Explore/Explore_01.mp3",
+                    "asset_path": "Music/FalloutNV/FNV/Explore/Explore_01.xwm",
+                    "track_path": "Data\\Music\\FalloutNV\\FNV\\Explore\\Explore_01.wav"
+                }],
                 "target_extracted_dir": "X:/extracted/fo4",
                 "target_data_dir": "N:/Steam Games/steamapps/common/Fallout 4/Data",
                 "target_record_preflight": [["Ammo10mm", "AMMO", "01F276:Fallout4.esm"]],
                 "target_master_names": ["Fallout4.esm"],
                 "legacy_pack_origins": [{
-                    "merged_form_key": "000900@FNV_FO3_Merged.esm",
+                    "merged_form_key": "000900@FalloutNV.esm",
                     "source_game": "fo3",
                     "source_plugin": "Fallout3.esm",
                     "source_form_key": "00000900@Fallout3.esm"
+                }],
+                "legacy_runtime_origins": [{
+                    "signature": "QUST",
+                    "merged_form_key": "00A900@FalloutNV.esm",
+                    "source_game": "fo3",
+                    "source_plugin": "Fallout3.esm",
+                    "source_form_key": "00000900@Fallout3.esm",
+                    "contributing_plugin": "ThePitt.esm",
+                    "source_parent_form_key": null,
+                    "merged_parent_form_key": null,
+                    "child_group_type": null
                 }],
                 "legacy_pack_raw_source_counts": {"fnv": 2, "fo3": 3},
                 "legacy_pack_expected_counts": {"fnv": 1, "fo3": 1},
@@ -2686,12 +4185,24 @@ mod tests {
         assert!(cfg.is_whole_plugin);
         assert_eq!(cfg.conversion_workers, Some(7));
         assert_eq!(cfg.records_limit, Some(123));
+        assert_eq!(cfg.additional_source_asset_roots.len(), 2);
+        assert_eq!(cfg.legacy_music_tracks.len(), 1);
+        assert_eq!(
+            cfg.legacy_music_tracks[0].legacy_relative_path,
+            "Explore/Explore_01.mp3"
+        );
         assert_eq!(cfg.warning_policy, WarningPolicy::WarnPlayable);
         assert_eq!(cfg.target_record_preflight.len(), 1);
         assert_eq!(cfg.target_record_preflight[0].editor_id, "Ammo10mm");
         assert_eq!(cfg.target_master_names, vec!["Fallout4.esm".to_string()]);
         assert_eq!(cfg.legacy_pack_origins.len(), 1);
         assert_eq!(cfg.legacy_pack_origins[0].source_game, "fo3");
+        assert_eq!(cfg.legacy_runtime_origins.len(), 1);
+        assert_eq!(cfg.legacy_runtime_origins[0].signature, "QUST");
+        assert_eq!(
+            cfg.legacy_runtime_origins[0].contributing_plugin,
+            "ThePitt.esm"
+        );
         assert_eq!(
             cfg.legacy_pack_raw_source_counts,
             Some(crate::legacy_pack_preflight::LegacyPackExpectedCounts { fnv: 2, fo3: 3 })
@@ -2742,6 +4253,28 @@ mod tests {
     }
 
     #[test]
+    fn config_from_json_reads_strict_mvp_record_exception_rows() {
+        let cfg = config_from_json(
+            r#"{"mvp_record_exceptions":[
+                {"signature":"WEAP","local_form_id":1157348,"source_plugin":"FalloutNV.esm"},
+                {"signature":"STAT","local_form_id":1157347,"source_plugin":"FalloutNV.esm"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.mvp_record_exceptions.len(), 2);
+        assert_eq!(cfg.mvp_record_exceptions[0].signature, "WEAP");
+        assert_eq!(cfg.mvp_record_exceptions[0].local_form_id, 0x11_A8E4);
+
+        for invalid in [
+            r#"{"mvp_record_exceptions":[{"signature":"WEAP","local_form_id":1157348}]}"#,
+            r#"{"mvp_record_exceptions":[{"signature":"WEAP","local_form_id":1157348,"source_plugin":"FalloutNV.esm","extra":true}]}"#,
+            r#"{"mvp_record_exceptions":{"signature":"WEAP","local_form_id":1157348,"source_plugin":"FalloutNV.esm"}}"#,
+        ] {
+            assert!(config_from_json(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn optional_path_treats_none_and_blank_as_absent() {
         let value: Value =
             serde_json::from_str(r#"{"none_path": null, "empty_path": "", "blank_path": "   "}"#)
@@ -2750,5 +4283,278 @@ mod tests {
         assert_eq!(optional_path(&value, "none_path"), None);
         assert_eq!(optional_path(&value, "empty_path"), None);
         assert_eq!(optional_path(&value, "blank_path"), None);
+    }
+
+    #[test]
+    fn skyrim_weapon_animation_types_classify_all_melee_variants() {
+        for animation_type in [
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "HandToHandMelee",
+            "OneHandSword",
+            "OneHandDagger",
+            "OneHandAxe",
+            "OneHandMace",
+            "TwoHandSword",
+            "TwoHandAxe",
+        ] {
+            assert_eq!(
+                classify_weapon_role(animation_type, Game::SkyrimSe),
+                "melee",
+                "{animation_type}"
+            );
+        }
+        for animation_type in ["7", "8", "9", "Bow", "Staff", "Crossbow"] {
+            assert_eq!(
+                classify_weapon_role(animation_type, Game::SkyrimSe),
+                "gun",
+                "{animation_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn skyrim_weapon_metadata_reads_two_hand_axe_enum_as_melee() {
+        let mut interner = StringInterner::new();
+        let mut record = Record::new(
+            SigCode::from_str("WEAP").unwrap(),
+            crate::ids::FormKey {
+                local: 0x013984,
+                plugin: interner.intern("Skyrim.esm"),
+            },
+        );
+        record.eid = Some(interner.intern("SteelBattleaxe"));
+        record.fields.push(crate::record::FieldEntry {
+            sig: crate::ids::SubrecordSig(*b"DATA"),
+            value: FieldValue::Struct(vec![(
+                interner.intern("AnimationType"),
+                FieldValue::String(interner.intern("TwoHandAxe")),
+            )]),
+        });
+
+        let metadata = weapon_metadata_from_record(
+            "013984@Skyrim.esm".to_string(),
+            &record,
+            &interner,
+            Game::SkyrimSe,
+        );
+
+        assert_eq!(metadata.6, "melee");
+        assert_eq!(metadata.8, "TwoHandAxe");
+    }
+
+    #[test]
+    fn bulk_melee_metadata_receipts_match_phase_accounting_and_reject_ranged() {
+        use crate::phase::mvp_melee::{
+            BULK_MELEE_V1_POLICY, Fo4MeleeTargetProfile, MeleeLoweringReason, MeleeRejectionReason,
+            MvpMeleeDisposition, MvpMeleeFirstPersonResolution, MvpMeleeReceipt, SourceMeleeFamily,
+        };
+
+        let interner = StringInterner::new();
+        let plugin = interner.intern("FalloutNV.esm");
+        let world_model = interner.intern("Weapons\\Hatchet\\Hatchet.nif");
+        let first_person_model = interner.intern("Weapons\\Hatchet\\1stPersonHatchet.nif");
+        let admitted = MvpMeleeReceipt {
+            source_form_key: crate::ids::FormKey {
+                local: 0x11_A8E4,
+                plugin,
+            },
+            source_family: Some(SourceMeleeFamily::Fnv),
+            disposition: MvpMeleeDisposition::Admitted,
+            policy: BULK_MELEE_V1_POLICY,
+            target_profile: Some(Fo4MeleeTargetProfile::MacheteOneHand),
+            world_model: Some(world_model),
+            first_person_model: Some(first_person_model),
+            first_person_resolution: MvpMeleeFirstPersonResolution::WnamStat,
+            drops: vec![MeleeLoweringReason::LegacyWeaponMods],
+        };
+        let ranged = MvpMeleeReceipt {
+            source_form_key: crate::ids::FormKey {
+                local: 0x00_0434,
+                plugin,
+            },
+            source_family: Some(SourceMeleeFamily::Fnv),
+            disposition: MvpMeleeDisposition::Rejected(MeleeRejectionReason::RangedAnimation(3)),
+            policy: BULK_MELEE_V1_POLICY,
+            target_profile: None,
+            world_model: None,
+            first_person_model: None,
+            first_person_resolution: MvpMeleeFirstPersonResolution::None,
+            drops: Vec::new(),
+        };
+
+        let admitted_row = bulk_melee_weapon_metadata_from_receipt(
+            (
+                "11A8E4@FalloutNV.esm".into(),
+                "Hatchet".into(),
+                "Weapons\\Hatchet\\Hatchet.nif".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+                "melee".into(),
+                "no_ammo_field".into(),
+                "1".into(),
+            ),
+            &admitted,
+            &interner,
+        );
+        let ranged_row = bulk_melee_weapon_metadata_from_receipt(
+            (
+                "000434@FalloutNV.esm".into(),
+                "10mmPistol".into(),
+                "Weapons\\10mmPistol\\10mmPistol.nif".into(),
+                String::new(),
+                String::new(),
+                String::new(),
+                "gun".into(),
+                "unknown".into(),
+                "3".into(),
+            ),
+            &ranged,
+            &interner,
+        );
+        let rows = [&admitted_row, &ranged_row];
+
+        assert_eq!(
+            rows.iter().filter(|row| row.status == "admitted").count(),
+            1
+        );
+        assert_eq!(
+            rows.iter().filter(|row| row.status == "rejected").count(),
+            1
+        );
+        assert_eq!(admitted_row.policy, "bulk_melee_v1");
+        assert_eq!(admitted_row.target_profile, "machete_one_hand");
+        assert_eq!(admitted_row.source_family, "fnv");
+        assert_eq!(admitted_row.world_model, "Weapons\\Hatchet\\Hatchet.nif");
+        assert_eq!(
+            admitted_row.first_person_model,
+            "Weapons\\Hatchet\\1stPersonHatchet.nif"
+        );
+        assert_eq!(admitted_row.first_person_resolution, "wnam_stat");
+        assert_eq!(admitted_row.lowering_drops, ["legacy_weapon_mods"]);
+        assert!(admitted_row.rejection_reason.is_empty());
+        assert_eq!(ranged_row.legacy.6, "gun");
+        assert_eq!(ranged_row.status, "rejected");
+        assert_eq!(ranged_row.rejection_reason, "ranged_animation");
+        assert!(ranged_row.target_profile.is_empty());
+    }
+
+    #[test]
+    fn fnv_weapon_numeric_animation_types_keep_ranged_values_out_of_melee() {
+        for animation_type in ["0", "1", "2", "Hand to Hand", "Melee (1 Hand)"] {
+            assert_eq!(
+                classify_weapon_role(animation_type, Game::Fnv),
+                "melee",
+                "{animation_type}"
+            );
+        }
+        for animation_type in ["3", "6", "Pistol - Ballistic (1 Hand)"] {
+            assert_eq!(
+                classify_weapon_role(animation_type, Game::Fnv),
+                "gun",
+                "{animation_type}"
+            );
+        }
+    }
+
+    fn raw_weapon_metadata(source_game: Game, dnam: Vec<u8>) -> (String, String) {
+        let interner = StringInterner::new();
+        let mut record = Record::new(
+            SigCode::from_str("WEAP").unwrap(),
+            crate::ids::FormKey {
+                local: 0x11_A8E4,
+                plugin: interner.intern("FalloutNV.esm"),
+            },
+        );
+        record.fields.push(crate::record::FieldEntry {
+            sig: crate::ids::SubrecordSig(*b"DNAM"),
+            value: FieldValue::Bytes(dnam.into()),
+        });
+        let metadata = weapon_metadata_from_record(
+            "11A8E4@FalloutNV.esm".to_string(),
+            &record,
+            &interner,
+            source_game,
+        );
+        (metadata.6, metadata.8)
+    }
+
+    fn raw_fnv_hatchet_dnam() -> Vec<u8> {
+        let mut dnam = vec![0_u8; FNV_WEAP_DNAM_SIZE];
+        dnam[0..4].copy_from_slice(&1_u32.to_le_bytes());
+        dnam[4..8].copy_from_slice(&1.0_f32.to_le_bytes());
+        dnam[8..12].copy_from_slice(&0.7_f32.to_le_bytes());
+        dnam[13] = 255;
+        dnam[14] = 1;
+        dnam[40] = 12;
+        dnam[41] = 255;
+        dnam[42] = 1;
+        dnam[44..48].copy_from_slice(&500.0_f32.to_le_bytes());
+        dnam[48..52].copy_from_slice(&2000.0_f32.to_le_bytes());
+        dnam[52..56].copy_from_slice(&1_u32.to_le_bytes());
+        dnam[56..60].copy_from_slice(&10_u32.to_le_bytes());
+        dnam[60..64].copy_from_slice(&1.1_f32.to_le_bytes());
+        dnam[68..72].copy_from_slice(&22.0_f32.to_le_bytes());
+        dnam[88..92].copy_from_slice(&2.538_461_2_f32.to_le_bytes());
+        dnam[104..108].copy_from_slice(&38_i32.to_le_bytes());
+        dnam[116..120].copy_from_slice(&1.5_f32.to_le_bytes());
+        dnam[120..124].copy_from_slice(&(-1_i32).to_le_bytes());
+        dnam[164..168].copy_from_slice(&99_u32.to_le_bytes());
+        dnam[168..172].copy_from_slice(&2_u32.to_le_bytes());
+        dnam[200..204].copy_from_slice(&25_u32.to_le_bytes());
+        dnam
+    }
+
+    #[test]
+    fn fnv_weapon_metadata_reads_animation_type_from_raw_204_byte_dnam() {
+        assert_eq!(
+            raw_weapon_metadata(Game::Fnv, raw_fnv_hatchet_dnam()),
+            ("melee".to_string(), "1".to_string())
+        );
+    }
+
+    #[test]
+    fn skyrim_weapon_metadata_reads_animation_type_from_raw_100_byte_dnam() {
+        let mut dnam = vec![0_u8; SKYRIM_WEAP_DNAM_SIZE];
+        dnam[0] = 6;
+
+        assert_eq!(
+            raw_weapon_metadata(Game::SkyrimSe, dnam),
+            ("melee".to_string(), "6".to_string())
+        );
+    }
+
+    #[test]
+    fn raw_weapon_metadata_rejects_wrong_layout_and_unknown_values() {
+        let mut unknown_fnv = raw_fnv_hatchet_dnam();
+        unknown_fnv[0..4].copy_from_slice(&14_u32.to_le_bytes());
+        assert_eq!(
+            raw_weapon_metadata(Game::Fnv, unknown_fnv),
+            (String::new(), String::new())
+        );
+        assert_eq!(
+            raw_weapon_metadata(Game::Fnv, vec![1, 0, 0]),
+            (String::new(), String::new())
+        );
+
+        let mut unknown_skyrim = vec![0_u8; SKYRIM_WEAP_DNAM_SIZE];
+        unknown_skyrim[0] = 10;
+        assert_eq!(
+            raw_weapon_metadata(Game::SkyrimSe, unknown_skyrim),
+            (String::new(), String::new())
+        );
+
+        let mut fo3 = vec![0_u8; FO3_WEAP_DNAM_SIZE];
+        fo3[0..4].copy_from_slice(&2_u32.to_le_bytes());
+        assert_eq!(
+            raw_weapon_metadata(Game::Fo3, fo3),
+            ("melee".to_string(), "2".to_string())
+        );
     }
 }

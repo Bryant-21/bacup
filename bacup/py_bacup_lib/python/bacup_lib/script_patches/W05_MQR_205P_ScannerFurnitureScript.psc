@@ -1,5 +1,3 @@
-; TODO
-
 Event OnActivate(ObjectReference akActionRef)
     If Gail == None || akActionRef != Gail.GetReference()
         Return

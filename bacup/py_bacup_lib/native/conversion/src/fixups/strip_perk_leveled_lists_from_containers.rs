@@ -1,25 +1,16 @@
 //! Fixup: strip perk-gated leveled lists (`LL_Perk_*`) from CONT inventories.
 //!
-//! # Why
-//! FO76 gates container loot behind perk-conditional leveled lists. The
-//! WhiteSpring trash can (`0711CEED`) carries a `CNTO` entry pointing at
-//! `LL_Perk_CanDo` (`0759DD1D`), an `UseAll` list of five reward items. In FO76
-//! that LVLI is only realized when the player owns the "Can Do" perk
-//! (`00346E0A`) — the leveled-list entries carry perk conditions. FO4 leveled
-//! lists cannot condition on a perk, so every `UseAll` entry drops into the
-//! container unconditionally and containers end up stuffed with perk-reward
-//! items. Bethesda's own FO4 equivalent (Scrounger etc.) drives this through a
-//! Papyrus quest (`0004A09E`), never through container leveled lists.
+//! FO76 gates container loot behind perk-conditional leveled lists: the WhiteSpring
+//! trash can (`0711CEED`) has a `CNTO` for `LL_Perk_CanDo` (`0759DD1D`), a `UseAll`
+//! list of five rewards whose entries require the "Can Do" perk (`00346E0A`). FO4
+//! leveled lists can't condition on a perk, so every entry drops into the container
+//! unconditionally. FO4's own equivalent (Scrounger etc.) uses a Papyrus quest
+//! (`0004A09E`), never container leveled lists.
 //!
-//! # What
-//! Drop any CONT `CNTO` entry whose item is an `LL_Perk_*` leveled list owned by
-//! the output plugin, keeping the `COCT` item count in lockstep (paired-array
-//! rule — a stale `COCT` hard-CTDs FO4 on cell load). The LVLI records
-//! themselves are left in place; they simply lose their container references.
-//!
-//! Scope is CONT only: the reported symptom is over-stuffed containers. NPC_
-//! inventories use the same `CNTO`/`COCT` shape, so extending to NPC_ is a
-//! one-line change to `CONTAINER_SIGS` if perk lists turn up in NPC loot.
+//! CONT `CNTO` entries naming an output-owned `LL_Perk_*` list are dropped, with
+//! `COCT` kept in lockstep (a stale `COCT` hard-CTDs FO4 on cell load). The LVLIs
+//! stay. NPC_ inventories share the `CNTO`/`COCT` shape; add NPC_ to
+//! `CONTAINER_SIGS` if perk lists turn up in NPC loot.
 
 use rustc_hash::FxHashSet;
 

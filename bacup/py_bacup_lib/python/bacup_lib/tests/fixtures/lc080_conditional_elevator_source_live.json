@@ -1,0 +1,99 @@
+{
+  "cell": {
+    "object_id": "1294F4",
+    "source_child_count": 16335,
+    "live_child_count": 16335,
+    "source_group_types": {
+      "2A3ED6": 9,
+      "2A3ED7": 9,
+      "286697": 8,
+      "286699": 8,
+      "2A793A": 8,
+      "2A793B": 8,
+      "2A793C": 8,
+      "2A793D": 8,
+      "2A793E": 8,
+      "2A793F": 8,
+      "2A7940": 8,
+      "2A7941": 8
+    },
+    "live_group_types": {
+      "2A3ED6": 9,
+      "2A3ED7": 9,
+      "286697": 8,
+      "286699": 8,
+      "2A793A": 8,
+      "2A793B": 8,
+      "2A793C": 8,
+      "2A793D": 8,
+      "2A793E": 8,
+      "2A793F": 8,
+      "2A7940": 8,
+      "2A7941": 8
+    }
+  },
+  "source_carriers": {
+    "2A3ED6": {
+      "base_plugin": "SeventySix.esm",
+      "base": "13C380",
+      "quest": "0293A3",
+      "marker": "286697",
+      "exam_door": "2A793E",
+      "foyer_door": "2A793F"
+    },
+    "2A3ED7": {
+      "base_plugin": "SeventySix.esm",
+      "base": "13C380",
+      "quest": "0293A3",
+      "marker": "286699",
+      "exam_door": "2A7940",
+      "foyer_door": "2A7941"
+    }
+  },
+  "live_carriers": {
+    "2A3ED6": {
+      "base_plugin": "Fallout4.esm",
+      "base": "13C380",
+      "quest": "0293A3",
+      "marker": "286697",
+      "exam_door": "2A793E",
+      "foyer_door": "2A793F"
+    },
+    "2A3ED7": {
+      "base_plugin": "Fallout4.esm",
+      "base": "13C380",
+      "quest": "0293A3",
+      "marker": "286699",
+      "exam_door": "2A7940",
+      "foyer_door": "2A7941"
+    }
+  },
+  "source_teleport_pairs": {
+    "2A793A": "2A793E",
+    "2A793B": "2A7940",
+    "2A793C": "2A793F",
+    "2A793D": "2A7941",
+    "2A793E": "2A793A",
+    "2A793F": "2A793C",
+    "2A7940": "2A793B",
+    "2A7941": "2A793D"
+  },
+  "live_teleport_pairs": {
+    "2A793A": "2A793E",
+    "2A793B": "2A7940",
+    "2A793C": "2A793F",
+    "2A793D": "2A7941",
+    "2A793E": "2A793A",
+    "2A793F": "2A793C",
+    "2A7940": "2A793B",
+    "2A7941": "2A793D"
+  },
+  "exam_marker_z": {
+    "286697": -48.0,
+    "286699": -48.0
+  },
+  "foyer_destination_z": {
+    "2A793F": -304.001953125,
+    "2A7941": -304.001953125
+  }
+}

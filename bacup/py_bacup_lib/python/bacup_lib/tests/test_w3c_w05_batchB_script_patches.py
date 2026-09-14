@@ -18,12 +18,10 @@ from bacup_lib.tests.test_terminal_fragment_script_patches import _fo4_base_sour
 REPO_ROOT = Path(__file__).resolve().parents[5]
 DEPLOYED_SCRIPTS_ROOT = REPO_ROOT / "mods" / "SeventySix" / "data" / "Scripts"
 
-# contracts/w3c-w05-batchB.md -- the 11 rows the coordinator's ADJUDICATION
-# FINAL approved for authoring this wave. All 11 are top-level scripts (no
-# Fragments: prefix), so they deploy directly under data/Scripts/, not under
-# a fragments/ subfolder. Rows 1, 7, 12, 13, 16, 18 are not patched here
-# (evidence-blocked / OPEN / non-defect -- see the contract); row 4 and 19
-# are non-defect and ship no patch either.
+# contracts/w3c-w05-batchB.md: the 11 patched rows. All are top-level scripts (no
+# Fragments: prefix), so they deploy directly under data/Scripts/, not a
+# fragments/ subfolder. Rows 1, 7, 12, 13, 16, 18 (evidence-blocked / open /
+# non-defect) and rows 4 and 19 (non-defect) ship no patch.
 PATCH_CASES: dict[str, dict[str, set[str] | tuple[str, ...]]] = {
     "W05_001P_Wayward_QuestScript": {
         "members": {"onstageset", "ontimer"},
@@ -172,14 +170,11 @@ def test_batchB_production_merge_native_compiles_for_fo4(base_name: str):
 
 
 def test_wayward_failsafe_anchors_on_scripted_kill_shot_not_instance_load():
-    # Contract row 2, coordinator ADJUDICATION FINAL (ratified over this
-    # shard's own first-pass 460 anchor): 450 "Have Mort shoot Batter in the
-    # face" is a scripted lethal action -- death is already the imminent
-    # expected outcome there, satisfying the decision rule even though 460/520
-    # (the hit/combat family) was the provisionally-guessed anchor. 102
-    # (bare OnHit-registration note) and 520 (open-ended player-driven fight,
-    # where forcing the kill mid-combat risks a worse defect than the one
-    # being fixed) are both rejected anchors.
+    # Contract row 2: stage 450 "Have Mort shoot Batter in the face" is a scripted
+    # lethal action, so death is already the expected outcome there. Rejected
+    # anchors: 460 (hit/combat family), 102 (bare OnHit-registration note), and 520
+    # (open-ended player fight, where forcing the kill mid-combat risks a worse
+    # defect than the one being fixed).
     patch = _script_patch_source("W05_001P_Wayward_QuestScript")
     assert patch is not None
     assert "auiStageID == 450" in patch
@@ -206,6 +201,8 @@ def test_addobjecttocollection_defines_shared_populate_helper_for_both_triggers(
     assert patch is not None
     members = _member_names(patch)
     assert {"onlocationchange", "onplayerloadgame", "populatekeycollection"} <= members
+    assert "Event OnLocationChange(Location akOldLoc, Location akNewLoc)" in patch
+    assert "Event OnPlayerLoadGame()" in patch
 
     onlocationchange_start, onlocationchange_end = next(
         (start, end)
@@ -232,6 +229,7 @@ def test_wakeup_enemies_targets_player_not_enemycollection():
     # unreferenced (dormant-disclosed) in the shipped body.
     patch = _script_patch_source("W05_003P_WakeUpEnemiesRefCollScript")
     assert patch is not None
+    assert "Event OnTriggerEnter(ObjectReference akActionRef)" in patch
     assert "Game.GetPlayer().AddToFaction(EnemyFaction)" in patch
     assert "EnemyCollection" not in patch
 

@@ -1,8 +1,8 @@
-Event OnLocationChange(ObjectReference akSenderRef, Location akOldLoc, Location akNewLoc)
+Event OnLocationChange(Location akOldLoc, Location akNewLoc)
     PopulateKeyCollection()
 EndEvent
 
-Event OnPlayerLoadGame(ObjectReference akSenderRef)
+Event OnPlayerLoadGame()
     PopulateKeyCollection()
 EndEvent
 

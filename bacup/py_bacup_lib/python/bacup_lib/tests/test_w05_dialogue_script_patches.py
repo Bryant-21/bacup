@@ -57,13 +57,11 @@ def _member_names(source: str) -> set[str]:
     }
 
 
-# 35 of the shard's 48 TIF_W05_Dialogue_* rows are repaired here (Fragment_End
-# confirmed live-bound in the converted plugin). The other 13 are non-defect:
-# dev-time load-slot-01 authoring residue with zero bindings in both the live
-# plugin and the FO76 source ESM (family01_probe.json), independently
-# re-verified per-worksheet — see
-# bacup/docs/stub_restoration/contracts/w3-w05-dialogue.md Section A.7. Those
-# 13 ship no patch: dontrelle_01000fc7_1, dontrelle_01000fd9_1,
+# 35 of the 48 TIF_W05_Dialogue_* rows are repaired here (Fragment_End live-bound
+# in the converted plugin). The other 13 are non-defect load-slot-01 authoring
+# residue with zero bindings in both the live plugin and the FO76 source ESM
+# (bacup/docs/stub_restoration/contracts/w3-w05-dialogue.md) and ship no patch:
+# dontrelle_01000fc7_1, dontrelle_01000fd9_1,
 # dontrelle_01000fe0_1, dontrelle_01000fe0_2, dontrelleha_01000fc7,
 # dontrelleha_01000fd9, dontrelleha_01000fe0, gilberthops_01000972,
 # gilberthops_01000975, gilberthops_01000978, gilberthops_0100097b,
@@ -246,21 +244,22 @@ QUEST_SCRIPT_MEMBERS: dict[str, set[str]] = {
 DAVENPORT_BASE_NAME = "TIF_W05_DialogueDavenport_0056F021"
 DAVENPORT_EXPECTED_SNIPPETS = (
     "Actor playerRef = Game.GetPlayer()",
-    "playerRef == None || W05_LookingForCameraAV == None",
+    "playerRef == None || W05_LookingForCameraAV == None || P01C_Bucket == None",
     "playerRef.GetValue(W05_LookingForCameraAV) != 0.0",
-    "P01C_Bucket != None && !P01C_Bucket.IsRunning() && !P01C_Bucket.IsCompleted()",
-    "P01C_Bucket.Start()",
+    'Game.GetFormFromFile(0x004845B4, "SeventySix.esm") as Keyword',
+    "bucketStartKeyword.SendStoryEventAndWait(None, playerRef, playerRef)",
+    "!P01C_Bucket.IsRunning() && !P01C_Bucket.IsCompleted()",
     "playerRef.SetValue(W05_LookingForCameraAV, 1.0)",
-    "P01C_BucketMisc_StartQuestKeyword != None",
+    "P01C_Bucket.IsRunning() && P01C_BucketMisc_StartQuestKeyword != None",
     "P01C_BucketMisc_StartQuestKeyword.SendStoryEvent(None, playerRef, playerRef)",
 )
 
-# --- Folded from the former dialogueradicals shard (single fragment_end) ------
-# Only TIF_W05_DialogueRadicals_00411F61 is patched in this shard. The other 4
-# rows (0040FA8F/0040FA90/0040FA93: non-defect, carrier record absent from
-# both the live FO4 plugin and the current FO76 source ESM; Ext_005895B2:
-# evidence-blocked, zero surviving property/variable literal) ship no patch —
-# see bacup/docs/stub_restoration/contracts/w3-w05-dialogueradicals.md.
+# --- DialogueRadicals (single fragment_end) -----------------------------------
+# Only TIF_W05_DialogueRadicals_00411F61 is patched. The other 4 rows ship no
+# patch: 0040FA8F/0040FA90/0040FA93 are non-defect (carrier record absent from
+# both the live FO4 plugin and the FO76 source ESM), and Ext_005895B2 is
+# evidence-blocked (no surviving property/variable literal). See
+# bacup/docs/stub_restoration/contracts/w3-w05-dialogueradicals.md.
 RADICALS_TOPICINFO_PATCH_CASES: dict[str, tuple[str, ...]] = {
     "TIF_W05_DialogueRadicals_00411F61": (
         "Actor playerRef = Game.GetPlayer()",
@@ -273,12 +272,11 @@ RADICALS_TOPICINFO_PATCH_CASES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# --- Folded from the former dialogueraiderscrate shard (7 Lou cooldown rows) --
-# All 7 rows are random-flavor variants of the same Fragment_End: cooldown-gated
-# repeatable-reward grant. Cooldown GlobalVariable value (1440.0) cross-validated
-# against the independent Johnny_00585551-557 archetype (identical value, identical
-# TimeStamp-AV Description) -- see contracts/w3a-raiders.md Section A and "Binding
-# conditions" resolution 1. All 7 share an identical body.
+# --- DialogueRaidersCrate (7 Lou cooldown rows) --------------------------------
+# All 7 rows are random-flavor variants sharing one Fragment_End body: a
+# cooldown-gated repeatable-reward grant. The 1440.0 cooldown GlobalVariable
+# matches the independent Johnny_00585551-557 archetype (same value, same
+# TimeStamp-AV Description); see contracts/w3a-raiders.md.
 RAIDERSCRATE_TOPICINFO_PATCH_CASES: dict[str, tuple[str, ...]] = {
     name: (
         "W05_MQR_LouRepeatableRewardCooldown.GetValue() / 1440.0",
@@ -297,13 +295,12 @@ RAIDERSCRATE_TOPICINFO_PATCH_CASES: dict[str, tuple[str, ...]] = {
     )
 }
 
-# --- Folded from the former dialogueraidersgener shard (2 GenericIntroLines) --
+# --- DialogueRaidersGener (2 GenericIntroLines) --------------------------------
 # Both rows share W05_Raiders_GenericIntroLines, a once/boolean AV ("...to make
-# sure they only fire off once per player" -- AV 42A0D2 Description). Ruling
-# matches the already-shipped Settlers-faction sibling for the identical
-# *_GenericIntroLines pattern (TIF_W05_DialogueSettlers_Fou_0058FE03.psc):
-# akSpeakerRef.SetValue(AV, 1.0), not an increment -- see
-# contracts/w3a-raiders.md Section C and "Binding conditions" resolution 4.
+# sure they only fire off once per player" -- AV 42A0D2 Description). Like the
+# Settlers sibling with the same *_GenericIntroLines pattern
+# (TIF_W05_DialogueSettlers_Fou_0058FE03.psc), the patch is
+# akSpeakerRef.SetValue(AV, 1.0), not an increment; see contracts/w3a-raiders.md.
 RAIDERSGENER_TOPICINFO_PATCH_CASES: dict[str, tuple[str, ...]] = {
     "TIF_W05_DialogueRaidersGener_0042A0A0": (
         "akSpeakerRef == None",
@@ -403,11 +400,10 @@ def test_johnny_repeatable_reward_first_use_and_cooldown_guard():
     # The GlobalVariable cooldown property itself is None-guarded before any
     # .GetValue() call is made on it.
     assert "W05_MQR_JohnnyRepeatablerewardCooldown == None" in patch
-    # Cross-shard cooldown-formula alignment (w3a-raiders corroboration, two
-    # independently-authored Johnny families both carry a 1440.0 GLOB and an
-    # identical timestamp-AV description): the raw GLOB value is
-    # game-minutes-per-day, so it must be divided by 1440.0 to compare
-    # against Utility.GetCurrentGameTime()'s game-days unit.
+    # The raw GLOB value is game-minutes per day (both independently authored
+    # Johnny families carry 1440.0 and the same timestamp-AV description), so it
+    # is divided by 1440.0 to compare against Utility.GetCurrentGameTime()'s
+    # game-days unit.
     assert "W05_MQR_JohnnyRepeatablerewardCooldown.GetValue() / 1440.0" in patch
 
 

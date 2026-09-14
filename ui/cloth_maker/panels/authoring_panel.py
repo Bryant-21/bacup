@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 from imgui_bundle import imgui
 
+from creation_lib.ui.widgets.modern import expandable_section
+
 if TYPE_CHECKING:
     from ui.cloth_maker.cloth_maker_app import ClothMakerApp
 
@@ -310,38 +312,38 @@ class AuthoringPanel:
 
         # --- Add new capsule ---
         imgui.spacing()
-        if imgui.tree_node_ex("Add Capsule##auth"):
-            _, self._add_capsule_bone = imgui.input_text(
-                "Bone Name##add_cap", self._add_capsule_bone, 64,
-            )
-            _, self._add_capsule_radius = imgui.slider_float(
-                "Radius##add_cap", self._add_capsule_radius, 0.5, 30.0, "%.1f",
-            )
+        with expandable_section("Add Capsule##auth") as expanded:
+            if expanded:
+                _, self._add_capsule_bone = imgui.input_text(
+                    "Bone Name##add_cap", self._add_capsule_bone, 64,
+                )
+                _, self._add_capsule_radius = imgui.slider_float(
+                    "Radius##add_cap", self._add_capsule_radius, 0.5, 30.0, "%.1f",
+                )
 
-            _, self._add_capsule_start[0] = imgui.slider_float(
-                "Start X##add_cap", self._add_capsule_start[0], -200.0, 200.0, "%.1f",
-            )
-            _, self._add_capsule_start[1] = imgui.slider_float(
-                "Start Y##add_cap", self._add_capsule_start[1], -200.0, 200.0, "%.1f",
-            )
-            _, self._add_capsule_start[2] = imgui.slider_float(
-                "Start Z##add_cap", self._add_capsule_start[2], -200.0, 200.0, "%.1f",
-            )
+                _, self._add_capsule_start[0] = imgui.slider_float(
+                    "Start X##add_cap", self._add_capsule_start[0], -200.0, 200.0, "%.1f",
+                )
+                _, self._add_capsule_start[1] = imgui.slider_float(
+                    "Start Y##add_cap", self._add_capsule_start[1], -200.0, 200.0, "%.1f",
+                )
+                _, self._add_capsule_start[2] = imgui.slider_float(
+                    "Start Z##add_cap", self._add_capsule_start[2], -200.0, 200.0, "%.1f",
+                )
 
-            _, self._add_capsule_end[0] = imgui.slider_float(
-                "End X##add_cap", self._add_capsule_end[0], -200.0, 200.0, "%.1f",
-            )
-            _, self._add_capsule_end[1] = imgui.slider_float(
-                "End Y##add_cap", self._add_capsule_end[1], -200.0, 200.0, "%.1f",
-            )
-            _, self._add_capsule_end[2] = imgui.slider_float(
-                "End Z##add_cap", self._add_capsule_end[2], -200.0, 200.0, "%.1f",
-            )
+                _, self._add_capsule_end[0] = imgui.slider_float(
+                    "End X##add_cap", self._add_capsule_end[0], -200.0, 200.0, "%.1f",
+                )
+                _, self._add_capsule_end[1] = imgui.slider_float(
+                    "End Y##add_cap", self._add_capsule_end[1], -200.0, 200.0, "%.1f",
+                )
+                _, self._add_capsule_end[2] = imgui.slider_float(
+                    "End Z##add_cap", self._add_capsule_end[2], -200.0, 200.0, "%.1f",
+                )
 
-            if imgui.button("Add Capsule##auth_add", imgui.ImVec2(-1, 0)):
-                self._add_capsule()
+                if imgui.button("Add Capsule##auth_add", imgui.ImVec2(-1, 0)):
+                    self._add_capsule()
 
-            imgui.tree_pop()
 
     # ------------------------------------------------------------------
     # Per-vertex painting brush

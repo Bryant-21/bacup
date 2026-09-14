@@ -32,3 +32,10 @@ def test_normalize_asset_source_path_strips_windows_fo76_build_root():
 
 def test_normalize_asset_source_path_preserves_valid_relative_asset_path():
     assert normalize_asset_source_path("Meshes/Foo/Bar.nif") == "Meshes/Foo/Bar.nif"
+
+
+def test_normalize_asset_source_path_trims_component_whitespace():
+    assert (
+        normalize_asset_source_path("DLC05/Effects/ DLC05MZRmGenerator01_d.NIF")
+        == "DLC05/Effects/DLC05MZRmGenerator01_d.NIF"
+    )

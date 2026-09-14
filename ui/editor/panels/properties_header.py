@@ -17,6 +17,8 @@ from typing import Any
 
 from imgui_bundle import imgui
 
+from creation_lib.ui.widgets.modern import expandable_section
+
 from creation_lib.nif.actions import NifAction, OperationResult
 
 _log = logging.getLogger("nif_editor.properties_header")
@@ -277,47 +279,52 @@ def _draw_bto_btr_diagnostics(nif, file_path: str) -> None:
     else:
         imgui.text("Unread remainder bytes: 0")
 
-    if diagnostics["shape_lines"] and imgui.tree_node(
-        f"LOD Shape Readout [{len(diagnostics['shape_lines'])}]"
-    ):
-        _draw_lines_child("lod_shape_readout", diagnostics["shape_lines"], 180)
-        imgui.tree_pop()
+    if diagnostics["shape_lines"]:
+        with expandable_section(
+            f"LOD Shape Readout [{len(diagnostics['shape_lines'])}]"
+        ) as expanded:
+            if expanded:
+                _draw_lines_child("lod_shape_readout", diagnostics["shape_lines"], 180)
 
-    if diagnostics["texture_paths"] and imgui.tree_node(
-        f"Texture Paths [{len(diagnostics['texture_paths'])}]"
-    ):
-        _draw_lines_child("lod_texture_paths", diagnostics["texture_paths"], 160)
-        imgui.tree_pop()
+    if diagnostics["texture_paths"]:
+        with expandable_section(
+            f"Texture Paths [{len(diagnostics['texture_paths'])}]"
+        ) as expanded:
+            if expanded:
+                _draw_lines_child("lod_texture_paths", diagnostics["texture_paths"], 160)
 
-    if diagnostics["block_type_counts"] and imgui.tree_node(
-        f"Block Type Counts [{len(diagnostics['block_type_counts'])}]"
-    ):
-        lines = [
-            f"{type_name}: {count}"
-            for type_name, count in diagnostics["block_type_counts"]
-        ]
-        _draw_lines_child("lod_block_type_counts", lines, 160)
-        imgui.tree_pop()
+    if diagnostics["block_type_counts"]:
+        with expandable_section(
+            f"Block Type Counts [{len(diagnostics['block_type_counts'])}]"
+        ) as expanded:
+            if expanded:
+                lines = [
+                    f"{type_name}: {count}"
+                    for type_name, count in diagnostics["block_type_counts"]
+                ]
+                _draw_lines_child("lod_block_type_counts", lines, 160)
 
-    if diagnostics["fields_by_type"] and imgui.tree_node(
-        f"Unique Read Fields by Block Type [{len(diagnostics['fields_by_type'])}]"
-    ):
-        lines = [
-            f"{type_name}: {', '.join(fields)}"
-            for type_name, fields in diagnostics["fields_by_type"]
-        ]
-        _draw_lines_child("lod_unique_read_fields", lines, 260)
-        imgui.tree_pop()
+    if diagnostics["fields_by_type"]:
+        with expandable_section(
+            f"Unique Read Fields by Block Type [{len(diagnostics['fields_by_type'])}]"
+        ) as expanded:
+            if expanded:
+                lines = [
+                    f"{type_name}: {', '.join(fields)}"
+                    for type_name, fields in diagnostics["fields_by_type"]
+                ]
+                _draw_lines_child("lod_unique_read_fields", lines, 260)
 
-    if diagnostics["remainders"] and imgui.tree_node(
-        f"Unread Remainders [{len(diagnostics['remainders'])}]"
-    ):
-        lines = [
-            f"[{item['block_id']}] {item['type']}: {item['bytes']} bytes"
-            for item in diagnostics["remainders"]
-        ]
-        _draw_lines_child("lod_unread_remainders", lines, 140)
-        imgui.tree_pop()
+    if diagnostics["remainders"]:
+        with expandable_section(
+            f"Unread Remainders [{len(diagnostics['remainders'])}]"
+        ) as expanded:
+            if expanded:
+                lines = [
+                    f"[{item['block_id']}] {item['type']}: {item['bytes']} bytes"
+                    for item in diagnostics["remainders"]
+                ]
+                _draw_lines_child("lod_unread_remainders", lines, 140)
 
 
 def draw_header_props(app, nif_id: str) -> None:
@@ -355,42 +362,42 @@ def draw_header_props(app, nif_id: str) -> None:
                                  old_value=h.creator, new_value=new_creator),
         )
 
-    if imgui.tree_node(f"Export Info [{len(h.export_info)}]"):
-        remove_idx: int | None = None
-        for i, line in enumerate(h.export_info):
-            imgui.push_id(f"export_info_{i}")
-            changed_i, new_line = imgui.input_text(f"[{i}]", line or "")
-            if changed_i:
+    with expandable_section(f"Export Info [{len(h.export_info)}]") as expanded:
+        if expanded:
+            remove_idx: int | None = None
+            for i, line in enumerate(h.export_info):
+                imgui.push_id(f"export_info_{i}")
+                changed_i, new_line = imgui.input_text(f"[{i}]", line or "")
+                if changed_i:
+                    new_list = list(h.export_info)
+                    new_list[i] = new_line
+                    _push_header_action(
+                        app, nif_id,
+                        SetHeaderFieldAction(field_name="export_info",
+                                             old_value=h.export_info,
+                                             new_value=new_list),
+                    )
+                imgui.same_line()
+                if imgui.small_button("X"):
+                    remove_idx = i
+                imgui.pop_id()
+            if remove_idx is not None:
                 new_list = list(h.export_info)
-                new_list[i] = new_line
+                del new_list[remove_idx]
                 _push_header_action(
                     app, nif_id,
                     SetHeaderFieldAction(field_name="export_info",
                                          old_value=h.export_info,
                                          new_value=new_list),
                 )
-            imgui.same_line()
-            if imgui.small_button("X"):
-                remove_idx = i
-            imgui.pop_id()
-        if remove_idx is not None:
-            new_list = list(h.export_info)
-            del new_list[remove_idx]
-            _push_header_action(
-                app, nif_id,
-                SetHeaderFieldAction(field_name="export_info",
-                                     old_value=h.export_info,
-                                     new_value=new_list),
-            )
-        if imgui.small_button("+ Add line"):
-            new_list = list(h.export_info) + [""]
-            _push_header_action(
-                app, nif_id,
-                SetHeaderFieldAction(field_name="export_info",
-                                     old_value=h.export_info,
-                                     new_value=new_list),
-            )
-        imgui.tree_pop()
+            if imgui.small_button("+ Add line"):
+                new_list = list(h.export_info) + [""]
+                _push_header_action(
+                    app, nif_id,
+                    SetHeaderFieldAction(field_name="export_info",
+                                         old_value=h.export_info,
+                                         new_value=new_list),
+                )
 
     # Read-only info
     imgui.separator()
@@ -421,24 +428,26 @@ def draw_header_props(app, nif_id: str) -> None:
 
     _draw_bto_btr_diagnostics(nif, session.file_path)
 
-    if h.strings and imgui.tree_node(f"Strings [{len(h.strings)}]"):
-        imgui.begin_child("strings_scroll",
-                          imgui.ImVec2(0, 200),
-                          imgui.ChildFlags_.borders.value)
-        for i, s in enumerate(h.strings):
-            imgui.text(f"[{i}] {s}")
-        imgui.end_child()
-        imgui.tree_pop()
+    if h.strings:
+        with expandable_section(f"Strings [{len(h.strings)}]") as expanded:
+            if expanded:
+                imgui.begin_child("strings_scroll",
+                                  imgui.ImVec2(0, 200),
+                                  imgui.ChildFlags_.borders.value)
+                for i, s in enumerate(h.strings):
+                    imgui.text(f"[{i}] {s}")
+                imgui.end_child()
 
-    if h.block_type_names and imgui.tree_node(
-        f"Block Type Names [{len(h.block_type_names)}]"
-    ):
-        imgui.begin_child("btn_scroll",
-                          imgui.ImVec2(0, 200),
-                          imgui.ChildFlags_.borders.value)
-        for i, name in enumerate(h.block_type_names):
-            imgui.text(f"[{i}] {name}")
-        imgui.end_child()
-        imgui.tree_pop()
+    if h.block_type_names:
+        with expandable_section(
+            f"Block Type Names [{len(h.block_type_names)}]"
+        ) as expanded:
+            if expanded:
+                imgui.begin_child("btn_scroll",
+                                  imgui.ImVec2(0, 200),
+                                  imgui.ChildFlags_.borders.value)
+                for i, name in enumerate(h.block_type_names):
+                    imgui.text(f"[{i}] {name}")
+                imgui.end_child()
 
     imgui.end_child()

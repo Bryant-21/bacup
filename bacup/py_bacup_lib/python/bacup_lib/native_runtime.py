@@ -45,6 +45,9 @@ _FNV_KEYS = (
     "lip_regeneration_needed",
     "vmad_intents",
     "vmad_attached_in_rust",
+    "generated_psc_classes",
+    "voice_manifest",
+    "quest_runtime_components",
 )
 
 
@@ -129,8 +132,85 @@ def _phase_event_from_raw(raw: Any) -> dict[str, Any]:
     raise ValueError(f"unknown phase event kind: {kind!r}")
 
 
+def _weapon_metadata_from_raw(raw: Any) -> dict[str, Any]:
+    if len(raw) not in {9, 18}:
+        raise ValueError(
+            f"weapon metadata raw tuple must contain 9 or 18 fields, got {len(raw)}"
+        )
+    row = {
+        "source_form_key": raw[0],
+        "editor_id": raw[1],
+        "base_model": raw[2],
+        "model_mod1": raw[3],
+        "model_mod2": raw[4],
+        "model_mod3": raw[5],
+        "weapon_role": raw[6],
+        "ammo_decision": raw[7],
+        "anim_type": raw[8],
+    }
+    if len(raw) == 9:
+        return row
+
+    status = raw[9]
+    source_family = raw[12]
+    rejection_reason = raw[17]
+    row.update(
+        {
+            "status": status,
+            "disposition": status,
+            "policy": raw[10],
+            "target_profile": raw[11],
+            "source_family": source_family,
+            "provenance": source_family,
+            "world_model": raw[13],
+            "first_person_model": raw[14],
+            "first_person_resolution": raw[15],
+            "lowering_drops": list(raw[16]),
+            "rejection_reason": rejection_reason,
+            "reason_code": rejection_reason or ("admitted" if status == "admitted" else ""),
+        }
+    )
+    return row
+
+
 def _fnv_result_from_raw(raw: Any) -> dict[str, Any]:
-    result = dict(zip(_FNV_KEYS, raw, strict=True))
+    if len(raw) == len(_FNV_KEYS) - 3:
+        legacy_keys = tuple(
+            key for key in _FNV_KEYS
+            if key
+            not in {
+                "generated_psc_classes",
+                "voice_manifest",
+                "quest_runtime_components",
+            }
+        )
+        result = dict(zip(legacy_keys, raw, strict=True))
+        result["generated_psc_classes"] = []
+        result["voice_manifest"] = {"version": 1, "entries": []}
+        result["quest_runtime_components"] = []
+    elif len(raw) == len(_FNV_KEYS) - 2:
+        legacy_keys = tuple(
+            key
+            for key in _FNV_KEYS
+            if key not in {"voice_manifest", "quest_runtime_components"}
+        )
+        result = dict(zip(legacy_keys, raw, strict=True))
+        result["voice_manifest"] = {"version": 1, "entries": []}
+        result["quest_runtime_components"] = []
+    elif len(raw) == len(_FNV_KEYS) - 1:
+        legacy_keys = tuple(
+            key for key in _FNV_KEYS if key != "quest_runtime_components"
+        )
+        result = dict(zip(legacy_keys, raw, strict=True))
+        result["quest_runtime_components"] = []
+    else:
+        result = dict(zip(_FNV_KEYS, raw, strict=True))
+    if isinstance(result["voice_manifest"], str):
+        result["voice_manifest"] = json.loads(result["voice_manifest"])
+    if isinstance(result["quest_runtime_components"], str):
+        result["quest_runtime_components"] = json.loads(
+            result["quest_runtime_components"]
+        )
     result["vmad_intents"] = [
         {"target_form_key": target_form_key, "script_class_name": script_class_name}
         for target_form_key, script_class_name in result["vmad_intents"]
@@ -146,7 +226,7 @@ class _ConversionNativeProxy:
         return getattr(self._raw, name)
 
     def conversion_diagnose_navmesh_links(
-        self, plugin_path: str, game: str
+        self, plugin_path: str, game: str, workers: int | None = None
     ) -> dict[str, Any]:
         keys = (
             "navmeshes_seen",
@@ -164,13 +244,13 @@ class _ConversionNativeProxy:
             "winding_conflicts",
             "residual_warning_count",
         )
-        return dict(
-            zip(
-                keys,
-                self._raw.conversion_diagnose_navmesh_links(plugin_path, game),
-                strict=True,
-            )
+        args = (plugin_path, game)
+        raw = (
+            self._raw.conversion_diagnose_navmesh_links(*args)
+            if workers is None
+            else self._raw.conversion_diagnose_navmesh_links(*args, workers)
         )
+        return dict(zip(keys, raw, strict=True))
 
     def conversion_merge_sources(self, opts: dict[str, Any]) -> dict[str, Any]:
         return json.loads(self._raw.conversion_merge_sources(_config_json(opts)))
@@ -199,7 +279,15 @@ class _ConversionNativeProxy:
 
     def conversion_pipeline_run(self, plan_json: str) -> dict[str, Any]:
         stages, elapsed_ms, counters = self._raw.conversion_pipeline_run(plan_json)
-        return {"stages": list(stages), "elapsed_ms": elapsed_ms, "counters": dict(counters)}
+        return {
+            "stages": [tuple(row[:5]) for row in stages],
+            "phase_reports": {
+                row[0]: _phase_report_from_raw(row[5])
+                for row in stages if len(row) > 5 and row[5] is not None
+            },
+            "elapsed_ms": elapsed_ms,
+            "counters": dict(counters),
+        }
 
     def conversion_run_sync_cell_regions_from_source(
         self, run_id: int, source_worldspace_editor_id: str, target_worldspace_editor_id: str
@@ -248,6 +336,15 @@ class _ConversionNativeProxy:
             )
         )
 
+    def conversion_run_fnv_reconcile_compiled_scripts(
+        self, run_id: int, compiled_scripts: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        return dict(
+            self._raw.conversion_run_fnv_reconcile_compiled_scripts(
+                run_id, compiled_scripts
+            )
+        )
+
     def conversion_run_form_key_map(self, run_id: int, source_form_keys: list[str]) -> dict[str, str]:
         return dict(self._raw.conversion_run_form_key_map(run_id, source_form_keys))
 
@@ -256,28 +353,8 @@ class _ConversionNativeProxy:
 
     def conversion_run_weapon_metadata(self, run_id: int, source_form_keys: list[str]) -> list[dict[str, Any]]:
         return [
-            {
-                "source_form_key": source_form_key,
-                "editor_id": editor_id,
-                "base_model": base_model,
-                "model_mod1": model_mod1,
-                "model_mod2": model_mod2,
-                "model_mod3": model_mod3,
-                "weapon_role": weapon_role,
-                "ammo_decision": ammo_decision,
-                "anim_type": anim_type,
-            }
-            for (
-                source_form_key,
-                editor_id,
-                base_model,
-                model_mod1,
-                model_mod2,
-                model_mod3,
-                weapon_role,
-                ammo_decision,
-                anim_type,
-            ) in self._raw.conversion_run_weapon_metadata(run_id, source_form_keys)
+            _weapon_metadata_from_raw(row)
+            for row in self._raw.conversion_run_weapon_metadata(run_id, source_form_keys)
         ]
 
     def conversion_run_apply_registry_mappings(self, run_id: int, mappings: dict[str, str]) -> int:

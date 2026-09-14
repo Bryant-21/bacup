@@ -1,5 +1,3 @@
-; TODO
-
 Function Fragment_Stage_0100_Item_00()
     SetObjectiveDisplayed(100)
 EndFunction
@@ -33,4 +31,8 @@ Function Fragment_Stage_9000_Item_00()
     If W05_MQR_204P_QuestStart_Keyword != None
         W05_MQR_204P_QuestStart_Keyword.SendStoryEvent(None, playerRef, playerRef)
     EndIf
+EndFunction
+
+Function Fragment_Stage_9999_Item_00()
+    SetObjectiveFailed(100)
 EndFunction

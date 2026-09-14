@@ -1,23 +1,21 @@
 //! store2::visitor — fused fixup sweeps.
 //!
-//! A `RecordVisitor` adapts one legacy fixup's pure kernel to record-major
-//! execution. `run_sweep` executes an ordered visitor list over the union of
-//! their candidate records in ONE pass: serial per-visitor `applies` +
-//! `gather` (at the sweep's registry position, so indices observe exactly
-//! what each legacy fixup's own gather would have observed), parallel decide
-//! (read-only over `ReadView`, rayon — the same split
-//! `session::map_apply_by_sig` already proves safe), then serial apply in
-//! enumeration order.
+//! A `RecordVisitor` adapts one fixup's pure kernel to record-major execution.
+//! `run_sweep` runs an ordered visitor list over the union of their candidate
+//! records in one pass: serial per-visitor `applies` + `gather` at the sweep's
+//! registry position (so indexes see what the fixup's own gather would), a
+//! parallel read-only decide over `ReadView` (the split
+//! `session::map_apply_by_sig` uses), then serial apply in enumeration order.
 //!
 //! Lanes are homogeneous per sweep:
 //! - `Decoded` visitors mutate the schema-decoded `Record`; apply re-encodes
-//!   via `replace_records_contents` — matching legacy decoded-lane fixups.
+//!   via `replace_records_contents`.
 //! - `RawBytes` visitors emit per-subrecord byte patches; apply goes through
-//!   `patch_all_subrecords_bytes` (no re-encode) — matching legacy raw-lane.
+//!   `patch_all_subrecords_bytes` (no re-encode).
 //!
 //! Within one record, visitors compose in list order on the same in-memory
 //! state (decoded `Record`, or materialized subrecord bytes for the raw
-//! lane), mirroring the legacy fixup-major composition.
+//! lane), matching fixup-major composition.
 
 use std::any::Any;
 use std::sync::Arc;

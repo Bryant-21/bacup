@@ -1,27 +1,13 @@
 //! Fixup: drop or pre-remap non-vanilla RACE records on weapon/armor conversion
 //! roots.
 //!
-
-//!
-//! # What this does
-//! For weapon/armor root conversions (i.e. not NPC_/LVLN), RACE records in the
-//! target plugin that have no FO4 vanilla equivalent (e.g. ScorchedRace,
-//! ZetanInvaderRace) are removed from the target plugin entirely — they cannot
-//! become additive children of any vanilla race.
-//!
-//! RACE records that *do* have a vanilla equivalent (HumanRace, PowerArmorRace,
-//! HumanRaceSubGraphData, etc.) are kept in the target plugin so downstream
-//! passes can read their subgraph fields.  Their source-to-target mapping is
-//! pre-seeded to the vanilla FormKey so all cross-record references resolve to
-//! the vanilla parent instead of the newly-allocated local FK.
-//!
-//! # Guards
-//! - `is_whole_plugin = true` → no-op.
-//! - Creature root type (NPC_/LVLN) → no-op (creatures need full-clone races).
-//!
-//! # Vanilla lookup
-//! Uses `FormKeyMapper::find_vanilla_fk(eid, RACE_SIG)`, which queries the
-//! target-master EID index unconditionally (no `use_base_game_assets` gate).
+//! Weapon/armor roots only (not NPC_/LVLN, not whole-plugin). RACEs with no FO4
+//! vanilla equivalent (ScorchedRace, ZetanInvaderRace) are removed, since they
+//! can't become additive children of a vanilla race. RACEs with one (HumanRace,
+//! PowerArmorRace, HumanRaceSubGraphData) stay for downstream subgraph reads,
+//! with their mapping pre-seeded to the vanilla FormKey so references resolve to
+//! the vanilla parent. The lookup, `FormKeyMapper::find_vanilla_fk`, ignores
+//! `use_base_game_assets`.
 
 use crate::fixups::{Fixup, FixupConfig, FixupContext, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -180,13 +166,8 @@ pub enum RaceOutcome {
     Keep,
 }
 
-/// Decide the outcome for one RACE record and, if `Remap`, seed the mapping.
-///
-/// - `eid_str` — the EditorID of the source RACE record.
-/// - `source_fk` — the source (FO76) FormKey for this record.
-/// - `race_sig` — the `SigCode` for "RACE".
-/// - `mapper` — mutable mapper; seeded via `add_mapping` when outcome is `Remap`.
-///
+/// Decide the outcome for one RACE record; on `Remap`, seed the source→vanilla
+/// mapping via `add_mapping`.
 
 pub fn apply_to_record(
     eid_str: &str,

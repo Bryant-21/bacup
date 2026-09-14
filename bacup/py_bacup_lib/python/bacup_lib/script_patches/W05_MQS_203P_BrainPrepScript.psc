@@ -16,8 +16,8 @@ Event OnActivate(ObjectReference akActionRef)
 
     if selectedButton == CorrectButton
         player.SetValue(AVToSet, 1.0)
+        TryToSetStage()
     else
         player.SetValue(AVToSet, 0.0)
     endif
-    TryToSetStage()
 EndEvent

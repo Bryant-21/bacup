@@ -1,3 +1,11 @@
+; Rewritten against Fallout 4's vanilla IDCardReaderScript parent, whose member names
+; differ from FO76's: IDCardReader_PlayFailureSound() -> NeedsCardFailureSound.Play(),
+; LinkedRefToActivate -> myLinkedRefToActivate,
+; shouldActivateAsActivatingPlayer -> shouldActivateAsPlayer, and the state names
+; StartsRed/red/StartsRedLockdown/redlockdown/green -> Red/Red_Lockdown/Green.
+; BEHAVIOUR LOST: FO76 shouldConsumeIDCard has no FO4 counterpart, so an accepted
+; ID card is no longer removed from the inventory.
+
 Key Function FindIDCard(Actor activatingActor)
     If activatingActor == None || IDCards == None
         Return None
@@ -14,13 +22,13 @@ Key Function FindIDCard(Actor activatingActor)
 EndFunction
 
 Function ActivateLinkedObject(Actor activatingActor)
-    If LinkedRefToActivate == None
+    If myLinkedRefToActivate == None
         Return
     EndIf
 
-    ObjectReference linkedObject = GetLinkedRef(LinkedRefToActivate)
+    ObjectReference linkedObject = GetLinkedRef(myLinkedRefToActivate)
     If linkedObject != None
-        If shouldActivateAsActivatingPlayer
+        If shouldActivateAsPlayer
             linkedObject.Activate(activatingActor)
         Else
             linkedObject.Activate(Self)
@@ -41,19 +49,16 @@ Function ProcessIDCardActivation(ObjectReference akActionRef)
     lock_IDCardReaderActivation = True
     Key acceptedCard = FindIDCard(activatingActor)
     If acceptedCard == None
-        IDCardReader_PlayFailureSound()
+        NeedsCardFailureSound.Play(Self)
         IDCardReaderMessageNeedsCard.Show()
     Else
-        If shouldConsumeIDCard
-            activatingActor.RemoveItem(acceptedCard, 1, True)
-        EndIf
         WaitFor3DLoad()
         PlayAnimationAndWait("SwipeGreen01", "End")
-        GoToState("green")
+        GoToState("Green")
         ActivateLinkedObject(activatingActor)
         If shouldAutoReset
             PlayAnimation("JumpRed01")
-            GoToState("red")
+            GoToState("Red")
         EndIf
     EndIf
     lock_IDCardReaderActivation = False
@@ -70,7 +75,7 @@ Function ProcessLockdownActivation(ObjectReference akActionRef)
     EndIf
 
     lock_IDCardReaderActivation = True
-    IDCardReader_PlayFailureSound()
+    LockdownFailureSound.Play(Self)
     If FindIDCard(activatingActor) != None
         IDCardReaderMessageLockdown.Show()
     Else
@@ -81,9 +86,9 @@ EndFunction
 
 Event OnActivate(ObjectReference akActionRef)
     String currentState = GetState()
-    If currentState == "startsredlockdown" || currentState == "redlockdown"
+    If currentState == "Red_Lockdown"
         ProcessLockdownActivation(akActionRef)
-    ElseIf currentState == "StartsRed" || currentState == "red"
+    ElseIf currentState == "Red" || currentState == ""
         ProcessIDCardActivation(akActionRef)
     EndIf
 EndEvent

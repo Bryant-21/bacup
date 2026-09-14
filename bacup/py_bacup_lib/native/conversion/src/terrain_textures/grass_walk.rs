@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
-use esp_authoring_core::plugin_runtime::plugin_handle_read_authoring_record_value_json;
+use esp_authoring_core::plugin_runtime::{
+    plugin_handle_read_authoring_record_value_json, plugin_handle_read_raw_subrecords_no_py,
+};
 use serde_json::Value as JsonValue;
 
 use crate::terrain_textures::ltex_walk::{
@@ -8,6 +10,7 @@ use crate::terrain_textures::ltex_walk::{
     normalize_esp_form_key,
 };
 use crate::terrain_textures::manifest::{GrassEntry, ObjectBounds};
+use crate::terrain_textures::starfield_records::{raw_hex_bytes, raw_u16_le, resolve_raw_form_id};
 
 const FO4_GRASS_FLAGS: &[&str] = &["VertexLighting", "UniformScaling", "FitToSlope"];
 const FO76_MIN_POSITION_RANGE: f32 = 12.0;
@@ -32,6 +35,17 @@ struct GcvrGrassRef {
 struct GcvrDensityPolicy {
     cover_scalar: f32,
     entry_weight_fraction: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct StarfieldGrassData {
+    density: u8,
+    max_slope: u8,
+    position_range: f32,
+    height_range: f32,
+    color_range: f32,
+    wave_period: f32,
+    flags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +102,7 @@ pub fn grass_entries_for_gcvr(
 
     grass_entries_for_gcvr_refs(
         handle_id,
-        gcvr_grass_refs(gcvr_fields),
+        gcvr_grass_refs_for_handle(handle_id, gcvr_fields)?,
         source_game,
         gcvr_cover_scalar(gcvr_fields),
     )
@@ -107,7 +121,16 @@ pub fn gcvr_land_texture_form_keys(
         .and_then(|v| v.as_array())
         .map(|a| a.as_slice())
         .unwrap_or(&[]);
-    Ok(gcvr_land_texture_form_keys_from_fields(gcvr_fields))
+    let mut form_keys = gcvr_land_texture_form_keys_from_fields(gcvr_fields);
+    for field in gcvr_fields {
+        let Some(value) = field.as_object().and_then(|object| object.get("LNAM")) else {
+            continue;
+        };
+        if let Some(form_key) = resolve_raw_form_id(handle_id, value)? {
+            form_keys.push(form_key);
+        }
+    }
+    Ok(form_keys)
 }
 
 pub fn record_editor_id(handle_id: u64, form_key: &str) -> Result<String, String> {
@@ -161,6 +184,39 @@ fn gcvr_grass_refs(fields: &[JsonValue]) -> Vec<GcvrGrassRef> {
     refs
 }
 
+fn gcvr_grass_refs_for_handle(
+    handle_id: u64,
+    fields: &[JsonValue],
+) -> Result<Vec<GcvrGrassRef>, String> {
+    let mut refs = Vec::new();
+    for entry in fields {
+        let Some(object) = entry.as_object() else {
+            continue;
+        };
+        if let Some(value) = object.get("GrassTexture").or_else(|| object.get("GNAM")) {
+            let form_key = if let Some(form_key) = reference_form_key_from_value(value) {
+                Some(form_key)
+            } else {
+                resolve_raw_form_id(handle_id, value)?
+            };
+            if let Some(form_key) = form_key {
+                refs.push(GcvrGrassRef {
+                    form_key,
+                    weight: None,
+                });
+            }
+        } else if let Some(value) = object.get("UnknownInt").or_else(|| object.get("DNAM")) {
+            if let Some(last) = refs
+                .last_mut()
+                .filter(|grass_ref| grass_ref.weight.is_none())
+            {
+                last.weight = u16_value(value).or_else(|| raw_u16_le(value));
+            }
+        }
+    }
+    Ok(refs)
+}
+
 fn gcvr_land_texture_form_keys_from_fields(fields: &[JsonValue]) -> Vec<String> {
     let mut keys = field_all_reference_form_keys(fields, "LandscapeTexture");
     keys.extend(field_all_reference_form_keys(fields, "LNAM"));
@@ -181,7 +237,12 @@ fn grass_entries_for_form_keys(
         let grass = plugin_handle_read_authoring_record_value_json(handle_id, &form_key)
             .map_err(|e| format!("plugin lookup failed for GRAS {form_key}: {e}"))?
             .ok_or_else(|| format!("GRAS not found: {form_key}"))?;
-        entries.push(entry_from_grass(&grass, &form_key, source_game));
+        entries.push(entry_from_grass_for_handle(
+            handle_id,
+            &grass,
+            &form_key,
+            source_game,
+        ));
     }
     Ok(entries)
 }
@@ -215,7 +276,8 @@ fn grass_entries_for_gcvr_refs(
         } else {
             None
         };
-        entries.push(entry_from_grass_with_policy(
+        entries.push(entry_from_grass_with_policy_for_handle(
+            handle_id,
             &grass,
             &grass_ref.form_key,
             source_game,
@@ -226,7 +288,16 @@ fn grass_entries_for_gcvr_refs(
 }
 
 fn entry_from_grass(grass: &JsonValue, form_key: &str, asset_prefix: &str) -> GrassEntry {
-    entry_from_grass_with_policy(grass, form_key, asset_prefix, None)
+    entry_from_grass_with_policy_and_raw(grass, form_key, asset_prefix, None, None)
+}
+
+fn entry_from_grass_for_handle(
+    handle_id: u64,
+    grass: &JsonValue,
+    form_key: &str,
+    asset_prefix: &str,
+) -> GrassEntry {
+    entry_from_grass_with_policy_for_handle(handle_id, grass, form_key, asset_prefix, None)
 }
 
 fn entry_from_grass_with_policy(
@@ -234,6 +305,38 @@ fn entry_from_grass_with_policy(
     form_key: &str,
     asset_prefix: &str,
     gcvr_policy: Option<GcvrDensityPolicy>,
+) -> GrassEntry {
+    entry_from_grass_with_policy_and_raw(grass, form_key, asset_prefix, gcvr_policy, None)
+}
+
+fn entry_from_grass_with_policy_for_handle(
+    handle_id: u64,
+    grass: &JsonValue,
+    form_key: &str,
+    asset_prefix: &str,
+    gcvr_policy: Option<GcvrDensityPolicy>,
+) -> GrassEntry {
+    let raw_model = plugin_handle_read_raw_subrecords_no_py(handle_id, form_key, "MODL")
+        .ok()
+        .and_then(|values| values.into_iter().next());
+    let raw_data = plugin_handle_read_raw_subrecords_no_py(handle_id, form_key, "DNAM")
+        .ok()
+        .and_then(|values| values.into_iter().next());
+    entry_from_grass_with_policy_and_raw(
+        grass,
+        form_key,
+        asset_prefix,
+        gcvr_policy,
+        Some((raw_model.as_deref(), raw_data.as_deref())),
+    )
+}
+
+fn entry_from_grass_with_policy_and_raw(
+    grass: &JsonValue,
+    form_key: &str,
+    asset_prefix: &str,
+    gcvr_policy: Option<GcvrDensityPolicy>,
+    raw_starfield: Option<(Option<&[u8]>, Option<&[u8]>)>,
 ) -> GrassEntry {
     let editor_id = grass
         .get("eid")
@@ -246,13 +349,33 @@ fn entry_from_grass_with_policy(
         .map(|a| a.as_slice())
         .unwrap_or(&[]);
 
-    let object_bounds = field_value(fields, "ObjectBounds")
-        .and_then(object_bounds_from_value)
-        .unwrap_or_default();
+    let object_bounds_value = field_value(fields, "ObjectBounds");
+    let object_bounds = if is_starfield_source_game(asset_prefix) {
+        object_bounds_value
+            .and_then(starfield_object_bounds_from_value)
+            .or_else(|| object_bounds_value.and_then(object_bounds_from_value))
+    } else {
+        object_bounds_value.and_then(object_bounds_from_value)
+    }
+    .unwrap_or_default();
 
     let data_field = field_value(fields, "DATA").or_else(|| field_value(fields, "DNAM"));
     let data_obj = data_field.and_then(|v| v.as_object());
-    let source_model_file_name = field_str(fields, "ModelFileName").unwrap_or("");
+    let starfield_data = if is_starfield_source_game(asset_prefix) {
+        raw_starfield
+            .and_then(|(_, data)| data)
+            .and_then(starfield_grass_data_from_bytes)
+            .or_else(|| field_value(fields, "DNAM").and_then(starfield_grass_data_from_value))
+    } else {
+        None
+    };
+    let raw_model_file_name = raw_starfield
+        .and_then(|(model, _)| model)
+        .and_then(zstring_from_bytes);
+    let source_model_file_name = field_str(fields, "ModelFileName")
+        .or_else(|| field_str(fields, "Model"))
+        .or(raw_model_file_name.as_deref())
+        .unwrap_or("");
     let grass_kind = gcvr_grass_kind(&editor_id, source_model_file_name);
     let source_unknown = data_obj
         .and_then(|o| f32_field(o, "Unknown"))
@@ -260,11 +383,15 @@ fn entry_from_grass_with_policy(
 
     let source_position_range = data_obj
         .and_then(|o| f32_field(o, "PositionRange"))
+        .or_else(|| starfield_data.as_ref().map(|data| data.position_range))
         .unwrap_or(0.0);
     let min_position_range = position_range_floor(asset_prefix, gcvr_policy, grass_kind);
     let (position_range, position_range_normalized) =
         normalized_position_range(source_position_range, min_position_range);
-    let source_density = data_obj.and_then(|o| u8_field(o, "Density")).unwrap_or(0);
+    let source_density = data_obj
+        .and_then(|o| u8_field(o, "Density"))
+        .or_else(|| starfield_data.as_ref().map(|data| data.density))
+        .unwrap_or(0);
     let (density_scalar, density_cap) = density_policy(source_unknown, gcvr_policy, grass_kind);
 
     GrassEntry {
@@ -276,16 +403,22 @@ fn entry_from_grass_with_policy(
             .unwrap_or("")
             .to_owned(),
         density: normalized_density(source_density, density_scalar, density_cap),
-        max_slope: data_obj.and_then(|o| u8_field(o, "MaxSlope")).unwrap_or(0),
+        max_slope: data_obj
+            .and_then(|o| u8_field(o, "MaxSlope"))
+            .or_else(|| starfield_data.as_ref().map(|data| data.max_slope))
+            .unwrap_or(0),
         position_range,
         height_range: data_obj
             .and_then(|o| f32_field(o, "HeightRange"))
+            .or_else(|| starfield_data.as_ref().map(|data| data.height_range))
             .unwrap_or(0.0),
         color_range: data_obj
             .and_then(|o| f32_field(o, "ColorRange"))
+            .or_else(|| starfield_data.as_ref().map(|data| data.color_range))
             .unwrap_or(0.0),
         wave_period: data_obj
             .and_then(|o| f32_field(o, "WavePeriod"))
+            .or_else(|| starfield_data.as_ref().map(|data| data.wave_period))
             .unwrap_or(0.0),
         flags: data_obj
             .and_then(|o| o.get("Flags"))
@@ -297,6 +430,7 @@ fn entry_from_grass_with_policy(
                     .map(str::to_owned)
                     .collect()
             })
+            .or_else(|| starfield_data.as_ref().map(|data| data.flags.clone()))
             .unwrap_or_default(),
         position_range_normalized,
         assets: Vec::new(),
@@ -305,6 +439,10 @@ fn entry_from_grass_with_policy(
 
 fn is_fo76_source_game(source_game: &str) -> bool {
     source_game.trim().to_ascii_lowercase().replace('-', "") == "fo76"
+}
+
+fn is_starfield_source_game(source_game: &str) -> bool {
+    source_game.trim().eq_ignore_ascii_case("starfield")
 }
 
 fn min_position_range_for_source_game(source_game: &str) -> f32 {
@@ -465,6 +603,74 @@ fn object_bounds_from_value(value: &JsonValue) -> Option<ObjectBounds> {
     })
 }
 
+fn starfield_grass_data_from_value(value: &JsonValue) -> Option<StarfieldGrassData> {
+    let bytes = raw_hex_bytes(value)?;
+    starfield_grass_data_from_bytes(&bytes)
+}
+
+fn starfield_grass_data_from_bytes(bytes: &[u8]) -> Option<StarfieldGrassData> {
+    let position_range = f32::from_le_bytes(bytes.get(32..36)?.try_into().ok()?);
+    let height_range = f32::from_le_bytes(bytes.get(8..12)?.try_into().ok()?);
+    let color_range = f32::from_le_bytes(bytes.get(12..16)?.try_into().ok()?);
+    let wave_period = f32::from_le_bytes(bytes.get(16..20)?.try_into().ok()?);
+    if [position_range, height_range, color_range, wave_period]
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+    {
+        return None;
+    }
+    let flag_bits = *bytes.get(31)? & 0x07;
+    let flags = [
+        (0x01, "VertexLighting"),
+        (0x02, "UniformScaling"),
+        (0x04, "FitToSlope"),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| flag_bits & bit != 0)
+    .map(|(_, name)| name.to_owned())
+    .collect();
+    Some(StarfieldGrassData {
+        density: *bytes.get(28)?,
+        max_slope: *bytes.get(30)?,
+        position_range,
+        height_range,
+        color_range,
+        wave_period,
+        flags,
+    })
+}
+
+fn zstring_from_bytes(bytes: &[u8]) -> Option<String> {
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    let value = String::from_utf8_lossy(bytes.get(..end)?).trim().to_owned();
+    (!value.is_empty()).then_some(value)
+}
+
+fn starfield_object_bounds_from_value(value: &JsonValue) -> Option<ObjectBounds> {
+    let bytes = raw_hex_bytes(value)?;
+    let mut bounds = [0_i16; 6];
+    for (index, bound) in bounds.iter_mut().enumerate() {
+        let start = index * 4;
+        let meters = f32::from_le_bytes(bytes.get(start..start + 4)?.try_into().ok()?);
+        if !meters.is_finite() {
+            return None;
+        }
+        let fo4_units = meters * terrain_native::sf_frame::FO4_UNITS_PER_METER as f32;
+        *bound = fo4_units.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+    }
+    Some(ObjectBounds {
+        object_bounds_x1: bounds[0],
+        object_bounds_y1: bounds[1],
+        object_bounds_z1: bounds[2],
+        object_bounds_x2: bounds[3],
+        object_bounds_y2: bounds[4],
+        object_bounds_z2: bounds[5],
+    })
+}
+
 // Helpers accept int OR numeric string in the JSON (Python int()/float() parity).
 fn u8_field(obj: &serde_json::Map<String, JsonValue>, key: &str) -> Option<u8> {
     let v = obj.get(key)?;
@@ -562,6 +768,58 @@ mod tests {
         assert_eq!(e.density, 7);
         assert_eq!(e.position_range, 2.5);
         assert!(!e.position_range_normalized);
+    }
+
+    #[test]
+    fn entry_from_starfield_grass_maps_dnam_and_metric_bounds_to_fo4() {
+        let value = json!({
+            "eid": "LichenStalkGrass01",
+            "fields": [
+                { "ObjectBounds": {
+                    "raw_hex": "00A072BE00405BBE00A003BD00005E3E0020773E00409B3E"
+                }},
+                { "ModelFileName": "Landscape\\Grass\\LichenStalkGrass01.nif" },
+                { "DNAM": {
+                    "raw_hex": "0000AC427B142E3FC3F5A83E0000000000002041FFFF7F7FFFFF7F7F5300320E0000D8417F7F"
+                }}
+            ]
+        });
+
+        let entry = entry_from_grass(&value, "Starfield.esm:069538", "starfield");
+
+        assert_eq!(
+            entry.model_file_name,
+            "Landscape/Grass/LichenStalkGrass01.nif"
+        );
+        assert_eq!(entry.density, 83);
+        assert_eq!(entry.max_slope, 50);
+        assert_eq!(entry.position_range, 27.0);
+        assert!((entry.height_range - 0.33).abs() < 0.001);
+        assert_eq!(entry.color_range, 0.0);
+        assert_eq!(entry.wave_period, 10.0);
+        assert_eq!(
+            entry.flags,
+            vec!["UniformScaling".to_owned(), "FitToSlope".to_owned()]
+        );
+        assert_eq!(entry.object_bounds.object_bounds_x1, -17);
+        assert_eq!(entry.object_bounds.object_bounds_z2, 21);
+    }
+
+    #[test]
+    fn starfield_grass_dnam_ignores_non_fo4_flag_bits() {
+        let value = json!({
+            "raw_hex": "000020419A99993E9A99993ECDCC4C3E00002041FFFF7F7FCDCCCC3D620032080000BE427F7F"
+        });
+
+        let data = starfield_grass_data_from_value(&value).unwrap();
+
+        assert_eq!(data.density, 98);
+        assert_eq!(data.max_slope, 50);
+        assert_eq!(data.position_range, 95.0);
+        assert!((data.height_range - 0.3).abs() < 0.001);
+        assert!((data.color_range - 0.2).abs() < 0.001);
+        assert_eq!(data.wave_period, 10.0);
+        assert!(data.flags.is_empty());
     }
 
     #[test]

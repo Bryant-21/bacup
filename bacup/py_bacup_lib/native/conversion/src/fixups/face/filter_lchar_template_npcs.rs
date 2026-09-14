@@ -1,37 +1,15 @@
 //! Fixup: remove LeveledNpc entries that reference template-actor NPCs.
 //!
-
-//! # What this does
-//! CK rejects "leveled template actors" in LeveledNpc lists — if an entry's
-//! reference points to an NPC that inherits data via `TemplateActors`, CK errors
-//! on load.
+//! The CK rejects leveled template actors: an LVLN entry whose NPC inherits
+//! data through `TemplateActors` (`TPTA`) errors on load. Entries pointing at an
+//! NPC_ with any populated TPTA slot, in the output or a target master, are
+//! dropped. No-op on non-creature single-root runs.
 //!
-//! Steps:
-//! 1. Collect FormKeys of every target NPC_ record whose `TemplateActors` slot
-//!    set has any populated template actor slot (FO4 sig `TPTA`).
-//! 2. For each LVLN record in target plugin, drop every `LVLO` entry whose
-//!    `Reference` FormKey is in that set.
-//! 3. When at least one entry was removed, write the record back.
-//!
-//! # Guards
-//! - Non-creature single-root runs → no-op.
-//! - Whole-plugin runs → scan all NPC_/LVLN records.
-//! - No NPCs have `TemplateActors` populated → no-op.
-//!
-//! # Subrecord layouts (FO4 schema)
-//! `TPTA` codec `struct:I,I,I,I,I,I,I,I,I,I,I,I,I` — 13 FormID slots, each
-//! 4 bytes. Slot order: traits, stats, factions, spell_list, ai_data,
-//! ai_packages, model_animation, **base_data** (slot 7, offset 28), inventory,
-//! script, def_package_list, attack_data, keywords.
-//!
-//! `LVLO` codec `struct:H,B,B,I,H,B,B` (`parsed_with_raw_fallback`) — 12 bytes
-//! total: level (u16, off 0), unknown_u8_1 (off 2), unknown_u8_2 (off 3),
-//! **reference (formid, off 4)**, count (u16, off 8), unknown_u8_3 (off 10),
-//! unknown_u8_4 (off 11).
-//!
-//! Decoded values are usually `FieldValue::Bytes` on the `read_record` path.
-//! Python-pushed records may arrive as `FieldValue::Struct`; both shapes are
-//! handled.
+//! `TPTA` is 13 FormID slots: traits, stats, factions, spell_list, ai_data,
+//! ai_packages, model_animation, base_data (slot 7, offset 28), inventory,
+//! script, def_package_list, attack_data, keywords. `LVLO`
+//! (`struct:H,B,B,I,H,B,B`, 12 bytes) holds the reference FormID at offset 4.
+//! Entries arrive as `FieldValue::Bytes` or `FieldValue::Struct`.
 
 use crate::fixups::prune_orphaned_records::is_creature_root_sig;
 use crate::fixups::{Fixup, FixupConfig, FixupContext, FixupError, FixupReport};
@@ -281,13 +259,12 @@ fn target_master_handle_for_fk(
     target_master_handle_ids.get(load_index).copied()
 }
 
-/// Drop every `LVLO` entry in `record` whose `Reference` FormKey is contained
-/// in `template_npc_fks`. Returns the number of entries removed.
+/// Drop every `LVLO` entry in `record` whose `Reference` is a template NPC.
+/// Returns the number of entries removed.
 ///
-/// Supports both `FieldValue::Bytes` (raw 12-byte payload) and
-/// `FieldValue::Struct` (Python-pushed records).  For the `Bytes` path the
-/// raw FormID at offset 4..8 is resolved against `target_masters` /
-/// `target_plugin_name` to produce a `FormKey` comparable with the set.
+/// Handles `FieldValue::Bytes` (raw 12-byte payload, FormID at offset 4..8
+/// resolved against `target_masters` / `target_plugin_name`) and
+/// `FieldValue::Struct`.
 fn drop_template_lvlo_entries(
     record: &mut Record,
     template_npc_fks: &HashSet<FormKey>,

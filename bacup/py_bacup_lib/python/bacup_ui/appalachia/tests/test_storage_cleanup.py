@@ -57,18 +57,68 @@ def test_discovers_only_safe_known_cleanup_targets(tmp_path):
     assert by_key["legacy_local_data"].paths == (legacy_local_data,)
 
 
-def test_never_offers_game_root_as_extracted_cleanup_target(tmp_path):
+@pytest.mark.parametrize("relative", [
+    "", "Data", "Data/Meshes/B21/TalesFromAppalachia/WorkshopIcons",
+    "Data/Textures/interface/workshopicons",
+])
+def test_never_offers_game_root_or_assets_as_extracted_cleanup_target(tmp_path, relative):
     game_root = tmp_path / "Fallout 4"
-    game_root.mkdir()
+    extracted = game_root / relative
+    extracted.mkdir(parents=True)
 
     targets = discover_cleanup_targets(
-        fo4_extracted_dir=game_root,
+        fo4_extracted_dir=extracted,
         fo76_extracted_dir=None,
         forbidden_roots=(game_root,),
+        game_roots=(game_root,),
         temp_root=tmp_path / "Temp",
     )
 
     assert all(target.key != "fo4_extracted" for target in targets)
+
+
+def test_all_cleanup_categories_respect_protected_game_directories(tmp_path):
+    game_root = tmp_path / "Fallout 4"
+    game_data = game_root / "Data"
+    for relative in ("GeoExporter", "VIS", "bacup-old", "legacy-cache"):
+        directory = game_data / relative
+        directory.mkdir(parents=True)
+        (directory / "keep.bin").write_bytes(b"installed asset")
+
+    targets = discover_cleanup_targets(
+        fo4_extracted_dir=game_data,
+        fo76_extracted_dir=game_data,
+        forbidden_roots=iter((game_root,)),
+        game_roots=iter((game_root,)),
+        temp_root=game_data,
+        legacy_local_data_root=game_data / "legacy-cache",
+    )
+
+    assert targets == ()
+    assert len(list(game_data.rglob("keep.bin"))) == 4
+
+
+def test_cleanup_keeps_caches_under_application_and_home_available(tmp_path):
+    app_root = tmp_path / "BACUP"
+    home_root = tmp_path / "User"
+    extracted = app_root / "data/fo4"
+    legacy = home_root / "AppData/Local/modkit21/conversion"
+    temp_root = home_root / "AppData/Local/Temp"
+    for directory in (extracted, legacy, temp_root / "bacup-old"):
+        directory.mkdir(parents=True)
+
+    targets = discover_cleanup_targets(
+        fo4_extracted_dir=extracted,
+        fo76_extracted_dir=None,
+        forbidden_roots=(app_root, home_root),
+        game_roots=(tmp_path / "Fallout 4",),
+        temp_root=temp_root,
+        legacy_local_data_root=legacy,
+    )
+
+    assert {target.key for target in targets} == {
+        "fo4_extracted", "legacy_local_data", "bacup_temp",
+    }
 
 
 def test_measure_and_delete_touch_only_selected_target(tmp_path):

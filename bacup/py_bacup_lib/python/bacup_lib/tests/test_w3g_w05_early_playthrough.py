@@ -97,28 +97,43 @@ CRITICAL_EDGES: dict[str, dict[int, tuple[str, ...]]] = {
         599: ("SetStage(598)", "SetStage(600)"),
         805: ("Alias_Duchess.GetActorReference()", "EvaluatePackage()"),
         807: ("SetStage(809)", "EvaluatePackage()"),
-        900: ("SetStage(9000)",),
-        905: ("SetStage(9000)",),
+        900: (
+            "SetStage(9000)",
+            "AttemptRadicalHandoff()",
+        ),
+        905: (
+            "SetStage(9000)",
+            "AttemptRadicalHandoff()",
+        ),
         1000: ("W05_MQ_003P_Muscle_QuestStartKeyword.SendStoryEvent()",),
     },
     QF_002P: {
+        100: ("SetObjectiveDisplayed(100)",),
         450: (
             "SetValue(W05_MQ_002P_Radical_PlayerConnectedRadioStation, 1.0)",
-            "SetStage(709)",
-            "SetStage(736)",
-            "SetStage(1000)",
+            "SetObjectiveCompleted(400)",
+            "W05_MQ_002P_Radical_0450_RadioSignConnected.Start()",
+            "SetStage(475)",
         ),
         1550: ("SetStage(2000)",),
-        8950: (
-            "W05_MQ_003P_Muscle_QuestStartKeyword.SendStoryEvent()",
-            "SetStage(9000)",
-        ),
+        8950: ("SetStage(9000)",),
     },
     QF_003P: {
         100: ("W05_MQ_003P_Muscle_0100_StartScene.Start()", "SetStage(150)"),
         400: ("W05_MQ_003P_Muscle_0400_SolAttactScene.Start()",),
-        710: ("SetStage(800)",),
-        900: ("SetStage(1000)",),
+        410: (
+            "solRef.RemoveFromFaction(CaptiveFaction)",
+            "solRef.AddToFaction(W05_CrimeTheWayward)",
+        ),
+        415: ("solRef.ResetHealthAndLimbs()",),
+        450: (
+            "solRef.ChangeAnimArchetype(AnimArchetypeDepressed)",
+            "solRef.EvaluatePackage()",
+        ),
+        600: ("W05_MQ_003P_Muscle_0600_PollyAttractScene.Start()",),
+        1050: ("W05_MQ_003P_Muscle_1010b_PollyEquipped.Start()",),
+        1150: ("W05_MQ_003P_Muscle_1150_PollyScene.Start()",),
+        1325: ("SetObjectiveCompleted(1300)", "SetObjectiveDisplayed(1315)"),
         1500: (
             "SetStage(9000)",
             "W05_MQ_004P_Crane_QuestStartKeyword.SendStoryEvent()",
@@ -126,14 +141,15 @@ CRITICAL_EDGES: dict[str, dict[int, tuple[str, ...]]] = {
     },
     QF_004P: {
         1000: ("cacheDoor.Unlock()", "cacheDoor.SetOpen(True)"),
-        1150: ("!Alias_Roper.GetReference()", "SetStage(1300)"),
+        1150: (
+            "roperRef && !roperRef.IsDead()",
+            "roperRef.Enable()",
+            "roperRef.EvaluatePackage()",
+            "SetStage(1300)",
+        ),
         1200: ("W05_MQ_004P_Crane_1200_RoperScene.Start()",),
-        1235: ("SetStage(1300)",),
-        1240: ("SetStage(1300)",),
         1250: ("SetStage(1300)",),
-        1260: ("SetStage(1261)", "IsStageDone(1261)", "SetStage(1300)"),
-        1265: ("SetStage(1300)",),
-        8999: ("SetStage(9000)", "W05_MQ_101P_QuestStartKeyword.SendStoryEvent()"),
+        1265: ("playerRef.AddItem(Headwear_Radicals, 1, False)",),
     },
 }
 
@@ -152,7 +168,7 @@ def test_every_critical_receiving_edge_has_one_executable_fragment(script_name: 
             assert snippet in body
 
 
-def test_bypasses_land_only_on_source_named_receiving_stages():
+def test_source_named_receiving_stages_preserve_guarded_routes():
     radical = _script_patch_source(QF_002P)
     muscle = _script_patch_source(QF_003P)
     crane = _script_patch_source(QF_004P)
@@ -161,19 +177,35 @@ def test_bypasses_land_only_on_source_named_receiving_stages():
     assert crane is not None
 
     radical_450 = _member_body(radical, _member_name(450))
-    assert "SetStage(709)" in radical_450
-    assert "SetStage(736)" in radical_450
-    assert "SetStage(1000)" in radical_450
-    assert "SetStage(700)" not in radical_450
-    assert "SetStage(800)" in _member_body(muscle, _member_name(710))
-    assert "SetStage(900)" not in _member_body(muscle, _member_name(710))
-    assert _member_name(820) not in _member_names(crane)
+    assert "W05_MQ_002P_Radical_0450_RadioSignConnected.Start()" in radical_450
+    assert "If !IsStageDone(475)" in radical_450
+    assert "SetStage(475)" in radical_450
+    for stale_bypass in ("SetStage(709)", "SetStage(736)", "SetStage(1000)"):
+        assert stale_bypass not in radical_450
+
+    muscle_710 = _member_body(muscle, _member_name(710))
+    assert "encounterController.StartLocalEncounterWave(0)" in muscle_710
+    assert "ElseIf !IsStageDone(715)" in muscle_710
+    assert "SetStage(715)" in muscle_710
+
+    muscle_900 = _member_body(muscle, _member_name(900))
+    assert "pollyMarker.Disable()" in muscle_900
+    assert "solMarker.Disable()" in muscle_900
+    assert "playerRef.SetValue(W05_MQ_003P_Muscle_GauleyMineComplete, 1.0)" in muscle_900
+    assert "If !IsStageDone(1000)" in muscle_900
+    assert "SetStage(1000)" in muscle_900
+
+    crane_820 = _member_body(crane, _member_name(820))
+    assert "SetObjectiveDisplayed(800)" in crane_820
+    assert "cacheDoor.Unlock()" in crane_820
     assert "SetStage(1100)" not in _member_body(crane, _member_name(1000))
 
     bypass_bodies = "\n".join(
         (
-            _member_body(radical, _member_name(450)),
-            _member_body(muscle, _member_name(710)),
+            radical_450,
+            muscle_710,
+            muscle_900,
+            crane_820,
             _member_body(crane, _member_name(1000)),
         )
     )
@@ -192,12 +224,17 @@ def test_bypasses_land_only_on_source_named_receiving_stages():
 def test_existing_early_handoff_and_local_repairs_remain_present():
     expected = {
         QF_001P_LACEY: {
-            10: ("Alias_owningPlayer.ForceRefIfEmpty(Game.GetPlayer())",),
-            15: (
-                "W05_MQ_001P_Wayward_QuestStartKeyword.SendStoryEventAndWait("
-                "None, playerRef, playerRef)",
+            15: ("DispatchWaywardStartEvent()",),
+            30: (
+                "SetLaceyIselaCheckpoint(1.0)",
+                "W05_MQ_001P_Wayward_LaceyIselaScene_010.Stop()",
+                "W05_MQ_001P_Wayward_LaceyIselaScene_020.Stop()",
             ),
-            100: ("W05_MQ_001P_Wayward.SetStage(200)",),
+            100: (
+                "W05_MQ_001P_Wayward.SetStage(200)",
+                "SetLaceyIselaCheckpoint(10.0)",
+            ),
+            200: ("SetLaceyIselaCheckpoint(10.0)", "Stop()"),
         },
         QF_001P_ATTRACT: {
             100: ("W05_MQ_001P_Wayward_LaceyIselaAtrractScene_0100_Intro.Start()",),
@@ -220,6 +257,75 @@ def test_existing_early_handoff_and_local_repairs_remain_present():
             for snippet in snippets:
                 assert snippet in body
 
+    lacey = _script_patch_source(QF_001P_LACEY)
+    assert lacey is not None
+    dispatch = _member_body(lacey, "dispatchwaywardstartevent")
+    assert (
+        "W05_MQ_001P_Wayward_QuestStartKeyword.SendStoryEventAndWait("
+        "None, playerRef, playerRef)"
+    ) in dispatch
+
+
+def test_completed_early_quests_retry_successors_without_replaying_completion():
+    wayward = _script_patch_source(QF_001P)
+    radical = _script_patch_source(QF_002P)
+    radical_controller = _script_patch_source("W05_002P_Radical_QuestScript")
+    assert wayward is not None
+    assert radical is not None
+    assert radical_controller is not None
+
+    for stage in (900, 905):
+        body = _member_body(wayward, _member_name(stage))
+        assert body.index("SetStage(9000)") < body.index("AttemptRadicalHandoff()")
+        assert "SendStoryEventAndWait" not in body
+
+    attempt = _member_body(wayward, "attemptradicalhandoff")
+    target_state = "accepted = radicalQuest.IsRunning() || radicalQuest.IsCompleted()"
+    wayward_send = (
+        "W05_MQ_002P_Radical_QuestStartKeyword."
+        "SendStoryEventAndWait(None, playerRef, playerRef)"
+    )
+    assert attempt.count(target_state) == 2
+    assert attempt.index(target_state) < attempt.index(wayward_send) < attempt.rindex(
+        target_state
+    )
+    assert attempt.count(wayward_send) == 1
+    assert f"accepted = {wayward_send}" not in attempt
+    assert "If !accepted && IsStageDone(9000)" in attempt
+    assert "StartTimer(5.0, 9000)" in attempt
+    wayward_timer = _member_body(wayward, "ontimer")
+    assert "aiTimerID == 9000 && IsStageDone(9000)" in wayward_timer
+    assert wayward_timer.count("AttemptRadicalHandoff()") == 1
+    assert wayward.count("CompleteQuest()") == 1
+
+    radical_finish = _member_body(radical, _member_name(8950))
+    assert "If !IsStageDone(9000)" in radical_finish
+    assert "SetStage(9000)" in radical_finish
+    assert "SendStoryEventAndWait" not in radical_finish
+
+    try_start = _member_body(radical_controller, "trystartmusclequest")
+    scene_guard = "If playerRef == None || playerRef.IsInScene()"
+    muscle_send = "startKeyword.SendStoryEventAndWait(None, playerRef, playerRef)"
+    pre_send_state = (
+        "If muscleQuest == None || muscleQuest.IsRunning() || "
+        "muscleQuest.IsCompleted()"
+    )
+    post_send_state = "If muscleQuest.IsRunning() || muscleQuest.IsCompleted()"
+    guard_start = try_start.index(scene_guard)
+    guard_end = try_start.index("EndIf", guard_start)
+    assert try_start.index(pre_send_state) < try_start.index(muscle_send)
+    assert guard_start < guard_end < try_start.index(muscle_send)
+    assert "StartTimer(1.0, 8950)" in try_start[guard_start:guard_end]
+    assert try_start.count(muscle_send) == 1
+    assert try_start.index(muscle_send) < try_start.index(post_send_state)
+    assert f"= {muscle_send}" not in try_start
+    assert f"&& {muscle_send}" not in try_start
+    assert try_start.rstrip().endswith("StartTimer(1.0, 8950)\nEndFunction")
+    radical_timer = _member_body(radical_controller, "ontimer")
+    assert "aiTimerID == 8950" in radical_timer
+    assert radical_timer.count("TryStartMuscleQuest()") == 1
+    assert radical.count("CompleteQuest()") == 1
+
 
 @pytest.mark.parametrize("script_name", ASSIGNED_SCRIPTS)
 def test_assigned_production_merge_is_idempotent_and_native_compiles(script_name: str):
@@ -229,7 +335,14 @@ def test_assigned_production_merge_is_idempotent_and_native_compiles(script_name
     merged = _merge_script_method_patches(skeleton, patch)
 
     assert _merge_script_method_patches(merged, patch) == merged
-    assert Counter(_member_names(merged)) == Counter(_member_names(patch))
+    skeleton_members = Counter(_member_names(skeleton))
+    patch_members = Counter(_member_names(patch))
+    merged_members = Counter(_member_names(merged))
+    for member_name in patch_members:
+        assert merged_members[member_name] == 1
+        assert _member_body(merged, member_name) == _member_body(patch, member_name)
+    for member_name in skeleton_members.keys() - patch_members.keys():
+        assert merged_members[member_name] == skeleton_members[member_name]
 
     base_source = _fo4_base_source()
     assert base_source is not None, "FO4 base Papyrus sources unavailable"
@@ -246,10 +359,8 @@ def test_assigned_production_merge_is_idempotent_and_native_compiles(script_name
     assert result.pex_bytes is not None
 
 
-@pytest.mark.parametrize("script_name", (QF_000P, QF_001P, QF_002P, QF_003P, QF_004P))
-def test_each_still_partial_main_patch_keeps_one_plain_todo(script_name: str):
+@pytest.mark.parametrize("script_name", (QF_001P, QF_002P, QF_003P, QF_004P))
+def test_each_completed_main_patch_has_no_plain_todo(script_name: str):
     patch = _script_patch_source(script_name)
     assert patch is not None
-    assert [line for line in patch.splitlines() if line.strip() == "; TODO"] == [
-        "; TODO"
-    ]
+    assert not [line for line in patch.splitlines() if line.strip() == "; TODO"]

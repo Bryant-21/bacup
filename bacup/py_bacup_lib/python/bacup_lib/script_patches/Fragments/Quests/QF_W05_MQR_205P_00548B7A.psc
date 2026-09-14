@@ -1,5 +1,3 @@
-; TODO
-
 Function Fragment_Stage_0001_Item_00()
     ObjectReference initMarker = Alias_InitEnableMarker.GetReference()
     If initMarker != None
@@ -48,9 +46,6 @@ EndFunction
 
 Function Fragment_Stage_0300_Item_00()
     SetObjectiveDisplayed(300)
-    If W05_MQR_205P_0300_EnterVault != None && !W05_MQR_205P_0300_EnterVault.IsPlaying()
-        W05_MQR_205P_0300_EnterVault.Start()
-    EndIf
 EndFunction
 
 Function Fragment_Stage_0305_Item_00()
@@ -105,10 +100,18 @@ EndFunction
 
 Function Fragment_Stage_0550_Item_00()
     SetObjectiveDisplayed(500)
+    W05_MQR_205P_QuestScript owningQuestScript = (Self as Quest) as W05_MQR_205P_QuestScript
+    If owningQuestScript != None
+        owningQuestScript.KillJohnnyInSecurityRoom()
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0560_Item_00()
     SetObjectiveCompleted(500)
+    Actor playerRef = Alias_currentPlayer.GetActorReference()
+    If playerRef != None
+        playerRef.SetValue(W05_MQR_JohnnyDeadValue, 1.0)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0600_Item_00()
@@ -187,18 +190,16 @@ Function Fragment_Stage_0906_Item_00()
 EndFunction
 
 Function Fragment_Stage_0910_Item_00()
-    W05_MQR_205P_QuestScript owningQuestScript = Self as W05_MQR_205P_QuestScript
+    W05_MQR_205P_QuestScript owningQuestScript = (Self as Quest) as W05_MQR_205P_QuestScript
     If owningQuestScript != None && owningQuestScript.W05_MQR_205P_014_RaRa_OverseerVent03 != None && !owningQuestScript.W05_MQR_205P_014_RaRa_OverseerVent03.IsPlaying()
         owningQuestScript.W05_MQR_205P_014_RaRa_OverseerVent03.Start()
     EndIf
 EndFunction
 
 Function Fragment_Stage_0915_Item_00()
-    If Alias_AtriumRobotsWave01 != None
-        Alias_AtriumRobotsWave01.DisableAll()
-    EndIf
-    If !IsStageDone(920)
-        SetStage(920)
+    defaultquestencounterwavescript encounterWaves = (Self as Quest) as defaultquestencounterwavescript
+    If encounterWaves != None
+        encounterWaves.StartLocalEncounterWave(0)
     EndIf
 EndFunction
 
@@ -224,8 +225,9 @@ Function Fragment_Stage_0930_Item_00()
 EndFunction
 
 Function Fragment_Stage_0930_Item_01()
-    If Alias_AtriumRobotsWave01 != None
-        Alias_AtriumRobotsWave01.DisableAll()
+    defaultquestencounterwavescript encounterWaves = (Self as Quest) as defaultquestencounterwavescript
+    If encounterWaves != None
+        encounterWaves.StartLocalEncounterWave(1)
     EndIf
 EndFunction
 
@@ -234,8 +236,10 @@ Function Fragment_Stage_0940_Item_00()
 EndFunction
 
 Function Fragment_Stage_0940_Item_01()
-    If Alias_AtriumRobotsWave01 != None
-        Alias_AtriumRobotsWave01.DisableAll()
+    defaultquestencounterwavescript encounterWaves = (Self as Quest) as defaultquestencounterwavescript
+    If encounterWaves != None
+        encounterWaves.StartLocalEncounterWave(2)
+        encounterWaves.StartLocalEncounterWave(3)
     EndIf
 EndFunction
 
@@ -264,7 +268,7 @@ Function Fragment_Stage_1107_Item_00()
 EndFunction
 
 Function Fragment_Stage_1110_Item_00()
-    W05_MQR_205P_QuestScript owningQuestScript = Self as W05_MQR_205P_QuestScript
+    W05_MQR_205P_QuestScript owningQuestScript = (Self as Quest) as W05_MQR_205P_QuestScript
     If owningQuestScript != None && owningQuestScript.OptionalDoor != None
         ObjectReference optionalDoor = owningQuestScript.OptionalDoor.GetReference()
         If optionalDoor != None
@@ -336,14 +340,14 @@ EndFunction
 
 Function Fragment_Stage_1250_Item_00()
     SetObjectiveCompleted(1200)
+    If !IsStageDone(9000)
+        SetStage(9000)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
-    Actor playerRef = Alias_currentPlayer.GetActorReference()
-    If playerRef == None
-        playerRef = Game.GetPlayer()
-    EndIf
-    If W05_MQA_206P_QuestStart_Keyword != None
+    Actor playerRef = Game.GetPlayer()
+    If W05_MQA_206P_QuestStart_Keyword != None && playerRef != None
         W05_MQA_206P_QuestStart_Keyword.SendStoryEvent(None, playerRef, playerRef)
     EndIf
 EndFunction

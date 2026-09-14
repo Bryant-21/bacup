@@ -25,13 +25,27 @@ def build_outputs(
         and target_profile.id == "fo4"
         and {"diffuse", "reflectivity", "lighting"}.issubset(roles)
     )
+    # A `_l` with no `_r` sibling reaches neither the bundle nor the specular
+    # remix, yet the BGSM downgrade still promotes LightingTexture into FO4's
+    # GlowTexture slot. Emitting it as specular passes the packed gloss/AO RGB
+    # straight through, and the file then gets renamed to `_g` -- a glow map
+    # that is bright almost everywhere.
+    lone_lighting_is_glow = (
+        source_profile.id == "fo76"
+        and target_profile.id == "fo4"
+        and "lighting" in roles
+        and "reflectivity" not in roles
+    )
 
     for filepath, role in files_and_roles:
         if role is None:
             continue
         if is_fo76_to_fo4_bundle and role in {"reflectivity", "lighting"}:
             continue
-        out_role = _output_role(role, source_profile, target_profile)
+        if lone_lighting_is_glow and role == "lighting":
+            out_role = "glow"
+        else:
+            out_role = _output_role(role, source_profile, target_profile)
         if out_role is None:
             continue
         _append_output(

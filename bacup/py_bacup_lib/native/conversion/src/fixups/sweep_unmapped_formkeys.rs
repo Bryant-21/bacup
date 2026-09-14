@@ -1,7 +1,5 @@
 //! Fixup: replace FormKey references that still point at source-game plugins.
 //!
-
-//!
 //! # Decision tree (per source-plugin FK leaf)
 //! 1. **packed data** — local id matches the `is_packed_data_fk_hex` pattern → null.
 //! 2. **unreadable source record** — `read_record` fails on the source handle → null.
@@ -16,16 +14,12 @@
 //! 8. **weapon snowball gate** — non-creature root + sig in
 //!    `SWEEP_NULL_TYPES_FOR_WEAPON_ROOTS` + not a base-master vanilla_remap → null.
 //! 9. **apply resolution** — overwrite FK with resolved target FK.
-//! 10. **stub injection** — call the supplied stub-injector with a target-compatible
-//!     signature. On success, overwrite the FK with the freshly-allocated target
-//!     FK; on failure (or when the caller passes a no-op injector), null with a
-//!     warning so output stays valid. Mirrors Python `_inject_stub_record` via
-//!     the minimal-stub fallback path in `stub_injection::inject_minimal_stub`.
+//! 10. **stub injection** — call the supplied stub-injector (production:
+//!     `stub_injection::inject_minimal_stub`) with a target-compatible signature.
+//!     On success, overwrite the FK with the freshly-allocated target FK; on
+//!     failure (or a no-op injector), null with a warning so output stays valid.
 //!
-//! # Convergence
-//! Not convergent. One pass is enough because the mapper state does not change
-//! during the fixup (we never call `allocate_or_resolve` here), so a second pass
-//! would produce identical results.
+//! Not convergent: runs a single pass.
 
 use std::sync::OnceLock;
 
@@ -256,11 +250,124 @@ impl SweepUnmappedFormKeysFixup {
         };
 
         let defer_placed_child = config.defer_placed_child_ref_class;
+        let worklist_owners =
+            sweep_worklist_owners(&unresolved_refs_by_owner, supplemental_cobj_owners);
+
+        if !use_source_record_decision_tree {
+            use rayon::prelude::*;
+
+            const SWEEP_CHUNK_SIZE: usize = 65_536;
+
+            let owner_count = worklist_owners.len();
+            let mut deferred_skipped = 0u32;
+            eprintln!(
+                "[fixups_v2] sweep worklist owners={owner_count} mode=parallel chunk_size={SWEEP_CHUNK_SIZE}"
+            );
+
+            // A read view borrows the session, so each bounded chunk is fully
+            // inspected before its changed records are batch-written.
+            for (chunk_index, owner_chunk) in worklist_owners.chunks(SWEEP_CHUNK_SIZE).enumerate() {
+                let inspected = {
+                    let view = session
+                        .target_read_view()
+                        .map_err(|e| FixupError::HandleError(e.to_string()))?;
+                    let inspect = |record_fk: &FormKey| {
+                        let mut record = match view.record_decoded(
+                            record_fk,
+                            target_schema.as_ref(),
+                            mapper.interner,
+                        ) {
+                            Ok(record) => record,
+                            Err(error) => {
+                                return (
+                                    None,
+                                    0,
+                                    0,
+                                    Vec::new(),
+                                    Some(format!("sweep_worklist_read_err:{error}")),
+                                );
+                            }
+                        };
+
+                        let deferred = if defer_placed_child {
+                            let record_sig = record.sig.as_str();
+                            record
+                                .fields
+                                .iter()
+                                .filter(|entry| {
+                                    crate::fixups::null_dangling_own_plugin_refs::is_deferred_placed_child(
+                                        record_sig,
+                                        entry.sig.as_str(),
+                                    )
+                                })
+                                .count() as u32
+                        } else {
+                            0
+                        };
+                        let outcome = apply_known_unresolved_refs_to_record(
+                            &mut record,
+                            source_plugin_sym,
+                            null_plugin_sym,
+                            Some(output_plugin_sym),
+                            unresolved_refs_by_owner.get(record_fk),
+                            defer_placed_child,
+                            mapper,
+                        );
+
+                        (
+                            outcome.changed.then_some(record),
+                            outcome.nulled,
+                            deferred,
+                            outcome.warnings,
+                            None,
+                        )
+                    };
+
+                    if owner_chunk.len() < 64 {
+                        owner_chunk.iter().map(inspect).collect::<Vec<_>>()
+                    } else {
+                        owner_chunk.par_iter().map(inspect).collect::<Vec<_>>()
+                    }
+                };
+
+                let mut changed_records = Vec::new();
+                for (changed_record, nulled, deferred, warnings, read_error) in inspected {
+                    if let Some(message) = read_error {
+                        report.warnings.push(mapper.interner.intern(&message));
+                        continue;
+                    }
+                    changed_records.extend(changed_record);
+                    report.records_dropped += nulled;
+                    deferred_skipped += deferred;
+                    report.warnings.extend(warnings);
+                }
+
+                let replaced = session
+                    .replace_records_contents(
+                        changed_records,
+                        target_schema.as_ref(),
+                        mapper.interner,
+                    )
+                    .map_err(|e| FixupError::HandleError(e.to_string()))?;
+                report.records_changed += replaced.try_into().unwrap_or(u32::MAX);
+
+                let processed = ((chunk_index + 1) * SWEEP_CHUNK_SIZE).min(owner_count);
+                eprintln!(
+                    "[fixups_v2] sweep progress owners={processed}/{owner_count} changed={} nulled={}",
+                    report.records_changed, report.records_dropped
+                );
+            }
+
+            eprintln!(
+                "[trace_defer] sweep: defer_placed_child={defer_placed_child} deferred_skipped={deferred_skipped}"
+            );
+            return Ok(report);
+        }
+
         // Diagnostic count of LCTN LCEP/ACEP/LCUN entries left untouched by the
         // placed-child deferral (logged below; no behaviour).
         let mut deferred_skipped = 0u32;
-        for record_fk in sweep_worklist_owners(&unresolved_refs_by_owner, supplemental_cobj_owners)
-        {
+        for record_fk in worklist_owners {
             let mut record =
                 match session.record_decoded(&record_fk, target_schema.as_ref(), mapper.interner) {
                     Ok(r) => r,
@@ -287,35 +394,23 @@ impl SweepUnmappedFormKeysFixup {
                     .count() as u32;
             }
 
-            let outcome = if use_source_record_decision_tree {
-                apply_to_record_in_session(
-                    &mut record,
-                    source_plugin_sym,
-                    null_plugin_sym,
-                    false,
-                    Some(output_plugin_sym),
-                    unresolved_refs_by_owner.get(&record_fk),
-                    session,
-                    source_schema
-                        .as_ref()
-                        .expect("source schema for decision tree"),
-                    &config.skip_record_sigs,
-                    &target_master_names,
-                    creature_root,
-                    defer_placed_child,
-                    mapper,
-                )
-            } else {
-                apply_known_unresolved_refs_to_record(
-                    &mut record,
-                    source_plugin_sym,
-                    null_plugin_sym,
-                    Some(output_plugin_sym),
-                    unresolved_refs_by_owner.get(&record_fk),
-                    defer_placed_child,
-                    mapper,
-                )
-            };
+            let outcome = apply_to_record_in_session(
+                &mut record,
+                source_plugin_sym,
+                null_plugin_sym,
+                false,
+                Some(output_plugin_sym),
+                unresolved_refs_by_owner.get(&record_fk),
+                session,
+                source_schema
+                    .as_ref()
+                    .expect("source schema for decision tree"),
+                &config.skip_record_sigs,
+                &target_master_names,
+                creature_root,
+                defer_placed_child,
+                mapper,
+            );
 
             if outcome.changed {
                 let replaced = session
@@ -563,13 +658,12 @@ where
     let record_sig = record.sig.as_str().to_string();
     for field in record.fields.iter_mut() {
         // Whole-plugin FO76→FO4: leave the placed-ref-target class (LCTN
-        // LCEP/ACEP/LCUN) untouched. Their targets — exterior placed children
-        // (ACHR/REFR) — are in `skip_record_sigs`, so the rule-6 skip-record-type
-        // null would zero these source-ref leaves here. The exterior children are
-        // re-inserted by the phase-6 cell-slice copy AFTER all fixups, then the
-        // post-copy `null_dangling_own_plugin_refs::repair_placed_child_refs`
-        // resolves the LCEP/LCUN refs authoritatively. SWEEP is the FIRST fixup
-        // (runs before fix_invalid + null_dangling), so this is the real null site.
+        // LCEP/ACEP/LCUN) untouched. Its targets (exterior ACHR/REFR) are in
+        // `skip_record_sigs`, so rule 6 would null these leaves before the phase-6
+        // cell-slice copy re-inserts them after all fixups; the post-copy
+        // `null_dangling_own_plugin_refs::repair_placed_child_refs` resolves them.
+        // This sweep runs first (before fix_invalid + null_dangling), so this is the
+        // real null site.
         if defer_placed_child
             && crate::fixups::null_dangling_own_plugin_refs::is_deferred_placed_child(
                 &record_sig,
@@ -981,13 +1075,10 @@ fn decide_fk<F, I>(
         return;
     }
 
-    // Branch 10: no resolution. Try stub injection — mirrors Python
-    // `_inject_stub_record` via the minimal-stub fallback path. Source-only
-    // signatures are converted to target-compatible signatures before the
-    // injector sees them. On success the FK is overwritten with the freshly
-    // allocated target FK and the source→target mapping is registered on the
-    // mapper. On failure (e.g. the injector closure is a no-op or the
-    // underlying insert errored) fall back to the legacy null+warn behaviour.
+    // Branch 10: no resolution. Try stub injection with a target-compatible
+    // signature. On success the FK becomes the freshly allocated target FK and the
+    // source→target mapping is registered on the mapper; on failure (no-op
+    // injector or insert error) the leaf is nulled with a warning.
     let stub_sig = target_sig_for_source_sig(src_sig);
     if let Some(new_fk) = stub_injector(original_fk, &eid, stub_sig, mapper) {
         *fk = new_fk;
@@ -1066,24 +1157,6 @@ fn is_constructible_object_type(sig: SigCode) -> bool {
 }
 
 /// SigCodes that trigger the weapon/armor snowball gate.
-///
-/// Python uses Mutagen friendly names; this table maps each to its 4-byte sig:
-///   Keywords             → KYWD
-///   ImpactDataSets       → IPDS
-///   MaterialTypes        → MATT
-///   EquipTypes           → EQUP
-///   VoiceTypes           → VTYP
-///   BodyParts            → BPTD
-///   AnimationSoundTagSets → ASTS  (FO4 only)
-///   MovementTypes        → MOVT
-///   AimModels            → AMDL
-///   Zooms                → ZOOM
-///   InstanceNamingRules  → INNR
-///   AttachParentSlots    → AORU  (FO4 attach-point slot record)
-///   MagicEffects         → MGEF
-///   Spells               → SPEL
-///   ObjectEffects        → ENCH
-///   Perks                → PERK
 fn is_sweep_null_type_for_weapon_root(sig: SigCode) -> bool {
     static TABLE: OnceLock<FxHashSet<SigCode>> = OnceLock::new();
     let set = TABLE.get_or_init(|| {
@@ -2468,8 +2541,8 @@ mod tests {
 
     #[test]
     fn sweep_lctn_lcep_placed_child_nulled_when_not_deferred() {
-        // defer=false reproduces the OLD behavior: Branch-6 nulls the LCEP ref
-        // because the placed-child target sig (ACHR) is in skip_record_sigs.
+        // With defer=false, branch 6 nulls the LCEP ref because the placed-child
+        // target sig (ACHR) is in skip_record_sigs.
         let interner = StringInterner::new();
         let null_sym = interner.intern("__null__");
         let source_sym = interner.intern("SeventySix.esm");
@@ -2506,9 +2579,8 @@ mod tests {
 
     #[test]
     fn sweep_lctn_lcep_placed_child_deferred_left_intact() {
-        // defer=true is the FIX: the LCTN LCEP class is skipped entirely, so the
-        // source-ref leaf survives for the post-copy repair. FAILS on pre-fix
-        // code (Branch-6 always nulled it).
+        // With defer=true the LCTN LCEP class is skipped entirely, so the
+        // source-ref leaf survives for the post-copy repair.
         let interner = StringInterner::new();
         let null_sym = interner.intern("__null__");
         let source_sym = interner.intern("SeventySix.esm");

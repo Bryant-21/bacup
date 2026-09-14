@@ -4,6 +4,8 @@ from __future__ import annotations
 import numpy as np
 from imgui_bundle import imgui
 
+from creation_lib.ui.widgets.modern import expandable_section
+
 
 class OutputPanel:
     """Read-only YAML output of current scope alignment values."""
@@ -80,16 +82,16 @@ class OutputPanel:
         # World positions for additional bones
         positions = self._app._world_positions
         if positions:
-            if imgui.tree_node("All Bone Positions"):
-                for name in ["Root", "COM", "Pelvis", "Spine1", "Spine2", "Chest",
-                             "RArm_Collarbone", "RArm_UpperArm", "RArm_ForeArm1",
-                             "RArm_ForeArm2", "RArm_ForeArm3", "RArm_Hand",
-                             "Weapon", "WeaponBolt", "WeaponOptics1",
-                             "Camera", "Camera Control",
-                             "LArm_Hand", "Head", "Neck"]:
-                    if name in positions:
-                        px, py, pz = positions[name]
-                        imgui.text(f"{name:24s} ({px:9.4f}, {py:9.4f}, {pz:9.4f})")
-                imgui.tree_pop()
+            with expandable_section("All Bone Positions") as expanded:
+                if expanded:
+                    for name in ["Root", "COM", "Pelvis", "Spine1", "Spine2", "Chest",
+                                 "RArm_Collarbone", "RArm_UpperArm", "RArm_ForeArm1",
+                                 "RArm_ForeArm2", "RArm_ForeArm3", "RArm_Hand",
+                                 "Weapon", "WeaponBolt", "WeaponOptics1",
+                                 "Camera", "Camera Control",
+                                 "LArm_Hand", "Head", "Neck"]:
+                        if name in positions:
+                            px, py, pz = positions[name]
+                            imgui.text(f"{name:24s} ({px:9.4f}, {py:9.4f}, {pz:9.4f})")
 
         imgui.end()

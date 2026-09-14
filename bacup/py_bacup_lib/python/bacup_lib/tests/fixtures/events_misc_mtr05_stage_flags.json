@@ -1,0 +1,19 @@
+{
+  "form_id": "0006A379",
+  "editor_id": "MTR05_Mother",
+  "source": {
+    "500": ["CompleteQuest"],
+    "510": [],
+    "999": ["RunOnStop"]
+  },
+  "live": {
+    "500": ["CompleteQuest"],
+    "510": [],
+    "999": ["RunOnStop"]
+  },
+  "fragments": {
+    "500": "Fragment_Stage_0500_Item_00",
+    "510": "Fragment_Stage_0510_Item_00",
+    "999": "Fragment_Stage_0999_Item_00"
+  }
+}

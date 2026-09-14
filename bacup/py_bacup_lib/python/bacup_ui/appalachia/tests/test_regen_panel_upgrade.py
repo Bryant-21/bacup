@@ -80,6 +80,7 @@ def test_upgrade_on_build_options_sets_fields_with_auto_from(monkeypatch, tmp_pa
     options = panel.build_options()
 
     assert options.upgrade is True
+    assert options.hydrate_upgrade_from_deployed is True
     assert options.mod_version == "alpha2"  # manifest.current, no target override
     assert options.upgrade_from is None  # auto-detect, no override set
     from bacup_lib.upgrade_manifest import bundled_upgrade_manifest_path
@@ -87,14 +88,35 @@ def test_upgrade_on_build_options_sets_fields_with_auto_from(monkeypatch, tmp_pa
     assert options.upgrade_manifest_path == bundled_upgrade_manifest_path()
 
 
-def test_upgrade_off_leaves_full_build_path_unchanged(monkeypatch, tmp_path):
+def test_upgrade_uses_the_selected_deploy_format(monkeypatch, tmp_path):
+    expected = {
+        "expanded": ("expanded", False),
+        "standard": ("packed", False),
+        "loose": ("expanded", True),
+    }
+
+    for deploy_format, (ba2_mode, deploy_loose) in expected.items():
+        panel = _panel(monkeypatch, tmp_path, snam="alpha1")
+        panel.deploy_format = deploy_format
+        panel.upgrade = True
+
+        options = panel.build_options()
+
+        assert options.upgrade is True
+        assert options.hydrate_upgrade_from_deployed is True
+        assert options.ba2_mode == ba2_mode
+        assert options.deploy_loose is deploy_loose
+
+
+def test_full_build_stamps_current_manifest_version(monkeypatch, tmp_path):
     panel = _panel(monkeypatch, tmp_path, snam="alpha1")
     panel.upgrade = False
 
     options = panel.build_options()
 
     assert options.upgrade is False
-    assert options.mod_version is None
+    assert options.hydrate_upgrade_from_deployed is False
+    assert options.mod_version == "alpha2"
     assert options.upgrade_from is None
     assert options.upgrade_manifest_path is None
 
@@ -124,15 +146,18 @@ def test_non_fo76_pair_uses_pair_scoped_upgrade_manifest(monkeypatch, tmp_path):
     )
 
 
-def test_upgrade_plan_preview_reflects_resolved_families_and_swap_labels(monkeypatch, tmp_path):
+def test_upgrade_plan_preview_reflects_workspace_reuse_and_full_deploy(
+    monkeypatch, tmp_path
+):
     panel = _panel(monkeypatch, tmp_path, snam="alpha1")
     panel.upgrade = True
 
     preview = panel.upgrade_plan_preview()
 
     assert preview == (
-        "Will regenerate: Materials, Meshes -> "
-        "swap Materials, Meshes, MeshesExtra; reuse rest"
+        "Will regenerate: Materials, Meshes; reuse complete local loose assets or "
+        "restore them from the deployed BA2s; redeploy the complete mod as "
+        "Standard BA2s."
     )
 
 
@@ -148,7 +173,8 @@ def test_upgrade_plan_preview_repeats_target_scripts_when_current(monkeypatch, t
     panel.upgrade = True
 
     assert panel.upgrade_plan_preview() == (
-        "Will regenerate: Scripts -> swap Misc; reuse rest"
+        "Will regenerate: Scripts; reuse complete local loose assets or restore "
+        "them from the deployed BA2s; redeploy the complete mod as Standard BA2s."
     )
 
 
@@ -166,8 +192,9 @@ def test_upgrade_plan_preview_repeats_all_declared_target_families_when_current(
     panel.upgrade = True
 
     assert panel.upgrade_plan_preview() == (
-        "Will regenerate: Havok, NIFs, Scripts, Textures -> "
-        "swap Animations, Meshes, MeshesExtra, Misc, Textures; reuse rest"
+        "Will regenerate: Havok, NIFs, Scripts, Textures; reuse complete local "
+        "loose assets or restore them from the deployed BA2s; redeploy the complete "
+        "mod as Standard BA2s."
     )
 
 

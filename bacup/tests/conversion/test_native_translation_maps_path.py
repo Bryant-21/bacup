@@ -12,6 +12,7 @@ def test_native_translation_maps_dir_resolves_embedded_native_maps() -> None:
     assert (maps_dir / "fo76_to_fo4.yaml").is_file()
     assert (maps_dir / "events_fo76_to_fo4.yaml").is_file()
     assert (maps_dir / "skeleton_fnv_to_fo4_creatures.yaml").is_file()
+    assert (maps_dir / "skeleton_skyrimse_to_fo4.yaml").is_file()
 
 
 def test_native_translation_maps_dir_supports_packaged_resource_override(tmp_path, monkeypatch) -> None:

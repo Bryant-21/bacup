@@ -23,7 +23,11 @@ PATCH_CASES = {
     "DefaultSequentialStateActivator": {
         "pex": "defaultsequentialstateactivator.pex",
         "members": {
-            ("event", "onsyncvariablenetworkchanged"),
+            # OnSyncVariableNetworkChanged is a FO76-only engine event; the stock FO4
+            # compiler rejects it, so the patch drops it and re-homes the body into
+            # SetCurrentState()/AdvanceState().
+            ("function", "setcurrentstate"),
+            ("function", "advancestate"),
             ("event", "onload"),
         },
     },
@@ -93,9 +97,10 @@ def test_client_side_state_lookup_preserves_default_and_rejects_unknown_names():
 def test_sequential_state_handlers_guard_empty_and_invalid_arrays_before_indexing():
     merged = _merged_source("DefaultSequentialStateActivator")
     assert merged.count("Event OnLoad()") == 1
-    assert merged.count("Event OnSyncVariableNetworkChanged(String varName)") == 1
-    assert merged.count("States == None || States.Length == 0") == 2
-    assert merged.count("stateIndex = StartState") == 2
+    assert "OnSyncVariableNetworkChanged" not in merged
+    assert merged.count("Function SetCurrentState(Int newState)") == 1
+    assert merged.count("States == None || States.Length == 0") == 3
+    assert merged.count("stateIndex = StartState") == 1
     assert "currentState = stateIndex" not in merged
     assert merged.count("clientState = stateIndex") == 2
     assert "PlayAnimation(States[stateIndex].IdleAnim)" in merged

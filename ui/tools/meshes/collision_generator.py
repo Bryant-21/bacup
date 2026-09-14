@@ -7,9 +7,11 @@ import os
 
 from imgui_bundle import imgui
 
+from creation_lib.ui.widgets.modern import expandable_section
+
 from ui.tools.base import BaseTool
 from creation_lib.ui.widgets import pick_folder
-from ui.tools.imgui_helpers import begin_form, end_form, draw_path_row, draw_run_cancel_buttons, pick_file
+from creation_lib.ui.widgets.forms import begin_form, end_form, draw_path_row, draw_run_cancel_buttons, pick_file
 
 _log = logging.getLogger("tools.collision_gen")
 
@@ -54,7 +56,6 @@ class CollisionGeneratorTool(BaseTool):
         self._replace_existing = True
 
         # Preview state
-        self._preview_open = False
         self._preview_parts: list[dict] = []
         self._preview_unmatched: list[str] = []
 
@@ -191,25 +192,25 @@ class CollisionGeneratorTool(BaseTool):
 
         # --- Preview ---
         imgui.separator_text("Preview")
-        _, self._preview_open = imgui.collapsing_header("Preview Results", self._preview_open)
-        if self._preview_open:
-            if imgui.button("Preview Single NIF"):
-                self._run_preview()
+        with expandable_section("Preview Results") as expanded:
+            if expanded:
+                if imgui.button("Preview Single NIF"):
+                    self._run_preview()
 
-            if self._preview_parts:
-                imgui.text(f"Detected {len(self._preview_parts)} part(s):")
-                for p in self._preview_parts:
-                    imgui.bullet_text(
-                        f"{p['name']} -> {p['pattern']} ({p['shape']}) "
-                        f"[{p['meshes']} mesh(es), {p['verts']} verts]"
-                    )
-                if self._preview_unmatched:
-                    imgui.spacing()
-                    imgui.text_colored(imgui.ImVec4(0.7, 0.7, 0.3, 1.0), "Unmatched nodes:")
-                    for name in self._preview_unmatched:
-                        imgui.bullet_text(name)
-            elif self._preview_parts is not None and len(self._preview_parts) == 0 and self._input_path:
-                imgui.text_disabled("No parts detected. Check mappings and grouping mode.")
+                if self._preview_parts:
+                    imgui.text(f"Detected {len(self._preview_parts)} part(s):")
+                    for p in self._preview_parts:
+                        imgui.bullet_text(
+                            f"{p['name']} -> {p['pattern']} ({p['shape']}) "
+                            f"[{p['meshes']} mesh(es), {p['verts']} verts]"
+                        )
+                    if self._preview_unmatched:
+                        imgui.spacing()
+                        imgui.text_colored(imgui.ImVec4(0.7, 0.7, 0.3, 1.0), "Unmatched nodes:")
+                        for name in self._preview_unmatched:
+                            imgui.bullet_text(name)
+                elif self._preview_parts is not None and len(self._preview_parts) == 0 and self._input_path:
+                    imgui.text_disabled("No parts detected. Check mappings and grouping mode.")
 
         imgui.spacing()
         imgui.separator()

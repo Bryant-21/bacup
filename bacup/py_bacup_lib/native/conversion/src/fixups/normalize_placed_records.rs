@@ -1,31 +1,16 @@
 //! Post-copy normalization for placed records copied verbatim into cell slices.
 //!
-//! # Why this exists
 //! The cell-bounded conversion copies placed children (REFR/ACHR/PGRE/PHZD/PGRD)
-//! directly from the FO76 source handle into target cells
-//! (`esp_authoring_core::cell_slice::plugin_handle_copy_cell_slice_children`),
-//! applying only FormID remap + position offset. That path BYPASSES the
-//! translate + apply_fixups pipeline, so the copied placed records keep FO76
-//! values that crash FO4 on cell load:
-//!   - out-of-domain enums (XLCM "$7000001") and unmasked flag bits (XRDO),
-//!   - dangling / wild FormID pointers in placed-record fields.
+//! straight from the FO76 source into target cells
+//! (`esp_authoring_core::cell_slice::plugin_handle_copy_cell_slice_children`) with
+//! only FormID remap and position offset, bypassing translate + fixups. The copies
+//! keep FO76 values that crash FO4 on cell load: out-of-domain enums (XLCM
+//! "$7000001"), unmasked flag bits (XRDO), and dangling or wild FormIDs.
 //!
-//! This pass runs AFTER the copy, over the placed records now present in the
-//! TARGET handle, reusing existing normalization logic (no duplication):
-//!   1. `class_a_normalize::normalize_flags_and_enums` — flag mask + enum clamp
-//!      (clears XLCM out-of-domain enum, XRDO flag bits). Already per-record.
-//!   2. `rewrite_placed_ref_location_record` — XLCN/XCZC/XLRT normalization. The
-//!      XEZN→LCTN pointer is NO LONGER stripped here: the encounter-zone
-//!      synthesis pass (which runs after this one) repoints placed XEZN→LCTN to
-//!      the LCTN's synthesized ECZN, so XEZN must survive this pass intact. Any
-//!      XEZN the shared rewrite would strip is captured and restored in place.
-//!   3. Raw zero-master local refs in placed-only subrecords (XLKR/XAPR/etc.)
-//!      are rebound to the output plugin when that object-id exists there. This
-//!      catches paths that copied FO76-local `00xxxxxx` payloads after the normal
-//!      mapper pass.
-//!   4. (keystone-gated) wild-pointer null/strip for placed FormID fields via
-//!      the schema struct-field layout + metadata-driven action — not wired
-//!      here yet.
+//! This pass runs over the target after the copy, reusing the shared normalizers.
+//! Raw zero-master local refs in placed-only subrecords (XLKR/XAPR/...) are rebound
+//! to the output plugin when that object-id exists there. XEZN is preserved: the
+//! later encounter-zone synthesis repoints placed XEZN→LCTN to the synthesized ECZN.
 
 use bytes::Bytes;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -47,7 +32,6 @@ use crate::ids::SigCode;
 use crate::session::{PluginSession, open_session};
 use crate::sym::StringInterner;
 use crate::translator::class_a_normalize::normalize_flags_and_enums;
-use crate::translator::pair_hooks::fo76_fo4::namespace_fo76_radio_frequency;
 
 /// Outcome counters for the placed-record normalization pass.
 #[derive(Debug, Default, Clone, Copy)]
@@ -56,7 +40,6 @@ pub struct PlacedNormalizeReport {
     pub records_changed: u32,
     pub xezn_stripped: u32,
     pub class_a_changed: u32,
-    pub loc_ref_types_stripped: u32,
     /// Struct-internal wild/wrong-type FK slots nulled.
     pub wild_pointers_nulled: u32,
     /// XLKR linked-ref subrecords dropped because their keyword/ref is genuinely
@@ -170,12 +153,9 @@ fn raw_xalg_flags(record: &ParsedRecord) -> u64 {
         })
 }
 
-/// Normalize every placed-signature record currently in the target plugin
-/// handle. Idempotent: re-running on already-normalized records is a no-op.
-///
-/// `placed_signatures` is the set of placed child sigs to walk (e.g.
-/// `["REFR","ACHR","PGRE","PHZD","PGRD"]`); sigs lacking flag/enum/XEZN fields
-/// are harmless no-ops. `class_a_normalize` / the XEZN strip already self-gate.
+/// Normalize every placed-signature record in the target handle. Idempotent.
+/// `placed_signatures` lists the placed child sigs to walk (e.g.
+/// `["REFR","ACHR","PGRE","PHZD","PGRD"]`); sigs without flag/enum/XEZN fields are no-ops.
 pub fn normalize_copied_placed_records(
     target_handle_id: u64,
     placed_signatures: &[String],
@@ -183,7 +163,14 @@ pub fn normalize_copied_placed_records(
     let interner = StringInterner::new();
     let mut session =
         open_session(target_handle_id, None).map_err(|e| FixupError::HandleError(e.to_string()))?;
+    normalize_copied_placed_records_in_session(&mut session, &interner, placed_signatures)
+}
 
+pub(crate) fn normalize_copied_placed_records_in_session(
+    session: &mut PluginSession,
+    interner: &StringInterner,
+    placed_signatures: &[String],
+) -> Result<PlacedNormalizeReport, FixupError> {
     let schema = session
         .schema()
         .map_err(|e| FixupError::HandleError(e.to_string()))?;
@@ -193,15 +180,11 @@ pub fn normalize_copied_placed_records(
     // Encoded target FK → sig index, for the XEZN→ECZN type check. The placed
     // records are already remapped, so we resolve against the target plugin's
     // own records + masters.
-    let target_sigs_by_encoded =
-        target_record_sigs_by_encoded_form_id(&mut session, &interner, &target_masters)?;
-    let forced_loc_ref_type_bases =
-        collect_forced_loc_ref_type_bases(&session.target_slot().parsed.root_items);
-
+    let target_sigs_by_encoded = target_record_sigs_by_encoded_form_id(session, &target_masters)?;
     // Post-copy: refs are already target-encoded, so there is no source remap.
     let empty_encoded_targets: FxHashMap<u32, u32> = FxHashMap::default();
-    // Master validity is permissive here — re-validating/nulling dangling target
-    // masters is the wild-pointer step (Phase 2, keystone-gated), not this pass.
+    // Master validity is permissive: this pass does not re-validate or null refs
+    // into target masters.
     let mut always_valid = |_raw: u32| true;
 
     let mut report = PlacedNormalizeReport::default();
@@ -220,7 +203,7 @@ pub fn normalize_copied_placed_records(
             continue;
         };
         let fks = session
-            .form_keys_of_sig(sig, &interner)
+            .form_keys_of_sig(sig, interner)
             .map_err(|e| FixupError::HandleError(e.to_string()))?;
 
         for fk in fks {
@@ -231,20 +214,14 @@ pub fn normalize_copied_placed_records(
                     Err(_) => continue,
                 };
                 let xprm_relaid_out = relayout_short_fo76_xprm_subrecords(raw_record);
-                let radio_namespaced = namespace_fo76_radio_transmitter_frequency(raw_record);
                 let remapped = remap_placed_raw_local_ref_subrecords(
                     raw_record,
                     output_own_prefix,
                     &target_sigs_by_encoded,
                 );
                 let ownership_xown = normalize_ownership_xown_subrecords(raw_record);
-                let stripped = strip_xlrt_when_base_has_forced_loc_ref_type(
-                    raw_record,
-                    &forced_loc_ref_type_bases,
-                );
                 report.empty_xown_stripped += ownership_xown.empty_stripped;
                 report.xown_no_crime_defaulted += ownership_xown.no_crime_defaulted;
-                report.loc_ref_types_stripped += stripped;
                 // Runs AFTER remap so valid 0x00-master XLKR refs are already
                 // rebound; only genuinely-dangling own refs remain to drop.
                 let xlkr_dropped = drop_dangling_xlkr_subrecords(
@@ -253,12 +230,7 @@ pub fn normalize_copied_placed_records(
                     &target_sigs_by_encoded,
                 );
                 report.dangling_xlkr_dropped += xlkr_dropped;
-                xprm_relaid_out
-                    + radio_namespaced
-                    + remapped
-                    + ownership_xown.changed()
-                    + stripped
-                    + xlkr_dropped
+                xprm_relaid_out + remapped + ownership_xown.changed() + xlkr_dropped
             };
             let raw_changed = raw_normalized > 0;
             if raw_changed {
@@ -267,25 +239,21 @@ pub fn normalize_copied_placed_records(
                 });
             }
 
-            let mut record = match session.record_decoded(&fk, schema.as_ref(), &interner) {
+            let mut record = match session.record_decoded(&fk, schema.as_ref(), interner) {
                 Ok(r) => r,
                 Err(_) => continue,
             };
             report.records_seen += 1;
 
             // 1. Flag mask + enum clamp (XLCM out-of-domain enum, XRDO flags).
-            let class_a = normalize_flags_and_enums(&mut record, schema.as_ref(), &interner);
+            let class_a = normalize_flags_and_enums(&mut record, schema.as_ref(), interner);
             let class_a_changed = !class_a.decisions.is_empty();
 
-            // 2. XLCN/XCZC/XLRT normalization on placed refs. XEZN is NO LONGER
-            // stripped here: the encounter-zone synthesis pass repoints placed
-            // XEZN→LCTN to the LCTN's synthesized ECZN (and strips only the
-            // residual non-ECZN targets). It runs AFTER this normalize, so the
-            // XEZN must survive intact. `rewrite_placed_ref_location_record` would
-            // otherwise strip a wrong-type XEZN, so capture it (with its original
-            // field position) and restore it in place if that call removed it (the
-            // call never rewrites XEZN here — `encoded_targets` is empty — it only
-            // validates/strips).
+            // 2. XLCN/XCZC/XLRT normalization on placed refs. XEZN must survive: the
+            // later encounter-zone synthesis repoints placed XEZN→LCTN to the LCTN's
+            // synthesized ECZN and strips only residual non-ECZN targets. With empty
+            // `encoded_targets`, `rewrite_placed_ref_location_record` can only strip
+            // a wrong-type XEZN, so it is restored at its original position.
             let saved_xezn = record
                 .fields
                 .iter()
@@ -304,12 +272,10 @@ pub fn normalize_copied_placed_records(
             }
             let xezn_changed = location_changed;
 
-            // 3. Wild/wrong-type struct-internal FK null — placed
-            //    records carry struct-codec FK fields (e.g. linked-ref data)
-            //    whose FO76 targets may be wrong-typed in FO4. Null them where
-            //    NULL is allowed so the engine doesn't dereference a wild ptr.
-            // form_version unions are rare on placed-record struct FK fields;
-            // None selects the legacy/first variant (correct for these).
+            // 3. Null wild or wrong-typed struct-internal FKs (e.g. linked-ref data)
+            //    where NULL is allowed, so the engine doesn't dereference a wild
+            //    pointer. None selects the first form_version variant, which is
+            //    correct for placed-record struct FK fields.
             let struct_fk = validate_struct_fk_fields(&mut record, schema.as_ref(), None, &|raw| {
                 target_sigs_by_encoded.get(&raw).copied()
             });
@@ -330,7 +296,7 @@ pub fn normalize_copied_placed_records(
                 if pending.len() >= FLUSH_CHUNK {
                     let chunk = std::mem::take(&mut pending);
                     session
-                        .replace_records_contents(chunk, schema.as_ref(), &interner)
+                        .replace_records_contents(chunk, schema.as_ref(), interner)
                         .map_err(|e| FixupError::HandleError(e.to_string()))?;
                 }
             }
@@ -339,35 +305,11 @@ pub fn normalize_copied_placed_records(
 
     if !pending.is_empty() {
         session
-            .replace_records_contents(pending, schema.as_ref(), &interner)
+            .replace_records_contents(pending, schema.as_ref(), interner)
             .map_err(|e| FixupError::HandleError(e.to_string()))?;
     }
 
     Ok(report)
-}
-
-fn namespace_fo76_radio_transmitter_frequency(record: &mut ParsedRecord) -> u32 {
-    if record.signature.as_str() != "REFR" {
-        return 0;
-    }
-    let mut changed = 0;
-    for subrecord in &mut record.subrecords {
-        if subrecord.signature.as_str() != "XRDO" || subrecord.data.len() < 4 {
-            continue;
-        }
-        let mut data = subrecord.data.to_vec();
-        let mut frequency =
-            f32::from_le_bytes(data[..4].try_into().expect("XRDO frequency prefix"));
-        if namespace_fo76_radio_frequency(&mut frequency) {
-            data[..4].copy_from_slice(&frequency.to_le_bytes());
-            subrecord.data = Bytes::from(data);
-            changed += 1;
-        }
-    }
-    if changed > 0 {
-        record.raw_payload = None;
-    }
-    changed
 }
 
 fn relayout_short_fo76_xprm_subrecords(record: &mut ParsedRecord) -> u32 {
@@ -402,54 +344,12 @@ fn relayout_short_fo76_xprm_subrecords(record: &mut ParsedRecord) -> u32 {
     changed
 }
 
-fn collect_forced_loc_ref_type_bases(items: &[ParsedItem]) -> FxHashSet<u32> {
-    let mut out = FxHashSet::default();
-    collect_forced_loc_ref_type_bases_in_items(items, &mut out);
-    out
-}
-
-fn collect_forced_loc_ref_type_bases_in_items(items: &[ParsedItem], out: &mut FxHashSet<u32>) {
-    for item in items {
-        match item {
-            ParsedItem::Record(record) => {
-                let subrecords = effective_subrecords_for_record(record);
-                if subrecords
-                    .iter()
-                    .any(|subrecord| subrecord.signature.as_str() == "FTYP")
-                {
-                    out.insert(record.form_id);
-                }
-            }
-            ParsedItem::Group(group) => {
-                collect_forced_loc_ref_type_bases_in_items(&group.children, out);
-            }
-        }
-    }
-}
-
-fn strip_xlrt_when_base_has_forced_loc_ref_type(
-    record: &mut ParsedRecord,
-    forced_loc_ref_type_bases: &FxHashSet<u32>,
-) -> u32 {
-    if !matches!(record.signature.as_str(), "ACHR" | "REFR" | "PGRE" | "PHZD") {
-        return 0;
-    }
-    let Some(base) = raw_subrecord_form_id(record, "NAME") else {
-        return 0;
-    };
-    if !forced_loc_ref_type_bases.contains(&base) {
-        return 0;
-    }
-    let before = record.subrecords.len();
-    record
-        .subrecords
-        .retain(|subrecord| subrecord.signature.as_str() != "XLRT");
-    let removed = before.saturating_sub(record.subrecords.len()) as u32;
-    if removed > 0 {
-        record.raw_payload = None;
-    }
-    removed
-}
+// A placed ref's XLRT is kept even when its base carries FTYP. FO4 resolves
+// quest-alias "Find Matching Reference: in <location alias>, with LocRefType X"
+// from the ref's own XLRT (see `backfill_placed_loc_ref_types`); base FTYP does not
+// substitute. A non-optional alias that cannot fill makes FO4 refuse to start the
+// quest, with no log line. Example: `W05_MQ_001P_Wayward` (405E14), whose Mort alias
+// wants reftype 405EAE; base 405EAB has `FTYP = 405EAE` and still filled as NONE.
 
 /// Record signatures whose copied ownership payload must match FO4's
 /// owner-formid + No-Crime byte layout.
@@ -560,18 +460,6 @@ fn normalize_ownership_xown_subrecords(record: &mut ParsedRecord) -> OwnershipXo
     report
 }
 
-fn raw_subrecord_form_id(record: &ParsedRecord, sig: &str) -> Option<u32> {
-    record
-        .subrecords
-        .iter()
-        .find(|subrecord| subrecord.signature.as_str() == sig)
-        .and_then(|subrecord| {
-            let data = subrecord.data.as_ref();
-            let bytes = data.get(0..4)?;
-            Some(u32::from_le_bytes(bytes.try_into().ok()?))
-        })
-}
-
 /// Drop XLKR (linked-reference) subrecords whose own-plugin keyword or linked
 /// ref is absent from the fully-assembled target.
 ///
@@ -638,6 +526,11 @@ fn remap_placed_raw_local_ref_subrecords(
     let mut remapped = 0;
     for subrecord in record.subrecords.iter_mut() {
         let sig = subrecord.signature.as_str();
+        if !matches!(sig, "XLRT" | "XLKR" | "XLOC" | "XPLK" | "XESP" | "XAPR")
+            && placed_local_ref_offsets(sig).is_empty()
+        {
+            continue;
+        }
         let mut data = subrecord.data.to_vec();
         let mut subrecord_remapped = 0;
         if sig == "XLRT" {
@@ -809,6 +702,57 @@ mod tests {
     }
 
     #[test]
+    fn raw_local_ref_remap_preserves_unrelated_and_malformed_payloads() {
+        let own_prefix = 0x0700_0000;
+        let mut target_sigs = FxHashMap::default();
+        target_sigs.insert(own_prefix | 0x0012_3456, SigCode(*b"KYWD"));
+        target_sigs.insert(own_prefix | 0x0065_4321, SigCode(*b"REFR"));
+        target_sigs.insert(own_prefix | 0x0000_0042, SigCode(*b"KEYM"));
+
+        let mut xlkr = Vec::new();
+        xlkr.extend_from_slice(&0x0012_3456_u32.to_le_bytes());
+        xlkr.extend_from_slice(&0x0065_4321_u32.to_le_bytes());
+        let mut xloc = vec![0; 4];
+        xloc.extend_from_slice(&0x0000_0042_u32.to_le_bytes());
+        xloc.extend_from_slice(&[0xAA; 4]);
+        let mut placed = record(vec![
+            subrecord("EDID", vec![0x41; 1024]),
+            subrecord("ZZZZ", vec![0xCC; 7]),
+            subrecord("XTEL", vec![0xDD; 3]),
+            subrecord("XLKR", xlkr),
+            subrecord("XLOC", xloc),
+            subrecord("VMAD", vec![0x5A; 512]),
+        ]);
+        let unrelated = [
+            placed.subrecords[0].data.clone(),
+            placed.subrecords[1].data.clone(),
+            placed.subrecords[2].data.clone(),
+            placed.subrecords[5].data.clone(),
+        ];
+
+        let remapped = remap_placed_raw_local_ref_subrecords(&mut placed, own_prefix, &target_sigs);
+
+        assert_eq!(remapped, 3);
+        assert!(placed.raw_payload.is_none());
+        assert_eq!(placed.subrecords[0].data, unrelated[0]);
+        assert_eq!(placed.subrecords[1].data, unrelated[1]);
+        assert_eq!(placed.subrecords[2].data, unrelated[2]);
+        assert_eq!(placed.subrecords[5].data, unrelated[3]);
+        assert_eq!(
+            u32::from_le_bytes(placed.subrecords[3].data[0..4].try_into().unwrap()),
+            0x0712_3456
+        );
+        assert_eq!(
+            u32::from_le_bytes(placed.subrecords[3].data[4..8].try_into().unwrap()),
+            0x0765_4321
+        );
+        assert_eq!(
+            u32::from_le_bytes(placed.subrecords[4].data[4..8].try_into().unwrap()),
+            0x0700_0042
+        );
+    }
+
+    #[test]
     fn post_copy_lod_normalizer_repairs_every_fo76_refr_flag_combination() {
         let cases = [
             (0x0010_0000, 0x0000_0500, 0x0000_2000_u64, 0x0000_0400),
@@ -884,21 +828,34 @@ mod tests {
     }
 
     #[test]
-    fn namespaces_fo76_radio_transmitter_frequency_once() {
+    fn copied_placed_normalizer_preserves_fo76_radio_frequency() {
+        let target = plugin_handle_new_native("Converted.esm", Some("fo4")).unwrap();
         let mut transmitter = vec![0_u8; 16];
         transmitter[..4].copy_from_slice(&98.2_f32.to_le_bytes());
         let mut placed = record(vec![subrecord("XRDO", transmitter)]);
+        placed.form_id = 0x0015_781F;
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            store.get_mut(&target).unwrap().parsed.root_items = vec![ParsedItem::Record(placed)];
+        }
 
-        assert_eq!(namespace_fo76_radio_transmitter_frequency(&mut placed), 1);
-        let once = placed.subrecords[0].data.clone();
-        assert_eq!(namespace_fo76_radio_transmitter_frequency(&mut placed), 0);
+        let report = normalize_copied_placed_records(target, &["REFR".to_string()]).unwrap();
 
-        assert_eq!(placed.subrecords[0].data, once);
-        assert!(placed.raw_payload.is_none());
+        assert_eq!(report.records_seen, 1);
+        let mut session = open_session(target, None).unwrap();
+        let transmitter = session
+            .record_mut(0x0015_781F)
+            .unwrap()
+            .subrecords
+            .iter()
+            .find(|subrecord| subrecord.signature.as_str() == "XRDO")
+            .expect("radio transmitter data survives placed normalization");
         assert_eq!(
-            f32::from_le_bytes(placed.subrecords[0].data[..4].try_into().unwrap()),
-            98.2 + crate::translator::pair_hooks::fo76_fo4::FO76_RADIO_FREQUENCY_NAMESPACE_OFFSET
+            f32::from_le_bytes(transmitter.data[..4].try_into().unwrap()),
+            98.2
         );
+        drop(session);
+        assert!(plugin_handle_close_native(target));
     }
 
     #[test]
@@ -1275,37 +1232,17 @@ mod tests {
     }
 
     #[test]
-    fn strips_xlrt_when_base_has_forced_loc_ref_type() {
-        let mut forced_bases = FxHashSet::default();
-        forced_bases.insert(0x0708F6B7);
+    fn keeps_xlrt_even_when_base_has_forced_loc_ref_type() {
+        // FO4 fills location-scoped quest aliases from the REF's XLRT, not from
+        // the base's FTYP, so normalization must leave XLRT alone regardless.
         let mut placed = record(vec![
             subrecord("NAME", 0x0708F6B7_u32.to_le_bytes().to_vec()),
             subrecord("XLRT", 0x073D4B0D_u32.to_le_bytes().to_vec()),
         ]);
 
-        let stripped = strip_xlrt_when_base_has_forced_loc_ref_type(&mut placed, &forced_bases);
+        let ownership = normalize_ownership_xown_subrecords(&mut placed);
 
-        assert_eq!(stripped, 1);
-        assert!(placed.raw_payload.is_none());
-        assert!(
-            placed
-                .subrecords
-                .iter()
-                .all(|subrecord| subrecord.signature.as_str() != "XLRT")
-        );
-    }
-
-    #[test]
-    fn keeps_xlrt_when_base_has_no_forced_loc_ref_type() {
-        let forced_bases = FxHashSet::default();
-        let mut placed = record(vec![
-            subrecord("NAME", 0x0708F6B7_u32.to_le_bytes().to_vec()),
-            subrecord("XLRT", 0x073D4B0D_u32.to_le_bytes().to_vec()),
-        ]);
-
-        let stripped = strip_xlrt_when_base_has_forced_loc_ref_type(&mut placed, &forced_bases);
-
-        assert_eq!(stripped, 0);
+        assert_eq!(ownership.changed(), 0);
         assert!(placed.raw_payload.is_some());
         assert!(
             placed

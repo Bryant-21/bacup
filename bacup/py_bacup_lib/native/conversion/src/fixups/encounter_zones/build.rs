@@ -70,7 +70,7 @@ pub fn rebuild_keyword_fields(
             KW_SETTLEMENT,
             KW_CLEARABLE,
         ],
-        WorkshopClass::Shelter => &[KW_WORKSHOP, KW_CLEARABLE],
+        WorkshopClass::Shelter => &[KW_CLEARABLE],
         WorkshopClass::NonWorkshop => return,
     };
     let mut kept: Vec<FormKey> = Vec::new();
@@ -272,7 +272,8 @@ mod tests {
                 _ => panic!(),
             })
             .collect();
-        assert!(locals.contains(&KW_WORKSHOP) && locals.contains(&KW_CLEARABLE));
+        assert!(locals.contains(&KW_CLEARABLE));
+        assert!(!locals.contains(&KW_WORKSHOP));
         assert!(!locals.contains(&KW_WORKSHOP_SETTLEMENT) && !locals.contains(&KW_SETTLEMENT));
         assert!(!locals.contains(&0x900001));
     }

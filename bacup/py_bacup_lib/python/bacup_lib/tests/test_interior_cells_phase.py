@@ -1,13 +1,10 @@
 """Tests for --include-interior / --carry-interior-previs CLI+Python plumbing.
 
-Verifies that:
-1. `PluginPortOptions` exposes the two new bool fields.
-2. The unified workflow calls run_phase("convert_interior_cells", ...) when
-   include_interior=True (the default), and skips it when opted out.
-3. carry_interior_previs is forwarded as params["carry_previs"].
-
-These tests do NOT hit the native dispatcher — run_phase is mocked on the
-stub rust_run object attached to the conversion context.
+`PluginPortOptions` carries both bool fields; the unified workflow calls
+run_phase("convert_interior_cells", ...) when include_interior=True (the default)
+and skips it when opted out; carry_interior_previs is forwarded as
+params["carry_previs"]. run_phase is mocked on the stub rust_run object, so the
+native dispatcher is never hit.
 """
 from __future__ import annotations
 

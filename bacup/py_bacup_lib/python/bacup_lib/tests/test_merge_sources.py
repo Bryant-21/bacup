@@ -113,7 +113,7 @@ def test_merge_sources_native_roundtrip(tmp_path: Path) -> None:
         "fo3",
         [("GLOB", 0x9900, "TimeScale"), ("FACT", 0x9A00, "FO3Faction")],
     )
-    output = tmp_path / "FNV_FO3_Merged.esm"
+    output = tmp_path / "FalloutNV.esm"
     report_path = tmp_path / "merge_report.json"
 
     report = load_native_module().conversion_merge_sources(
@@ -135,7 +135,7 @@ def test_merge_sources_native_roundtrip(tmp_path: Path) -> None:
 def test_merge_sources_preserves_four_byte_inline_lstring(tmp_path: Path) -> None:
     primary = tmp_path / "FalloutNV.esm"
     _write_nonlocalized_named_plugin(primary, "Cup")
-    output = tmp_path / "FNV_FO3_Merged.esm"
+    output = tmp_path / "FalloutNV.esm"
 
     load_native_module().conversion_merge_sources(
         {

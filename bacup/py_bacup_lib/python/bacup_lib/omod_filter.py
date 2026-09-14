@@ -1,19 +1,15 @@
 """Shared engine-semantics gate for OMOD relationship passes.
 
-OMOD relationship discovery can over-approximate because records may
-touch overlapping FormKeys without being selectable on the same weapon.
-This module supplies the gate that mirrors what the FO4 workbench engine
-actually does at runtime:
+OMOD relationship discovery over-approximates: records can share FormKeys without
+being selectable on the same weapon. This gate mirrors the FO4 workbench check:
 
-  (a) ``AttachPoint`` matches one of the slots the weapon already
-      exposes (collected from forward-walked OMODs' AttachPoint fields).
-  (b) ``TargetOmodKeywords`` is a SUBSET of the weapon's ``Keywords`` —
-      every listed keyword must be present on the weapon, not merely
-      one of them.
+  (a) ``AttachPoint`` is one of the slots the weapon exposes (from forward-walked
+      OMODs' AttachPoint fields).
+  (b) ``TargetOmodKeywords`` is a SUBSET of the weapon's ``Keywords``; every
+      listed keyword must be present.
 
-Without (a)+(b) the lookup pulls hundreds of unrelated OMODs whenever
-the weapon shares a generic capability tag like FO76 ``ma_Gun_Appearance``
-(present on 592+ records — every paintable gun in the game).
+Without both, a generic capability tag like FO76 ``ma_Gun_Appearance`` (on 592+
+records, every paintable gun) pulls hundreds of unrelated OMODs.
 """
 from __future__ import annotations
 
@@ -69,16 +65,11 @@ def omod_matches_weapon(
     weapon_attach_points: Iterable[str],
     omod_yaml: dict,
 ) -> bool:
-    """Return ``True`` iff the OMOD would actually attach to the weapon.
+    """Return ``True`` iff the OMOD would attach to the weapon (see module docstring).
 
-    Mirrors the FO4 workbench engine's selectability check:
-      - ``AttachPoint`` is one of the slots the weapon exposes
-      - ``TargetOmodKeywords`` is a non-empty subset of the weapon's
-        ``Keywords``
-
-    An empty ``TargetOmodKeywords`` is rejected: with no keyword filter
-    the engine would show the OMOD on any weapon with the matching
-    AttachPoint, which is too broad for an automated reverse-lookup.
+    An empty ``TargetOmodKeywords`` is rejected: the engine would offer the OMOD on
+    any weapon with the matching AttachPoint, too broad for an automated reverse
+    lookup.
     """
     if not isinstance(omod_yaml, dict):
         return False

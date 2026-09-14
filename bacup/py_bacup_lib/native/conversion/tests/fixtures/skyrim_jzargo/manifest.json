@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "classes": [
+    {
+      "class_name": "QF_MGRJzargoSpell01_000958B3",
+      "fixture_source_path": "psc/QF_MGRJzargoSpell01_000958B3.psc",
+      "kind": "quest-fragment",
+      "required": true
+    },
+    {
+      "class_name": "MGRJzargoSpell01QuestScript",
+      "fixture_source_path": "psc/MGRJzargoSpell01QuestScript.psc",
+      "kind": "helper",
+      "required": true
+    },
+    {
+      "class_name": "MGRJzargoFlameEffectScript",
+      "fixture_source_path": "psc/MGRJzargoFlameEffectScript.psc",
+      "kind": "helper",
+      "required": true
+    },
+    {
+      "class_name": "TIF__000958B2",
+      "fixture_source_path": "psc/TIF__000958B2.psc",
+      "kind": "info-fragment",
+      "required": true
+    },
+    {
+      "class_name": "TIF__000967E2",
+      "fixture_source_path": "psc/TIF__000967E2.psc",
+      "kind": "info-fragment",
+      "required": true
+    },
+    {
+      "class_name": "TIF__000C041C",
+      "fixture_source_path": "psc/TIF__000C041C.psc",
+      "kind": "info-fragment",
+      "required": true
+    },
+    {
+      "class_name": "TIF__000C04FD",
+      "fixture_source_path": "psc/TIF__000C04FD.psc",
+      "kind": "info-fragment",
+      "required": true
+    },
+    {
+      "class_name": "TIF__000C0502",
+      "fixture_source_path": "psc/TIF__000C0502.psc",
+      "kind": "info-fragment",
+      "required": true
+    },
+    {
+      "class_name": "TIF__000C0506",
+      "fixture_source_path": "psc/TIF__000C0506.psc",
+      "kind": "info-fragment",
+      "required": true
+    },
+    {
+      "class_name": "TIF__000F1B29",
+      "fixture_source_path": "psc/TIF__000F1B29.psc",
+      "kind": "info-fragment",
+      "required": true
+    },
+    {
+      "class_name": "MGRApprenticeQGScript",
+      "fixture_source_path": "psc/MGRApprenticeQGScript.psc",
+      "kind": "alias-script",
+      "required": true
+    }
+  ]
+}

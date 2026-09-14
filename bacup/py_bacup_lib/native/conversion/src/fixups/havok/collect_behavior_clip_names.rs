@@ -1,22 +1,10 @@
 //! Collect unique animation names from hkbClipGenerator objects.
 //!
-
-//!
-//! # What this does
-//! Parses all `.hkx` files in a behavior directory, finds `hkbClipGenerator`
-//! objects, and returns their `animationName` values (e.g.
-//! `"Animations\Idle.hkt"`).  These are the animations the behavior graph
-//! actually references — only these should appear in
-//! `character.hkx`'s `animationBundleNameData.assetNames`.
-//!
-//! # Usage in this crate
-//! This module exposes `collect_behavior_clip_names` as a free function
-//! (not a `Fixup` trait implementor) because it is a pure analysis function
-//! that returns a data structure rather than mutating records or files.
-//!
-//! It is used internally by `InjectAnimationNamesFixup` (C.4.4) to prefer
-//! behavior-referenced clips over disk-scanning.
-//!
+//! Returns the `animationName` of every `hkbClipGenerator` in a behavior
+//! directory's `.hkx` files (e.g. `"Animations\Idle.hkt"`): the clips the graph
+//! references, and the only ones that belong in `character.hkx`'s
+//! `animationBundleNameData.assetNames`. `InjectAnimationNamesFixup` prefers
+//! these over a disk scan.
 
 use std::collections::HashSet;
 use std::path::Path;

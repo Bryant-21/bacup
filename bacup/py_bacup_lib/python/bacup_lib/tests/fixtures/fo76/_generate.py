@@ -1,14 +1,12 @@
 """Fixture generator for FO76 conversion tests.
 
 Run manually with `uv run python bacup/py_bacup_lib/python/bacup_lib/tests/fixtures/fo76/_generate.py`
-to (re)create the synthesized DDS textures used by the FO76->FO4 conversion
-test suite. Output files are committed to the repo so the generator does NOT
-need to be runnable as part of normal test execution.
+to recreate the synthesized DDS textures. The outputs are committed, so tests
+never run this.
 
-Each generated DDS is an 8x8 uncompressed BGRA8 (DXGI_FORMAT_B8G8R8A8_UNORM)
-file with hand-crafted header bytes. We pick uncompressed/no-mipmaps to keep
-parsing trivial in tests (no DXT decompression dependency) and to make the
-known channel values byte-exact.
+Each DDS is an 8x8 uncompressed BGRA8 (DXGI_FORMAT_B8G8R8A8_UNORM) file with
+hand-crafted header bytes and no mipmaps, so tests need no DXT decoder and the
+channel values are byte-exact.
 
 Channel values per role (must stay in sync with textures/README.md):
 

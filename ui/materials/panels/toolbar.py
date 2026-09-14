@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from imgui_bundle import imgui
+from creation_lib.ui.widgets.modern import scaled
 
 if TYPE_CHECKING:
     from ..app import MaterialEditorApp
@@ -55,7 +56,7 @@ def draw_version_row(app: MaterialEditorApp) -> None:
     """Draw the version selector row above the tab bar."""
     imgui.text("Version:")
     imgui.same_line()
-    imgui.set_next_item_width(130)
+    imgui.set_next_item_width(scaled(130))
     changed, new_ver = imgui.input_int("##version", app.version)
     if changed and new_ver >= 0:
         app.set_field("version", new_ver, track_undo=False)
@@ -64,7 +65,7 @@ def draw_version_row(app: MaterialEditorApp) -> None:
     imgui.same_line()
     imgui.text("Game:")
     imgui.same_line()
-    imgui.set_next_item_width(140)
+    imgui.set_next_item_width(scaled(140))
     current_label = next(
         (label for label, ver in _GAME_PRESETS if ver == app.version), "Custom"
     )
@@ -79,7 +80,7 @@ def draw_version_row(app: MaterialEditorApp) -> None:
     imgui.same_line()
     imgui.text("Type:")
     imgui.same_line()
-    imgui.set_next_item_width(100)
+    imgui.set_next_item_width(scaled(100))
     type_idx = 0 if app.file_type == "bgsm" else 1
     changed, new_idx = imgui.combo("##file_type", type_idx, _TYPE_ITEMS)
     if changed:

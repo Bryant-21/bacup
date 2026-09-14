@@ -44,3 +44,8 @@ EndFunction
 Event OnInit()
 	UpdateNetworkState(True)
 EndEvent
+
+; OnSimpleNetworkStateSet was the FO76 server->client replicated-state callback.
+; UpdateNetworkState is already driven locally from OnInit and the ClientHasAnimated
+; state's OnLoad.
+; @drop-member OnSimpleNetworkStateSet

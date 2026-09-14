@@ -10,6 +10,36 @@ use crate::embedded;
 use crate::ids::SubrecordSig;
 use serde::Serialize;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordRoutePolicy {
+    Compatible,
+    TargetProjection,
+    PairHook,
+    TopologyRebuild,
+    Blocked,
+}
+
+impl RecordRoutePolicy {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "compatible" => Some(Self::Compatible),
+            "target_projection" => Some(Self::TargetProjection),
+            "pair_hook" => Some(Self::PairHook),
+            "topology_rebuild" => Some(Self::TopologyRebuild),
+            "blocked" => Some(Self::Blocked),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) fn is_quest_runtime_signature(signature: &str) -> bool {
+    matches!(
+        signature,
+        "QUST" | "DIAL" | "INFO" | "SCEN" | "SMBN" | "SMEN" | "SMQN" | "DLBR" | "DLVW"
+    )
+}
+
 /// Return the embedded YAML text for the map named `key` (e.g. `"fo76_to_fo4"`).
 /// Returns an empty string if no embedded map exists for that key.
 fn embedded_map_text(key: &str) -> &'static str {
@@ -134,6 +164,16 @@ pub struct RecordMap {
     pub delegate: Option<DeferredKind>,
 }
 
+impl RecordMap {
+    fn has_executable_policy(&self) -> bool {
+        self.target_sig.is_some()
+            || !self.field_rewrites.is_empty()
+            || !self.transforms.is_empty()
+            || !self.drop_fields.is_empty()
+            || self.delegate.is_some()
+    }
+}
+
 /// A simple field-name rewrite: rename source_field to target_field.
 #[derive(Debug)]
 pub struct FieldRewrite {
@@ -154,6 +194,7 @@ pub struct TransformInvocation {
 pub struct TranslationMaps {
     record_maps: rustc_hash::FxHashMap<String, RecordMap>,
     pub skip_records: rustc_hash::FxHashSet<String>,
+    pub(crate) record_routes: rustc_hash::FxHashMap<String, RecordRoutePolicy>,
 }
 
 impl TranslationMaps {
@@ -237,6 +278,23 @@ impl TranslationMaps {
                         }
                     }
                 }
+                "record_routes" => {
+                    if let serde_json::Value::Object(routes) = val {
+                        for (policy, signatures) in routes {
+                            let Some(policy) = RecordRoutePolicy::parse(&policy) else {
+                                continue;
+                            };
+                            let Some(signatures) = signatures.as_array() else {
+                                continue;
+                            };
+                            for signature in signatures.iter().filter_map(|value| value.as_str()) {
+                                if is_raw_signature(signature) {
+                                    maps.record_routes.insert(signature.to_string(), policy);
+                                }
+                            }
+                        }
+                    }
+                }
                 "material_overrides" => {
                     // Ignored at this layer — consumed by Python hooks.
                 }
@@ -253,6 +311,10 @@ impl TranslationMaps {
     /// Look up the map for a given source record signature (e.g. "WEAP").
     pub fn record_map(&self, sig: &str) -> Option<&RecordMap> {
         self.record_maps.get(sig)
+    }
+
+    pub fn record_route(&self, sig: &str) -> Option<RecordRoutePolicy> {
+        self.record_routes.get(sig).copied()
     }
 }
 
@@ -299,6 +361,7 @@ fn lint_map_value(
     for (key, value) in root {
         match key.as_str() {
             "skip_records" => lint_skip_records(&mut coverage, value),
+            "record_routes" => lint_record_routes(&mut coverage, value),
             "material_overrides" => {}
             signature if is_raw_signature(signature) => {
                 let diagnostic_start = coverage.diagnostics.len();
@@ -341,6 +404,92 @@ fn lint_map_value(
             .then_with(|| left.reason.cmp(&right.reason))
     });
     coverage
+}
+
+fn lint_record_routes(coverage: &mut TranslationMapCoverage, value: &serde_json::Value) {
+    let Some(routes) = value.as_object() else {
+        push_diagnostic(
+            coverage,
+            None,
+            "record_routes",
+            "record_routes",
+            "invalid_rule_shape",
+            None,
+            None,
+            "record_routes must map route policies to lists of 4CC signatures",
+        );
+        return;
+    };
+    let mut owners = rustc_hash::FxHashMap::<&str, &str>::default();
+    for (policy, signatures) in routes {
+        if RecordRoutePolicy::parse(policy).is_none() {
+            push_diagnostic(
+                coverage,
+                None,
+                "record_routes",
+                format!("record_routes.{policy}"),
+                "unsupported_record_route_policy",
+                None,
+                None,
+                format!("record route policy {policy:?} is not registered"),
+            );
+            continue;
+        }
+        let Some(signatures) = signatures.as_array() else {
+            push_diagnostic(
+                coverage,
+                None,
+                "record_routes",
+                format!("record_routes.{policy}"),
+                "invalid_rule_shape",
+                None,
+                None,
+                "record route policy must contain a list of 4CC signatures",
+            );
+            continue;
+        };
+        for (index, signature) in signatures.iter().enumerate() {
+            let path = format!("record_routes.{policy}[{index}]");
+            let Some(signature) = signature.as_str() else {
+                push_diagnostic(
+                    coverage,
+                    None,
+                    "record_routes",
+                    path,
+                    "invalid_record_signature",
+                    None,
+                    None,
+                    "record route entries must be raw 4CC signatures",
+                );
+                continue;
+            };
+            if !is_raw_signature(signature) {
+                push_diagnostic(
+                    coverage,
+                    Some(signature),
+                    "record_routes",
+                    path,
+                    "invalid_record_signature",
+                    Some(signature.to_string()),
+                    None,
+                    "record route entries must be raw 4CC signatures",
+                );
+                continue;
+            }
+            if let Some(previous) = owners.insert(signature, policy) {
+                push_diagnostic(
+                    coverage,
+                    Some(signature),
+                    "record_routes",
+                    path,
+                    "duplicate_record_route",
+                    Some(signature.to_string()),
+                    None,
+                    format!("record route is already owned by {previous:?}"),
+                );
+            }
+        }
+    }
 }
 
 fn lint_skip_records(coverage: &mut TranslationMapCoverage, value: &serde_json::Value) {
@@ -1032,6 +1181,23 @@ mod tests {
     }
 
     #[test]
+    fn fo76_to_fo4_keeps_lvln_location_conditions() {
+        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
+        let lvln_map = maps.record_map("LVLN").expect("LVLN map");
+        assert!(
+            lvln_map
+                .field_rewrites
+                .iter()
+                .any(|rewrite| rewrite.source_field == "CTDA" && rewrite.target_field == "CTDA"),
+            "FO76 LVLN conditions must reach the FO76-to-FO4 condition hook"
+        );
+        assert!(
+            !lvln_map.drop_fields.iter().any(|field| field == "CTDA"),
+            "FO76 LVLN CTDA must not be dropped"
+        );
+    }
+
+    #[test]
     fn fo76_to_fo4_drops_npc_tint_layers_as_complete_groups() {
         // FO76 tint indices are only meaningful against the FO76 RACE tint
         // tables, which are not carried into FO4. Keep QNAM for the body/face
@@ -1149,6 +1315,19 @@ mod tests {
     }
 
     #[test]
+    fn fo76_to_fo4_skips_loading_screens() {
+        // FO76 loading screens hold their art in BNAM (a 2D .DDS background);
+        // FO4 needs NNAM (a 3D model) plus a camera transform. With no bridge
+        // between them, converted screens render blank, so the type is skipped
+        // and FO4 falls back to its own loading screens.
+        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
+        assert!(
+            maps.skip_records.contains("LSCR"),
+            "fo76_to_fo4 should skip LSCR"
+        );
+    }
+
+    #[test]
     fn fo76_to_fo4_drops_default_object_manager_singleton() {
         let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
         assert!(
@@ -1192,6 +1371,12 @@ mod tests {
             maps.skip_records.contains("NAVI"),
             "FNV NAVI must be rebuilt with the FO4 byte layout"
         );
+        for signature in ["IDLE", "IDLM", "ANIO"] {
+            assert!(
+                maps.skip_records.contains(signature),
+                "FNV {signature} requires a dedicated FO4 behavior/HKX lowerer"
+            );
+        }
     }
 
     #[test]
@@ -1201,6 +1386,12 @@ mod tests {
             assert!(
                 maps.skip_records.contains(signature),
                 "FO3 {signature} must be rebuilt with the FO4 byte layout"
+            );
+        }
+        for signature in ["IDLE", "IDLM", "ANIO"] {
+            assert!(
+                maps.skip_records.contains(signature),
+                "FO3 {signature} requires a dedicated FO4 behavior/HKX lowerer"
             );
         }
     }
@@ -1265,12 +1456,537 @@ mod tests {
     }
 
     #[test]
-    fn skyrimse_to_fo4_drops_unlowered_pack_records() {
+    fn skyrimse_to_fo4_routes_pack_records_to_the_safe_lowerer() {
         let maps = TranslationMaps::load(Game::SkyrimSe, Game::Fo4).unwrap();
         assert!(
-            maps.skip_records.contains("PACK"),
-            "Skyrim package data and procedure trees require a dedicated FO4 lowerer"
+            !maps.skip_records.contains("PACK"),
+            "Skyrim packages are rebuilt as target-safe FO4 travel packages"
         );
+    }
+
+    fn assert_nonquest_signature_routes(source: Game) {
+        let source_schema = crate::schema::AuthoringSchema::for_game(source.as_str()).unwrap();
+        let target_schema = crate::schema::AuthoringSchema::for_game("fo4").unwrap();
+        let maps = TranslationMaps::load(source, Game::Fo4).unwrap();
+        let mut missing = Vec::new();
+        let mut invalid = Vec::new();
+        for source_signature in source_schema.record_signatures() {
+            if is_quest_runtime_signature(source_signature)
+                || maps.skip_records.contains(source_signature)
+            {
+                continue;
+            }
+            let record_map = maps.record_map(source_signature);
+            if record_map.is_some_and(RecordMap::has_executable_policy) {
+                continue;
+            }
+            let Some(route) = maps.record_route(source_signature) else {
+                missing.push(source_signature.to_string());
+                continue;
+            };
+            let adapted = adapted_nonquest_signature(source, source_signature);
+            if target_schema.record_def(adapted).is_none() {
+                invalid.push(format!("{source_signature}->{adapted}:missing_target"));
+                continue;
+            }
+            let source_record = source_schema
+                .record_def(source_signature)
+                .expect("source signature came from schema");
+            let target_record = target_schema
+                .record_def(adapted)
+                .expect("target signature checked above");
+            let equal = record_shapes_equal(source_record, target_record);
+            match route {
+                RecordRoutePolicy::Compatible if !equal => invalid.push(format!(
+                    "{source_signature}:compatible_but_schema_divergent"
+                )),
+                RecordRoutePolicy::TargetProjection if equal => invalid.push(format!(
+                    "{source_signature}:target_projection_but_schema_identical"
+                )),
+                _ => {}
+            }
+        }
+        missing.sort();
+        invalid.sort();
+        assert!(
+            missing.is_empty(),
+            "{} non-quest signatures have no explicit FO4 shape policy: {}",
+            source.as_str(),
+            missing.join(", ")
+        );
+        assert!(
+            invalid.is_empty(),
+            "{} non-quest shape policies are invalid: {}",
+            source.as_str(),
+            invalid.join(", ")
+        );
+    }
+
+    fn adapted_nonquest_signature(source: Game, source_signature: &str) -> &str {
+        match (source, source_signature) {
+            (Game::Fnv | Game::Fo3, "ACRE") => "ACHR",
+            (Game::Fnv | Game::Fo3, "CREA") => "NPC_",
+            (Game::Fo3, "LVLC") => "LVLN",
+            (Game::SkyrimSe, "SCRL") => "ALCH",
+            (Game::SkyrimSe, "SHOU") => "SPEL",
+            _ => source_signature,
+        }
+    }
+
+    fn record_shapes_equal(
+        source: &crate::schema::RecordDef,
+        target: &crate::schema::RecordDef,
+    ) -> bool {
+        source.id == target.id
+            && source.subrecords.len() == target.subrecords.len()
+            && source
+                .subrecords
+                .iter()
+                .zip(&target.subrecords)
+                .all(|(source, target)| {
+                    source.id == target.id
+                        && source.kind == target.kind
+                        && source.codec == target.codec
+                        && source.multiple == target.multiple
+                        && source.scope_id == target.scope_id
+                        && source.required == target.required
+                        && source.localized == target.localized
+                        && field_shapes_equal(&source.fields, &target.fields)
+                        && field_shapes_equal(&source.union_variants, &target.union_variants)
+                })
+    }
+
+    fn field_shapes_equal(
+        source: &[crate::schema::FieldDef],
+        target: &[crate::schema::FieldDef],
+    ) -> bool {
+        source.len() == target.len()
+            && source.iter().zip(target).all(|(source, target)| {
+                source.id == target.id
+                    && source.kind == target.kind
+                    && source.codec == target.codec
+                    && field_shapes_equal(&source.fields, &target.fields)
+                    && field_shapes_equal(&source.union_variants, &target.union_variants)
+            })
+    }
+
+    #[test]
+    fn every_legacy_fallout_and_skyrim_nonquest_signature_has_a_declared_route() {
+        for source in [Game::Fnv, Game::Fo3, Game::SkyrimSe] {
+            assert_nonquest_signature_routes(source);
+        }
+    }
+
+    #[test]
+    fn schema_divergent_record_cannot_fall_back_to_same_signature_passthrough() {
+        let source_schema = crate::schema::AuthoringSchema::for_game("fnv").unwrap();
+        let target_schema = crate::schema::AuthoringSchema::for_game("fo4").unwrap();
+        assert!(!record_shapes_equal(
+            source_schema.record_def("ASPC").unwrap(),
+            target_schema.record_def("ASPC").unwrap(),
+        ));
+
+        let mut maps = TranslationMaps::load(Game::Fnv, Game::Fo4).unwrap();
+        assert_eq!(
+            maps.record_routes.remove("ASPC"),
+            Some(RecordRoutePolicy::TargetProjection)
+        );
+        assert!(maps.record_map("ASPC").is_none());
+        assert!(maps.record_route("ASPC").is_none());
+    }
+
+    #[test]
+    #[ignore = "requires explicit official FNV, FO3, and Skyrim SE Data directories"]
+    fn live_official_nonquest_shape_census_has_no_unclassified_records() {
+        use crate::ids::SigCode;
+        use crate::source_read::{iter_form_keys_of_sig, read_record_relayout_by_form_key};
+        use crate::target_normalize::{TargetRecordNormalization, TargetRecordNormalizer};
+        use crate::translator::{
+            LEGACY_REQUIRED_FO4_PROJECTION_FIELDS, TranslateResult, Translator,
+        };
+        use esp_authoring_core::plugin_runtime::{
+            ParsedItem, plugin_handle_close_native, plugin_handle_load_no_py,
+            plugin_handle_store_ref,
+        };
+        use std::collections::{BTreeMap, BTreeSet};
+        use std::path::PathBuf;
+
+        fn collect_shapes(items: &[ParsedItem], shapes: &mut BTreeSet<(String, Vec<String>)>) {
+            for item in items {
+                match item {
+                    ParsedItem::Record(record) => {
+                        shapes.insert((
+                            record.signature.as_str().to_string(),
+                            record
+                                .subrecords
+                                .iter()
+                                .map(|subrecord| subrecord.signature.as_str().to_string())
+                                .collect(),
+                        ));
+                    }
+                    ParsedItem::Group(group) => collect_shapes(&group.children, shapes),
+                }
+            }
+        }
+
+        #[derive(Debug, Default)]
+        struct ProjectionCounts {
+            encountered: usize,
+            lowered: usize,
+            failed: usize,
+        }
+
+        fn expected_projection_receipt(game: Game, signature: &str) -> Option<&'static str> {
+            match (game, signature) {
+                (Game::Fnv | Game::Fo3, "IMAD") => Some("legacy_imad_neutral_target_replacement"),
+                (Game::SkyrimSe, "BPTD") => Some("skyrim_bptd_target_tail_degraded"),
+                (Game::SkyrimSe, "HAZD") => Some("skyrim_hazd_spell_effect_omitted"),
+                _ => None,
+            }
+        }
+
+        fn regn_scopes_have_lod_distance(record: &crate::record::Record) -> bool {
+            let mut in_region_data = false;
+            let mut has_lod_distance = false;
+            for field in &record.fields {
+                if field.sig.as_str() == "RDAT" {
+                    if in_region_data && !has_lod_distance {
+                        return false;
+                    }
+                    in_region_data = true;
+                    has_lod_distance = false;
+                } else if in_region_data && field.sig.as_str() == "RLDM" {
+                    has_lod_distance = true;
+                }
+            }
+            !in_region_data || has_lod_distance
+        }
+
+        let cases: &[(Game, &str, &[&str])] = &[
+            (
+                Game::Fnv,
+                "BACUP_NONQUEST_FNV_DATA_DIR",
+                &[
+                    "FalloutNV.esm",
+                    "DeadMoney.esm",
+                    "HonestHearts.esm",
+                    "OldWorldBlues.esm",
+                    "LonesomeRoad.esm",
+                    "GunRunnersArsenal.esm",
+                    "ClassicPack.esm",
+                    "MercenaryPack.esm",
+                    "TribalPack.esm",
+                    "CaravanPack.esm",
+                ],
+            ),
+            (
+                Game::Fo3,
+                "BACUP_NONQUEST_FO3_DATA_DIR",
+                &[
+                    "Fallout3.esm",
+                    "Anchorage.esm",
+                    "ThePitt.esm",
+                    "BrokenSteel.esm",
+                    "PointLookout.esm",
+                    "Zeta.esm",
+                ],
+            ),
+            (
+                Game::SkyrimSe,
+                "BACUP_NONQUEST_SKYRIMSE_DATA_DIR",
+                &[
+                    "Skyrim.esm",
+                    "Update.esm",
+                    "Dawnguard.esm",
+                    "HearthFires.esm",
+                    "Dragonborn.esm",
+                ],
+            ),
+        ];
+        let interner = crate::sym::StringInterner::new();
+
+        for (game, data_env, plugins) in cases {
+            let data_dir =
+                PathBuf::from(std::env::var(data_env).unwrap_or_else(|_| {
+                    panic!("{data_env} must name the official Data directory")
+                }));
+            let schema = crate::schema::AuthoringSchema::for_game(game.as_str()).unwrap();
+            let target_schema = crate::schema::AuthoringSchema::for_game("fo4").unwrap();
+            let maps = TranslationMaps::load(*game, Game::Fo4).unwrap();
+            let translator = Translator::new(*game, Game::Fo4).unwrap();
+            let normalizer =
+                TargetRecordNormalizer::target_only_with_interner(&target_schema, &interner);
+            let mut route_records = BTreeMap::<String, usize>::new();
+            let mut blocked_records = BTreeMap::<String, usize>::new();
+            let mut encountered_shapes = BTreeSet::<(String, Vec<String>)>::new();
+            let mut unclassified = BTreeMap::<String, usize>::new();
+            let mut projection_counts = BTreeMap::<String, ProjectionCounts>::new();
+            let mut projection_failures = BTreeMap::<String, usize>::new();
+            for &(_, signature, _) in LEGACY_REQUIRED_FO4_PROJECTION_FIELDS
+                .iter()
+                .filter(|(source, _, _)| source == game)
+            {
+                assert_eq!(
+                    maps.record_route(signature),
+                    Some(RecordRoutePolicy::TargetProjection),
+                    "{} {signature} must retain an explicit target-projection route",
+                    game.as_str()
+                );
+                projection_counts.insert(signature.to_string(), ProjectionCounts::default());
+            }
+
+            for plugin in *plugins {
+                let path = data_dir.join(plugin);
+                assert!(
+                    path.is_file(),
+                    "official source is missing: {}",
+                    path.display()
+                );
+                let strings_dir = data_dir.join("Strings");
+                let handle = plugin_handle_load_no_py(
+                    path.to_str().expect("Unicode plugin path"),
+                    Some(game.as_str()),
+                    strings_dir
+                        .is_dir()
+                        .then(|| strings_dir.to_string_lossy())
+                        .as_deref(),
+                    None,
+                    true,
+                )
+                .unwrap_or_else(|error| panic!("load {}: {error}", path.display()));
+
+                for signature in schema.record_signatures() {
+                    let sig = SigCode::from_str(signature).unwrap();
+                    let keys = iter_form_keys_of_sig(handle, sig, &interner)
+                        .unwrap_or_else(|error| panic!("index {plugin} {signature}: {error}"));
+                    if keys.is_empty() {
+                        continue;
+                    }
+                    let route = if is_quest_runtime_signature(signature) {
+                        "quest_runtime_boundary"
+                    } else if maps.skip_records.contains(signature) {
+                        "intentional_omit"
+                    } else if maps
+                        .record_map(signature)
+                        .is_some_and(RecordMap::has_executable_policy)
+                    {
+                        "record_map"
+                    } else {
+                        match maps.record_route(signature) {
+                            Some(RecordRoutePolicy::Compatible) => "compatible",
+                            Some(RecordRoutePolicy::TargetProjection) => "target_projection",
+                            Some(RecordRoutePolicy::PairHook) => "pair_hook",
+                            Some(RecordRoutePolicy::TopologyRebuild) => "topology_rebuild",
+                            Some(RecordRoutePolicy::Blocked) => "blocked",
+                            None => {
+                                *unclassified.entry(signature.to_string()).or_default() +=
+                                    keys.len();
+                                "unclassified"
+                            }
+                        }
+                    };
+                    if route == "blocked" {
+                        *blocked_records.entry(signature.to_string()).or_default() += keys.len();
+                    }
+                    *route_records.entry(route.to_string()).or_default() += keys.len();
+
+                    let Some((_, _, required_fields)) = LEGACY_REQUIRED_FO4_PROJECTION_FIELDS
+                        .iter()
+                        .find(|(source, required_signature, _)| {
+                            source == game && *required_signature == signature
+                        })
+                    else {
+                        continue;
+                    };
+                    for key in &keys {
+                        projection_counts
+                            .get_mut(signature)
+                            .expect("initialized projection census")
+                            .encountered += 1;
+                        let source_record = match read_record_relayout_by_form_key(
+                            handle, key, &schema, &interner, None,
+                        ) {
+                            Ok(record) => record,
+                            Err(_) => {
+                                projection_counts.get_mut(signature).unwrap().failed += 1;
+                                *projection_failures
+                                    .entry(format!("{signature}:decode_error"))
+                                    .or_default() += 1;
+                                continue;
+                            }
+                        };
+                        let translated = match translator.translate(&source_record, &interner) {
+                            TranslateResult::Translated(record) => record,
+                            TranslateResult::Dropped { decision, .. } => {
+                                let reason = interner
+                                    .resolve(decision.kind)
+                                    .unwrap_or("unresolved_drop_reason");
+                                if reason == "unused_legacy_ingredient_sentinel" {
+                                    projection_counts.get_mut(signature).unwrap().lowered += 1;
+                                    continue;
+                                }
+                                projection_counts.get_mut(signature).unwrap().failed += 1;
+                                *projection_failures
+                                    .entry(format!("{signature}:dropped:{reason}"))
+                                    .or_default() += 1;
+                                continue;
+                            }
+                            TranslateResult::Deferred(kind) => {
+                                projection_counts.get_mut(signature).unwrap().failed += 1;
+                                *projection_failures
+                                    .entry(format!("{signature}:deferred:{kind:?}"))
+                                    .or_default() += 1;
+                                continue;
+                            }
+                        };
+                        if let Some(receipt) = expected_projection_receipt(*game, signature)
+                            && !translated
+                                .warnings
+                                .iter()
+                                .any(|warning| interner.resolve(*warning) == Some(receipt))
+                        {
+                            projection_counts.get_mut(signature).unwrap().failed += 1;
+                            *projection_failures
+                                .entry(format!("{signature}:missing_receipt:{receipt}"))
+                                .or_default() += 1;
+                            continue;
+                        }
+                        let TargetRecordNormalization::Keep(normalized) =
+                            normalizer.normalize(translated)
+                        else {
+                            projection_counts.get_mut(signature).unwrap().failed += 1;
+                            *projection_failures
+                                .entry(format!("{signature}:target_normalizer_dropped"))
+                                .or_default() += 1;
+                            continue;
+                        };
+                        let missing =
+                            if signature == "REGN" && !regn_scopes_have_lod_distance(&normalized) {
+                                Some("RLDM")
+                            } else {
+                                required_fields.iter().copied().find(|required| {
+                                    !normalized
+                                        .fields
+                                        .iter()
+                                        .any(|field| field.sig.as_str() == *required)
+                                        && !(signature == "REGN"
+                                            && *required == "RLDM"
+                                            && !normalized
+                                                .fields
+                                                .iter()
+                                                .any(|field| field.sig.as_str() == "RDAT"))
+                                })
+                            };
+                        if let Some(required) = missing {
+                            projection_counts.get_mut(signature).unwrap().failed += 1;
+                            *projection_failures
+                                .entry(format!("{signature}:missing_required:{required}"))
+                                .or_default() += 1;
+                            continue;
+                        }
+                        projection_counts.get_mut(signature).unwrap().lowered += 1;
+                    }
+                }
+                {
+                    let store = plugin_handle_store_ref().lock().unwrap();
+                    let slot = store.get(&handle).expect("loaded plugin handle");
+                    collect_shapes(&slot.parsed.root_items, &mut encountered_shapes);
+                }
+                assert!(
+                    plugin_handle_close_native(handle),
+                    "close {}",
+                    path.display()
+                );
+            }
+
+            eprintln!(
+                "{} official nonquest census: records={route_records:?}, blocked={blocked_records:?}, unique_subrecord_shapes={}",
+                game.as_str(),
+                encountered_shapes.len()
+            );
+            eprintln!(
+                "{} official required projection census: {projection_counts:?}, failures={projection_failures:?}",
+                game.as_str()
+            );
+            assert!(
+                unclassified.is_empty(),
+                "{} official corpus has unclassified records: {unclassified:?}",
+                game.as_str()
+            );
+            assert!(
+                projection_counts
+                    .values()
+                    .all(|counts| counts.failed == 0 && counts.lowered == counts.encountered),
+                "{} official required projection failures: counts={projection_counts:?}, reasons={projection_failures:?}",
+                game.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_fo4_routes_only_omit_declared_source_only_records() {
+        let cases = [
+            (
+                Game::Fnv,
+                &[
+                    "ALOC", "AMEF", "ANIO", "CDCK", "CHAL", "CSNO", "DEHY", "HAIR", "HUNG", "IDLE",
+                    "IDLM", "LSCT", "MICN", "MSET", "NAVI", "NAVM", "RADS", "REPU", "RGDL", "SLPD",
+                ][..],
+            ),
+            (
+                Game::Fo3,
+                &[
+                    "ANIO", "HAIR", "IDLE", "IDLM", "MICN", "NAVI", "NAVM", "RADS", "RGDL", "SCPT",
+                ][..],
+            ),
+            (
+                Game::SkyrimSe,
+                &["CLDC", "COLL", "HAIR", "NAVI", "RGDL", "SCPT", "VOLI"][..],
+            ),
+        ];
+        for (source, expected) in cases {
+            let maps = TranslationMaps::load(source, Game::Fo4).unwrap();
+            let mut actual = maps
+                .skip_records
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            actual.sort_unstable();
+            let mut expected = expected.to_vec();
+            expected.sort_unstable();
+            assert_eq!(
+                actual,
+                expected,
+                "{} omission policy drifted",
+                source.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_persistent_water_routes_through_fo4_reference_topology() {
+        for source in [Game::Fnv, Game::Fo3, Game::SkyrimSe] {
+            let maps = TranslationMaps::load(source, Game::Fo4).unwrap();
+            assert_eq!(
+                maps.record_map("PWAT")
+                    .and_then(|map| map.target_sig.as_deref()),
+                Some("REFR"),
+                "{} PWAT records must retain source group topology as FO4 REFR records",
+                source.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn fnv_misc_items_retain_value_and_weight_data() {
+        let maps = TranslationMaps::load(Game::Fnv, Game::Fo4).unwrap();
+        for signature in ["MISC", "KEYM"] {
+            let map = maps.record_map(signature).expect("legacy item map");
+            assert!(
+                !map.drop_fields.iter().any(|field| field == "DATA"),
+                "{signature}.DATA is the compatible value/weight payload"
+            );
+        }
     }
 
     #[test]

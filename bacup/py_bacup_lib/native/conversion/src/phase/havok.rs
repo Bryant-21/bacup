@@ -35,6 +35,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use serde_json::Value as JsonValue;
 
+use crate::anim_namespace::namespaced_anim_path;
 use crate::phase::progress::ProgressReporter;
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
 
@@ -90,7 +91,10 @@ impl Phase for ConvertHavokPhase {
             .unwrap_or(false);
         let mut assets = if convert_all {
             let source_roots = convert_all_source_roots(ctx.source_extracted_dir, p);
-            let found = enumerate_source_hkx_assets_from_roots(&source_roots);
+            let found = enumerate_source_hkx_assets_from_roots_with_inventory(
+                &source_roots,
+                ctx.run.source_asset_inventory.as_deref(),
+            );
             let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
                 phase: "convert_havok",
                 level: crate::phase::LogLevel::Info,
@@ -105,7 +109,8 @@ impl Phase for ConvertHavokPhase {
         } else {
             parse_hkx_assets(p)?
         };
-        if is_fo76_to_fo4(p) {
+        let fo76_to_fo4 = is_fo76_to_fo4(p);
+        if fo76_to_fo4 {
             append_fo76_to_fo4_creature_animation_aliases(&mut assets);
         }
         let nif_assets = parse_nif_assets(p)?;
@@ -129,10 +134,16 @@ impl Phase for ConvertHavokPhase {
         let mut to_convert: Vec<HkxAsset> = Vec::new();
 
         for asset in assets {
-            let norm = asset.source_path.replace('\\', "/").to_lowercase();
-            // Strip leading "meshes/" for DB matching
-            let db_key = norm.strip_prefix("meshes/").unwrap_or(&norm).to_string();
-            if target_behaviors.contains(&db_key) || target_behaviors.contains(&norm) {
+            let target_collision = target_contains_asset(&target_behaviors, &asset.source_path);
+            // Eligible weapon and first-person collisions are written under
+            // the namespace instead of being dropped. Unique clips keep their
+            // established paths so graphs that depend on them do not regress.
+            if fo76_to_fo4
+                && target_collision
+                && namespaced_anim_path(&mesh_relative_asset_path(&asset.source_path)).is_some()
+            {
+                to_convert.push(asset);
+            } else if target_collision {
                 remapped += 1;
             } else {
                 to_convert.push(asset);
@@ -221,7 +232,14 @@ impl Phase for ConvertHavokPhase {
                     None => {}
                 }
             }
-            let out = hkx_output_path(&mod_path, &asset.source_path);
+            let output_source_path =
+                if fo76_to_fo4 && target_contains_asset(&target_behaviors, &asset.source_path) {
+                    namespaced_anim_path(&mesh_relative_asset_path(&asset.source_path))
+                        .unwrap_or_else(|| asset.source_path.clone())
+                } else {
+                    asset.source_path.clone()
+                };
+            let out = hkx_output_path(&mod_path, &output_source_path);
             if !overwrite_existing && out.exists() {
                 if !register_with_sink(&out) {
                     sink_failures += 1;
@@ -277,12 +295,28 @@ impl Phase for ConvertHavokPhase {
                             std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
                         }
                         if let Some(ref version) = tv {
-                            havok_native::api::havok_convert_file_report(
-                                src,
-                                &task.output_path,
-                                version,
-                            )
-                            .map_err(|e| e.to_string())
+                            if fo76_to_fo4
+                                && should_rewrite_fo76_gauss_pistol_locomotion(&source_path)
+                            {
+                                havok_native::api::havok_convert_file_report_with_fo76_options(
+                                    src,
+                                    &task.output_path,
+                                    version,
+                                    havok_native::convert::fo76::Fo76MigrationOptions {
+                                        decompress_spline: true,
+                                        recompress: true,
+                                        ..Default::default()
+                                    },
+                                )
+                                .map_err(|e| e.to_string())
+                            } else {
+                                havok_native::api::havok_convert_file_report(
+                                    src,
+                                    &task.output_path,
+                                    version,
+                                )
+                                .map_err(|e| e.to_string())
+                            }
                         } else {
                             std::fs::copy(src, &task.output_path)
                                 .map(|_| Vec::new())
@@ -399,6 +433,13 @@ const FO76_TO_FO4_CREATURE_ANIMATION_ALIASES: &[(&str, &str)] = &[
     ),
 ];
 
+const FO76_GAUSS_PISTOL_LOCOMOTION_ANIMATIONS: &[&str] = &[
+    "actors/character/_1stperson/animations/gausspistol/wpnrunforwardready.hkx",
+    "actors/character/_1stperson/animations/gausspistol/wpnrungundown.hkx",
+    "actors/character/_1stperson/animations/gausspistol/wpnsprint.hkx",
+    "actors/character/_1stperson/animations/gausspistol/wpnwalkforwardsighted.hkx",
+];
+
 fn is_fo76_to_fo4(params: &JsonValue) -> bool {
     params
         .get("source_game")
@@ -410,6 +451,11 @@ fn is_fo76_to_fo4(params: &JsonValue) -> bool {
             .and_then(JsonValue::as_str)
             .map(|game| game.eq_ignore_ascii_case("fo4"))
             .unwrap_or(false)
+}
+
+fn should_rewrite_fo76_gauss_pistol_locomotion(source_path: &str) -> bool {
+    let path = mesh_relative_hkx_path(source_path).to_ascii_lowercase();
+    FO76_GAUSS_PISTOL_LOCOMOTION_ANIMATIONS.contains(&path.as_str())
 }
 
 fn append_fo76_to_fo4_creature_animation_aliases(assets: &mut Vec<HkxAsset>) {
@@ -540,6 +586,54 @@ fn enumerate_source_hkx_assets_from_roots(source_roots: &[PathBuf]) -> Vec<HkxAs
         }
     }
     assets
+}
+
+fn enumerate_source_hkx_assets_from_roots_with_inventory(
+    source_roots: &[PathBuf],
+    inventory: Option<&crate::source_inventory::SourceAssetInventory>,
+) -> Vec<HkxAsset> {
+    let Some(inventory) = inventory else {
+        return enumerate_source_hkx_assets_from_roots(source_roots);
+    };
+    try_enumerate_source_hkx_assets_from_inventory(source_roots, inventory)
+        .unwrap_or_else(|| enumerate_source_hkx_assets_from_roots(source_roots))
+}
+
+fn try_enumerate_source_hkx_assets_from_inventory(
+    source_roots: &[PathBuf],
+    inventory: &crate::source_inventory::SourceAssetInventory,
+) -> Option<Vec<HkxAsset>> {
+    let mut assets = Vec::new();
+    let mut seen = HashSet::new();
+    for root in source_roots {
+        let Some(meshes_root) = resolve_meshes_dir(root) else {
+            continue;
+        };
+        let files = inventory.files_if_compatible(&meshes_root, &[".hkx"])?;
+        let mut root_assets = files
+            .into_iter()
+            .filter_map(|path| {
+                let rel = path.strip_prefix(&meshes_root).ok()?;
+                Some(HkxAsset {
+                    source_path: format!("Meshes/{}", rel.to_string_lossy().replace('\\', "/")),
+                    resolved_path: path.to_string_lossy().into_owned(),
+                    asset_type: "behavior".to_string(),
+                })
+            })
+            .collect::<Vec<_>>();
+        root_assets.sort_by(|left, right| {
+            left.source_path
+                .to_ascii_lowercase()
+                .cmp(&right.source_path.to_ascii_lowercase())
+        });
+        for asset in root_assets {
+            let key = asset.source_path.replace('\\', "/").to_ascii_lowercase();
+            if seen.insert(key) {
+                assets.push(asset);
+            }
+        }
+    }
+    Some(assets)
 }
 
 /// Resolve the `Meshes` directory case-insensitively (NTFS is case-insensitive,
@@ -729,6 +823,12 @@ fn mesh_relative_asset_path(source_path: &str) -> String {
     strip_known_asset_prefix(&rel).to_string()
 }
 
+fn target_contains_asset(target_assets: &HashSet<String>, source_path: &str) -> bool {
+    let norm = source_path.replace('\\', "/").to_ascii_lowercase();
+    let db_key = norm.strip_prefix("meshes/").unwrap_or(&norm);
+    target_assets.contains(db_key) || target_assets.contains(&norm)
+}
+
 fn companion_nif_key_for_hkx(source_path: &str) -> String {
     let rel = mesh_relative_asset_path(source_path);
     if rel.len() >= 4 && rel[rel.len() - 4..].eq_ignore_ascii_case(".hkx") {
@@ -763,6 +863,25 @@ fn is_known_asset_prefix(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gauss_pistol_spline_rewrite_is_limited_to_first_person_locomotion() {
+        for path in FO76_GAUSS_PISTOL_LOCOMOTION_ANIMATIONS {
+            assert!(should_rewrite_fo76_gauss_pistol_locomotion(path));
+            assert!(should_rewrite_fo76_gauss_pistol_locomotion(&format!(
+                "Meshes/{}",
+                path.to_ascii_uppercase()
+            )));
+        }
+
+        for path in [
+            "Meshes/Actors/Character/_1stPerson/Animations/GaussPistol/WpnTurnLeftJiggleAdd.hkx",
+            "Meshes/Actors/Character/_1stPerson/Animations/10mm/WpnRunForwardReady.hkx",
+            "Meshes/Actors/PowerArmor/Animations/GaussPistol/WpnRunForwardReady.hkx",
+        ] {
+            assert!(!should_rewrite_fo76_gauss_pistol_locomotion(path));
+        }
+    }
 
     fn synthetic_hkx(class_name: &str) -> Vec<u8> {
         use havok_native::hkx::descriptors::DescriptorRegistry;
@@ -964,6 +1083,49 @@ mod tests {
     }
 
     #[test]
+    fn fo76_namespaces_only_colliding_weapon_clips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mod_dir = tmp.path();
+        let unique = [
+            "Actors/Character/Animations/Weapon/GatlingPlasma/WpnFireAutoReady.hkx",
+            "Actors/Character/_1stPerson/Animations/GatlingPlasma/WpnFireAutoSighted.hkx",
+            "Actors/Character/_1stPerson/Animations/AlienRifle/WpnFireSingleSighted.hkx",
+        ];
+        let colliding =
+            "Actors/Character/Animations/Weapon/GripRifleStraight/WpnFireSingleReady.hkx";
+        for rel in unique.into_iter().chain([colliding]) {
+            let source = mod_dir.join("source/Meshes").join(rel);
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            std::fs::write(source, synthetic_hkx("hkaAnimationContainer")).unwrap();
+        }
+
+        let params = serde_json::json!({
+            "source_game": "fo76",
+            "target_game": "fo4",
+            "target_version_id": "hk_2014.1.0-r1",
+            "convert_all": true,
+            "target_behaviors": [colliding.to_ascii_lowercase()],
+        });
+        let (report, _events) = run_convert_havok(params, mod_dir);
+
+        assert_eq!(report.assets_written, 4);
+        for rel in unique {
+            assert!(mod_dir.join("data/Meshes").join(rel).exists(), "{rel}");
+        }
+        for rel in [
+            "Actors/Character/Animations/FO76/Weapon/GatlingPlasma/WpnFireAutoReady.hkx",
+            "Actors/Character/_1stPerson/Animations/FO76/GatlingPlasma/WpnFireAutoSighted.hkx",
+            "Actors/Character/_1stPerson/Animations/FO76/AlienRifle/WpnFireSingleSighted.hkx",
+        ] {
+            assert!(!mod_dir.join("data/Meshes").join(rel).exists(), "{rel}");
+        }
+        assert!(mod_dir
+            .join("data/Meshes/Actors/Character/Animations/FO76/Weapon/GripRifleStraight/WpnFireSingleReady.hkx")
+            .exists());
+        assert!(!mod_dir.join("data/Meshes").join(colliding).exists());
+    }
+
+    #[test]
     fn convert_all_includes_grafted_root_with_primary_collision_precedence() {
         let tmp = tempfile::tempdir().unwrap();
         let mod_dir = tmp.path();
@@ -1032,6 +1194,47 @@ mod tests {
             ],
             "convert-all must enumerate UniqueBehaviors/GenericBehaviors too, not only Actors/"
         );
+    }
+
+    #[test]
+    fn source_inventory_havok_enumeration_matches_direct_root_precedence() {
+        let temp = tempfile::tempdir().unwrap();
+        let primary = temp.path().join("primary");
+        let secondary = temp.path().join("secondary");
+        for (root, relative, contents) in [
+            (
+                &primary,
+                "Meshes/Actors/Nested/shared.HKX",
+                b"primary".as_slice(),
+            ),
+            (
+                &secondary,
+                "Meshes/Actors/Nested/shared.HKX",
+                b"secondary".as_slice(),
+            ),
+            (
+                &secondary,
+                "Meshes/GenericBehaviors/only.hkx",
+                b"only".as_slice(),
+            ),
+            (&primary, "Meshes/ignore.txt", b"ignore".as_slice()),
+        ] {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+        let roots = vec![primary, secondary];
+        let inventory = crate::source_inventory::SourceAssetInventory::default();
+        let direct = enumerate_source_hkx_assets_from_roots(&roots);
+        let from_inventory =
+            enumerate_source_hkx_assets_from_roots_with_inventory(&roots, Some(&inventory));
+        let project = |assets: Vec<HkxAsset>| {
+            assets
+                .into_iter()
+                .map(|asset| (asset.source_path, asset.resolved_path, asset.asset_type))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(project(from_inventory), project(direct));
     }
 
     #[test]

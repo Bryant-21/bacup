@@ -1,99 +1,45 @@
 //! Fixup: fix creature weapon stats, explosions, race flags, factions, and quests.
 //!
+//! Creature conversions only (root sig NPC_ or LVLN); mostly fixed-offset byte
+//! writes.
+//!
+//! **WEAP**:
+//! - Melee `AttackDelay >= 5` is zeroed.
+//! - Ranged weapons missing `damage_base` / `accuracy_bonus` /
+//!   `action_point_cost` get FO4 defaults 10 / 100 / 20.
+//! - Creature weapons clear `NPCs Use Ammo`, so actors don't exhaust inventory
+//!   ammo and fall back to hand-to-hand.
+//! - Liberator lasers become embedded weapons that consume no NPC ammo, like
+//!   FO4 robot-integrated lasers.
+//! - Spit weapons whose EITM points at the converter's own mod get vanilla
+//!   `148D8F:Fallout4.esm` (MirelurkHunterSpitAttackSpell).
+//! - Ranged creature weapons get `crWeaponRanged`. Floater breath weapons swap
+//!   FO76/self and borrowed Bloodbug/rifle selectors for `WeaponTypeFlamer` or
+//!   `WeaponTypeCryolater`.
+//! - Not handled: `DamageTypes` curve-table cleanup (DAMA `array_struct:I,f`
+//!   with a form-version-gated `curve_table` tail).
+//!
+//! **IDLE**: Floater fire, charge, and right-release trees get animation-group
+//! section 171, which FO4 uses to dispatch those creature actions. FO76 leaves
+//! it unset; the working FO4 Floater port uses 171.
+//!
+//! **EXPL**: a zero `DATA.damage` becomes 10.0; spit/barf explosions without
+//! `EITM` get `crEnchMirelurkQueenSpit` (`115315:Fallout4.esm`).
+//!
+//! **RACE**: `VNAM` keeps the FO4 upper equipment mask plus creature low slots;
+//! vanilla Deathclaws and Molerats carry high flags there. `hand_to_hand_melee`
+//! is cleared for body-fighting creatures and kept for armed races.
+//!
+//! **FACT**: drop XNAM rows with a null faction. With none left, append FO4's
+//! defaults: CaptiveFaction `03E0C8` Friend (3), SuperMutantFaction `058305`
+//! Ally (2), MutantHoundFaction `0948B4` Ally, VertibirdFaction `1E5F60`
+//! Friend, and Self Ally.
+//!
+//! **QUST**: a missing 12-byte DNAM is added with flags 0x0311
+//! (`start_game_enabled | starts_enabled | run_once |
+//! exclude_from_dialogue_export`) and priority 5.
 
-//!
-//! # What this does
-//! For creature conversions (root sig NPC_ or LVLN), iterates the relevant
-//! record sigs in the target plugin and applies per-sig binary mutations.
-//! Every operation is a fixed-offset byte write, so the existing encoder
-//! round-trips bytes verbatim.
-//!
-//! **WEAP** — creature weapon cleanup:
-//! - **1a** Strip `AttackDelay >= 5` from melee weapons (DNAM byte 24..28
-//!   set to 0.0).
-//! - **1b** Ranged weapons missing `damage_base` / `accuracy_bonus` /
-//!   `action_point_cost` get FO4 defaults (10 / 100 / 20) written at the
-//!   fixed DNAM offsets.
-//! - **1c** Liberator lasers are marked as embedded weapons and do not consume
-//!   NPC inventory ammo, matching FO4 robot-integrated lasers.
-//! - **1d** EITM (Effect) pointing at the converter's own mod gets swapped
-//!   to vanilla `148D8F:Fallout4.esm` (MirelurkHunterSpitAttackSpell) on
-//!   spit weapons.
-//!
-//! Deferred (documented inline):
-//! - "ExtraData" removal — no FO4 subrecord with that name; YAML-only.
-//! - "DamageTypes" curve-table cleanup — DAMA `array_struct:I,f` with
-//!   form-version-conditional `curve_table` tail; deferred.
-//!
-//! **EXPL** — creature explosion cleanup:
-//! - Ensure `DATA.damage` (byte 28..32, f32) is non-zero by writing 10.0
-//!   when currently 0.0.
-//! - Add `EITM` (Enchantment) = `crEnchMirelurkQueenSpit`
-//!   (`115315:Fallout4.esm`) on spit/barf explosions missing it.
-//!
-//! Deferred:
-//! - Top-level `Damage` / `ObjectEffect` field removal — these are YAML
-//!   keys with no FO4 subrecord; nothing to remove in the binary layer.
-//!
-//! **RACE** — `VNAM` (Equipment Flags) is a `uint32 enum_ref=equip_type`
-//! flag bitset. Preserve the FO4-valid upper equipment mask plus creature low
-//! slots. Vanilla FO4 creatures such as Deathclaws and Molerats carry high
-//! numeric flags here; stripping them leaves converted creatures under-specified.
-//!
-//! **FACT** — Drop XNAM entries whose `faction` FormID is null (raw 0).
-//! When zero XNAM remain, append the FO4 default 5 entries:
-//! - `03E0C8:Fallout4.esm` / Friend (3)   — CaptiveFaction
-//! - `058305:Fallout4.esm` / Ally (2)     — SuperMutantFaction
-//! - `0948B4:Fallout4.esm` / Ally (2)     — MutantHoundFaction
-//! - `1E5F60:Fallout4.esm` / Friend (3)   — VertibirdFaction
-//! - own record FK   / Ally (2)             — Self
-//!
-//! **QUST** — When DNAM ("General") subrecord is missing, append it with
-//! flags = `start_game_enabled | starts_enabled | run_once |
-//! exclude_from_dialogue_export` (= 0x0311) and priority = 5.
-//!
-//! # Subrecord layouts (FO4 schema)
-//!
-//! `WEAP.DNAM` codec
-//! `struct:I,f,f,f,f,f,f,f,f,I,I,I,I,H,B,f,f,I,H,I,I,I,I,I,I,I,I,I,B,f,B,B,f,f,f,I,B,B,B,B`.
-//! 132 bytes. Relevant offsets used here:
-//! - 24..28 = `attack_delay` (f32)
-//! - 54     = `animation_type` (u8; 1 = Melee, 9 = Gun)
-//! - 67..69 = `damage_base` (u16)
-//! - 105    = `accuracy_bonus` (u8)
-//! - 112..116 = `action_point_cost` (f32)
-//!
-//! `WEAP.EITM` codec `formid` — 4 bytes, single FormID.
-//!
-//! `EXPL.DATA` codec
-//! `struct:I,I,I,I,I,I,f,f,f,f,f,f,I,I,f,I,f,f,f,f,I` (kind
-//! `parsed_with_raw_fallback`; trailing fields have `record_form_version`
-//! presence conditions). Relevant fixed-prefix offsets:
-//! - 24..28 = `force` (f32)
-//! - 28..32 = `damage` (f32)
-//!
-//! `EXPL.EITM` codec `formid` — 4 bytes.
-//!
-//! `RACE.VNAM` codec `uint32 enum_ref=equip_type`. Equipment-type bit
-//! values used:
-//! - upper mask = `0xFFFF8000`
-//! - `hand_to_hand_melee` = 1
-//! - `spell`   = 4096
-//! - `gun`     = 512
-//! - `shield`  = 8192
-//! - `torch`   = 16384
-//!
-//! `FACT.XNAM` codec `struct:I,i,I`, 12 bytes, `repeatable`. Per-entry:
-//! - 0..4  = `faction` (FormID u32)
-//! - 4..8  = `modifier` (i32; unused in defaults — left 0)
-//! - 8..12 = `group_combat_reaction` (u32; 0=Neutral 1=Enemy 2=Ally 3=Friend)
-//!
-//! `QUST.DNAM` codec `struct:H,B,B,f,B,B,B,B`, 12 bytes.
-//! - 0..2 = `flags` (u16; bits for `start_game_enabled` 1,
-//!   `starts_enabled` 16, `run_once` 256, `exclude_from_dialogue_export` 512)
-//! - 2    = `priority` (u8; default 5)
-//! - rest = zeroed
-
+use crate::fixups::creature::creature_predicate::record_is_armed_humanoid;
 use crate::fixups::creature::{
     creature_internal_fixup_applies, likely_creature_weapon_editor_id,
     likely_ranged_creature_weapon_editor_id,
@@ -134,6 +80,28 @@ const WEAP_DEFAULT_ACTION_POINT_COST: f32 = 20.0;
 /// Master byte 0x00 = Fallout4.esm (master index 0 in every FO4 plugin).
 const WEAP_SPIT_VANILLA_EFFECT_RAW: u32 = 0x00_148D8F;
 
+const FALLOUT4_ESM: &str = "Fallout4.esm";
+const CR_WEAPON_RANGED_LOW24: u32 = 0x18_9348;
+const WEAPON_TYPE_FLAMER_LOW24: u32 = 0x22_5760;
+const WEAPON_TYPE_CRYOLATER_LOW24: u32 = 0x22_575F;
+const ANIMS_GRIP_RIFLE_ASSAULT_LOW24: u32 = 0x01_F947;
+const BLOODBUG_WEAPON_LOW24: u32 = 0x03_284E;
+const FO76_WEAPON_TYPE_RANGED_LOW24: u32 = 0x33_A7C8;
+const FO76_WEAPON_TYPE_FLOATER_FLAMER_LOW24: u32 = 0x5E_8B44;
+
+const FLOATER_ANIMATION_GROUP_SECTION: u8 = 171;
+const FLOATER_COMBAT_IDLE_EDITOR_IDS: &[&str] = &[
+    "floaterfiresingleroot",
+    "floaterfire_default",
+    "floaterfire_eyeattack",
+    "floaterfireauto",
+    "floaterfirecharge",
+    "floaterrightrelease",
+    "floaterrightreleaseroot",
+    "floaterreleaseright",
+    "floatermagiccastrighthand",
+];
+
 // ---------------------------------------------------------------------------
 // EXPL byte-offset constants
 // ---------------------------------------------------------------------------
@@ -150,10 +118,24 @@ const EXPL_SPIT_ENCHANTMENT_RAW: u32 = 0x00_115315;
 // RACE / FACT / QUST constants
 // ---------------------------------------------------------------------------
 
-/// equip_type bitmask: preserve FO4's upper biped/equipment flags plus common
-/// creature low slots: `hand_to_hand_melee` (1), `spell` (4096), `gun` (512),
-/// `shield` (8192), `torch` (16384).
-const RACE_VNAM_KEEP_MASK: u32 = 0xFFFF_8000 | 1 | 512 | 4096 | 8192 | 16384;
+/// equip_type bitmask for a race that fights with its body: FO4's upper
+/// biped/equipment flags plus `spell` (4096), `gun` (512), `shield` (8192),
+/// `torch` (16384).
+///
+/// `hand_to_hand_melee` (1) is left out: none of the 22 vanilla FO4
+/// `ActorTypeCreature` races with attacks set it, while 7/7 `ActorTypeNPC` races
+/// do. FO76 sets it on beasts, and carried across it routes the actor down an
+/// H2H attack path its creature graph has no states for: `GetAttackState` stays
+/// 0 and no melee swing is staged, though the animation plays when sent
+/// directly. See [`RACE_VNAM_ARMED_HUMANOID_BITS`] for the exception.
+const RACE_VNAM_KEEP_MASK: u32 = 0xFFFF_8000 | 512 | 4096 | 8192 | 16384;
+
+/// Bits restored for a race that carries a weapon: `hand_to_hand_melee` (1) plus
+/// the weapon animation types (one-hand sword/dagger/axe/mace, two-hand
+/// sword/axe, bow, staff, grenade, mine). FO76 tags mole miners, super mutants
+/// and Zetans `ActorTypeCreature` though they use these; FO4 humanoid races
+/// carry the whole set.
+const RACE_VNAM_ARMED_HUMANOID_BITS: u32 = 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 1024 | 2048;
 
 /// FACT.XNAM payload size: faction(4) + modifier(4) + group_combat_reaction(4).
 const FACT_XNAM_LEN: usize = 12;
@@ -209,11 +191,12 @@ impl Fixup for FixCreatureWeaponsAndRecordsFixup {
         let target_own_index = (session.target_masters().len() & 0xFF) as u8;
 
         let sigs: &[&str] = if config.is_whole_plugin {
-            &["WEAP", "EXPL"]
+            &["WEAP", "IDLE", "EXPL"]
         } else {
-            &["WEAP", "EXPL", "RACE", "FACT", "QUST"]
+            &["WEAP", "IDLE", "EXPL", "RACE", "FACT", "QUST"]
         };
 
+        let mut replacements = Vec::new();
         for sig_str in sigs {
             let sig =
                 SigCode::from_str(sig_str).map_err(|e| FixupError::SchemaError(e.to_string()))?;
@@ -235,7 +218,9 @@ impl Fixup for FixCreatureWeaponsAndRecordsFixup {
                 if config.is_whole_plugin {
                     let keep = match *sig_str {
                         "WEAP" => likely_creature_weapon_editor_id(&eid_lower),
-                        "EXPL" => eid_lower.contains("spit") || eid_lower.contains("barf"),
+                        "IDLE" => is_floater_combat_idle_editor_id(&eid_lower),
+                        "EXPL" => eid_lower.contains("spit") || eid_lower.contains("barf")
+                            || eid_lower == super::player_fear::EXPLOSION_EID,
                         _ => false,
                     };
                     if !keep {
@@ -245,6 +230,11 @@ impl Fixup for FixCreatureWeaponsAndRecordsFixup {
 
                 let changed = match *sig_str {
                     "WEAP" => apply_weap(&mut record, target_own_index, mapper.interner),
+                    "IDLE" => apply_idle(&mut record, &eid_lower, mapper.interner),
+                    "EXPL" if eid_lower == super::player_fear::EXPLOSION_EID => {
+                        super::player_fear::repair_explosion(&mut record, mapper.interner, config.mod_path.as_deref())
+                            .map_err(FixupError::Other)?
+                    }
                     "EXPL" => apply_expl(&mut record, target_own_index, mapper.interner),
                     "RACE" => apply_race(&mut record, target_own_index),
                     "FACT" => apply_fact(&mut record, target_own_index),
@@ -252,16 +242,81 @@ impl Fixup for FixCreatureWeaponsAndRecordsFixup {
                     _ => false,
                 };
                 if changed {
-                    session
-                        .replace_record(record, target_schema, mapper.interner)
-                        .map_err(|e| FixupError::HandleError(e.to_string()))?;
-                    report.records_changed += 1;
+                    replacements.push(record);
                 }
             }
         }
+        report.records_changed = session
+            .replace_records_contents(replacements, target_schema, mapper.interner)
+            .map_err(|e| FixupError::HandleError(e.to_string()))?
+            .try_into()
+            .unwrap_or(u32::MAX);
 
         Ok(report)
     }
+}
+
+// ---------------------------------------------------------------------------
+// IDLE branch
+// ---------------------------------------------------------------------------
+
+fn is_floater_combat_idle_editor_id(eid_lower: &str) -> bool {
+    FLOATER_COMBAT_IDLE_EDITOR_IDS.contains(&eid_lower)
+}
+
+fn apply_idle(record: &mut Record, eid_lower: &str, interner: &crate::sym::StringInterner) -> bool {
+    if !is_floater_combat_idle_editor_id(eid_lower) {
+        return false;
+    }
+
+    let Some(data_sig) = sig("DATA") else {
+        return false;
+    };
+    let group_key = interner.intern("AnimationGroupSection");
+    let set_group = |value: &mut FieldValue| match value {
+        FieldValue::Struct(fields) => {
+            if let Some((_, current)) = fields.iter_mut().find(|(key, _)| *key == group_key) {
+                if *current == FieldValue::Uint(u64::from(FLOATER_ANIMATION_GROUP_SECTION)) {
+                    return false;
+                }
+                *current = FieldValue::Uint(u64::from(FLOATER_ANIMATION_GROUP_SECTION));
+            } else {
+                fields.push((
+                    group_key,
+                    FieldValue::Uint(u64::from(FLOATER_ANIMATION_GROUP_SECTION)),
+                ));
+            }
+            true
+        }
+        FieldValue::Bytes(data) if data.len() >= 4 => {
+            if data[3] == FLOATER_ANIMATION_GROUP_SECTION {
+                return false;
+            }
+            data[3] = FLOATER_ANIMATION_GROUP_SECTION;
+            true
+        }
+        FieldValue::None => {
+            *value = FieldValue::Struct(vec![(
+                group_key,
+                FieldValue::Uint(u64::from(FLOATER_ANIMATION_GROUP_SECTION)),
+            )]);
+            true
+        }
+        _ => false,
+    };
+
+    if let Some(entry) = record.fields.iter_mut().find(|entry| entry.sig == data_sig) {
+        return set_group(&mut entry.value);
+    }
+
+    record.fields.push(FieldEntry {
+        sig: data_sig,
+        value: FieldValue::Struct(vec![(
+            group_key,
+            FieldValue::Uint(u64::from(FLOATER_ANIMATION_GROUP_SECTION)),
+        )]),
+    });
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -289,9 +344,7 @@ pub fn apply_weap(
     };
 
     if !is_ranged {
-        // 1a — Strip AttackDelay >= 5 from melee. Setting to 0.0 matches the
-        // semantic "field removed" from the Python YAML perspective: the
-        // value never gets read by the engine.
+        // Zero melee AttackDelay >= 5; the engine never reads it.
         if let Some(delay) = read_dnam_f32(record, WEAP_DNAM_ATTACK_DELAY_OFFSET) {
             if delay >= WEAP_MELEE_ATTACK_DELAY_THRESHOLD {
                 if write_dnam_f32(record, WEAP_DNAM_ATTACK_DELAY_OFFSET, 0.0) {
@@ -299,11 +352,8 @@ pub fn apply_weap(
                 }
             }
         }
-        // "ExtraData" removal — Python YAML key with no FO4 subrecord. Skip.
     } else {
-        // 1b — Default damage_base / accuracy_bonus / action_point_cost
-        // when the DNAM struct shows them as zero (Python's
-        // `not data.get("DamageBase")` semantics).
+        // Default damage_base / accuracy_bonus / action_point_cost when zero.
         if let Some(dam_base) = read_dnam_u16(record, WEAP_DNAM_DAMAGE_BASE_OFFSET) {
             if dam_base == 0
                 && write_dnam_u16(
@@ -341,17 +391,29 @@ pub fn apply_weap(
 
         if eid_lower.contains("liberator") && eid_lower.contains("laser") {
             if let Some(flags) = read_dnam_u32(record, WEAP_DNAM_FLAGS_OFFSET) {
-                let repaired = (flags | WEAP_FLAG_EMBEDDED_WEAPON) & !WEAP_FLAG_NPCS_USE_AMMO;
+                let repaired = flags | WEAP_FLAG_EMBEDDED_WEAPON;
                 if repaired != flags && write_dnam_u32(record, WEAP_DNAM_FLAGS_OFFSET, repaired) {
                     changed = true;
                 }
             }
         }
+
+        if likely_creature_weapon_editor_id(&eid_lower)
+            && normalize_ranged_creature_keywords(record, &eid_lower, target_own_index, interner)
+        {
+            changed = true;
+        }
     }
 
-    // 1d — Spit weapon EITM swap: if eid contains "spit" and the current
-    // EITM FormID points into the converter's own plugin (master byte ==
-    // target_own_index), rewrite to vanilla MirelurkHunterSpitAttackSpell.
+    if let Some(flags) = read_dnam_u32(record, WEAP_DNAM_FLAGS_OFFSET) {
+        let repaired = flags & !WEAP_FLAG_NPCS_USE_AMMO;
+        if repaired != flags && write_dnam_u32(record, WEAP_DNAM_FLAGS_OFFSET, repaired) {
+            changed = true;
+        }
+    }
+
+    // Spit weapons: an EITM pointing into the converter's own plugin (master
+    // byte == target_own_index) becomes vanilla MirelurkHunterSpitAttackSpell.
     if eid_lower.contains("spit") {
         if swap_mod_local_eitm(record, target_own_index, WEAP_SPIT_VANILLA_EFFECT_RAW) {
             changed = true;
@@ -359,6 +421,237 @@ pub fn apply_weap(
     }
 
     changed
+}
+
+fn normalize_ranged_creature_keywords(
+    record: &mut Record,
+    eid_lower: &str,
+    target_own_index: u8,
+    interner: &crate::sym::StringInterner,
+) -> bool {
+    let mut changed = false;
+    if eid_lower.starts_with("crfloater") {
+        for low24 in [ANIMS_GRIP_RIFLE_ASSAULT_LOW24, BLOODBUG_WEAPON_LOW24] {
+            changed |= remove_fo4_keyword(record, low24, interner);
+        }
+        for low24 in [
+            FO76_WEAPON_TYPE_RANGED_LOW24,
+            FO76_WEAPON_TYPE_FLOATER_FLAMER_LOW24,
+        ] {
+            changed |= remove_own_keyword(record, low24, target_own_index);
+        }
+
+        if eid_lower.contains("flamer") {
+            changed |= append_fo4_keyword(record, WEAPON_TYPE_FLAMER_LOW24, interner);
+        } else if eid_lower.contains("freezer") {
+            changed |= append_fo4_keyword(record, WEAPON_TYPE_CRYOLATER_LOW24, interner);
+        }
+    }
+    changed |= append_fo4_keyword(record, CR_WEAPON_RANGED_LOW24, interner);
+    if changed {
+        sync_weap_keyword_count(record);
+    }
+    changed
+}
+
+fn remove_fo4_keyword(
+    record: &mut Record,
+    wanted_low24: u32,
+    interner: &crate::sym::StringInterner,
+) -> bool {
+    remove_keyword_matching(record, |raw, fk| {
+        raw.is_some_and(|raw| raw >> 24 == 0 && raw & 0x00FF_FFFF == wanted_low24)
+            || fk.is_some_and(|fk| {
+                fk.local & 0x00FF_FFFF == wanted_low24
+                    && interner
+                        .resolve(fk.plugin)
+                        .is_some_and(|plugin| plugin.eq_ignore_ascii_case(FALLOUT4_ESM))
+            })
+    })
+}
+
+fn remove_own_keyword(record: &mut Record, wanted_low24: u32, own_index: u8) -> bool {
+    let own_plugin = record.form_key.plugin;
+    remove_keyword_matching(record, |raw, fk| {
+        raw.is_some_and(|raw| (raw >> 24) as u8 == own_index && raw & 0x00FF_FFFF == wanted_low24)
+            || fk
+                .is_some_and(|fk| fk.plugin == own_plugin && fk.local & 0x00FF_FFFF == wanted_low24)
+    })
+}
+
+fn remove_keyword_matching(
+    record: &mut Record,
+    matches: impl Fn(Option<u32>, Option<&crate::ids::FormKey>) -> bool + Copy,
+) -> bool {
+    let Some(kwda_sig) = sig("KWDA") else {
+        return false;
+    };
+    record
+        .fields
+        .iter_mut()
+        .filter(|entry| entry.sig == kwda_sig)
+        .fold(false, |changed, entry| {
+            remove_keyword_from_value(&mut entry.value, matches) || changed
+        })
+}
+
+fn remove_keyword_from_value(
+    value: &mut FieldValue,
+    matches: impl Fn(Option<u32>, Option<&crate::ids::FormKey>) -> bool + Copy,
+) -> bool {
+    match value {
+        FieldValue::Bytes(data) => {
+            let original_len = data.len();
+            let mut filtered = smallvec::SmallVec::new();
+            for chunk in data.chunks_exact(4) {
+                let raw = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                if !matches(Some(raw), None) {
+                    filtered.extend_from_slice(chunk);
+                }
+            }
+            if filtered.len() == original_len {
+                return false;
+            }
+            *data = filtered;
+            true
+        }
+        FieldValue::FormKey(fk) if matches(None, Some(fk)) => {
+            *value = FieldValue::None;
+            true
+        }
+        FieldValue::List(items) => {
+            let mut changed = false;
+            for item in items.iter_mut() {
+                changed |= remove_keyword_from_value(item, matches);
+            }
+            if changed {
+                items.retain(|item| !matches!(item, FieldValue::None));
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+fn append_fo4_keyword(
+    record: &mut Record,
+    low24: u32,
+    interner: &crate::sym::StringInterner,
+) -> bool {
+    if record_has_fo4_keyword(record, low24, interner) {
+        return false;
+    }
+    let Some(kwda_sig) = sig("KWDA") else {
+        return false;
+    };
+    let keyword = crate::ids::FormKey {
+        local: low24,
+        plugin: interner.intern(FALLOUT4_ESM),
+    };
+    if let Some(entry) = record.fields.iter_mut().find(|entry| entry.sig == kwda_sig) {
+        match &mut entry.value {
+            FieldValue::Bytes(data) => data.extend_from_slice(&low24.to_le_bytes()),
+            FieldValue::List(items) => items.push(FieldValue::FormKey(keyword)),
+            value @ FieldValue::None => *value = FieldValue::FormKey(keyword),
+            value @ FieldValue::FormKey(_) => {
+                let existing = std::mem::replace(value, FieldValue::None);
+                *value = FieldValue::List(vec![existing, FieldValue::FormKey(keyword)]);
+            }
+            _ => return false,
+        }
+        return true;
+    }
+
+    record.fields.push(FieldEntry {
+        sig: kwda_sig,
+        value: FieldValue::Bytes(smallvec::SmallVec::from_slice(&low24.to_le_bytes())),
+    });
+    true
+}
+
+fn record_has_fo4_keyword(
+    record: &Record,
+    wanted_low24: u32,
+    interner: &crate::sym::StringInterner,
+) -> bool {
+    let Some(kwda_sig) = sig("KWDA") else {
+        return false;
+    };
+    record.fields.iter().any(|entry| {
+        entry.sig == kwda_sig && field_value_has_fo4_keyword(&entry.value, wanted_low24, interner)
+    })
+}
+
+fn field_value_has_fo4_keyword(
+    value: &FieldValue,
+    wanted_low24: u32,
+    interner: &crate::sym::StringInterner,
+) -> bool {
+    match value {
+        FieldValue::Bytes(data) => data.chunks_exact(4).any(|chunk| {
+            let raw = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            raw >> 24 == 0 && raw & 0x00FF_FFFF == wanted_low24
+        }),
+        FieldValue::FormKey(fk) => {
+            fk.local & 0x00FF_FFFF == wanted_low24
+                && interner
+                    .resolve(fk.plugin)
+                    .is_some_and(|plugin| plugin.eq_ignore_ascii_case(FALLOUT4_ESM))
+        }
+        FieldValue::List(items) => items
+            .iter()
+            .any(|item| field_value_has_fo4_keyword(item, wanted_low24, interner)),
+        _ => false,
+    }
+}
+
+fn sync_weap_keyword_count(record: &mut Record) {
+    let (Some(kwda_sig), Some(ksiz_sig)) = (sig("KWDA"), sig("KSIZ")) else {
+        return;
+    };
+    let count = record
+        .fields
+        .iter()
+        .filter(|entry| entry.sig == kwda_sig)
+        .map(|entry| weap_keyword_value_count(&entry.value))
+        .sum::<u32>();
+    if let Some(entry) = record.fields.iter_mut().find(|entry| entry.sig == ksiz_sig) {
+        write_weap_keyword_count(&mut entry.value, count);
+        return;
+    }
+    let insert_at = record
+        .fields
+        .iter()
+        .position(|entry| entry.sig == kwda_sig)
+        .unwrap_or(record.fields.len());
+    record.fields.insert(
+        insert_at,
+        FieldEntry {
+            sig: ksiz_sig,
+            value: FieldValue::Bytes(smallvec::SmallVec::from_slice(&count.to_le_bytes())),
+        },
+    );
+}
+
+fn weap_keyword_value_count(value: &FieldValue) -> u32 {
+    match value {
+        FieldValue::Bytes(data) => (data.len() / 4) as u32,
+        FieldValue::FormKey(_) => 1,
+        FieldValue::List(items) => items.iter().map(weap_keyword_value_count).sum(),
+        _ => 0,
+    }
+}
+
+fn write_weap_keyword_count(value: &mut FieldValue, count: u32) {
+    match value {
+        FieldValue::Bytes(data) => {
+            data.clear();
+            data.extend_from_slice(&count.to_le_bytes());
+        }
+        FieldValue::Int(current) => *current = i64::from(count),
+        FieldValue::Uint(current) => *current = u64::from(count),
+        _ => *value = FieldValue::Bytes(smallvec::SmallVec::from_slice(&count.to_le_bytes())),
+    }
 }
 
 /// Rewrite a single 4-byte EITM (Effect) FormID payload when the current
@@ -384,13 +677,9 @@ fn swap_mod_local_eitm(record: &mut Record, target_own_index: u8, replacement_ra
                 return true;
             }
             FieldValue::FormKey(fk) => {
-                // FieldValue::FormKey already encodes a FormKey; compare via
-                // .local high byte. fk.local is the 24-bit object_id only in
-                // the conversion FormKey shape — but the master byte is
-                // implicit in fk.plugin. We can't safely identify "own
-                // plugin" without comparing fk.plugin to the slot's plugin
-                // name. Fall back to skipping FormKey-shaped EITMs; the
-                // bytes-shaped path covers the read_record case.
+                // A FormKey carries its master in `fk.plugin`, not a master
+                // byte, so "own plugin" can't be checked here. Skip it; the
+                // bytes path covers `read_record` output.
                 let _ = fk;
                 return false;
             }
@@ -437,11 +726,8 @@ pub fn apply_expl(
         }
     }
 
-    // For spit/barf explosions missing EITM, append one pointing at
-    // crEnchMirelurkQueenSpit. Python places the field "before Data" in
-    // YAML; in the binary record, subrecord order isn't validated for
-    // round-trip equivalence (EITM appears before DATA in the FO4 schema
-    // anyway), so we insert before DATA when possible, otherwise append.
+    // Spit/barf explosions missing EITM get crEnchMirelurkQueenSpit, inserted
+    // before DATA (FO4 schema order) when DATA exists.
     let eid_lower = resolve_eid_lower(record, interner);
     let is_spit_or_barf = eid_lower.contains("spit") || eid_lower.contains("barf");
     if is_spit_or_barf && !has_subrecord(record, "EITM") {
@@ -449,9 +735,6 @@ pub fn apply_expl(
             changed = true;
         }
     }
-
-    // YAML-only top-level Damage / ObjectEffect removal — no FO4 subrecord;
-    // nothing to remove in the binary. Skip per deviation pattern.
 
     changed
 }
@@ -487,7 +770,17 @@ fn add_eitm_before_data(record: &mut Record, raw_form_id: u32) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Apply RACE.VNAM filter: preserve FO4-valid upper bits and creature slots.
+///
+/// Races that actually carry weapons keep their equipment-type bits verbatim —
+/// see [`record_is_armed_humanoid`]. Stripping is deliberately one-sided: an
+/// unused bit only permits an equip that never happens, while a missing one
+/// blocks the race from holding that weapon class at all.
 pub fn apply_race(record: &mut Record, _target_own_index: u8) -> bool {
+    let keep_mask = if record_is_armed_humanoid(record) {
+        RACE_VNAM_KEEP_MASK | RACE_VNAM_ARMED_HUMANOID_BITS
+    } else {
+        RACE_VNAM_KEEP_MASK
+    };
     let vnam_sig = match SubrecordSig::from_str("VNAM") {
         Ok(s) => s,
         Err(_) => return false,
@@ -500,7 +793,7 @@ pub fn apply_race(record: &mut Record, _target_own_index: u8) -> bool {
         match &mut entry.value {
             FieldValue::Bytes(data) if data.len() >= 4 => {
                 let cur = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                let masked = cur & RACE_VNAM_KEEP_MASK;
+                let masked = cur & keep_mask;
                 if cur != masked {
                     data[0..4].copy_from_slice(&masked.to_le_bytes());
                     changed = true;
@@ -508,7 +801,7 @@ pub fn apply_race(record: &mut Record, _target_own_index: u8) -> bool {
             }
             FieldValue::Uint(n) => {
                 let cur = (*n & 0xFFFF_FFFF) as u32;
-                let masked = cur & RACE_VNAM_KEEP_MASK;
+                let masked = cur & keep_mask;
                 if cur != masked {
                     *n = masked as u64;
                     changed = true;
@@ -795,6 +1088,9 @@ fn resolve_eid_lower(record: &Record, interner: &crate::sym::StringInterner) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixups::creature::creature_predicate::{
+        ACTOR_TYPE_HUMANLIKE_LOW24, ACTOR_TYPE_SUPER_MUTANT_LOW24,
+    };
     use crate::ids::{FormKey, SigCode, SubrecordSig};
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
     use crate::sym::StringInterner;
@@ -846,6 +1142,86 @@ mod tests {
             .copy_from_slice(&action_point_cost.to_le_bytes());
         let _ = WEAP_DNAM_MIN_LEN;
         data
+    }
+
+    fn keyword_raws(record: &Record) -> Vec<u32> {
+        let kwda = SubrecordSig::from_str("KWDA").unwrap();
+        let entry = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig == kwda)
+            .expect("KWDA");
+        let FieldValue::Bytes(data) = &entry.value else {
+            panic!("expected byte-shaped KWDA");
+        };
+        data.chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect()
+    }
+
+    fn idle_group_section(record: &Record, interner: &StringInterner) -> Option<u64> {
+        let data_sig = SubrecordSig::from_str("DATA").unwrap();
+        let group_key = interner.intern("AnimationGroupSection");
+        let entry = record.fields.iter().find(|entry| entry.sig == data_sig)?;
+        match &entry.value {
+            FieldValue::Struct(fields) => fields.iter().find_map(|(key, value)| {
+                (*key == group_key)
+                    .then_some(value)
+                    .and_then(|value| match value {
+                        FieldValue::Uint(value) => Some(*value),
+                        _ => None,
+                    })
+            }),
+            FieldValue::Bytes(data) if data.len() >= 4 => Some(u64::from(data[3])),
+            _ => None,
+        }
+    }
+
+    // ── IDLE: Floater combat animation-group section ──────────────────────
+
+    #[test]
+    fn floater_combat_idles_use_fan_port_animation_group_section() {
+        let interner = StringInterner::new();
+        for (index, eid_lower) in FLOATER_COMBAT_IDLE_EDITOR_IDS.iter().enumerate() {
+            let mut record = make_record(
+                "IDLE",
+                0x550000 + index as u32,
+                "Output.esp",
+                Some(eid_lower),
+                &interner,
+            );
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("DATA").unwrap(),
+                value: FieldValue::Struct(Vec::new()),
+            });
+
+            assert!(apply_idle(&mut record, eid_lower, &interner), "{eid_lower}");
+            assert_eq!(
+                idle_group_section(&record, &interner),
+                Some(u64::from(FLOATER_ANIMATION_GROUP_SECTION)),
+                "{eid_lower}"
+            );
+            assert!(
+                !apply_idle(&mut record, eid_lower, &interner),
+                "{eid_lower} should be idempotent"
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_idle_keeps_its_animation_group_section() {
+        let interner = StringInterner::new();
+        let mut record = make_record(
+            "IDLE",
+            0x0314DE,
+            "Fallout4.esm",
+            Some("BloatflyFireSingle"),
+            &interner,
+        );
+        push_bytes(&mut record, "DATA", vec![0, 0, 0, 0, 0, 0]);
+
+        assert!(!apply_idle(&mut record, "bloatflyfiresingle", &interner));
+        assert_eq!(idle_group_section(&record, &interner), Some(0));
     }
 
     // ── WEAP: melee AttackDelay strip ─────────────────────────────────────
@@ -941,9 +1317,139 @@ mod tests {
             "DNAM",
             make_dnam_bytes(WEAP_ANIM_TYPE_GUN, 0.0, 42, 75, 30.0),
         );
+        push_bytes(&mut r, "KSIZ", 1u32.to_le_bytes().to_vec());
+        push_bytes(
+            &mut r,
+            "KWDA",
+            CR_WEAPON_RANGED_LOW24.to_le_bytes().to_vec(),
+        );
         let changed = apply_weap(&mut r, 1, &interner);
         assert!(!changed);
         assert_eq!(read_dnam_u16(&r, WEAP_DNAM_DAMAGE_BASE_OFFSET), Some(42));
+    }
+
+    #[test]
+    fn floater_flamer_uses_fo4_ranged_keyword_contract() {
+        let interner = StringInterner::new();
+        let mut record = make_record(
+            "WEAP",
+            0x55DA6B,
+            "Output.esp",
+            Some("crFloaterFlamerBreath"),
+            &interner,
+        );
+        push_bytes(
+            &mut record,
+            "DNAM",
+            make_dnam_bytes(WEAP_ANIM_TYPE_GUN, 0.0, 10, 100, 20.0),
+        );
+        let keywords = [
+            ANIMS_GRIP_RIFLE_ASSAULT_LOW24,
+            BLOODBUG_WEAPON_LOW24,
+            (1u32 << 24) | FO76_WEAPON_TYPE_RANGED_LOW24,
+            (1u32 << 24) | FO76_WEAPON_TYPE_FLOATER_FLAMER_LOW24,
+            0x05_DDA2,
+        ];
+        push_bytes(
+            &mut record,
+            "KSIZ",
+            (keywords.len() as u32).to_le_bytes().to_vec(),
+        );
+        push_bytes(
+            &mut record,
+            "KWDA",
+            keywords.iter().flat_map(|raw| raw.to_le_bytes()).collect(),
+        );
+
+        assert!(apply_weap(&mut record, 1, &interner));
+        assert_eq!(
+            keyword_raws(&record),
+            vec![0x05_DDA2, WEAPON_TYPE_FLAMER_LOW24, CR_WEAPON_RANGED_LOW24,]
+        );
+        let ksiz = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig == SubrecordSig::from_str("KSIZ").unwrap())
+            .unwrap();
+        let FieldValue::Bytes(ksiz) = &ksiz.value else {
+            panic!("expected byte-shaped KSIZ");
+        };
+        assert_eq!(u32::from_le_bytes(ksiz.as_slice().try_into().unwrap()), 3);
+        assert!(!apply_weap(&mut record, 1, &interner));
+    }
+
+    #[test]
+    fn floater_freezer_adds_cryolater_and_ranged_formkeys() {
+        let interner = StringInterner::new();
+        let mut record = make_record(
+            "WEAP",
+            0x55DA67,
+            "Output.esp",
+            Some("crFloaterFreezerBreath"),
+            &interner,
+        );
+        push_bytes(
+            &mut record,
+            "DNAM",
+            make_dnam_bytes(WEAP_ANIM_TYPE_GUN, 0.0, 10, 100, 20.0),
+        );
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("KWDA").unwrap(),
+            value: FieldValue::FormKey(FormKey {
+                local: FO76_WEAPON_TYPE_RANGED_LOW24,
+                plugin: interner.intern("Output.esp"),
+            }),
+        });
+
+        assert!(apply_weap(&mut record, 1, &interner));
+        assert!(record_has_fo4_keyword(
+            &record,
+            WEAPON_TYPE_CRYOLATER_LOW24,
+            &interner
+        ));
+        assert!(record_has_fo4_keyword(
+            &record,
+            CR_WEAPON_RANGED_LOW24,
+            &interner
+        ));
+        let kwda = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig == SubrecordSig::from_str("KWDA").unwrap())
+            .unwrap();
+        let FieldValue::List(keywords) = &kwda.value else {
+            panic!("expected formkey list");
+        };
+        assert_eq!(keywords.len(), 2);
+        assert!(!apply_weap(&mut record, 1, &interner));
+    }
+
+    #[test]
+    fn ranged_creature_weapon_clears_npc_ammo_flag_with_add_ammo_list() {
+        let interner = StringInterner::new();
+        let mut record = make_record(
+            "WEAP",
+            0x5FA1EA,
+            "Output.esp",
+            Some("crMoleMinerBoss_Launcher_DailyOps"),
+            &interner,
+        );
+        let mut dnam = make_dnam_bytes(WEAP_ANIM_TYPE_GUN, 1.2, 44, 100, 20.0);
+        dnam[WEAP_DNAM_FLAGS_OFFSET..WEAP_DNAM_FLAGS_OFFSET + 4]
+            .copy_from_slice(&WEAP_FLAG_NPCS_USE_AMMO.to_le_bytes());
+        push_bytes(&mut record, "DNAM", dnam);
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("LNAM").unwrap(),
+            value: FieldValue::FormKey(FormKey {
+                local: 0x178EC6,
+                plugin: interner.intern("Fallout4.esm"),
+            }),
+        });
+
+        assert!(apply_weap(&mut record, 1, &interner));
+        let flags = read_dnam_u32(&record, WEAP_DNAM_FLAGS_OFFSET).unwrap();
+        assert_eq!(flags & WEAP_FLAG_NPCS_USE_AMMO, 0);
+        assert_eq!(flags & WEAP_FLAG_EMBEDDED_WEAPON, 0);
     }
 
     #[test]
@@ -1035,7 +1541,12 @@ mod tests {
         eitm.extend_from_slice(&vanilla_raw.to_le_bytes());
         push_bytes(&mut r, "EITM", eitm);
         let changed = apply_weap(&mut r, 1, &interner);
-        assert!(!changed);
+        assert!(changed, "the ranged keyword contract should be added");
+        assert!(record_has_fo4_keyword(
+            &r,
+            CR_WEAPON_RANGED_LOW24,
+            &interner
+        ));
         let eitm_sig = SubrecordSig::from_str("EITM").unwrap();
         for entry in &r.fields {
             if entry.sig == eitm_sig {
@@ -1131,10 +1642,12 @@ mod tests {
 
     // ── RACE.VNAM equipment-flags mask ────────────────────────────────────
 
-    /// Scorchbeast-style RACE.VNAM keeps melee and high FO4 creature bits while
-    /// unsupported low equipment slots remain filtered.
+    /// Scorchbeast-style RACE.VNAM keeps the high FO4 creature bits while
+    /// unsupported low equipment slots remain filtered. `hand_to_hand_melee`
+    /// goes with them: no vanilla FO4 creature race sets it, and carrying it
+    /// across stops the engine ever staging a melee swing.
     #[test]
-    fn race_vnam_preserves_scorchbeast_melee_and_high_creature_bits() {
+    fn race_vnam_preserves_scorchbeast_high_creature_bits_and_clears_h2h() {
         let mut interner = StringInterner::new();
         let mut r = make_record("RACE", 0x5678, "Output.esp", None, &mut interner);
         // Set bits: hand_to_hand_melee(1), one_hand_sword(2), gun(512),
@@ -1151,10 +1664,94 @@ mod tests {
             if entry.sig == vnam_sig {
                 if let FieldValue::Bytes(data) = &entry.value {
                     let new_val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                    assert_eq!(new_val, 1 | 512 | 4096 | 8192 | 16384 | 0xF8FF_8000);
+                    assert_eq!(new_val, 512 | 4096 | 8192 | 16384 | 0xF8FF_8000);
+                    assert_eq!(new_val & 1, 0, "body-fighting creature loses H2H");
                 }
             }
         }
+    }
+
+    /// Weapon-animation-type bits survive on a race that carries a weapon, even
+    /// when FO76 tags it `ActorTypeCreature` (mole miners).
+    #[test]
+    fn race_vnam_preserves_weapon_bits_on_humanlike_race() {
+        let mut interner = StringInterner::new();
+        let mut r = make_record("RACE", 0x012E6B, "Output.esp", None, &mut interner);
+        // MoleMinerRace: ActorTypeCreature *and* ActorTypeHumanlike.
+        let mut kwda: Vec<u8> = Vec::new();
+        kwda.extend_from_slice(&0x00_013795u32.to_le_bytes());
+        kwda.extend_from_slice(&ACTOR_TYPE_HUMANLIKE_LOW24.to_le_bytes());
+        push_bytes(&mut r, "KWDA", kwda);
+        let cur: u32 = 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 0xF8FF_8000;
+        let mut vnam: Vec<u8> = Vec::new();
+        vnam.extend_from_slice(&cur.to_le_bytes());
+        push_bytes(&mut r, "VNAM", vnam);
+
+        assert!(!apply_race(&mut r, 1), "armed humanoid must not be masked");
+        let vnam_sig = SubrecordSig::from_str("VNAM").unwrap();
+        let stored = r
+            .fields
+            .iter()
+            .find(|e| e.sig == vnam_sig)
+            .and_then(|e| match &e.value {
+                FieldValue::Bytes(d) if d.len() >= 4 => {
+                    Some(u32::from_le_bytes([d[0], d[1], d[2], d[3]]))
+                }
+                _ => None,
+            })
+            .expect("VNAM");
+        assert_eq!(stored, cur, "source equipment flags survive verbatim");
+    }
+
+    /// Super mutants swing boards and super sledges but FO76 leaves them
+    /// un-humanlike, so `ActorTypeSuperMutant` has to exempt them too.
+    #[test]
+    fn race_vnam_preserves_weapon_bits_on_super_mutant_race() {
+        let mut interner = StringInterner::new();
+        let mut r = make_record("RACE", 0x5C4F6E, "Output.esp", None, &mut interner);
+        let mut kwda: Vec<u8> = Vec::new();
+        kwda.extend_from_slice(&0x00_013795u32.to_le_bytes());
+        kwda.extend_from_slice(&ACTOR_TYPE_SUPER_MUTANT_LOW24.to_le_bytes());
+        push_bytes(&mut r, "KWDA", kwda);
+        // ShieldedSuperMutantRace loses two_hand_sword/axe + grenade today.
+        let cur: u32 = 1 | 32 | 64 | 512 | 1024 | 8192 | 16384 | 0xF8FF_8000;
+        let mut vnam: Vec<u8> = Vec::new();
+        vnam.extend_from_slice(&cur.to_le_bytes());
+        push_bytes(&mut r, "VNAM", vnam);
+
+        assert!(!apply_race(&mut r, 1));
+    }
+
+    /// A beast with the same `ActorTypeCreature` tag but no humanoid marker gets
+    /// FO4's body-fighting profile: no `one_hand_sword`, and no
+    /// `hand_to_hand_melee` either.
+    #[test]
+    fn race_vnam_still_masks_plain_creature_race() {
+        let mut interner = StringInterner::new();
+        let mut r = make_record("RACE", 0x822A4D, "Output.esp", None, &mut interner);
+        let mut kwda: Vec<u8> = Vec::new();
+        kwda.extend_from_slice(&0x00_013795u32.to_le_bytes());
+        push_bytes(&mut r, "KWDA", kwda);
+        let cur: u32 = 1 | 2 | 512 | 1024 | 8192 | 16384 | 0xF8FF_8000;
+        let mut vnam: Vec<u8> = Vec::new();
+        vnam.extend_from_slice(&cur.to_le_bytes());
+        push_bytes(&mut r, "VNAM", vnam);
+
+        assert!(apply_race(&mut r, 1));
+        let vnam_sig = SubrecordSig::from_str("VNAM").unwrap();
+        let stored = r
+            .fields
+            .iter()
+            .find(|e| e.sig == vnam_sig)
+            .and_then(|e| match &e.value {
+                FieldValue::Bytes(d) if d.len() >= 4 => {
+                    Some(u32::from_le_bytes([d[0], d[1], d[2], d[3]]))
+                }
+                _ => None,
+            })
+            .expect("VNAM");
+        assert_eq!(stored, 512 | 8192 | 16384 | 0xF8FF_8000);
+        assert_eq!(stored & 1, 0, "RadHog must not keep H2H");
     }
 
     /// RACE.VNAM already filtered is a no-op.
@@ -1162,7 +1759,7 @@ mod tests {
     fn race_vnam_clean_is_noop() {
         let mut interner = StringInterner::new();
         let mut r = make_record("RACE", 0x5678, "Output.esp", None, &mut interner);
-        let cur: u32 = 1 | 512 | 4096 | 8192 | 16384 | 0xF8FF_8000;
+        let cur: u32 = 512 | 4096 | 8192 | 16384 | 0xF8FF_8000;
         let mut vnam: Vec<u8> = Vec::new();
         vnam.extend_from_slice(&cur.to_le_bytes());
         push_bytes(&mut r, "VNAM", vnam);

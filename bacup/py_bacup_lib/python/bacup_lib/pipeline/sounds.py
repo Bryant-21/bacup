@@ -157,6 +157,17 @@ def copy_sounds(
 ) -> None:
     """Copy resolved sound assets into the converted mod output."""
     sound_assets = [asset for asset in assets if asset.asset_type in {"sound", "audio"}]
+    if any(
+        asset.resolved_path
+        and Path(asset.resolved_path).suffix.casefold() == ".mp3"
+        for asset in sound_assets
+    ):
+        from bacup_lib.legacy_music import prepare_legacy_music_assets
+
+        sound_assets = prepare_legacy_music_assets(
+            sound_assets,
+            Path(ctx.mod_path) / ".regen_music_cache",
+        )
     summary = ctx.summary
     summary.audio_total = len(sound_assets)
     progress.total_items = len(sound_assets)
@@ -219,6 +230,17 @@ def copy_sounds_native(
     from bacup_lib.workflows.asset_phases import _drain_native_phase_events
 
     sound_assets = [a for a in assets if a.asset_type in {"sound", "audio"}]
+    if any(
+        asset.resolved_path
+        and Path(asset.resolved_path).suffix.casefold() == ".mp3"
+        for asset in sound_assets
+    ):
+        from bacup_lib.legacy_music import prepare_legacy_music_assets
+
+        sound_assets = prepare_legacy_music_assets(
+            sound_assets,
+            Path(ctx.mod_path) / ".regen_music_cache",
+        )
     summary = ctx.summary
     summary.audio_total = len(sound_assets)
     progress.total_items = len(sound_assets)

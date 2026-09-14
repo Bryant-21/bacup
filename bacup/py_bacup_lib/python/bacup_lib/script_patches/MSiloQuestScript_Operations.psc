@@ -26,10 +26,11 @@ EndFunction
 
 MSiloPersonalQuestScript Function GetPersonalQuest()
     Quest personalQuest = Game.GetFormFromFile(0x003E03AA, "SeventySix.esm") as Quest
-    If personalQuest != None && !personalQuest.IsRunning()
-        personalQuest.Start()
+    MSiloPersonalQuestScript personal = personalQuest as MSiloPersonalQuestScript
+    If personal != None && !personalQuest.IsRunning()
+        personal.EnsureSiloStarted(Game.GetPlayer().GetCurrentLocation())
     EndIf
-    Return personalQuest as MSiloPersonalQuestScript
+    Return personal
 EndFunction
 
 Function HandlePanelDestroyed(ObjectReference akPanel)

@@ -12,6 +12,12 @@ use esp_authoring_core::plugin_runtime::ensure_core_section;
 const DUMMY_KEYWORD_EDITOR_ID: &str = "B21_ma_none";
 const DUMMY_KEYWORD_SOURCE_PLUGIN: &str = "__synth_omod_none__";
 const KEYWORD_TYPE_MOD_ASSOCIATION: u64 = 5;
+const OBJECT_TEMPLATE_RECORD_SIGS: &[&str] = &["WEAP", "ARMO", "NPC_"];
+const OMOD_DATA_HEADER_LEN: usize = 20;
+const OMOD_ATTACH_PARENT_SLOT_COUNT_LEN: usize = 4;
+const OMOD_ITEM_COUNT_LEN: usize = 4;
+const OMOD_ITEM_ROW_LEN: usize = 8;
+const OMOD_INCLUDE_ROW_LEN: usize = 7;
 
 pub struct RepairOmodTargetKeywordsFixup;
 
@@ -46,8 +52,6 @@ impl Fixup for RepairOmodTargetKeywordsFixup {
     ) -> Result<FixupReport, FixupError> {
         let omod_sig = SigCode::from_str("OMOD")
             .map_err(|error| FixupError::SchemaError(error.to_string()))?;
-        let npc_sig = SigCode::from_str("NPC_")
-            .map_err(|error| FixupError::SchemaError(error.to_string()))?;
         let kywd_sig = SigCode::from_str("KYWD")
             .map_err(|error| FixupError::SchemaError(error.to_string()))?;
         let target_schema = session
@@ -62,12 +66,11 @@ impl Fixup for RepairOmodTargetKeywordsFixup {
 
         let target_omod_set: FxHashSet<FormKey> = target_omods.iter().copied().collect();
         let target_masters = session.target_masters().to_vec();
-        let npc_object_template_omods = collect_target_npc_object_template_omods(
+        let object_template_omod_closure = collect_target_object_template_omod_closure(
             session,
             mapper.interner,
             &target_omod_set,
             &target_masters,
-            npc_sig,
             target_schema.as_ref(),
         )?;
         let mut target_keyword_set: FxHashSet<FormKey> = session
@@ -122,8 +125,12 @@ impl Fixup for RepairOmodTargetKeywordsFixup {
             let changed = repairs
                 .get(&target_fk)
                 .is_some_and(|keywords| merge_target_keywords(&mut record, keywords) > 0);
-            let record_needs_dummy =
-                omod_needs_dummy_target_keyword(&record, target_fk, &npc_object_template_omods);
+            let record_needs_dummy = omod_needs_dummy_target_keyword(
+                &record,
+                target_fk,
+                &object_template_omod_closure,
+                mapper.interner,
+            );
             needs_dummy |= record_needs_dummy;
             if changed || record_needs_dummy {
                 pending.push((record, changed, record_needs_dummy));
@@ -170,38 +177,144 @@ impl Fixup for RepairOmodTargetKeywordsFixup {
     }
 }
 
-fn collect_target_npc_object_template_omods(
+fn collect_target_object_template_omod_closure(
     session: &mut PluginSession,
     interner: &crate::sym::StringInterner,
     target_omods: &FxHashSet<FormKey>,
     target_masters: &[String],
-    npc_sig: SigCode,
     target_schema: &crate::schema::AuthoringSchema,
 ) -> Result<FxHashSet<FormKey>, FixupError> {
     let target_plugin = session.target_slot().parsed.plugin_name.clone();
-    let npc_form_keys = session
-        .form_keys_of_sig(npc_sig, interner)
-        .map_err(|error| FixupError::HandleError(error.to_string()))?;
     let mut referenced = FxHashSet::default();
-    for npc_form_key in npc_form_keys {
-        let Ok(npc) = session.record_decoded(&npc_form_key, target_schema, interner) else {
-            continue;
-        };
-        for entry in &npc.fields {
-            if entry.sig.0 != *b"OBTS" {
+    for sig_name in OBJECT_TEMPLATE_RECORD_SIGS {
+        let sig = SigCode::from_str(sig_name)
+            .map_err(|error| FixupError::SchemaError(error.to_string()))?;
+        let form_keys = session
+            .form_keys_of_sig(sig, interner)
+            .map_err(|error| FixupError::HandleError(error.to_string()))?;
+        for form_key in form_keys {
+            let Ok(record) = session.record_decoded(&form_key, target_schema, interner) else {
                 continue;
+            };
+            for entry in &record.fields {
+                if entry.sig.0 == *b"OBTS" {
+                    collect_obts_omod_references(
+                        &entry.value,
+                        &target_plugin,
+                        target_masters,
+                        interner,
+                        &mut referenced,
+                    );
+                }
             }
-            collect_obts_omod_references(
-                &entry.value,
-                &target_plugin,
-                target_masters,
-                interner,
-                &mut referenced,
-            );
         }
     }
     referenced.retain(|form_key| target_omods.contains(form_key));
+
+    let mut includes_by_omod: FxHashMap<FormKey, FxHashSet<FormKey>> = FxHashMap::default();
+    for form_key in target_omods {
+        let Ok(record) = session.record_decoded(form_key, target_schema, interner) else {
+            continue;
+        };
+        let mut includes = FxHashSet::default();
+        for entry in &record.fields {
+            if entry.sig.0 == *b"DATA" {
+                collect_omod_include_references(
+                    &entry.value,
+                    &target_plugin,
+                    target_masters,
+                    interner,
+                    &mut includes,
+                );
+            }
+        }
+        includes.retain(|include| target_omods.contains(include));
+        if !includes.is_empty() {
+            includes_by_omod.insert(*form_key, includes);
+        }
+    }
+
+    let mut pending: Vec<FormKey> = referenced.iter().copied().collect();
+    while let Some(form_key) = pending.pop() {
+        let Some(includes) = includes_by_omod.get(&form_key) else {
+            continue;
+        };
+        for include in includes {
+            if referenced.insert(*include) {
+                pending.push(*include);
+            }
+        }
+    }
     Ok(referenced)
+}
+
+fn collect_omod_include_references(
+    value: &FieldValue,
+    own_plugin: &str,
+    masters: &[String],
+    interner: &crate::sym::StringInterner,
+    out: &mut FxHashSet<FormKey>,
+) {
+    match value {
+        FieldValue::Bytes(bytes) => {
+            let Some((include_count, includes_start)) = raw_omod_includes_layout(bytes) else {
+                return;
+            };
+            for index in 0..include_count {
+                let offset = includes_start + index * OMOD_INCLUDE_ROW_LEN;
+                let raw = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+                if let Some(form_key) = form_key_from_raw(raw, own_plugin, masters, interner) {
+                    out.insert(form_key);
+                }
+            }
+        }
+        FieldValue::Struct(fields) => {
+            let Some(FieldValue::List(includes)) = named_struct_value(fields, "includes", interner)
+            else {
+                return;
+            };
+            for include in includes {
+                let FieldValue::Struct(include_fields) = include else {
+                    continue;
+                };
+                let Some(mod_value) = named_struct_value(include_fields, "mod", interner) else {
+                    continue;
+                };
+                if let Some(form_key) =
+                    form_key_from_value(mod_value, own_plugin, masters, interner)
+                {
+                    out.insert(form_key);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn raw_omod_includes_layout(bytes: &[u8]) -> Option<(usize, usize)> {
+    if bytes.len() < OMOD_DATA_HEADER_LEN + OMOD_ATTACH_PARENT_SLOT_COUNT_LEN {
+        return None;
+    }
+    let include_count = u32::from_le_bytes(bytes[0..4].try_into().ok()?) as usize;
+    let attach_parent_slot_count = u32::from_le_bytes(
+        bytes[OMOD_DATA_HEADER_LEN..OMOD_DATA_HEADER_LEN + 4]
+            .try_into()
+            .ok()?,
+    ) as usize;
+    let item_count_offset = OMOD_DATA_HEADER_LEN
+        .checked_add(OMOD_ATTACH_PARENT_SLOT_COUNT_LEN)?
+        .checked_add(attach_parent_slot_count.checked_mul(4)?)?;
+    let item_count_end = item_count_offset.checked_add(OMOD_ITEM_COUNT_LEN)?;
+    let item_count = u32::from_le_bytes(
+        bytes
+            .get(item_count_offset..item_count_end)?
+            .try_into()
+            .ok()?,
+    ) as usize;
+    let includes_start = item_count_end.checked_add(item_count.checked_mul(OMOD_ITEM_ROW_LEN)?)?;
+    let includes_end =
+        includes_start.checked_add(include_count.checked_mul(OMOD_INCLUDE_ROW_LEN)?)?;
+    (includes_end <= bytes.len()).then_some((include_count, includes_start))
 }
 
 fn collect_obts_omod_references(
@@ -456,9 +569,16 @@ fn has_non_null_target_keyword(record: &Record) -> bool {
 fn omod_needs_dummy_target_keyword(
     record: &Record,
     form_key: FormKey,
-    npc_object_template_omods: &FxHashSet<FormKey>,
+    object_template_omod_closure: &FxHashSet<FormKey>,
+    interner: &crate::sym::StringInterner,
 ) -> bool {
-    !has_non_null_target_keyword(record) && !npc_object_template_omods.contains(&form_key)
+    let is_zzz_prefixed = record
+        .eid
+        .and_then(|editor_id| interner.resolve(editor_id))
+        .and_then(|editor_id| editor_id.get(..3))
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("zzz"));
+    !has_non_null_target_keyword(record)
+        && (is_zzz_prefixed || !object_template_omod_closure.contains(&form_key))
 }
 
 fn set_target_keywords(record: &mut Record, keywords: Vec<FormKey>) {
@@ -612,6 +732,41 @@ mod tests {
         record("OMOD", local, plugin, editor_id, fields, interner)
     }
 
+    fn omod_with_includes(
+        local: u32,
+        plugin: &str,
+        editor_id: &str,
+        includes: &[u32],
+        interner: &StringInterner,
+    ) -> Record {
+        let mut record = omod(local, plugin, editor_id, vec![], interner);
+        let mut data = Vec::new();
+        data.extend_from_slice(&(includes.len() as u32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.resize(OMOD_DATA_HEADER_LEN, 0);
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        for include in includes {
+            data.extend_from_slice(&include.to_le_bytes());
+            data.extend_from_slice(&[0; 3]);
+        }
+        record.fields.push(field(
+            "DATA",
+            FieldValue::Bytes(smallvec::SmallVec::from_vec(data)),
+        ));
+        record
+    }
+
+    fn object_template_with_includes(includes: &[u32]) -> FieldValue {
+        let mut obts = vec![0; 18];
+        obts[0..4].copy_from_slice(&(includes.len() as u32).to_le_bytes());
+        for include in includes {
+            obts.extend_from_slice(&include.to_le_bytes());
+            obts.extend_from_slice(&[0; 3]);
+        }
+        FieldValue::Bytes(smallvec::SmallVec::from_vec(obts))
+    }
+
     fn seed(handle: u64, records: Vec<Record>, interner: &StringInterner) {
         let mut session = open_session(handle, None).unwrap();
         let schema = session.schema().unwrap();
@@ -649,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn npc_object_template_omod_is_not_given_a_dummy_target_keyword() {
+    fn object_template_exemption_does_not_apply_to_zzz_omods() {
         let interner = StringInterner::new();
         let plugin = "Output.esm";
         let form_key = FormKey {
@@ -668,17 +823,33 @@ mod tests {
         assert!(!omod_needs_dummy_target_keyword(
             &record,
             form_key,
-            &referenced
+            &referenced,
+            &interner,
         ));
         assert!(omod_needs_dummy_target_keyword(
             &record,
             form_key,
-            &FxHashSet::default()
+            &FxHashSet::default(),
+            &interner,
+        ));
+
+        let zzz_record = omod(
+            form_key.local,
+            plugin,
+            "zzzmod_Meltdown_Barrel_Base",
+            vec![],
+            &interner,
+        );
+        assert!(omod_needs_dummy_target_keyword(
+            &zzz_record,
+            form_key,
+            &referenced,
+            &interner,
         ));
     }
 
     #[test]
-    fn reads_raw_and_structured_npc_object_template_omod_references() {
+    fn reads_raw_and_structured_object_template_omod_references() {
         let interner = StringInterner::new();
         let own_plugin = "Output.esm";
         let masters = vec!["DLCNukaWorld.esm".to_string()];
@@ -714,6 +885,130 @@ mod tests {
             &mut references,
         );
         assert!(references.contains(&target));
+    }
+
+    #[test]
+    fn armor_object_template_chain_exempts_only_non_zzz_omods() {
+        let interner = StringInterner::new();
+        let source_name = "SeventySix.esm";
+        let target_name = "Output.esm";
+        let source = plugin_handle_new_native(source_name, Some("fo76")).unwrap();
+        let target = plugin_handle_new_native(target_name, Some("fo4")).unwrap();
+
+        let target_plugin = interner.intern(target_name);
+        let target_aggregator = FormKey {
+            local: 0x900,
+            plugin: target_plugin,
+        };
+        let target_selector = FormKey {
+            local: 0x901,
+            plugin: target_plugin,
+        };
+        let target_leaf = FormKey {
+            local: 0x902,
+            plugin: target_plugin,
+        };
+        let target_orphan = FormKey {
+            local: 0x903,
+            plugin: target_plugin,
+        };
+        let target_zzz = FormKey {
+            local: 0x904,
+            plugin: target_plugin,
+        };
+
+        seed(
+            target,
+            vec![
+                record(
+                    "ARMO",
+                    0xA00,
+                    target_name,
+                    "RaiderOutfit",
+                    vec![
+                        field("OBTE", FieldValue::Bytes(smallvec::smallvec![1, 0, 0, 0])),
+                        field("OBTF", FieldValue::Bytes(smallvec::smallvec![])),
+                        field(
+                            "FULL",
+                            FieldValue::Bytes(smallvec::SmallVec::from_slice(b"Default\0")),
+                        ),
+                        field(
+                            "OBTS",
+                            object_template_with_includes(&[
+                                target_aggregator.local,
+                                target_zzz.local,
+                            ]),
+                        ),
+                        field("STOP", FieldValue::Bytes(smallvec::smallvec![])),
+                    ],
+                    &interner,
+                ),
+                omod_with_includes(
+                    target_aggregator.local,
+                    target_name,
+                    "RaiderOutfit_Aggregator",
+                    &[target_selector.local],
+                    &interner,
+                ),
+                omod_with_includes(
+                    target_selector.local,
+                    target_name,
+                    "RaiderOutfit_Selector",
+                    &[target_leaf.local],
+                    &interner,
+                ),
+                omod(
+                    target_leaf.local,
+                    target_name,
+                    "RaiderOutfit_Leaf",
+                    vec![],
+                    &interner,
+                ),
+                omod(
+                    target_orphan.local,
+                    target_name,
+                    "Unused_Orphan",
+                    vec![],
+                    &interner,
+                ),
+                omod(
+                    target_zzz.local,
+                    target_name,
+                    "zzzmod_Meltdown_Barrel_Base",
+                    vec![],
+                    &interner,
+                ),
+            ],
+            &interner,
+        );
+
+        let mut state = MapperState::new(
+            std::iter::empty(),
+            MapperOptions {
+                output_plugin_name: target_name.into(),
+                source_plugin_name: source_name.into(),
+                generated_object_id_floor: 0x800,
+                ..Default::default()
+            },
+        );
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+
+        let mut session = open_session(target, Some(source)).unwrap();
+        let report = RepairOmodTargetKeywordsFixup
+            .run_with_session(&mut session, &mut mapper, &FixupConfig::default())
+            .unwrap();
+
+        assert_eq!(report.records_added, 1);
+        assert_eq!(report.records_changed, 2);
+        assert!(target_keywords(&mut session, target_aggregator, &interner).is_empty());
+        assert!(target_keywords(&mut session, target_selector, &interner).is_empty());
+        assert!(target_keywords(&mut session, target_leaf, &interner).is_empty());
+        let orphan_keywords = target_keywords(&mut session, target_orphan, &interner);
+        assert_eq!(orphan_keywords.len(), 1);
+        assert_eq!(
+            target_keywords(&mut session, target_zzz, &interner),
+            orphan_keywords
+        );
     }
 
     #[test]

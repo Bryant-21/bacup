@@ -291,15 +291,7 @@ fn discover_nif_textures_with_progress(
         match NifFile::load(nif_path.to_path_buf()) {
             Ok(nif) => match extracted_root_from_nif(nif_path) {
                 Ok(source_root) => {
-                    for texture_ref in nif.referenced_asset_paths().textures {
-                        match texture_entry_from_ref(&source_root, &texture_ref) {
-                            Ok(texture) => discovery.textures.push(texture),
-                            Err(error) => discovery.fail(format!(
-                                "copy_textures: NIF texture ref rejected {} ({texture_ref}): {error}",
-                                entry.source_path
-                            )),
-                        }
-                    }
+                    append_nif_texture_refs(&mut discovery, &source_root, &nif, &entry.source_path);
                 }
                 Err(error) => discovery.fail(format!(
                     "copy_textures: NIF dependency root failed {}: {error}",
@@ -318,6 +310,22 @@ fn discover_nif_textures_with_progress(
         }
     }
     discovery
+}
+
+fn append_nif_texture_refs(
+    discovery: &mut NifDiscovery,
+    source_root: &Path,
+    nif: &NifFile,
+    source_path: &str,
+) {
+    for texture_ref in nif.referenced_asset_paths().textures {
+        match texture_entry_from_ref(source_root, &texture_ref) {
+            Ok(texture) => discovery.textures.push(texture),
+            Err(error) => discovery.fail(format!(
+                "copy_textures: NIF texture ref rejected {source_path} ({texture_ref}): {error}"
+            )),
+        }
+    }
 }
 
 fn extracted_root_from_nif(nif_path: &Path) -> Result<PathBuf, String> {
@@ -674,6 +682,76 @@ mod tests {
                 ..
             } if item.ends_with("Meshes/fnv/missing_b.nif")
         )));
+    }
+
+    #[test]
+    fn nif_dependency_scan_finds_fnv_tall_grass_texture() {
+        let temp = temp_dir("fnv_grass");
+        let root = temp.join("extracted/fnv");
+
+        let mut nif = NifFile::new("fnv");
+        let mut shader = nif_core_native::model::NifBlock::new(0, "TallGrassShaderProperty");
+        shader.set_field(
+            "File Name",
+            nif_core_native::model::NifValue::String(
+                "textures\\landscape\\grass\\GrassWastelandComp01.dds".to_string(),
+            ),
+        );
+        nif.blocks.push(shader);
+
+        let mut discovery = NifDiscovery::default();
+        append_nif_texture_refs(
+            &mut discovery,
+            &root,
+            &nif,
+            "Meshes/landscape/grass/grasswasteland01.nif",
+        );
+
+        assert_eq!(discovery.failures, 0, "{:?}", discovery.warning_messages);
+        assert_eq!(discovery.textures.len(), 1);
+        assert_eq!(
+            discovery.textures[0].source_path,
+            "Textures/landscape/grass/grasswastelandcomp01.dds"
+        );
+        assert_eq!(
+            Path::new(&discovery.textures[0].resolved_path),
+            root.join("Textures/landscape/grass/grasswastelandcomp01.dds")
+        );
+    }
+
+    #[test]
+    fn nif_dependency_scan_finds_fnv_no_lighting_texture() {
+        let temp = temp_dir("fnv_no_lighting");
+        let root = temp.join("extracted/fnv");
+
+        let mut nif = NifFile::new("fnv");
+        let mut shader = nif_core_native::model::NifBlock::new(0, "BSShaderNoLightingProperty");
+        shader.set_field(
+            "File Name",
+            nif_core_native::model::NifValue::String(
+                "textures\\effects\\FXDustSmallGen01.dds".to_string(),
+            ),
+        );
+        nif.blocks.push(shader);
+
+        let mut discovery = NifDiscovery::default();
+        append_nif_texture_refs(
+            &mut discovery,
+            &root,
+            &nif,
+            "Meshes/effects/ambient/fxswampgas01.nif",
+        );
+
+        assert_eq!(discovery.failures, 0, "{:?}", discovery.warning_messages);
+        assert_eq!(discovery.textures.len(), 1);
+        assert_eq!(
+            discovery.textures[0].source_path,
+            "Textures/effects/fxdustsmallgen01.dds"
+        );
+        assert_eq!(
+            Path::new(&discovery.textures[0].resolved_path),
+            root.join("Textures/effects/fxdustsmallgen01.dds")
+        );
     }
 
     #[test]

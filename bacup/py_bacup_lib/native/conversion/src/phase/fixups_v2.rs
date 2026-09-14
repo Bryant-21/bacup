@@ -11,7 +11,12 @@ impl Phase for FixupsV2Phase {
     fn run(&self, ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
         let reports = ctx
             .run
-            .apply_fixups_v2()
+            .apply_fixups_v2_with_deferred_havok(
+                ctx.params
+                    .get("defer_havok_postprocess")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            )
             .map_err(|e| PhaseError::Internal(e.to_string()))?;
         let mut total = PhaseReport::default();
         for (_name, r) in &reports {

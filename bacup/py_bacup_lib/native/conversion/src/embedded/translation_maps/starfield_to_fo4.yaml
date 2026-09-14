@@ -1,3 +1,22 @@
+skip_records:
+  # CELL and REFR are deliberately ABSENT here. Do not "restore parity with
+  # fo76_to_fo4.yaml" — that map is the PROJECTED pair (a bounded slice pushed
+  # into a new FO4 worldspace by its own structured emitter). starfield:fo4 is
+  # a whole-plugin pair, like skyrimse/fnv/fo3:fo4, none of which skip these:
+  # the generic writer IS the intake, translated CELL/REFR land flat, and
+  # `starfield_worldspace::relattice_worldspaces` then rebuilds the topology
+  # from the placed positions (Starfield's 100 m cell does not divide FO4's
+  # 4096 units, so source cell/block/sub-block labels cannot be copied).
+  # Skipping REFR additionally makes the starfield_fo4 pair hook's position
+  # x69.99125 a no-op, because the scaled record is dropped right after
+  # pre_translate.
+  #
+  # NAVM/NAVI stay skipped: no Starfield navmesh converter exists (out of MVP
+  # scope), and FO4 NAVM requires structured placement under a cell's
+  # Temporary (9) group that a flat top-level copy cannot satisfy.
+  - NAVM
+  - NAVI
+
 WEAP:
   fields:
     FULL: FULL
@@ -495,7 +514,7 @@ ALCH:
 
 TXST:
   fields:
-    ObjectBounds: ObjectBounds
+    OBND: OBND
     TX00: TX00
     TX01: TX01
     group_textures_rgb_a: group_textures_rgb_a
@@ -503,9 +522,9 @@ TXST:
   - ODTY
   - TX08
   - TX09
+  - TX17
   - TX19
   - DODT
-  - Flags
   defaults:
     SmoothSpec: ""
 
@@ -514,8 +533,8 @@ STAT:
     FULL: FULL
     Name: Name
     MODL: MODL
-    ObjectBounds: ObjectBounds
-    Properties: Properties
+    OBND: OBND
+    PRPS: PRPS
   transforms:
     FULL:
       type: trim_languages
@@ -526,7 +545,7 @@ STAT:
     MODL:
       type: strip_subfields
       remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
-    Properties:
+    PRPS:
       type: remap_formkey
       source_esm: Starfield.esm
       target_esm: Fallout4.esm
@@ -608,10 +627,11 @@ ACTI:
     FULL: FULL
     Name: Name
     MODL: MODL
-    ObjectBounds: ObjectBounds
-    Keywords: Keywords
+    OBND: OBND
+    KWDA: KWDA
     MarkerColor: MarkerColor
     Flags: Flags
+    NavmeshGeometry: NavmeshGeometry
   transforms:
     FULL:
       type: trim_languages
@@ -622,10 +642,13 @@ ACTI:
     MODL:
       type: strip_subfields
       remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
-    Keywords:
+    KWDA:
       type: remap_formkey
       source_esm: Starfield.esm
       target_esm: Fallout4.esm
+  drop:
+  - PRPS
+  - NTRM
   defaults:
     VirtualMachineAdapter: "Null"
     ActivateTextOverride: "Null"
@@ -870,10 +893,10 @@ MISC:
     FULL: FULL
     Name: Name
     MODL: MODL
-    ObjectBounds: ObjectBounds
+    OBND: OBND
     DATA: DATA
-    Components: Components
-    Keywords: Keywords
+    CVPA: CVPA
+    KWDA: KWDA
   transforms:
     FULL:
       type: trim_languages
@@ -884,11 +907,11 @@ MISC:
     MODL:
       type: strip_subfields
       remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
-    Components:
+    CVPA:
       type: remap_formkey
       source_esm: Starfield.esm
       target_esm: Fallout4.esm
-    Keywords:
+    KWDA:
       type: remap_formkey
       source_esm: Starfield.esm
       target_esm: Fallout4.esm
@@ -953,9 +976,8 @@ CONT:
     FULL: FULL
     Name: Name
     MODL: MODL
-    ObjectBounds: ObjectBounds
-    Keywords: Keywords
-    Properties: Properties
+    OBND: OBND
+    KWDA: KWDA
     Flags: Flags
   transforms:
     FULL:
@@ -967,22 +989,24 @@ CONT:
     MODL:
       type: strip_subfields
       remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
-    Keywords:
+    KWDA:
       type: remap_formkey
       source_esm: Starfield.esm
       target_esm: Fallout4.esm
-    Properties:
-      type: remap_formkey
-      source_esm: Starfield.esm
-      target_esm: Fallout4.esm
+  drop:
+  - PRPS
+  - NTRM
+  - COCT
+  - CNTO
+  - COED
 
 DOOR:
   fields:
     FULL: FULL
     Name: Name
     MODL: MODL
-    ObjectBounds: ObjectBounds
-    Keywords: Keywords
+    OBND: OBND
+    KWDA: KWDA
     Flags: Flags
   transforms:
     FULL:
@@ -994,10 +1018,12 @@ DOOR:
     MODL:
       type: strip_subfields
       remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
-    Keywords:
+    KWDA:
       type: remap_formkey
       source_esm: Starfield.esm
       target_esm: Fallout4.esm
+  drop:
+  - NTRM
 
 MESG:
   fields:
@@ -1101,6 +1127,11 @@ KYWD:
     Name:
       type: trim_languages
       keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    TNAM:
+      type: remap_enum
+      enum_ref: keyword_type_enum
+      max_value: 18
+      default: 0
 
 FLST:
   fields:
@@ -1139,10 +1170,10 @@ LIGH:
     FULL: FULL
     Name: Name
     MODL: MODL
-    ObjectBounds: ObjectBounds
+    OBND: OBND
     DATA: DATA
     NAM0: NAM0
-    Keywords: Keywords
+    KWDA: KWDA
     Flags: Flags
   transforms:
     FULL:
@@ -1158,7 +1189,93 @@ LIGH:
       type: remap_formkey
       source_esm: Starfield.esm
       target_esm: Fallout4.esm
-    Keywords:
+    KWDA:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+SCOL:
+  fields:
+    FULL: FULL
+    MODL: MODL
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+
+MSTT:
+  fields:
+    FULL: FULL
+    MODL: MODL
+    PRPS: PRPS
+    KWDA: KWDA
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    PRPS:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+GRAS:
+  fields:
+    MODL: MODL
+  transforms:
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+
+FLOR:
+  fields:
+    FULL: FULL
+    MODL: MODL
+    PRPS: PRPS
+    KWDA: KWDA
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    PRPS:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    KWDA:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+
+TERM:
+  fields:
+    FULL: FULL
+    MODL: MODL
+    PRPS: PRPS
+    KWDA: KWDA
+  transforms:
+    FULL:
+      type: trim_languages
+      keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, Portuguese_Brazil, Russian]
+    MODL:
+      type: strip_subfields
+      remove: [XFLG, ENLT, ENLS, AUUV, MODD, ENLM]
+    PRPS:
+      type: remap_formkey
+      source_esm: Starfield.esm
+      target_esm: Fallout4.esm
+    KWDA:
       type: remap_formkey
       source_esm: Starfield.esm
       target_esm: Fallout4.esm

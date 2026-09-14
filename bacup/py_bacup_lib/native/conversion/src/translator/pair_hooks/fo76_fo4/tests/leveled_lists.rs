@@ -35,30 +35,94 @@
 
     #[test]
     fn condition_gates_dropped_world_state_classifies_nuke_and_event_globals() {
+        let interner = StringInterner::new();
         // Nuke-zone check (func 849): dropped regardless of operator/value.
         assert!(Fo76Fo4Hook::condition_gates_dropped_world_state(
+            &interner,
             &raw_ctda_full(FO76_NUKE_ZONE_CONDITION_FUNCTION_ID, 0, 0.0,)
         ));
         // GetGlobalValue == 1 (event ON): dropped.
         assert!(Fo76Fo4Hook::condition_gates_dropped_world_state(
+            &interner,
             &raw_ctda_full(GET_GLOBAL_VALUE_CONDITION_FUNCTION_ID, 0, 1.0,)
         ));
         // GetGlobalValue != 0 (event ON): dropped.
         assert!(Fo76Fo4Hook::condition_gates_dropped_world_state(
+            &interner,
             &raw_ctda_full(GET_GLOBAL_VALUE_CONDITION_FUNCTION_ID, 1, 0.0,)
         ));
         // GetGlobalValue >= 1 (event ON): dropped.
         assert!(Fo76Fo4Hook::condition_gates_dropped_world_state(
+            &interner,
             &raw_ctda_full(GET_GLOBAL_VALUE_CONDITION_FUNCTION_ID, 3, 1.0,)
         ));
         // GetGlobalValue == 0 (event OFF / FO4 default): kept.
         assert!(!Fo76Fo4Hook::condition_gates_dropped_world_state(
+            &interner,
             &raw_ctda_full(GET_GLOBAL_VALUE_CONDITION_FUNCTION_ID, 0, 0.0,)
         ));
         // Unrelated condition function: kept.
         assert!(!Fo76Fo4Hook::condition_gates_dropped_world_state(
+            &interner,
             &raw_ctda_full(56, 0, 1.0)
         ));
+        // An unrelated condition form is not treated as a creature variant.
+        assert!(!Fo76Fo4Hook::condition_gates_dropped_world_state(
+            &interner,
+            &raw_ctda_with_parameter_1(
+                FO76_CONDITION_FORM_CONDITION_FUNCTION_ID,
+                0x123456,
+            )
+        ));
+    }
+
+    #[test]
+    fn pre_translate_drops_special_mole_miner_variants_from_generic_lvln() {
+        let interner = StringInterner::new();
+        let mut record = make_record("LVLN", &interner);
+        push_field(&mut record, "LLCT", FieldValue::Uint(3));
+
+        push_field(&mut record, "LVLO", FieldValue::Uint(0x48FA64));
+        push_field(
+            &mut record,
+            "CTDA",
+            raw_ctda_with_parameter_1(
+                FO76_CONDITION_FORM_CONDITION_FUNCTION_ID,
+                FO76_GLOWING_CREATURE_SPAWN_CONDITION_FORM,
+            ),
+        );
+
+        push_field(&mut record, "LVLO", FieldValue::Uint(0x3D14E4));
+        push_field(
+            &mut record,
+            "CTDA",
+            raw_ctda_with_parameter_1(
+                FO76_EDITOR_LOCATION_HAS_KEYWORD_CONDITION_FUNCTION_ID,
+                FO76_SCORCHED_CREATURE_VARIANT_KEYWORD,
+            ),
+        );
+
+        push_field(&mut record, "LVLO", FieldValue::Uint(0x3D14D9));
+
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        assert_eq!(converted_lvlo_ids(&record, &interner), vec![0x3D14D9]);
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .find(|entry| entry.sig.0 == *b"LLCT")
+                .map(|entry| &entry.value),
+            Some(&FieldValue::Uint(1))
+        );
+        assert!(
+            record
+                .fields
+                .iter()
+                .all(|entry| !matches!(&entry.sig.0, b"CTDA" | b"CTDT"))
+        );
     }
 
     #[test]
@@ -191,6 +255,51 @@
             Some(&FieldValue::Bytes(SmallVec::from_slice(&[
                 LEVELED_LIST_USE_ALL_FLAG
             ])))
+        );
+    }
+
+    /// `LPI_FloraRhododendron01` (525648): the normal-world leaf is gated by a
+    /// `GetRandomPercent` chance roll, the nuke variant by a condition form
+    /// (`Radstorm_NukaFlora_Spawn_Condition`). Keeping the condition-form entry
+    /// and dropping the chance-gated one left placed refs resolving to the nuked
+    /// plant everywhere.
+    #[test]
+    fn pre_translate_keeps_chance_gated_default_leaf_over_condition_form_variant() {
+        let interner = StringInterner::new();
+        let mut record = make_record("LVLI", &interner);
+        push_field(&mut record, "LLCT", FieldValue::Uint(4));
+        push_field(&mut record, "LVLO", FieldValue::Uint(0x525646));
+        push_field(
+            &mut record,
+            "CTDA",
+            raw_ctda_full(GET_RANDOM_PERCENT_CONDITION_FUNCTION_ID, 5, 100.0),
+        );
+        push_field(
+            &mut record,
+            "CTDA",
+            raw_ctda_full(FO76_NUKE_ZONE_CONDITION_FUNCTION_ID, 0, 1.0),
+        );
+        push_field(&mut record, "LVLO", FieldValue::Uint(0x525646));
+        push_field(
+            &mut record,
+            "CTDA",
+            raw_ctda_full(FO76_CONDITION_FORM_CONDITION_FUNCTION_ID, 0, 1.0),
+        );
+        push_field(&mut record, "LVLO", FieldValue::Uint(0x525642));
+        push_field(
+            &mut record,
+            "CTDA",
+            raw_ctda_full(GET_RANDOM_PERCENT_CONDITION_FUNCTION_ID, 5, 65.0),
+        );
+        push_field(&mut record, "LVLO", FieldValue::Uint(0x525647));
+
+        let hook = Fo76Fo4Hook;
+        let mut ctx = make_ctx(&interner);
+        hook.pre_translate(&mut ctx, &mut record).unwrap();
+
+        assert_eq!(
+            converted_lvlo_ids(&record, &interner),
+            vec![0x525642, 0x525647]
         );
     }
 
@@ -576,6 +685,30 @@
             crate::target_write::encode_field_pub(lvlo_entry, schema.record_def("LVLI"), &interner)
                 .expect("converted LVLO encodes");
         assert_eq!(encoded, vec![2, 0, 0, 0, 0x65, 0x9C, 0x83, 0, 7, 0, 0, 0]);
+    }
+
+    #[test]
+    fn pre_translate_clamps_zero_lvlo_level_to_one() {
+        let mut interner = StringInterner::new();
+        let mut record = make_record("LVLI", &mut interner);
+        push_field(&mut record, "LVLO", FieldValue::Uint(0x0083_9C65));
+        push_field(&mut record, "LVIV", FieldValue::Float(1.0));
+        push_field(&mut record, "LVLV", FieldValue::Float(0.0));
+
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let schema = AuthoringSchema::for_game("fo4").expect("FO4 schema loads");
+        let lvlo_entry = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.as_str() == "LVLO")
+            .expect("converted LVLO");
+        let encoded =
+            crate::target_write::encode_field_pub(lvlo_entry, schema.record_def("LVLI"), &interner)
+                .expect("converted LVLO encodes");
+        assert_eq!(&encoded[0..2], &1_u16.to_le_bytes());
     }
 
     #[test]

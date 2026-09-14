@@ -68,6 +68,8 @@ Function EvaluateAndSetState()
     EndIf
 
     If DejaChannel != ""
-        Debug.Trace(Self as String + " W05_InstSwapEnableStateQuestStage| criteriaMet=" + criteriaMet as String + " shouldEnable=" + shouldEnable as String, 0, DejaChannel)
+        ; FO4's Debug.Trace takes (message, severity) — FO76's third Deja-channel
+        ; argument does not exist, so it goes into the message instead.
+        Debug.Trace("[" + DejaChannel + "] " + Self as String + " W05_InstSwapEnableStateQuestStage| criteriaMet=" + criteriaMet as String + " shouldEnable=" + shouldEnable as String, 0)
     EndIf
 EndFunction

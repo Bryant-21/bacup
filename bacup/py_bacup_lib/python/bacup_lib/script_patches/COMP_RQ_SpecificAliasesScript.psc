@@ -15,13 +15,10 @@ Event OnQuestInit()
         COMP_RQ_Ins.Alias_Location.ForceLocationTo(Alias_Location.GetLocation())
     EndIf
 
-    Bool started = False
     If StoryEventKeyword
-        started = StoryEventKeyword.SendStoryEventAndWait(Alias_Location.GetLocation(), Alias_Companion.GetReference(), Alias_Object.GetReference())
+        StoryEventKeyword.SendStoryEventAndWait(Alias_Location.GetLocation(), Alias_Companion.GetReference(), Alias_Object.GetReference())
     EndIf
-    If !started && QuestTarget && !QuestTarget.IsRunning()
-        QuestTarget.Start()
-    EndIf
+    Stop()
 EndEvent
 
 Function CopyReferenceAlias(ReferenceAlias sourceAlias, ReferenceAlias targetAlias)

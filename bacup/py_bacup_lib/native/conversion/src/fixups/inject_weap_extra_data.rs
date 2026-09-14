@@ -1,20 +1,10 @@
 //! Fixup: inject sidecar-specified ExtraData fields into translated WEAP records.
-
 //!
-//! # What this does
-//! The `weapon_extra_fks.yaml` sidecar may specify a `weap_extra_data` dict
-//! for specific weapon EditorIDs (e.g. `meltdown`).  This fixup loads that
-//! sidecar, then for each WEAP record in the target plugin whose EditorID
-//! appears in the sidecar, injects the specified extra fields.
-//!
-//! Currently only `ProjectileOverride` is supported, which maps to the
-//! `override_projectile` field (offset 29) in the FO4 FNAM subrecord.
-//! Other `weap_extra_data` keys are logged as warnings and skipped.
-//!
-//! # FK remapping
-//! The sidecar may specify values as FO76 FormKeys (e.g.
-//! `7A316D:SeventySix.esm`).  The fixup uses the `FormKeyMapper`'s
-//! `source_to_target` mapping to remap them.
+//! `src/embedded/weapon_extra_fks.yaml` (compiled in, parsed lazily; unparseable
+//! data yields an empty sidecar) maps weapon EditorIDs (e.g. `meltdown`) to a
+//! `weap_extra_data` dict. Only `ProjectileOverride` is supported; it writes FNAM
+//! `override_projectile` (offset 29). Other keys warn and are skipped. FO76 FormKey
+//! values (e.g. `7A316D:SeventySix.esm`) are remapped via `mapper.source_to_target`.
 //!
 //! # FO4 FNAM struct layout (codec `struct:f,f,f,f,f,B,B,B,B,f,B,I,I,I`)
 //! | Offset | Size | Field                       |
@@ -35,10 +25,6 @@
 //! |     37 |    4 | rumble_period_ms (uint32)   |
 //!
 //! Minimum FNAM size for override_projectile to be present: 33 bytes.
-//!
-//! # Data file
-//! `src/embedded/weapon_extra_fks.yaml`, compiled into the native library and
-//! cached lazily via `OnceLock`. Unparseable data produces an empty sidecar.
 
 use std::sync::OnceLock;
 
@@ -247,12 +233,9 @@ impl Fixup for InjectWeapExtraDataFixup {
 // Record-level mutation (extracted for unit-test access)
 // ---------------------------------------------------------------------------
 
-/// Inject `weap_extra_data` fields into a WEAP record's FNAM bytes.
-///
-/// Currently supports only `ProjectileOverride` → FNAM offset 29.
-/// Other field names are emitted as warnings.
-///
-/// Returns `true` when the record was mutated.
+/// Inject `weap_extra_data` fields into a WEAP record's FNAM bytes. Only
+/// `ProjectileOverride` (offset 29) is supported; other fields warn. Returns
+/// `true` when the record was mutated.
 pub fn apply_extra_data_to_record(
     record: &mut Record,
     weap_extra_data: &FxHashMap<String, String>,
@@ -327,15 +310,10 @@ pub fn apply_extra_data_to_record(
     mutated
 }
 
-/// Resolve a source-game FormKey string through the mapper, returning the raw
-/// 32-bit FormID to write into FNAM.
-///
-/// Interns the plugin name in `mapper.interner` so that the `FormKey` produced
-/// is comparable to keys stored in the mapper's `source_to_target` table
-/// (which also interned their plugin names via the same interner).
-///
-/// Returns `None` when the mapper has no pre-existing entry for the source FK
-/// (i.e. does not allocate a new mapping — this function is read-only).
+/// Resolve a source-game FormKey string through the mapper to the raw FormID to
+/// write into FNAM. Read-only: returns `None` when the mapper has no entry for the
+/// source FK. The plugin name is interned in `mapper.interner` so the key compares
+/// equal to `source_to_target` keys.
 
 fn resolve_proj_override_raw_id(
     source_fk_str: &str,

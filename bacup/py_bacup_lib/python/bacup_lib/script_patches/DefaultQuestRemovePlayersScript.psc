@@ -1,4 +1,6 @@
 Event OnQuestInit()
+    cleanupLock = False
+    cleanupDone = False
     Utility.Wait(0.1)
     If IsRunning()
         FillPlayerAliases()
@@ -36,7 +38,7 @@ Function CleanUpQuestItems()
 
     Int index = 0
     While QuestItemsToCleanUpArray && index < QuestItemsToCleanUpArray.Length
-        If QuestItemsToCleanUpArray[index].DoNotCleanUpOnStage < 0 || GetStage() != QuestItemsToCleanUpArray[index].DoNotCleanUpOnStage
+        If QuestItemsToCleanUpArray[index].DoNotCleanUpOnStage < 0 || !IsStageDone(QuestItemsToCleanUpArray[index].DoNotCleanUpOnStage)
             If QuestItemsToCleanUpArray[index].QuestItemToCleanUp
                 RemoveQuestReference(QuestItemsToCleanUpArray[index].QuestItemToCleanUp.GetReference())
             EndIf
@@ -60,10 +62,8 @@ Function RemoveQuestReference(ObjectReference itemRef)
     If !itemRef
         Return
     EndIf
-    Form itemBase = itemRef.GetBaseObject()
     Actor player = Game.GetPlayer()
-    Int count = player.GetItemCount(itemBase)
-    If itemBase && count > 0
-        player.RemoveItem(itemBase, count, True)
+    If itemRef.GetContainer() == player
+        player.RemoveItem(itemRef, 1, True)
     EndIf
 EndFunction

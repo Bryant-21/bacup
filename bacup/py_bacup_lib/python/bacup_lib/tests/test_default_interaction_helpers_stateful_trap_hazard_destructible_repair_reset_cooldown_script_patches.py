@@ -19,19 +19,17 @@ from creation_lib.pex.native_runtime import compile_psc
 REPO_ROOT = Path(__file__).resolve().parents[5]
 DEPLOYED_SCRIPTS_DIR = REPO_ROOT / "mods" / "SeventySix" / "data" / "Scripts"
 PARENT_SOURCE_DIR = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
-# Fallback source for scripts not (yet) present in the deployed conversion output —
-# the raw FO76-shipped PEX. Valid as a skeleton source here because these are
-# property-only/hollow scripts where the FO76 and expected FO4 interface (Scriptname/
-# Extends/properties) are identical; see the shard contract's program-wide note.
+# Fallback source for scripts missing from the deployed conversion output: the raw
+# FO76 PEX. Valid as a skeleton here because these property-only/hollow scripts
+# have the same interface (Scriptname/Extends/properties) in FO76 and FO4.
 RAW_FO76_SCRIPTS_DIR = REPO_ROOT / "extracted" / "fo76" / "scripts" / "client"
 
 # script_name -> (deployed pex filename, expected new/repaired top-level member names)
 #
-# Only DefaultDestructibleMultiStateActivator is genuinely stateful (a named
-# "Destroyed" state with a repair-detection branch); the other six are
-# deterministic guarded one-shot OnDeath/OnInit/OnCellLoad/OnTriggerEnter
-# handlers, so a full compile of the merged patch is sufficient coverage for
-# them — see repair-papyrus-stubs SKILL.md's dedicated-test-file criteria.
+# Only DefaultDestructibleMultiStateActivator is stateful (a named "Destroyed"
+# state with a repair-detection branch); the other six are guarded one-shot
+# OnDeath/OnInit/OnCellLoad/OnTriggerEnter handlers, covered by a full compile of
+# the merged patch.
 PATCH_CASES = {
     "DefaultActorSetAVOnDeathInstOwner": (
         "defaultactorsetavondeathinstowner.pex",

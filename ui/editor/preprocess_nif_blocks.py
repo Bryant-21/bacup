@@ -1,13 +1,12 @@
 """Build nif_blocks.db — full deserialized block data from all indexed NIFs.
 
 Standalone tool for the NIF editor. Reads NIF paths from the existing
-nifs.db metadata database (built by fo4_data_mcp/preprocess_nifs.py),
-loads each NIF, serializes every block's fields (with enum/bitflag
-resolution, field filtering, and array truncation), and writes everything
-into its own SQLite database with FTS5 search.
+nifs.db metadata database, loads each NIF, serializes every block's fields
+(with enum/bitflag resolution, field filtering, and array truncation), and
+writes everything into its own SQLite database with FTS5 search.
 
-The database lives alongside the editor at ui/editor/db/nif_blocks.db
-and can be queried directly via the nif_block_db module.
+The database lives at ui/editor/db/fo4_nif_blocks.db and is queried via the
+nif_block_db module.
 
 Phase 1: Query nifs.db for all (nif_id, source_path, path) tuples.
 Phase 2: ProcessPoolExecutor for parallel block extraction.
@@ -40,7 +39,6 @@ BLOCKS_DB = DB_DIR / "fo4_nif_blocks.db"
 # nifs.db lives in data/ — we only read from it
 NIFS_DB = _get_db_dir() / "fo4_nifs.db"
 
-# Same size limit as preprocess_nifs.py
 MAX_NIF_SIZE = 5 * 1024 * 1024  # 5 MB
 
 # Fields to skip — huge per-vertex/per-triangle/binary arrays

@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from bacup_lib.models import AssetRef, ConversionSummary
 from bacup_lib.workflows import asset_phases
 from bacup_lib.workflows.unified import (
@@ -79,7 +81,14 @@ def _builder(monkeypatch, tmp_path: Path, source_game: str):
         _remove_stale_asset_output=lambda _asset: False,
         _track_asset=lambda *_args: None,
     )
-    ctx = SimpleNamespace(source_game=source_game, assets=assets, summary=summary)
+    # target_game is load-bearing: the wave plan is keyed on the PAIR now that
+    # fo4:starfield inverts the "everything targets FO4" assumption.
+    ctx = SimpleNamespace(
+        source_game=source_game,
+        target_game="fo4",
+        assets=assets,
+        summary=summary,
+    )
     driver = SimpleNamespace(
         ctx=ctx,
         terrain_texture_jobs=[],
@@ -106,6 +115,11 @@ def _builder(monkeypatch, tmp_path: Path, source_game: str):
                 for asset in nif_assets
             ],
             "fo76_only_extra": True,
+            **(
+                {"translation_maps_dir": str(tmp_path / "translation_maps")}
+                if _shim.source_game == "fnv"
+                else {}
+            ),
         },
     )
     monkeypatch.setattr(
@@ -139,7 +153,7 @@ def _builder(monkeypatch, tmp_path: Path, source_game: str):
     return builder, shim, assets, source_root
 
 
-def test_fo76_wave_phase_sets_and_params_are_unchanged(monkeypatch, tmp_path):
+def test_fo76_wave_phase_sets_and_params(monkeypatch, tmp_path):
     builder, _shim, _assets, _source_root = _builder(monkeypatch, tmp_path, "fo76")
 
     assert [stage.phase for stage in builder.build_wave_a1()] == ["copy_sounds"]
@@ -154,10 +168,28 @@ def test_fo76_wave_phase_sets_and_params_are_unchanged(monkeypatch, tmp_path):
     assert a3[0].params["convert_all"] is True
     assert [stage.phase for stage in builder.build_wave_a4()] == [
         "convert_havok",
-        "synthesize_drivers",
         "postprocess_havok_assets",
+        "synthesize_drivers",
         "copy_materialized_facegen",
     ]
+
+
+@pytest.mark.parametrize("source_game", ["fo76", "skyrimse"])
+@pytest.mark.parametrize("havok,drivers", [(True, True), (True, False), (False, True)])
+def test_driver_scan_follows_final_havok_assets(monkeypatch, tmp_path, source_game, havok, drivers):
+    builder, *_ = _builder(monkeypatch, tmp_path, source_game)
+    builder.toggles = AssetWaveToggles(havok=havok, drivers=drivers)
+    stages = builder.build_wave_a4()
+    if source_game == "skyrimse":
+        assert stages == []
+        return
+    expected = ["convert_havok", "postprocess_havok_assets"] if havok else []
+    if havok and drivers:
+        expected.append("synthesize_drivers")
+    expected.append("copy_materialized_facegen")
+    assert [stage.phase for stage in stages] == expected
+    for previous, stage in zip(stages, stages[1:]):
+        assert stage.after == (previous.phase,)
 
 
 def test_fnv_wave_uses_gamebryo_nifs_and_converts_the_referenced_textures(
@@ -176,6 +208,7 @@ def test_fnv_wave_uses_gamebryo_nifs_and_converts_the_referenced_textures(
             }
         ],
         "material_out_rel": "materials/MojaveCapital/gamebryo",
+        "translation_maps_dir": str(tmp_path / "translation_maps"),
     }
 
     late_texture = source_root / "Textures" / "landscape" / "late_d.dds"
@@ -232,12 +265,12 @@ def test_gamebryo_phase_reports_merge_into_asset_summary():
     _merge_wave_report_into_summary(
         summary,
         "convert_gamebryo_nifs",
-        {"assets_written": 3, "warnings": 1},
+        {"assets_written": 3, "warnings": 4, "items_failed": 1},
     )
     _merge_wave_report_into_summary(
         summary,
         "copy_textures",
-        {"assets_written": 5, "warnings": 2},
+        {"assets_written": 5, "warnings": 1, "items_failed": 2},
     )
 
     assert summary.nifs_converted == 3

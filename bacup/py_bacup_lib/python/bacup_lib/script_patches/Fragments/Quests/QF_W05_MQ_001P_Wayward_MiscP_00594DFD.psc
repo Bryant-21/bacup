@@ -5,4 +5,5 @@ Function Fragment_Stage_0100_Item_00()
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
+    ; The QUST stage carries CompleteQuest; no fragment-side effect is required.
 EndFunction

@@ -61,10 +61,9 @@ def _members_of(base_name: str) -> set[str]:
 # Stage 0 resets the 5 AwayValue AVs (per-AV None-guarded, none mandatory in the
 # skeleton) only if the referenced Wastelanders-episode quest IsCompleted(). Stages
 # 10/11/20/21 apply one of the 4 mandatory Rep_Mod_* globals to Reputation_AV_Crater,
-# each guarded by its own documented tracking AV so a repeat dialogue trigger cannot
-# re-apply reputation. Large/Medium/Small mapping is a disclosed flavor-tone
-# inference (contracts/w3a-raiders.md Section B1 + Binding conditions resolution 2);
-# every stage note was checked and contains no literal magnitude word.
+# each guarded by its own tracking AV so a repeated dialogue trigger can't re-apply
+# reputation. The Large/Medium/Small mapping is inferred from flavor tone
+# (contracts/w3a-raiders.md); no stage note names a magnitude.
 CRATER_INTERIOR = "QF_W05_DialogueRaidersCrater_00559532"
 
 

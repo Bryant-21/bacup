@@ -1,36 +1,15 @@
 //! Parse / strip / compose canonical-shape RACE subgraph data.
 //!
-
-//! # What this module owns
-//! The `SubgraphBlock` representation of one canonical subgraph section plus
-//! the writer helpers that work against the native pipeline's
-//! `Record` / `FieldEntry` / `FieldValue` types. Canonical block grouping is
-//! shared with `ck_native`; this module only adapts conversion-owned types.
-//!
-//! # Why these live together
-//! The conversion adapter and `block_to_entries` are inverse operations, and
-//! `build_additive_race_record` composes the result of
-//! `strip_template_subgraph_fields` with re-serialized blocks. Keeping the
-//! round-trip pair colocated keeps the schema mapping (canonical YAML label →
-//! subrecord sig) in one place.
-//!
-//! # Schema mapping
-//! Canonical YAML label → FO4 RACE subrecord:
-//! - `BehaviourGraph`         → `SGNM` (zstring, repeatable; main block marker)
-//! - `Path`                   → `SAPT` (zstring, repeatable)
-//! - `SAKD`                   → `SAKD` (formid → KYWD, repeatable;
-//!                                       `subgraph_keywords`)
-//! - `STKD`                   → `STKD` (formid → KYWD, repeatable;
-//!                                       `target_keywords`)
-//! - `SRAF`                   → `SRAF` (struct:H,H — role+perspective;
-//!                                       carried opaquely as raw bytes,
-//!                                       see deviation below)
-//! - `SubgraphAdditiveRace`   → `SADD` (formid → RACE)
-//!
-//! # SRAF opaque carry
-//! SRAF struct (`struct:H,H` role+perspective) fields carry as raw bytes
-//! (`FieldValue::Bytes`); the fixup never interprets the H,H values, so this
-//! is round-trip-safe.
+//! `SubgraphBlock` and its writers over the pipeline's `Record` / `FieldEntry`
+//! types; canonical block grouping is shared with `ck_native`. Canonical YAML
+//! label → FO4 RACE subrecord:
+//! - `BehaviourGraph`       → `SGNM` (zstring, repeatable; block marker)
+//! - `Path`                 → `SAPT` (zstring, repeatable)
+//! - `SAKD`                 → `SAKD` (formid → KYWD, repeatable; `subgraph_keywords`)
+//! - `STKD`                 → `STKD` (formid → KYWD, repeatable; `target_keywords`)
+//! - `SRAF`                 → `SRAF` (`struct:H,H` role+perspective, carried as
+//!                                     opaque `FieldValue::Bytes`)
+//! - `SubgraphAdditiveRace` → `SADD` (formid → RACE)
 
 use smallvec::SmallVec;
 
@@ -131,12 +110,9 @@ pub fn strip_template_subgraph_fields(record: &Record) -> Record {
 // build_additive_race_record
 // ---------------------------------------------------------------------------
 
-/// Compose a canonical-shape additive RACE record. Starts from a stripped
-/// template, appends one `SADD` reference, then appends the serialized
-/// subgraph blocks in order.
-///
-/// The `template` is consumed (taken by value) — callers typically pass
-/// `strip_template_subgraph_fields(&source)` or similar.
+/// Compose a canonical-shape additive RACE record: the stripped `template`
+/// (e.g. `strip_template_subgraph_fields(&source)`), one `SADD` reference, then
+/// the serialized subgraph blocks in order.
 pub fn build_additive_race_record(
     template: Record,
     target_base_fk: FormKey,
@@ -162,7 +138,7 @@ pub fn build_additive_race_record(
 
 /// Serialize one block back into a flat sequence of canonical `FieldEntry`s.
 /// Order matches inspected FO4 records: SAKD*, STKD*, SGNM, SAPT*, SRAF.
-fn block_to_entries(block: &SubgraphBlock) -> Vec<FieldEntry> {
+pub(crate) fn block_to_entries(block: &SubgraphBlock) -> Vec<FieldEntry> {
     let sgnm = SubrecordSig::from_str("SGNM").expect("SGNM sig");
     let sapt = SubrecordSig::from_str("SAPT").expect("SAPT sig");
     let sakd = SubrecordSig::from_str("SAKD").expect("SAKD sig");

@@ -107,13 +107,21 @@ class ConversionRun:
         *,
         emit_authoring_yaml: bool = False,
         run_nvnm_validator: bool = True,
+        preserve_target_identity: bool = False,
     ) -> None:
         _native().conversion_run_save_target(
-            self._id, output_path, emit_authoring_yaml, run_nvnm_validator
+            self._id,
+            output_path,
+            emit_authoring_yaml,
+            run_nvnm_validator,
+            preserve_target_identity,
         )
 
     def release_source_handle(self) -> bool:
         return _native().conversion_run_release_source_handle(self._id)
+
+    def share_output_nif_dependencies(self, source: "ConversionRun") -> None:
+        _native().conversion_run_share_output_nif_dependencies(source.id, self.id)
 
     def set_target_description(self, text: str) -> None:
         _native().conversion_run_set_target_description(self._id, text)

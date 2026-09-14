@@ -18,6 +18,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use havok_native::hkx::types::HkxValue;
+use havok_native::hkx::{HkxFile, HkxMember};
 use serde_json::Value as JsonValue;
 
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
@@ -197,6 +199,7 @@ impl Phase for SynthesizeDriversPhase {
         let mut warnings: u32 = 0;
         let mut sink_failures: u32 = 0;
         let mut chains_injected: u32 = 0;
+        let mut xml_expanded: u32 = 0;
 
         for (idx, hkx_path) in hkx_files.iter().enumerate() {
             ctx.check_cancel()?;
@@ -224,9 +227,8 @@ impl Phase for SynthesizeDriversPhase {
                 }
             };
 
-            // Unpack to XML
-            let xml = match havok_native::api::havok_hkx_to_xml(&hkx_bytes) {
-                Ok(x) => x,
+            let hkx = match HkxFile::read(&hkx_bytes) {
+                Ok(file) => file,
                 Err(e) => {
                     let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
                         phase: "synthesize_drivers",
@@ -238,23 +240,25 @@ impl Phase for SynthesizeDriversPhase {
                 }
             };
 
-            // Detect unbound variables
-            let detections = match detect_unbound_variables(&xml, &config) {
-                Ok(d) => d,
+            let detections = detect_unbound_variables(&hkx, &config);
+            if detections.is_empty() {
+                continue;
+            }
+
+            let xml = match havok_native::hkx::tagxml::write_tagxml_string(&hkx) {
+                Ok(xml) => xml,
                 Err(e) => {
                     let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
                         phase: "synthesize_drivers",
                         level: crate::phase::LogLevel::Warn,
-                        message: format!("[BehaviorDriver] Detection failed for {rel}: {e}"),
+                        message: format!("[BehaviorDriver] Could not serialize {rel}: {e}"),
                     });
                     warnings += 1;
                     continue;
                 }
             };
 
-            if detections.is_empty() {
-                continue;
-            }
+            xml_expanded += 1;
 
             // Inject all chains into the XML
             let behavior_name = behavior_name_from_rel_path(&rel);
@@ -341,7 +345,8 @@ impl Phase for SynthesizeDriversPhase {
             level: crate::phase::LogLevel::Info,
             message: format!(
                 "Behavior driver synthesis: {chains_injected} injection(s) across \
-                 {files_patched} file(s), {warnings} skipped, {total} HKX file(s) scanned"
+                 {files_patched} file(s), {warnings} skipped, {total} HKX file(s) scanned, \
+                 {xml_expanded} expanded to XML for injection"
             ),
         });
 
@@ -382,14 +387,16 @@ fn visit_dir_for_behaviors(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if path
             .extension()
             .map_or(false, |e| e.eq_ignore_ascii_case("hkx"))
+            && is_behavior_hkx_path(&path)
         {
-            // Include only if "behaviors" or "uniquebehaviors" appears in the path
-            let path_lower = path.to_string_lossy().to_lowercase();
-            if path_lower.contains("behaviors") || path_lower.contains("uniquebehaviors") {
-                out.push(path);
-            }
+            out.push(path);
         }
     }
+}
+
+fn is_behavior_hkx_path(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str().eq_ignore_ascii_case("behaviors"))
 }
 
 fn relative_path(base: &Path, abs: &Path) -> String {
@@ -424,14 +431,114 @@ fn behavior_name_from_rel_path(rel_path: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// XML detection (read-only via roxmltree)
+// Native detection
 // ---------------------------------------------------------------------------
+
+fn native_member<'a>(members: &'a [HkxMember], name: &str) -> Option<&'a HkxValue> {
+    members
+        .iter()
+        .find(|member| member.name == name)
+        .map(|member| &member.value)
+}
+
+fn detect_unbound_variables(hkx: &HkxFile, config: &DriverConfig) -> Vec<(String, String)> {
+    let variable_names = hkx
+        .objects()
+        .iter()
+        .find(|object| object.class_name == "hkbBehaviorGraphStringData")
+        .and_then(|object| native_member(&object.members, "variableNames"));
+    let Some(HkxValue::Array(variable_names)) = variable_names else {
+        return Vec::new();
+    };
+    let variable_names: Vec<_> = variable_names
+        .iter()
+        .filter_map(|value| match value {
+            HkxValue::String { value, is_null } => Some(if *is_null { "" } else { value.trim() }),
+            _ => None,
+        })
+        .collect();
+    let sinks: HashSet<_> = config
+        .telemetry_sinks
+        .iter()
+        .map(|sink| sink.to_lowercase())
+        .collect();
+    let mut sink_bindings = HashMap::new();
+    let mut written_indices = HashSet::new();
+    for object in hkx.objects() {
+        let Some(HkxValue::Pointer(Some(index))) =
+            native_member(&object.members, "variableBindingSet")
+        else {
+            continue;
+        };
+        let Some(binding_set) = hkx.objects().get(*index) else {
+            continue;
+        };
+        let Some(HkxValue::Array(bindings)) = native_member(&binding_set.members, "bindings")
+        else {
+            continue;
+        };
+        let class = object.class_name.to_lowercase();
+        let is_writer = config.internal_writer_classes.contains(&class)
+            || (class.contains("modifier") && class != "hkbvariablebindingset");
+        for binding in bindings {
+            let Some(members) = binding.as_object_members() else {
+                continue;
+            };
+            let Some(HkxValue::I32(index)) = native_member(members, "variableIndex") else {
+                continue;
+            };
+            let Ok(index) = usize::try_from(*index) else {
+                continue;
+            };
+            if index >= variable_names.len() {
+                continue;
+            }
+            let member_path = match native_member(members, "memberPath") {
+                Some(HkxValue::String {
+                    value,
+                    is_null: false,
+                }) => value.trim(),
+                Some(HkxValue::String { is_null: true, .. }) => "null",
+                _ => "",
+            };
+            if member_path.is_empty() {
+                continue;
+            }
+            let simple = member_path
+                .rsplit('.')
+                .next()
+                .unwrap_or(member_path)
+                .rsplit('/')
+                .next()
+                .unwrap_or(member_path)
+                .to_lowercase();
+            if sinks.contains(&simple) {
+                sink_bindings.entry(index).or_insert(member_path);
+            }
+            if is_writer {
+                written_indices.insert(index);
+            }
+        }
+    }
+    let mut seen_vars = HashSet::new();
+    sink_bindings
+        .into_iter()
+        .filter_map(|(index, member_path)| {
+            let variable_name = variable_names[index];
+            if written_indices.contains(&index) || !seen_vars.insert(variable_name) {
+                return None;
+            }
+            Some((variable_name.to_string(), member_path.to_string()))
+        })
+        .collect()
+}
 
 /// Returns (variable_name, sink_member_path) pairs for variables that are:
 /// - declared in hkbBehaviorGraphStringData.variableNames
 /// - bound (via hkbVariableBindingSet) to a memberPath matching a telemetry sink
 /// - NOT written by any modifier-class object
-fn detect_unbound_variables(
+#[cfg(test)]
+fn detect_unbound_variables_xml(
     xml: &str,
     config: &DriverConfig,
 ) -> Result<Vec<(String, String)>, String> {
@@ -552,6 +659,7 @@ fn read_hkparam_text(node: &roxmltree::Node, param_name: &str) -> String {
     String::new()
 }
 
+#[cfg(test)]
 fn read_binding_pairs(bs_node: &roxmltree::Node) -> Vec<(String, usize)> {
     let mut pairs = Vec::new();
     for child in bs_node.children() {
@@ -1440,6 +1548,196 @@ fn string_list_from_value(v: Option<&serde_json::Value>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use havok_native::hkx::HkxObject;
+
+    fn object(class_name: &str, members: Vec<(&str, HkxValue)>) -> HkxObject {
+        HkxObject {
+            name: None,
+            offset: 0,
+            signature: 0,
+            class_name: class_name.into(),
+            members: members
+                .into_iter()
+                .map(|(name, value)| HkxMember {
+                    name: name.into(),
+                    value,
+                })
+                .collect(),
+        }
+    }
+
+    fn string(value: &str) -> HkxValue {
+        HkxValue::String {
+            value: value.into(),
+            is_null: false,
+        }
+    }
+
+    fn binding(path: &str, index: i32) -> HkxValue {
+        HkxValue::Object(vec![
+            HkxMember {
+                name: "memberPath".into(),
+                value: string(path),
+            },
+            HkxMember {
+                name: "variableIndex".into(),
+                value: HkxValue::I32(index),
+            },
+        ])
+    }
+
+    fn detection_fixture(writer_class: &str) -> HkxFile {
+        HkxFile::from_tagxml(
+            11,
+            "hk_2014.1.0-r1",
+            vec![
+                object(
+                    "hkbBehaviorGraphStringData",
+                    vec![(
+                        "variableNames",
+                        HkxValue::Array(vec![string(" heat "), string("owned")]),
+                    )],
+                ),
+                object(
+                    "hkbVariableBindingSet",
+                    vec![(
+                        "bindings",
+                        HkxValue::Array(vec![
+                            binding("nested/path.FTimePercent", 0),
+                            binding("fPercent", 0),
+                            binding("fCharge", 1),
+                            binding("fPercent", -1),
+                            binding("fPercent", 99),
+                        ]),
+                    )],
+                ),
+                object(
+                    "BGSGamebryoSequenceGenerator",
+                    vec![("variableBindingSet", HkxValue::Pointer(Some(1)))],
+                ),
+                object(
+                    "hkbVariableBindingSet",
+                    vec![("bindings", HkxValue::Array(vec![binding("rawValue", 1)]))],
+                ),
+                object(
+                    writer_class,
+                    vec![("variableBindingSet", HkxValue::Pointer(Some(3)))],
+                ),
+                object(
+                    "BGSGamebryoSequenceGenerator",
+                    vec![("variableBindingSet", HkxValue::Pointer(None))],
+                ),
+            ],
+        )
+    }
+
+    fn assert_detection_parity(file: &HkxFile) -> Vec<(String, String)> {
+        let config = DriverConfig::load(DRIVERS_YAML);
+        let mut native = detect_unbound_variables(file, &config);
+        let xml = havok_native::hkx::tagxml::write_tagxml_string(file).unwrap();
+        let mut legacy = detect_unbound_variables_xml(&xml, &config).unwrap();
+        native.sort();
+        legacy.sort();
+        assert_eq!(native, legacy);
+        native
+    }
+
+    #[test]
+    fn native_detection_preserves_sinks_indices_and_writer_rules() {
+        for writer in [
+            "hkbDampingModifier",
+            "hkbScriptGenerator",
+            "hkbTimerModifier",
+        ] {
+            let file = detection_fixture(writer);
+            assert_eq!(
+                assert_detection_parity(&file),
+                vec![("heat".into(), "nested/path.FTimePercent".into())]
+            );
+        }
+    }
+
+    #[test]
+    fn native_detection_reads_packed_bindings() {
+        let file = detection_fixture("hkbDampingModifier");
+        let packed = file.save();
+        let parsed = HkxFile::read(&packed).unwrap();
+        assert_eq!(
+            assert_detection_parity(&parsed),
+            vec![("heat".into(), "nested/path.FTimePercent".into())]
+        );
+    }
+
+    #[test]
+    fn native_detection_ignores_blank_or_missing_binding_paths() {
+        let mut file = detection_fixture("hkbDampingModifier");
+        let HkxValue::Array(bindings) = &mut file.objects_mut()[3].members[0].value else {
+            panic!("fixture bindings must be an array");
+        };
+        bindings.extend([
+            binding("", 0),
+            binding(" \t ", 0),
+            HkxValue::Object(vec![HkxMember {
+                name: "variableIndex".into(),
+                value: HkxValue::I32(0),
+            }]),
+        ]);
+        assert_eq!(
+            assert_detection_parity(&file),
+            vec![("heat".into(), "nested/path.FTimePercent".into())]
+        );
+    }
+
+    #[test]
+    fn native_detection_handles_missing_tables_and_dangling_bindings() {
+        let mut file = detection_fixture("hkbDampingModifier");
+        file.objects_mut()[2].members[0].value = HkxValue::Pointer(Some(999));
+        assert!(detect_unbound_variables(&file, &DriverConfig::load(DRIVERS_YAML)).is_empty());
+        file.objects_mut()[0].members.clear();
+        assert!(assert_detection_parity(&file).is_empty());
+    }
+
+    #[test]
+    #[ignore = "Read-only corpus parity/benchmark; set MODKIT_DRIVER_CORPUS to a JSON list of HKX paths"]
+    fn native_detection_corpus_parity() {
+        let manifest = std::env::var("MODKIT_DRIVER_CORPUS").expect("MODKIT_DRIVER_CORPUS");
+        let paths: Vec<PathBuf> =
+            serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
+        assert!(!paths.is_empty());
+        let config = DriverConfig::load(DRIVERS_YAML);
+        let mut native_time = std::time::Duration::ZERO;
+        let mut xml_time = std::time::Duration::ZERO;
+        let mut detected_files = 0;
+        let mut detections = 0;
+        for (index, path) in paths.iter().enumerate() {
+            let bytes = std::fs::read(path).unwrap();
+            let started = std::time::Instant::now();
+            let file =
+                HkxFile::read(&bytes).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            let mut native = detect_unbound_variables(&file, &config);
+            native_time += started.elapsed();
+            let started = std::time::Instant::now();
+            let xml = havok_native::api::havok_hkx_to_xml(&bytes).unwrap();
+            let mut legacy = detect_unbound_variables_xml(&xml, &config).unwrap();
+            xml_time += started.elapsed();
+            native.sort();
+            legacy.sort();
+            assert_eq!(native, legacy, "{}", path.display());
+            detected_files += usize::from(!native.is_empty());
+            detections += native.len();
+            if index % 100 == 0 {
+                eprintln!(
+                    "driver parity {}/{} native={native_time:?} xml={xml_time:?}",
+                    index + 1,
+                    paths.len()
+                );
+            }
+        }
+        eprintln!(
+            "driver parity files={} detected_files={detected_files} detections={detections} native={native_time:?} xml={xml_time:?}",
+            paths.len()
+        );
+    }
 
     #[test]
     fn behavior_name_from_path_unique_behaviors() {
@@ -1457,6 +1755,19 @@ mod tests {
             behavior_name_from_rel_path("meshes/actors/snallygaster/behaviors/snallygaster.hkx"),
             "snallygaster"
         );
+    }
+
+    #[test]
+    fn driver_discovery_only_accepts_behavior_graph_directories() {
+        assert!(is_behavior_hkx_path(Path::new(
+            "meshes/UniqueBehaviors/TestYourStrength/Behaviors/Behavior.hkx"
+        )));
+        assert!(!is_behavior_hkx_path(Path::new(
+            "meshes/UniqueBehaviors/TestYourStrength/Characters/Character.hkx"
+        )));
+        assert!(!is_behavior_hkx_path(Path::new(
+            "meshes/UniqueBehaviors/TestYourStrength/TestYourStrength.hkx"
+        )));
     }
 
     #[test]

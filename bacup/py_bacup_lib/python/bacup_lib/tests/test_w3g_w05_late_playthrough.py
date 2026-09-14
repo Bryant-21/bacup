@@ -43,7 +43,7 @@ PLAYTHROUGH_SCRIPTS = (
 
 PROGRESSION_STAGES = {
     QF_101P: (5, 10, 30, 100, 600, 1300, 1310, 9000),
-    QF_101P_A: (10, 1000, 1050, 1110, 9000),
+    QF_101P_A: (1000, 1110, 9000),
     QF_101P_B: (9000,),
     QF_101P_RADIO: (20,),
     QF_102P: (10, 15, 30, 1300, 1400, 1500, 1600, 1700),
@@ -107,13 +107,10 @@ def test_101p_start_children_and_102p_handoff_are_connected():
     )
 
 
-def test_instance_and_ews_gates_have_narrow_single_player_receivers():
-    raider_intro = _patch(QF_101P_A)
+def test_supported_instance_and_ews_gates_have_narrow_single_player_receivers():
     mq = _patch(QF_101P)
     vtu = _patch(QF_102P)
 
-    assert "SetStage(1050)" in _member_body(raider_intro, 1000)
-    assert "SetStage(1110)" in _member_body(raider_intro, 1050)
     assert "SetStage(1400)" in _member_body(mq, 1310)
     assert "SetStage(15)" in _member_body(vtu, 10)
     stage_15 = _member_body(vtu, 15)
@@ -121,19 +118,26 @@ def test_instance_and_ews_gates_have_narrow_single_player_receivers():
     assert "W05_MQ_102p_NPCEnableMarker.Enable()" in stage_15
 
 
-def test_raider_intro_makes_meg_available_before_talk_objective():
-    stage_1110 = _member_body(_patch(QF_101P_A), 1110)
-    ordered_operations = (
-        "Actor megRef = Alias_Meg.GetActorReference()",
-        "If megRef",
-        "megRef.Enable()",
-        "megRef.EvaluatePackage()",
-        "SetStage(1200)",
-        "EndIf",
+def test_raider_intro_initializes_local_state_and_preserves_mezzanine_handoff():
+    patch = _patch(QF_101P_A)
+    stage_10 = _member_body(patch, 10)
+    assert "playerRef.SetValue(W05_MQ_101P_A_Started, 1.0)" in stage_10
+    assert "MTNS01_Intro_Quest_Keyword.SendStoryEvent" in stage_10
+    assert stage_10.index("SetValue(W05_MQ_101P_A_Started, 1.0)") < stage_10.index(
+        "SendStoryEvent"
     )
-
-    positions = [stage_1110.index(operation) for operation in ordered_operations]
-    assert positions == sorted(positions)
+    assert "SetStage(1050)" not in _member_body(patch, 1000)
+    stage_1050 = _member_body(patch, 1050)
+    assert "controller.CheckMezzanineHostiles()" in stage_1050
+    assert "SetStage(1100)" in stage_1050
+    stage_1110 = _member_body(patch, 1110)
+    assert "controller.SpawnMegParty()" in stage_1110
+    assert "Alias_Meg.GetActorReference()" in stage_1110
+    assert "megRef.Enable()" in stage_1110
+    assert "megRef.EvaluatePackage()" in stage_1110
+    assert stage_1110.index("controller.SpawnMegParty()") < stage_1110.index(
+        "SetStage(1200)"
+    )
 
 
 def test_102p_children_start_next_chains_and_complete_parent():
@@ -169,7 +173,8 @@ def test_mqa_scene_route_reaches_native_completion_without_rewards():
 
     stage_200 = _member_body(mqa, 200)
     assert "louDoor.SetActivatorOpen(True)" in stage_200
-    assert "SetStage(250)" in stage_200
+    assert "SetStage(250)" not in stage_200
+    assert "SetObjectiveDisplayed(200)" in stage_200
     assert "SetStage(600)" in _member_body(mqa, 590)
     assert "SetStage(9000)" in _member_body(mqa, 800)
 
@@ -209,10 +214,9 @@ def test_merged_progression_bodies_are_exact_and_unique(script_name: str):
         assert member_count == 1
 
 
-def test_each_still_deferred_patch_has_one_plain_todo_marker():
+def test_completed_playthrough_patches_have_no_plain_todo_markers():
     for script_name in PLAYTHROUGH_SCRIPTS:
-        expected = 0 if script_name in {QF_101P_RADIO, QF_102P_A, QF_102P_B} else 1
-        assert _patch(script_name).splitlines().count("; TODO") == expected
+        assert "; TODO" not in _patch(script_name).splitlines()
 
 
 @pytest.mark.parametrize("script_name", PLAYTHROUGH_SCRIPTS)

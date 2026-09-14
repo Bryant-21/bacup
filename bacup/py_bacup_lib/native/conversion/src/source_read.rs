@@ -1,16 +1,9 @@
 //! Schema-driven source-handle decoder: reads a raw `ParsedRecord` from a
 //! plugin handle and produces a typed `Record` using `AuthoringSchema`.
 //!
-//! `read_record` is the primary entry point. It:
-//!   1. Locks the global plugin handle store and finds the slot.
-//!   2. Builds (or retrieves cached) the locator index section.
-//!   3. Looks up the requested form_key, fetches the raw `ParsedRecord`.
-//!   4. Walks each `ParsedSubrecord`, dispatches on the schema codec, and
-//!      produces a `FieldEntry` (or a warning for unknown codecs).
-//!
-//! Unknown codecs are recorded as warnings rather than hard errors so that
-//! partial decodes can still proceed. Only truly fatal problems (missing
-//! record, unparseable form_key) return `Err(RecordReadError)`.
+//! `read_record` is the primary entry point. Unknown codecs become record
+//! warnings so partial decodes proceed; only fatal problems (missing record,
+//! unparseable form_key) return `Err(RecordReadError)`.
 
 use crate::errors::{DecodeError, RecordReadError};
 use crate::ids::{FormKey, SigCode, SubrecordSig};
@@ -59,17 +52,9 @@ pub(crate) const TES4_FLAG_LOCALIZED: u32 = 0x0000_0080;
 
 /// Read and decode a single record from a loaded plugin handle.
 ///
-/// # Arguments
-/// * `handle_id` — the integer handle returned by `plugin_handle_load` etc.
-/// * `form_key_str` — form_key string in "PluginName.esm:XXXXXX" format.
-/// * `schema` — the parsed authoring schema for the plugin's game.
-/// * `interner` — per-run string interner for `Sym` allocation.
-///
-/// # Errors
-/// Returns `RecordReadError::NotFound` when no record matches `form_key_str`.
-/// Returns `RecordReadError::UnknownSignature` when the record sig has no
-/// schema entry. Subrecord decode failures are captured as warnings in the
-/// returned `Record` rather than propagated as errors.
+/// `form_key_str` is `"PluginName.esm:XXXXXX"`. Errors with `NotFound` when no
+/// record matches and `UnknownSignature` when the record signature is invalid;
+/// subrecord decode failures become warnings on the returned `Record`.
 pub fn read_record(
     handle_id: u64,
     form_key_str: &str,
@@ -352,16 +337,14 @@ pub(crate) fn decode_record_from_parsed_relayout(
     let sig = SigCode::from_str(raw_record.signature.as_str())
         .map_err(|_| RecordReadError::UnknownSignature(SigCode([0, 0, 0, 0])))?;
 
-    let record_def = schema.record_def(raw_record.signature.as_str());
+    let record_def = schema.record_lookup(raw_record.signature.as_str());
 
     let subrecords = effective_subrecords_for_record(raw_record);
     let raw_flags = raw_record.flags;
-    // Preserve ALL 32 header-flag bits losslessly. `from_bits_truncate` dropped
-    // every bit not in the curated `RecordFlags` set — both FO76-only bits AND
-    // FO4-valid bits we never named — corrupting the header word before the
-    // Class A masking pass (run.rs stage 6.5) can run. `from_bits_retain` keeps
-    // the raw word; the masking pass clears unknown bits against the FO4 schema
-    // valid mask, not the named constants (several of which are mislabeled).
+    // Keep all 32 header-flag bits. `from_bits_truncate` would drop FO76-only and
+    // unnamed FO4-valid bits before the Class A masking pass (run.rs stage 6.5),
+    // which clears unknown bits against the FO4 schema's valid mask rather than
+    // the named constants (several of which are mislabeled).
     let flags = RecordFlags::from_bits_retain(raw_flags);
     let mut record = Record {
         sig,
@@ -376,19 +359,19 @@ pub(crate) fn decode_record_from_parsed_relayout(
     let is_qust_record = raw_record.signature.as_str() == "QUST";
     let is_scen_record = raw_record.signature.as_str() == "SCEN";
     let is_term_record = raw_record.signature.as_str() == "TERM";
+    let is_furn_record = raw_record.signature.as_str() == "FURN";
     let mut in_pack_package_data = false;
     let mut after_pack_procedure_marker = false;
     let mut after_term_marker_model = false;
-    // SCEN has two TNAM subrecords in schema: float32 (Timer, actions-scoped)
-    // and formid (Template Scene, top-level). subrecord_def() returns the first
-    // match (float32), so the Template Scene TNAM is incorrectly decoded as a
-    // float and its FormKey is never remapped 00→07.
-    //
-    // Fix: the Template Scene TNAM sits in the record-level tail block
-    // "VNAM TNAM XNAM". Every other TNAM lives inside an action block and is
-    // preceded by SNAM/ENAM/ANAM — never by VNAM. So: override to formid ONLY
-    // when the immediately-preceding subrecord signature is VNAM.
+    let mut after_furn_marker_model = false;
+    // SCEN has two TNAM defs: float32 (Timer, action-scoped) and formid
+    // (Template Scene, top-level). subrecord_def() returns the float32 one, which
+    // would leave the Template Scene FormKey unremapped. The template TNAM sits in
+    // the record-level tail "VNAM TNAM XNAM", while action TNAMs follow
+    // SNAM/ENAM/ANAM, so override to formid only right after VNAM.
     let mut scen_prev_sig = "";
+    let mut in_scen_phase = false;
+    let mut in_component_run = false;
     for sr in subrecords.iter() {
         let subrec_sig_str = sr.signature.as_str();
 
@@ -410,7 +393,8 @@ pub(crate) fn decode_record_from_parsed_relayout(
             }
         };
 
-        let subrecord_def = record_def.and_then(|rd| rd.subrecord_def(subrec_sig_str));
+        let subrecord_def = record_def
+            .and_then(|rd| rd.subrecord_def_in_component_run(subrec_sig_str, in_component_run));
         let codec = subrecord_def.and_then(|sd| {
             if sd.kind == "raw" {
                 None
@@ -430,23 +414,34 @@ pub(crate) fn decode_record_from_parsed_relayout(
         // TNAMs are surrounded by SNAM/ENAM/ANAM, never by VNAM.
         let scen_tnam_override_codec =
             is_scen_record && subrec_sig_str == "TNAM" && scen_prev_sig == "VNAM";
+        // SCEN also overloads FNAM: record/action flags are uint32, while phase
+        // flags are uint16. Phase rows are enclosed by paired HNAM markers.
+        let scen_phase_fnam_override_codec =
+            is_scen_record && subrec_sig_str == "FNAM" && in_scen_phase;
 
-        // TERM reuses SNAM: the pre-XMRK row is a sound FormID, while the
-        // post-XMRK rows are 24-byte marker structs.
-        // QUST overloads SNAM: the record-level and alias forms are zstrings,
-        // while objective-scope SNAM is uint16. Preserve all three until the
-        // pair hook removes the incompatible objective form by scope.
+        // TERM reuses SNAM: pre-XMRK it is a sound FormID, post-XMRK a marker
+        // struct. Starfield FURN/TERM post-XMRK SNAM is a 28-byte marker row
+        // (schema slot 0 is int32); keep it raw so the starfield->FO4 hook can
+        // project it to FO4's 24-byte layout. Position after XMRK identifies the
+        // marker payload, so only FO76's ZNAM spelling gets a row-length gate. A
+        // %24 gate on SNAM sends Starfield rows through FO4's `Looping Sound` def
+        // as 4 bytes and crashes the loader in TESFurniture::LoadFurnitureData.
+        // QUST overloads SNAM: record-level and alias forms are zstrings,
+        // objective-scope SNAM is uint16. Keep all three until the pair hook
+        // drops the incompatible objective form by scope.
         let force_raw_bytes = (is_pack_record
             && ((in_pack_package_data && subrec_sig_str == "CNAM")
                 || (after_pack_procedure_marker && subrec_sig_str == "PNAM")))
             || (is_qust_record && subrec_sig_str == "SNAM")
             || (is_term_record
                 && !sr.data.is_empty()
-                && sr.data.len() % 24 == 0
-                && (subrec_sig_str == "ZNAM"
-                    || (subrec_sig_str == "SNAM" && after_term_marker_model)));
+                && ((subrec_sig_str == "ZNAM" && sr.data.len() % 24 == 0)
+                    || (subrec_sig_str == "SNAM" && after_term_marker_model)))
+            || (is_furn_record && subrec_sig_str == "SNAM" && after_furn_marker_model);
         let override_codec: Option<&str> = if scen_tnam_override_codec {
             Some("formid")
+        } else if scen_phase_fnam_override_codec {
+            Some("uint16")
         } else {
             None
         };
@@ -518,11 +513,24 @@ pub(crate) fn decode_record_from_parsed_relayout(
         });
 
         if is_scen_record {
+            if subrec_sig_str == "HNAM" {
+                in_scen_phase = !in_scen_phase;
+            }
             scen_prev_sig = subrec_sig_str;
+        }
+
+        match subrec_sig_str {
+            "BFCB" => in_component_run = true,
+            "BFCE" => in_component_run = false,
+            _ => {}
         }
 
         if is_term_record && subrec_sig_str == "XMRK" {
             after_term_marker_model = true;
+        }
+
+        if is_furn_record && subrec_sig_str == "XMRK" {
+            after_furn_marker_model = true;
         }
 
         if is_pack_record {
@@ -544,14 +552,10 @@ pub(crate) fn decode_record_from_parsed_relayout(
 // EID index collection
 // ---------------------------------------------------------------------------
 
-/// Collect every EID-keyed record from a plugin handle into a flat list of
-/// `(eid_sym, FormKey, SigCode)` tuples suitable for seeding a `MapperState`.
-///
-/// Uses the plugin core index, which already stores each record's decoded EDID,
-/// signature, and owning plugin. This avoids a second recursive walk of the
-/// parsed tree during `translate_all` mapper setup.
-///
-/// The `schema` parameter is unused; kept only for call-site compatibility.
+/// Collect every EID-keyed record in a plugin handle as `(eid_sym, FormKey,
+/// SigCode)` tuples for seeding a `MapperState`. Reads the core index, which
+/// already holds each record's EDID, signature and plugin, so no tree walk.
+/// `_schema` is unused.
 pub fn collect_eid_index(
     handle_id: u64,
     _schema: &crate::schema::AuthoringSchema,
@@ -604,10 +608,9 @@ pub fn source_signatures(
         .keys()
         .filter_map(|k| SigCode::from_str(k.as_str()).ok())
         .collect();
-    // `by_signature_form_keys` is a std HashMap (RandomState), so `.keys()` yields a
-    // different order each process. translate_all drives lstring-id allocation in
-    // record/sig-processing order, so a random sig order made the localized string
-    // table — and thus the output ESM — byte-non-reproducible. Sort for determinism.
+    // `by_signature_form_keys` is a RandomState HashMap. translate_all allocates
+    // lstring ids in sig-processing order, so sort to keep the localized string
+    // table (and the output ESM) byte-reproducible.
     sigs.sort_unstable();
     drop(core);
     drop(store);
@@ -620,15 +623,8 @@ pub fn source_signatures(
 // Sig-based iteration
 // ---------------------------------------------------------------------------
 
-/// Return every FormKey in `handle_id` whose record signature matches `sig`.
-///
-/// Uses the `CoreSection` index so no linear scan of root_items is needed on
-/// the hot path. Returns an empty `Vec` when the signature is present but has
-/// no records; returns `Err(RecordReadError::NotFound)` only when the handle
-/// itself does not exist.
-///
-/// # Errors
-/// Returns `RecordReadError::NotFound` when `handle_id` is not a loaded handle.
+/// Every FormKey in `handle_id` whose record signature is `sig`, read from the
+/// `CoreSection` index. Errors with `NotFound` only when the handle is missing.
 pub fn iter_form_keys_of_sig(
     handle_id: u64,
     sig: SigCode,
@@ -883,6 +879,19 @@ pub(crate) fn decode_subrecord(
             }
             Ok(FieldValue::List(items))
         }
+        "struct:I,I" if record_sig == "IDLE" && subrecord_sig == "ANAM" && data.len() == 8 => {
+            // FO76 can reuse a FO4 IDLE's numeric ID for a different action;
+            // raw bytes lose the ownership needed to distinguish those trees.
+            let mut fields = Vec::with_capacity(2);
+            for (name, bytes) in ["Parent", "Previous"].into_iter().zip(data.chunks_exact(4)) {
+                let raw = u32::from_le_bytes(bytes.try_into().unwrap());
+                fields.push((
+                    interner.intern(name),
+                    decode_nullable_form_id_value(raw, masters, plugin_name, interner)?,
+                ));
+            }
+            Ok(FieldValue::Struct(fields))
+        }
         "array_struct:I,I,I" if record_sig == "REGN" && subrecord_sig == "RDWT" => {
             decode_regn_rdwt(data, masters, plugin_name, interner)
         }
@@ -1003,24 +1012,18 @@ const LCTN_LCEP_ROW_LEN: usize = 12; // I,I,B,B,B,B
 const LCTN_LCUN_ROW_LEN: usize = 12; // I,I,I
 
 /// FO76 LCTN `LCEP` "Master Enable Parent References" rows are `I,I,B,B,B,B`
-/// (Ref FK, EnableParent FK, flags + 3 unknown bytes) — identical layout to FO4.
-/// `array_struct:` codecs are NOT decoded by the generic decoder (it only handles
-/// `struct:`), so without this special-case LCEP falls through to a raw `Bytes`
-/// blob and its two FormKeys are never remapped 00→07 (the struct-FK byte-offset
-/// remap also skips it: `struct_field_layout` returns empty for `array_struct:`).
-/// Decoding to a List of Structs with the FK fields as `FormKey` routes them
-/// through the normal FormKey remap. Same pattern as `decode_cobj_fvpa` /
+/// (Ref FK, EnableParent FK, flags + 3 unknown bytes), same as FO4. The generic
+/// decoder only handles `struct:`, and `struct_field_layout` is empty for
+/// `array_struct:`, so without this LCEP stays a raw `Bytes` blob and both
+/// FormKeys miss the 00→07 remap. Same pattern as `decode_cobj_fvpa` /
 /// `decode_regn_rdwt`.
 ///
-/// Every emitted struct field MUST be named to match the FO4 target schema's
-/// field ids, because `target_normalize::normalize_struct_pairs` DROPS any
-/// decoded struct field whose name matches no target field. The schema models
-/// the 4 trailing bytes as 4 SEPARATE uint8 fields (`flags`, `unknown_u8_3/4/5`),
-/// emitted as 4 `Uint(u8)` fields with those exact ids — not one combined
-/// `Bytes` blob, which normalize would drop, collapsing 12B rows to 8B.
-/// Emitting `Uint`s is safe: normalize pre-encodes each scalar to its target
-/// field width via `encode_fixed_scalar` (uint8 → 1 byte) before the generic
-/// Struct encoder runs, so each row re-encodes to exactly 12B.
+/// Field names must match the FO4 schema ids, or
+/// `target_normalize::normalize_struct_pairs` drops them. The 4 trailing bytes
+/// are 4 separate uint8 fields (`flags`, `unknown_u8_3/4/5`) emitted as `Uint`s;
+/// one `Bytes` blob would be dropped, collapsing 12-byte rows to 8. Normalize
+/// pre-encodes each scalar to its target width (`encode_fixed_scalar`), so rows
+/// re-encode to 12 bytes.
 fn decode_lctn_lcep(
     data: &[u8],
     masters: &[String],
@@ -1354,6 +1357,50 @@ mod tests {
     }
 
     #[test]
+    fn idle_anchors_distinguish_master_and_self_and_preserve_malformed_bytes() {
+        let interner = StringInterner::new();
+        let masters = vec!["Fallout4.esm".to_string()];
+        let payload = [0x0009_F152_u32.to_le_bytes(), 0x0109_F152_u32.to_le_bytes()].concat();
+        let value = decode_subrecord(
+            "IDLE",
+            "ANAM",
+            "struct:I,I",
+            &payload,
+            &masters,
+            "Test.esp",
+            None,
+            &interner,
+        )
+        .unwrap();
+        let FieldValue::Struct(fields) = value else {
+            panic!("IDLE anchors must retain their source ownership");
+        };
+        assert_eq!(
+            field_value(&fields, &interner, "Parent"),
+            &FieldValue::FormKey(FormKey::parse("09F152@Fallout4.esm", &interner).unwrap()),
+        );
+        assert_eq!(
+            field_value(&fields, &interner, "Previous"),
+            &FieldValue::FormKey(FormKey::parse("09F152@Test.esp", &interner).unwrap()),
+        );
+        for size in [0, 4, 7, 9, 12] {
+            let payload = vec![0x42; size];
+            let value = decode_subrecord(
+                "IDLE",
+                "ANAM",
+                "struct:I,I",
+                &payload,
+                &masters,
+                "Test.esp",
+                None,
+                &interner,
+            )
+            .unwrap();
+            assert_eq!(value, FieldValue::Bytes(payload.into_iter().collect()));
+        }
+    }
+
+    #[test]
     fn normalized_index_plugin_names_are_interned_across_case_variants() {
         let original = normalized_index_plugin_name("SeventySix.esm");
         let mixed = normalized_index_plugin_name("seventysix.ESM");
@@ -1425,7 +1472,14 @@ mod tests {
         marker_parameters.extend_from_slice(&0_u32.to_le_bytes());
         marker_parameters.extend_from_slice(&[0xFF, 1, 0, 0]);
 
-        for marker in [marker_parameters, vec![0; 24]] {
+        // The last case is Starfield's 28-byte stride: gating this on %24 sent
+        // it down FO4's bogus `Looping Sound` SNAM def and produced the
+        // loader-fatal 4-byte payload.
+        for marker in [
+            marker_parameters,
+            vec![0; 24],
+            (0_u8..28).collect::<Vec<_>>(),
+        ] {
             let raw_record = ParsedRecord {
                 signature: SmolStr::new_static("TERM"),
                 form_id: 0x0072_6E6C,
@@ -1476,6 +1530,160 @@ mod tests {
             };
             assert_eq!(bytes.as_slice(), marker.as_slice());
         }
+    }
+
+    #[test]
+    fn starfield_furn_marker_parameters_stay_raw_bytes_after_xmrk() {
+        let marker_parameters = (0_u8..56).collect::<Vec<_>>();
+        let raw_record = ParsedRecord {
+            signature: SmolStr::new_static("FURN"),
+            form_id: 0x001E_9A,
+            flags: 0,
+            version_control: 0,
+            form_version: Some(581),
+            version2: Some(7),
+            subrecords: vec![
+                parsed_subrecord(
+                    "EDID",
+                    b"NPCChairRyujinTall02_ExecutiveHandClasp\0".to_vec(),
+                ),
+                parsed_subrecord("SNAM", 7_u32.to_le_bytes().to_vec()),
+                parsed_subrecord(
+                    "XMRK",
+                    b"Markers\\FurnitureMarkers\\SitTable_ExecutiveHandClasp_Idle_Marker.nif\0"
+                        .to_vec(),
+                ),
+                parsed_subrecord("SNAM", marker_parameters.clone()),
+            ],
+            raw_payload: None,
+            parse_error: None,
+        };
+        let schema = AuthoringSchema::for_game("starfield").expect("starfield schema");
+        let interner = StringInterner::new();
+        let fk = FormKey {
+            local: 0x001E_9A,
+            plugin: interner.intern("Starfield.esm"),
+        };
+
+        let record = decode_record_from_parsed(
+            &raw_record,
+            &fk,
+            &schema,
+            &[],
+            "Starfield.esm",
+            None,
+            false,
+            &interner,
+        )
+        .unwrap();
+        let snam = record
+            .fields
+            .iter()
+            .filter(|field| field.sig.as_str() == "SNAM")
+            .collect::<Vec<_>>();
+
+        assert_eq!(snam.len(), 2);
+        let FieldValue::Bytes(bytes) = &snam[1].value else {
+            panic!(
+                "post-XMRK Starfield FURN SNAM must stay marker bytes: {:?}",
+                snam[1].value
+            );
+        };
+        assert_eq!(bytes.as_slice(), marker_parameters.as_slice());
+    }
+
+    fn decode_starfield(signature: &'static str, subrecords: Vec<ParsedSubrecord>) -> Record {
+        let raw_record = ParsedRecord {
+            signature: SmolStr::new_static(signature),
+            form_id: 0x0000_21C9,
+            flags: 0,
+            version_control: 0,
+            form_version: Some(581),
+            version2: Some(7),
+            subrecords,
+            raw_payload: None,
+            parse_error: None,
+        };
+        let schema = AuthoringSchema::for_game("starfield").expect("starfield schema");
+        let interner = StringInterner::new();
+        let fk = FormKey {
+            local: 0x0000_21C9,
+            plugin: interner.intern("Starfield.esm"),
+        };
+        decode_record_from_parsed(
+            &raw_record,
+            &fk,
+            &schema,
+            &[],
+            "Starfield.esm",
+            None,
+            false,
+            &interner,
+        )
+        .unwrap()
+    }
+
+    fn field<'a>(record: &'a Record, signature: &str) -> Vec<&'a FieldValue> {
+        record
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.as_str() == signature)
+            .map(|entry| &entry.value)
+            .collect()
+    }
+
+    #[test]
+    fn starfield_record_level_subrecords_ignore_component_scoped_definitions() {
+        // Shipped IPDS 0021C9 PHYBilliardBallImpactSet. The component-scoped
+        // `int32` PNAM precedes the record-level `struct:I,I` impact row in the
+        // schema; decoding through it kept 4 of the 8 bytes.
+        let impact_row = hex::decode("d2230200c8210000").unwrap();
+        let ipds = decode_starfield(
+            "IPDS",
+            vec![
+                parsed_subrecord("EDID", b"PHYBilliardBallImpactSet\0".to_vec()),
+                parsed_subrecord("PNAM", impact_row.clone()),
+            ],
+        );
+        assert_eq!(
+            field(&ipds, "PNAM"),
+            vec![&FieldValue::Bytes(impact_row.into_iter().collect())]
+        );
+
+        // FURN.MNAM is a flags word; the component def reads it as a FormID.
+        let furn = decode_starfield(
+            "FURN",
+            vec![
+                parsed_subrecord("EDID", b"TestBed\0".to_vec()),
+                parsed_subrecord("MNAM", 0x4000_1001_u32.to_le_bytes().to_vec()),
+            ],
+        );
+        assert_eq!(field(&furn, "MNAM"), vec![&FieldValue::Uint(0x4000_1001)]);
+    }
+
+    #[test]
+    fn starfield_component_block_keeps_component_scoped_definitions() {
+        let mut xnam_row = Vec::new();
+        xnam_row.extend_from_slice(&0x0002_3C01_u32.to_le_bytes());
+        xnam_row.extend_from_slice(&0_i32.to_le_bytes());
+        xnam_row.extend_from_slice(&3_u32.to_le_bytes());
+        let fact = decode_starfield(
+            "FACT",
+            vec![
+                parsed_subrecord("EDID", b"TestFaction\0".to_vec()),
+                parsed_subrecord("BFCB", b"BGSTestComponent\0".to_vec()),
+                parsed_subrecord("XNAM", 5_u32.to_le_bytes().to_vec()),
+                parsed_subrecord("BFCE", Vec::new()),
+                parsed_subrecord("XNAM", xnam_row.clone()),
+            ],
+        );
+        assert_eq!(
+            field(&fact, "XNAM"),
+            vec![
+                &FieldValue::Uint(5),
+                &FieldValue::Bytes(xnam_row.into_iter().collect()),
+            ]
+        );
     }
 
     #[test]
@@ -2182,6 +2390,63 @@ mod tests {
     // ------------------------------------------------------------------
     // SCEN.TNAM Template Scene formid decode
     // ------------------------------------------------------------------
+
+    #[test]
+    fn scen_phase_fnam_decodes_with_uint16_scope() {
+        let raw_record = ParsedRecord {
+            signature: SmolStr::new("SCEN"),
+            form_id: 0x0040_BD20,
+            flags: 0,
+            version_control: 0,
+            form_version: Some(155),
+            version2: None,
+            subrecords: vec![
+                parsed_subrecord("EDID", b"TestScene\0".to_vec()),
+                parsed_subrecord("FNAM", 0x1024_u32.to_le_bytes().to_vec()),
+                parsed_subrecord("HNAM", Vec::new()),
+                parsed_subrecord("WNAM", 0x015E_u32.to_le_bytes().to_vec()),
+                parsed_subrecord("FNAM", 1_u16.to_le_bytes().to_vec()),
+                parsed_subrecord("HNAM", Vec::new()),
+                parsed_subrecord("ANAM", 3_u16.to_le_bytes().to_vec()),
+                parsed_subrecord("FNAM", 0x0020_0000_u32.to_le_bytes().to_vec()),
+            ],
+            raw_payload: None,
+            parse_error: None,
+        };
+        let schema = AuthoringSchema::for_game("fo76").expect("fo76 schema");
+        let interner = StringInterner::new();
+        let fk = FormKey {
+            local: 0x40BD20,
+            plugin: interner.intern("SeventySix.esm"),
+        };
+
+        let record = decode_record_from_parsed(
+            &raw_record,
+            &fk,
+            &schema,
+            &[],
+            "SeventySix.esm",
+            None,
+            false,
+            &interner,
+        )
+        .unwrap();
+        let fnams = record
+            .fields
+            .iter()
+            .filter(|field| field.sig.as_str() == "FNAM")
+            .map(|field| &field.value)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            fnams,
+            vec![
+                &FieldValue::Uint(0x1024),
+                &FieldValue::Uint(1),
+                &FieldValue::Uint(0x0020_0000),
+            ]
+        );
+    }
 
     /// Build a minimal SCEN ParsedRecord with an actions-block TNAM (float32)
     /// followed by the top-level Template Scene TNAM (formid pointing into

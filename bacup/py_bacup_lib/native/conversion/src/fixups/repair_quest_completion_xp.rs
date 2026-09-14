@@ -62,6 +62,10 @@ impl Fixup for RepairQuestCompletionXpFixup {
             .source_slot_opt()
             .map(|slot| slot.parsed.plugin_name.clone())
             .ok_or_else(|| FixupError::HandleError("source plugin missing".into()))?;
+        let source_masters = session
+            .source_slot_opt()
+            .map(|slot| slot.parsed.header.masters.clone())
+            .ok_or_else(|| FixupError::HandleError("source plugin missing".into()))?;
         let output_plugin_name = session.target_slot().parsed.plugin_name.clone();
         let source_plugin = mapper.interner.intern(&source_plugin_name);
         let output_plugin = mapper.interner.intern(&output_plugin_name);
@@ -130,15 +134,24 @@ impl Fixup for RepairQuestCompletionXpFixup {
                 }
             };
 
-            let choice = choose_completion_xp(&source_quest, source_xp_none, |reward_fk| {
-                source_reward_xp_global(
-                    session,
-                    source_schema.as_ref(),
-                    mapper.interner,
-                    reward_fk,
-                    &mut reward_xp_cache,
-                )
-            });
+            let choice = choose_completion_xp(
+                &source_quest,
+                source_xp_none,
+                |value| {
+                    source_form_key(value, &source_masters, &source_plugin_name, mapper.interner)
+                },
+                |reward_fk| {
+                    source_reward_xp_global(
+                        session,
+                        source_schema.as_ref(),
+                        mapper.interner,
+                        reward_fk,
+                        &source_masters,
+                        &source_plugin_name,
+                        &mut reward_xp_cache,
+                    )
+                },
+            );
             let Some(choice) = choice else {
                 unresolved += 1;
                 continue;
@@ -197,6 +210,8 @@ fn source_reward_xp_global(
     source_schema: &crate::schema::AuthoringSchema,
     interner: &crate::sym::StringInterner,
     reward_fk: FormKey,
+    source_masters: &[String],
+    source_plugin_name: &str,
     cache: &mut FxHashMap<FormKey, Option<FormKey>>,
 ) -> Option<FormKey> {
     if let Some(cached) = cache.get(&reward_fk) {
@@ -206,7 +221,15 @@ fn source_reward_xp_global(
         .source_record_decoded(&reward_fk, source_schema, interner)
         .ok()
         .filter(|record| record.sig.0 == *b"GMRW")
-        .and_then(|record| first_form_key(&record, *b"NAM7"));
+        .and_then(|record| {
+            first_source_form_key(
+                &record,
+                *b"NAM7",
+                source_masters,
+                source_plugin_name,
+                interner,
+            )
+        });
     cache.insert(reward_fk, resolved);
     resolved
 }
@@ -233,6 +256,7 @@ fn target_global_for_source(
 fn choose_completion_xp(
     source_quest: &Record,
     source_xp_none: Option<FormKey>,
+    mut reward_ref: impl FnMut(&FieldValue) -> Option<FormKey>,
     mut reward_xp: impl FnMut(FormKey) -> Option<FormKey>,
 ) -> Option<CompletionXpChoice> {
     if let Some(source_global) = first_form_key(source_quest, *b"XNAM") {
@@ -242,7 +266,7 @@ fn choose_completion_xp(
         });
     }
 
-    let reward_globals = completion_reward_refs(source_quest)
+    let reward_globals = completion_reward_refs(source_quest, &mut reward_ref)
         .into_iter()
         .filter_map(&mut reward_xp)
         .collect::<FxHashSet<_>>();
@@ -262,7 +286,10 @@ fn choose_completion_xp(
     })
 }
 
-fn completion_reward_refs(record: &Record) -> Vec<FormKey> {
+fn completion_reward_refs(
+    record: &Record,
+    mut resolve: impl FnMut(&FieldValue) -> Option<FormKey>,
+) -> Vec<FormKey> {
     let mut in_stage = false;
     let mut stage_completes = false;
     let mut rewards = Vec::new();
@@ -276,11 +303,9 @@ fn completion_reward_refs(record: &Record) -> Vec<FormKey> {
                 stage_completes = field_value_u8(&entry.value)
                     .is_some_and(|flags| flags & COMPLETE_QUEST_FLAG != 0);
             }
-            b"DNAM" if in_stage && stage_completes => {
-                if let FieldValue::FormKey(form_key) = &entry.value
-                    && form_key.local != 0
-                {
-                    rewards.push(*form_key);
+            b"QRWD" if in_stage && stage_completes => {
+                if let Some(form_key) = resolve(&entry.value) {
+                    rewards.push(form_key);
                 }
             }
             _ => {}
@@ -311,6 +336,46 @@ fn first_form_key(record: &Record, sig: [u8; 4]) -> Option<FormKey> {
                 FieldValue::FormKey(form_key) if form_key.local != 0 => Some(*form_key),
                 _ => None,
             })
+    })
+}
+
+fn first_source_form_key(
+    record: &Record,
+    sig: [u8; 4],
+    source_masters: &[String],
+    source_plugin_name: &str,
+    interner: &crate::sym::StringInterner,
+) -> Option<FormKey> {
+    record.fields.iter().find_map(|entry| {
+        (entry.sig.0 == sig)
+            .then_some(&entry.value)
+            .and_then(|value| source_form_key(value, source_masters, source_plugin_name, interner))
+    })
+}
+
+fn source_form_key(
+    value: &FieldValue,
+    source_masters: &[String],
+    source_plugin_name: &str,
+    interner: &crate::sym::StringInterner,
+) -> Option<FormKey> {
+    if let FieldValue::FormKey(form_key) = value {
+        return (form_key.local != 0).then_some(*form_key);
+    }
+    let FieldValue::Bytes(bytes) = value else {
+        return None;
+    };
+    let raw = u32::from_le_bytes(bytes.get(0..4)?.try_into().ok()?);
+    if raw == 0 {
+        return None;
+    }
+    let plugin = source_masters
+        .get((raw >> 24) as usize)
+        .map(String::as_str)
+        .unwrap_or(source_plugin_name);
+    Some(FormKey {
+        local: raw & 0x00FF_FFFF,
+        plugin: interner.intern(plugin),
     })
 }
 
@@ -370,6 +435,10 @@ mod tests {
         }
     }
 
+    fn raw_form(local: u32) -> FieldValue {
+        FieldValue::Bytes(smallvec::SmallVec::from_slice(&local.to_le_bytes()))
+    }
+
     fn quest(interner: &StringInterner, local: u32, fields: Vec<FieldEntry>) -> Record {
         Record {
             sig: SigCode(*b"QUST"),
@@ -392,14 +461,20 @@ mod tests {
             vec![
                 field(b"INDX", FieldValue::Uint(100)),
                 field(b"QSDT", FieldValue::Uint(0)),
-                field(b"DNAM", FieldValue::FormKey(ignored)),
+                field(b"QRWD", raw_form(ignored.local)),
                 field(b"INDX", FieldValue::Uint(200)),
                 field(b"QSDT", FieldValue::Uint(1)),
-                field(b"DNAM", FieldValue::FormKey(completion)),
+                field(b"DNAM", FieldValue::FormKey(ignored)),
+                field(b"QRWD", raw_form(completion.local)),
             ],
         );
 
-        assert_eq!(completion_reward_refs(&record), vec![completion]);
+        assert_eq!(
+            completion_reward_refs(&record, |value| {
+                source_form_key(value, &[], "SeventySix.esm", &interner)
+            }),
+            vec![completion]
+        );
     }
 
     #[test]
@@ -416,12 +491,18 @@ mod tests {
             vec![
                 field(b"INDX", FieldValue::Uint(200)),
                 field(b"QSDT", FieldValue::Uint(1)),
-                field(b"DNAM", FieldValue::FormKey(reward_a)),
-                field(b"DNAM", FieldValue::FormKey(reward_b)),
+                field(b"QRWD", raw_form(reward_a.local)),
+                field(b"QRWD", raw_form(reward_b.local)),
             ],
         );
 
-        let unique = choose_completion_xp(&record, Some(xp_none), |_| Some(xp)).unwrap();
+        let unique = choose_completion_xp(
+            &record,
+            Some(xp_none),
+            |value| source_form_key(value, &[], "SeventySix.esm", &interner),
+            |_| Some(xp),
+        )
+        .unwrap();
         assert_eq!(
             unique,
             CompletionXpChoice {
@@ -430,9 +511,12 @@ mod tests {
             }
         );
 
-        let conflict = choose_completion_xp(&record, Some(xp_none), |reward| {
-            (reward == reward_a).then_some(xp).or(Some(other_xp))
-        })
+        let conflict = choose_completion_xp(
+            &record,
+            Some(xp_none),
+            |value| source_form_key(value, &[], "SeventySix.esm", &interner),
+            |reward| (reward == reward_a).then_some(xp).or(Some(other_xp)),
+        )
         .unwrap();
         assert_eq!(
             conflict,
@@ -440,6 +524,27 @@ mod tests {
                 source_global: xp_none,
                 reason: CompletionXpReason::Fallback,
             }
+        );
+    }
+
+    #[test]
+    fn reward_xp_global_reads_fo76_raw_nam7_formid() {
+        let interner = StringInterner::new();
+        let xp = fk(&interner, 0x556D52);
+        let reward = Record {
+            sig: SigCode(*b"GMRW"),
+            form_key: fk(&interner, 0x6313B1),
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: vec![field(b"NAM7", raw_form(xp.local))]
+                .into_iter()
+                .collect(),
+            warnings: smallvec![],
+        };
+
+        assert_eq!(
+            first_source_form_key(&reward, *b"NAM7", &[], "SeventySix.esm", &interner,),
+            Some(xp)
         );
     }
 
@@ -453,7 +558,7 @@ mod tests {
             1,
             vec![field(b"XNAM", FieldValue::FormKey(source_xp))],
         );
-        let choice = choose_completion_xp(&source, None, |_| None).unwrap();
+        let choice = choose_completion_xp(&source, None, |_| None, |_| None).unwrap();
         assert_eq!(choice.reason, CompletionXpReason::Source);
         assert_eq!(choice.source_global, source_xp);
 

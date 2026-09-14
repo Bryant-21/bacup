@@ -72,6 +72,70 @@ def _has_bto(objects_dir: Path) -> bool:
         return False
 
 
+# Compiling any converted script needs the type of everything it touches, and
+# those resolve transitively through this chain. If they are absent the compiler
+# cannot type a single `Extends`, so every script fails at once.
+_PAPYRUS_ANCHOR_TYPES = ("ScriptObject", "Form", "ObjectReference")
+
+
+def _missing_papyrus_anchors(
+    *roots: Path | None, fo4_data: Path | None = None
+) -> list[str]:
+    """Anchor types absent from every candidate FO4 script corpus.
+
+    The type universe is built from the game's compiled `.pex`, so this checks
+    for those rather than the `.psc` that only a Creation Kit install provides.
+    Anchor presence rather than directory existence is the test: an empty or
+    partial `Scripts` directory satisfies `is_dir()` and still compiles nothing.
+    """
+    found: set[str] = set()
+    for root in roots:
+        if root is None:
+            continue
+        scripts_dir = _resolve_ci_path(Path(root), "Scripts")
+        if not scripts_dir.is_dir():
+            continue
+        try:
+            names = {entry.stem.casefold() for entry in scripts_dir.glob("*.pex")}
+        except OSError:
+            continue
+        found.update(
+            anchor for anchor in _PAPYRUS_ANCHOR_TYPES if anchor.casefold() in names
+        )
+    missing = [anchor for anchor in _PAPYRUS_ANCHOR_TYPES if anchor not in found]
+    if not missing:
+        return []
+    if _anchors_in_archives(fo4_data, missing):
+        return []
+    # With a shipped corpus the conversion compiles without reading the game, so an
+    # install with no minable types doesn't block the run.
+    from creation_lib.pex.corpus import bundled_corpus_archive
+
+    if bundled_corpus_archive("fo4") is not None:
+        return []
+    return missing
+
+
+def _anchors_in_archives(fo4_data: Path | None, anchors: list[str]) -> bool:
+    """Whether the archives hold the anchors the loose directories lack.
+
+    Fallout 4 keeps its compiled scripts inside `Fallout4 - Misc.ba2`. A player
+    who never extracted the game has none loose, which says nothing about
+    whether the conversion can read them — it opens the archives either way.
+    """
+    if fo4_data is None or not Path(fo4_data).is_dir():
+        return False
+    try:
+        from bacup_lib.target_assets import TargetAssetStore
+
+        store = TargetAssetStore(target_data_dir=fo4_data)
+        return all(
+            store.has_asset(f"scripts/{anchor.lower()}.pex") for anchor in anchors
+        )
+    except Exception:
+        return False
+
+
 def scan_conversion_inputs(
     paths: object,
     worldspaces: Iterable[str] = ("Appalachia",),
@@ -135,6 +199,24 @@ def scan_conversion_inputs(
                     "FO4 base master",
                     str(target_master),
                     "Verify the Fallout 4 Data directory contains Fallout4.esm.",
+                )
+            )
+
+        fo4_ext = Path(getattr(paths, "target_extracted_dir", "") or "")
+        missing_anchors = _missing_papyrus_anchors(
+            fo4_ext if str(fo4_ext) else None, fo4_data, fo4_data=fo4_data
+        )
+        if missing_anchors:
+            report.required_missing.append(
+                MissingInput(
+                    "FO4 Papyrus script corpus "
+                    f"(missing {', '.join(missing_anchors)})",
+                    str(_resolve_ci_path(fo4_ext or fo4_data, "Scripts")),
+                    "Verify the Fallout 4 install: neither its loose Scripts "
+                    "directory nor its archives hold the base script types. The "
+                    "converter builds the Papyrus type universe from those .pex; "
+                    "without them no converted script compiles and its records "
+                    "lose their script bindings.",
                 )
             )
     if catalog.is_file() and fo4_data.is_dir():

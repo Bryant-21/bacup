@@ -27,6 +27,16 @@ ASSET_CONTRIBUTIONS: tuple[AssetContribution, ...] = (
         subrecord_signatures=frozenset({"ICON", "MICO"}),
         kind="texture",
     ),
+    # Cloud layers: FO3/FNV name the first four, later games number all 32.
+    AssetContribution(
+        record_signatures=frozenset({"WTHR"}),
+        subrecord_signatures=(
+            frozenset({"DNAM", "CNAM", "ANAM", "BNAM"})
+            # Layer index counts up from '0' through ':' to 'O', not in hex.
+            | frozenset(chr(ord("0") + index) + "0TX" for index in range(32))
+        ),
+        kind="texture",
+    ),
     AssetContribution(
         record_signatures=frozenset({"MSWP"}),
         subrecord_signatures=frozenset({"BNAM", "MNAM"}),
@@ -36,6 +46,11 @@ ASSET_CONTRIBUTIONS: tuple[AssetContribution, ...] = (
         record_signatures=frozenset({"IDLE", "RACE"}),
         subrecord_signatures=frozenset({"ANAM", "BNAM"}),
         kind="behavior",
+    ),
+    AssetContribution(
+        record_signatures=frozenset({"IDLE"}),
+        subrecord_signatures=frozenset({"MODL"}),
+        kind="kf_animation",
     ),
     AssetContribution(
         record_signatures=frozenset({"CREA"}),
@@ -69,6 +84,20 @@ ASSET_CONTRIBUTIONS: tuple[AssetContribution, ...] = (
     ),
 )
 
+ASSET_SOURCE_PREFIXES: dict[str, tuple[str, ...]] = {
+    "kf_animation": ("Meshes",),
+}
+
+FNV_KNOWN_DANGLING_CREATURE_KF_PATHS = frozenset(
+    {
+        "creatures/nvsecuritron/idleanims/specialidle_nvopening_securitron.kf",
+        "creatures/nvsecuritron/idleanims/specialidle_nvopening_securitronidle.kf",
+        "creatures/nvsecuritron/idleanims/specialidle_screentransition2.kf",
+        "creatures/roach/idleanims/specialidle_wings.kf",
+        "creatures/yaoguai/idleanims/mtspecialide_cleaningself.kf",
+    }
+)
+
 
 def signatures_for_asset_kind(kind: str) -> frozenset[str]:
     sigs: set[str] = set()
@@ -82,8 +111,31 @@ def signatures_for_asset_kind(kind: str) -> frozenset[str]:
     return frozenset(sigs)
 
 
+def source_prefixes_for_asset_kind(kind: str) -> tuple[str, ...]:
+    return ASSET_SOURCE_PREFIXES.get(str(kind).casefold(), ())
+
+
+def is_known_dangling_asset_reference(
+    source_game: str,
+    kind: str,
+    source_path: str,
+) -> bool:
+    if str(source_game).casefold() not in {"fnv", "falloutnv"}:
+        return False
+    if str(kind).casefold() != "kf_animation":
+        return False
+    normalized = str(source_path).replace("\\", "/").strip().lstrip("/").casefold()
+    if normalized.startswith("meshes/"):
+        normalized = normalized[7:]
+    return normalized in FNV_KNOWN_DANGLING_CREATURE_KF_PATHS
+
+
 __all__ = [
     "ASSET_CONTRIBUTIONS",
+    "ASSET_SOURCE_PREFIXES",
     "AssetContribution",
+    "FNV_KNOWN_DANGLING_CREATURE_KF_PATHS",
+    "is_known_dangling_asset_reference",
     "signatures_for_asset_kind",
+    "source_prefixes_for_asset_kind",
 ]

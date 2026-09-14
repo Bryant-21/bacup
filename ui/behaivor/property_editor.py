@@ -8,6 +8,8 @@ indices/weights, and BSAssignVariablesModifier arrays.
 
 from imgui_bundle import imgui
 
+from creation_lib.ui.widgets.modern import expandable_section
+
 from .node_types import NODE_TYPE_DEFINITIONS
 
 # ---------------------------------------------------------------------------
@@ -429,62 +431,62 @@ class PropertyEditorPanel:
     def _render_binding_array(self, node: dict, prop_name: str):
         entries: list = node.setdefault(prop_name, [])
 
-        header_open = imgui.collapsing_header(
+        with expandable_section(
             f"Bindings ({len(entries)})##bindings_header"
-        )
-        if not header_open:
-            return
+        ) as header_open:
+            if not header_open:
+                return
 
-        imgui.indent(8)
+            imgui.indent(8)
 
-        remove_idx = -1
-        for i, entry in enumerate(entries):
-            entry_open = imgui.tree_node(f"Binding [{i}]##binding_{i}")
-            if not entry_open:
-                continue
+            remove_idx = -1
+            for i, entry in enumerate(entries):
+                entry_open = imgui.tree_node(f"Binding [{i}]##binding_{i}")
+                if not entry_open:
+                    continue
 
-            # memberPath
-            mp = entry.get("memberPath", "")
-            ch, new_mp = imgui.input_text(f"memberPath##bind_mp_{i}", mp)
-            if ch:
-                entry["memberPath"] = new_mp
+                # memberPath
+                mp = entry.get("memberPath", "")
+                ch, new_mp = imgui.input_text(f"memberPath##bind_mp_{i}", mp)
+                if ch:
+                    entry["memberPath"] = new_mp
 
-            # variableIndex
-            vi = int(entry.get("variableIndex", -1))
-            ch, new_vi = imgui.input_int(f"variableIndex##bind_vi_{i}", vi)
-            if ch:
-                entry["variableIndex"] = new_vi
-            if self._global_state is not None:
-                self._show_variable_hint(vi)
+                # variableIndex
+                vi = int(entry.get("variableIndex", -1))
+                ch, new_vi = imgui.input_int(f"variableIndex##bind_vi_{i}", vi)
+                if ch:
+                    entry["variableIndex"] = new_vi
+                if self._global_state is not None:
+                    self._show_variable_hint(vi)
 
-            # bindingType combo
-            bt = entry.get("bindingType", "BINDING_TYPE_VARIABLE")
-            bt_idx = 0
-            if bt in BINDING_TYPE_NAMES:
-                bt_idx = BINDING_TYPE_NAMES.index(bt)
-            ch, new_bt_idx = imgui.combo(
-                f"bindingType##bind_bt_{i}", bt_idx, BINDING_TYPE_NAMES
-            )
-            if ch:
-                entry["bindingType"] = BINDING_TYPE_NAMES[new_bt_idx]
+                # bindingType combo
+                bt = entry.get("bindingType", "BINDING_TYPE_VARIABLE")
+                bt_idx = 0
+                if bt in BINDING_TYPE_NAMES:
+                    bt_idx = BINDING_TYPE_NAMES.index(bt)
+                ch, new_bt_idx = imgui.combo(
+                    f"bindingType##bind_bt_{i}", bt_idx, BINDING_TYPE_NAMES
+                )
+                if ch:
+                    entry["bindingType"] = BINDING_TYPE_NAMES[new_bt_idx]
 
-            # Remove button
-            if imgui.button(f"Remove##bind_rm_{i}"):
-                remove_idx = i
+                # Remove button
+                if imgui.button(f"Remove##bind_rm_{i}"):
+                    remove_idx = i
 
-            imgui.tree_pop()
+                imgui.tree_pop()
 
-        if remove_idx >= 0:
-            entries.pop(remove_idx)
+            if remove_idx >= 0:
+                entries.pop(remove_idx)
 
-        if imgui.button("+ Add Binding##bind_add"):
-            entries.append({
-                "memberPath": "",
-                "variableIndex": -1,
-                "bindingType": "BINDING_TYPE_VARIABLE",
-            })
+            if imgui.button("+ Add Binding##bind_add"):
+                entries.append({
+                    "memberPath": "",
+                    "variableIndex": -1,
+                    "bindingType": "BINDING_TYPE_VARIABLE",
+                })
 
-        imgui.unindent(8)
+            imgui.unindent(8)
 
     # -----------------------------------------------------------------------
     # 2. Transition array (hkbStateMachineTransitionInfoArray, type 7)
@@ -493,93 +495,93 @@ class PropertyEditorPanel:
     def _render_transition_array(self, node: dict, prop_name: str):
         entries: list = node.setdefault(prop_name, [])
 
-        header_open = imgui.collapsing_header(
+        with expandable_section(
             f"Transitions ({len(entries)})##trans_header"
-        )
-        if not header_open:
-            return
+        ) as header_open:
+            if not header_open:
+                return
 
-        imgui.indent(8)
+            imgui.indent(8)
 
-        remove_idx = -1
-        for i, entry in enumerate(entries):
-            entry_open = imgui.tree_node(f"Transition [{i}]##trans_{i}")
-            if not entry_open:
-                continue
+            remove_idx = -1
+            for i, entry in enumerate(entries):
+                entry_open = imgui.tree_node(f"Transition [{i}]##trans_{i}")
+                if not entry_open:
+                    continue
 
-            # transition index
-            ch, nv = imgui.input_int(f"transition##trans_t_{i}",
-                                     int(entry.get("transition", 0)))
-            if ch:
-                entry["transition"] = nv
+                # transition index
+                ch, nv = imgui.input_int(f"transition##trans_t_{i}",
+                                         int(entry.get("transition", 0)))
+                if ch:
+                    entry["transition"] = nv
 
-            # eventId
-            eid = int(entry.get("eventId", -1))
-            ch, nv = imgui.input_int(f"eventId##trans_eid_{i}", eid)
-            if ch:
-                entry["eventId"] = nv
-            self._show_event_hint(eid)
+                # eventId
+                eid = int(entry.get("eventId", -1))
+                ch, nv = imgui.input_int(f"eventId##trans_eid_{i}", eid)
+                if ch:
+                    entry["eventId"] = nv
+                self._show_event_hint(eid)
 
-            # toStateId
-            ch, nv = imgui.input_int(f"toStateId##trans_ts_{i}",
-                                     int(entry.get("toStateId", -1)))
-            if ch:
-                entry["toStateId"] = nv
+                # toStateId
+                ch, nv = imgui.input_int(f"toStateId##trans_ts_{i}",
+                                         int(entry.get("toStateId", -1)))
+                if ch:
+                    entry["toStateId"] = nv
 
-            # fromNestedStateId
-            ch, nv = imgui.input_int(f"fromNestedStateId##trans_fns_{i}",
-                                     int(entry.get("fromNestedStateId", -1)))
-            if ch:
-                entry["fromNestedStateId"] = nv
+                # fromNestedStateId
+                ch, nv = imgui.input_int(f"fromNestedStateId##trans_fns_{i}",
+                                         int(entry.get("fromNestedStateId", -1)))
+                if ch:
+                    entry["fromNestedStateId"] = nv
 
-            # toNestedStateId
-            ch, nv = imgui.input_int(f"toNestedStateId##trans_tns_{i}",
-                                     int(entry.get("toNestedStateId", -1)))
-            if ch:
-                entry["toNestedStateId"] = nv
+                # toNestedStateId
+                ch, nv = imgui.input_int(f"toNestedStateId##trans_tns_{i}",
+                                         int(entry.get("toNestedStateId", -1)))
+                if ch:
+                    entry["toNestedStateId"] = nv
 
-            # priority
-            ch, nv = imgui.input_int(f"priority##trans_pri_{i}",
-                                     int(entry.get("priority", 0)))
-            if ch:
-                entry["priority"] = nv
+                # priority
+                ch, nv = imgui.input_int(f"priority##trans_pri_{i}",
+                                         int(entry.get("priority", 0)))
+                if ch:
+                    entry["priority"] = nv
 
-            # flags (15-element bool array)
-            flags: list = entry.setdefault("flags", [False] * 15)
-            # Ensure it is always 15 elements
-            while len(flags) < 15:
-                flags.append(False)
+                # flags (15-element bool array)
+                flags: list = entry.setdefault("flags", [False] * 15)
+                # Ensure it is always 15 elements
+                while len(flags) < 15:
+                    flags.append(False)
 
-            if imgui.tree_node(f"Flags##trans_flags_{i}"):
-                for fi in range(15):
-                    flag_name = TRANSITION_FLAG_NAMES[fi] if fi < len(
-                        TRANSITION_FLAG_NAMES) else f"flag_{fi}"
-                    ch, nv = imgui.checkbox(f"{flag_name}##trans_fl_{i}_{fi}",
-                                            bool(flags[fi]))
-                    if ch:
-                        flags[fi] = nv
+                if imgui.tree_node(f"Flags##trans_flags_{i}"):
+                    for fi in range(15):
+                        flag_name = TRANSITION_FLAG_NAMES[fi] if fi < len(
+                            TRANSITION_FLAG_NAMES) else f"flag_{fi}"
+                        ch, nv = imgui.checkbox(f"{flag_name}##trans_fl_{i}_{fi}",
+                                                bool(flags[fi]))
+                        if ch:
+                            flags[fi] = nv
+                    imgui.tree_pop()
+
+                if imgui.button(f"Remove##trans_rm_{i}"):
+                    remove_idx = i
+
                 imgui.tree_pop()
 
-            if imgui.button(f"Remove##trans_rm_{i}"):
-                remove_idx = i
+            if remove_idx >= 0:
+                entries.pop(remove_idx)
 
-            imgui.tree_pop()
+            if imgui.button("+ Add Transition##trans_add"):
+                entries.append({
+                    "transition": 0,
+                    "eventId": -1,
+                    "toStateId": -1,
+                    "fromNestedStateId": -1,
+                    "toNestedStateId": -1,
+                    "priority": 0,
+                    "flags": [False] * 15,
+                })
 
-        if remove_idx >= 0:
-            entries.pop(remove_idx)
-
-        if imgui.button("+ Add Transition##trans_add"):
-            entries.append({
-                "transition": 0,
-                "eventId": -1,
-                "toStateId": -1,
-                "fromNestedStateId": -1,
-                "toNestedStateId": -1,
-                "priority": 0,
-                "flags": [False] * 15,
-            })
-
-        imgui.unindent(8)
+            imgui.unindent(8)
 
     # -----------------------------------------------------------------------
     # 3. Events array (hkbStateMachineEventPropertyArray, type 8)
@@ -588,54 +590,54 @@ class PropertyEditorPanel:
     def _render_events_array(self, node: dict, prop_name: str):
         entries: list = node.setdefault(prop_name, [])
 
-        header_open = imgui.collapsing_header(
+        with expandable_section(
             f"Events ({len(entries)})##evtarr_header"
-        )
-        if not header_open:
-            return
+        ) as header_open:
+            if not header_open:
+                return
 
-        imgui.indent(8)
+            imgui.indent(8)
 
-        remove_idx = -1
-        for i, entry in enumerate(entries):
-            entry_open = imgui.tree_node(f"Event [{i}]##evtarr_{i}")
-            if not entry_open:
-                continue
+            remove_idx = -1
+            for i, entry in enumerate(entries):
+                entry_open = imgui.tree_node(f"Event [{i}]##evtarr_{i}")
+                if not entry_open:
+                    continue
 
-            # eventID
-            eid = int(entry.get("eventID", -1))
-            ch, nv = imgui.input_int(f"eventID##evtarr_eid_{i}", eid)
-            if ch:
-                entry["eventID"] = nv
-            self._show_event_hint(eid)
+                # eventID
+                eid = int(entry.get("eventID", -1))
+                ch, nv = imgui.input_int(f"eventID##evtarr_eid_{i}", eid)
+                if ch:
+                    entry["eventID"] = nv
+                self._show_event_hint(eid)
 
-            # Event combo selector
-            if self._global_state and self._global_state.events:
-                self._render_inline_event_combo(entry, "eventID",
-                                                f"evtarr_ecb_{i}")
+                # Event combo selector
+                if self._global_state and self._global_state.events:
+                    self._render_inline_event_combo(entry, "eventID",
+                                                    f"evtarr_ecb_{i}")
 
-            # payloadID
-            pid = int(entry.get("payloadID", -1))
-            ch, nv = imgui.input_int(f"payloadID##evtarr_pid_{i}", pid)
-            if ch:
-                entry["payloadID"] = nv
-            self._show_payload_hint(pid)
+                # payloadID
+                pid = int(entry.get("payloadID", -1))
+                ch, nv = imgui.input_int(f"payloadID##evtarr_pid_{i}", pid)
+                if ch:
+                    entry["payloadID"] = nv
+                self._show_payload_hint(pid)
 
-            if imgui.button(f"Remove##evtarr_rm_{i}"):
-                remove_idx = i
+                if imgui.button(f"Remove##evtarr_rm_{i}"):
+                    remove_idx = i
 
-            imgui.tree_pop()
+                imgui.tree_pop()
 
-        if remove_idx >= 0:
-            entries.pop(remove_idx)
+            if remove_idx >= 0:
+                entries.pop(remove_idx)
 
-        if imgui.button("+ Add Event##evtarr_add"):
-            entries.append({
-                "eventID": -1,
-                "payloadID": -1,
-            })
+            if imgui.button("+ Add Event##evtarr_add"):
+                entries.append({
+                    "eventID": -1,
+                    "payloadID": -1,
+                })
 
-        imgui.unindent(8)
+            imgui.unindent(8)
 
     # -----------------------------------------------------------------------
     # 4. Expression array (hkbExpressionDataArray, type 21)
@@ -644,54 +646,54 @@ class PropertyEditorPanel:
     def _render_expression_array(self, node: dict, prop_name: str):
         entries: list = node.setdefault(prop_name, [])
 
-        header_open = imgui.collapsing_header(
+        with expandable_section(
             f"Expressions ({len(entries)})##expr_header"
-        )
-        if not header_open:
-            return
+        ) as header_open:
+            if not header_open:
+                return
 
-        imgui.indent(8)
+            imgui.indent(8)
 
-        remove_idx = -1
-        for i, entry in enumerate(entries):
-            entry_open = imgui.tree_node(f"Expression [{i}]##expr_{i}")
-            if not entry_open:
-                continue
+            remove_idx = -1
+            for i, entry in enumerate(entries):
+                entry_open = imgui.tree_node(f"Expression [{i}]##expr_{i}")
+                if not entry_open:
+                    continue
 
-            # expression string
-            expr = str(entry.get("expression", ""))
-            ch, nv = imgui.input_text(f"expression##expr_e_{i}", expr)
-            if ch:
-                entry["expression"] = nv
+                # expression string
+                expr = str(entry.get("expression", ""))
+                ch, nv = imgui.input_text(f"expression##expr_e_{i}", expr)
+                if ch:
+                    entry["expression"] = nv
 
-            # assignmentIndex
-            ch, nv = imgui.input_int(f"assignmentIndex##expr_ai_{i}",
-                                     int(entry.get("assignmentIndex", 0)))
-            if ch:
-                entry["assignmentIndex"] = nv
+                # assignmentIndex
+                ch, nv = imgui.input_int(f"assignmentIndex##expr_ai_{i}",
+                                         int(entry.get("assignmentIndex", 0)))
+                if ch:
+                    entry["assignmentIndex"] = nv
 
-            # assignmentEventMode
-            ch, nv = imgui.input_int(f"assignmentEventMode##expr_aem_{i}",
-                                     int(entry.get("assignmentEventMode", 0)))
-            if ch:
-                entry["assignmentEventMode"] = nv
+                # assignmentEventMode
+                ch, nv = imgui.input_int(f"assignmentEventMode##expr_aem_{i}",
+                                         int(entry.get("assignmentEventMode", 0)))
+                if ch:
+                    entry["assignmentEventMode"] = nv
 
-            if imgui.button(f"Remove##expr_rm_{i}"):
-                remove_idx = i
+                if imgui.button(f"Remove##expr_rm_{i}"):
+                    remove_idx = i
 
-            imgui.tree_pop()
+                imgui.tree_pop()
 
-        if remove_idx >= 0:
-            entries.pop(remove_idx)
+            if remove_idx >= 0:
+                entries.pop(remove_idx)
 
-        if imgui.button("+ Add Expression##expr_add"):
-            entries.append({
-                "expression": "",
-                "assignmentIndex": 0,
-                "assignmentEventMode": 0,
-            })
+            if imgui.button("+ Add Expression##expr_add"):
+                entries.append({
+                    "expression": "",
+                    "assignmentIndex": 0,
+                    "assignmentEventMode": 0,
+                })
 
-        imgui.unindent(8)
+            imgui.unindent(8)
 
     # -----------------------------------------------------------------------
     # 5. Triggers array (hkbClipTriggerArray, type 26)
@@ -700,79 +702,79 @@ class PropertyEditorPanel:
     def _render_triggers_array(self, node: dict, prop_name: str):
         entries: list = node.setdefault(prop_name, [])
 
-        header_open = imgui.collapsing_header(
+        with expandable_section(
             f"Triggers ({len(entries)})##trig_header"
-        )
-        if not header_open:
-            return
+        ) as header_open:
+            if not header_open:
+                return
 
-        imgui.indent(8)
+            imgui.indent(8)
 
-        remove_idx = -1
-        for i, entry in enumerate(entries):
-            entry_open = imgui.tree_node(f"Trigger [{i}]##trig_{i}")
-            if not entry_open:
-                continue
+            remove_idx = -1
+            for i, entry in enumerate(entries):
+                entry_open = imgui.tree_node(f"Trigger [{i}]##trig_{i}")
+                if not entry_open:
+                    continue
 
-            # localTime (float stored as string)
-            lt = str(entry.get("localTime", "0.000000"))
-            ch, nv = imgui.input_text(f"localTime##trig_lt_{i}", lt)
-            if ch:
-                entry["localTime"] = nv
+                # localTime (float stored as string)
+                lt = str(entry.get("localTime", "0.000000"))
+                ch, nv = imgui.input_text(f"localTime##trig_lt_{i}", lt)
+                if ch:
+                    entry["localTime"] = nv
 
-            # eventID
-            eid = int(entry.get("eventID", -1))
-            ch, nv = imgui.input_int(f"eventID##trig_eid_{i}", eid)
-            if ch:
-                entry["eventID"] = nv
-            self._show_event_hint(eid)
+                # eventID
+                eid = int(entry.get("eventID", -1))
+                ch, nv = imgui.input_int(f"eventID##trig_eid_{i}", eid)
+                if ch:
+                    entry["eventID"] = nv
+                self._show_event_hint(eid)
 
-            if self._global_state and self._global_state.events:
-                self._render_inline_event_combo(entry, "eventID",
-                                                f"trig_ecb_{i}")
+                if self._global_state and self._global_state.events:
+                    self._render_inline_event_combo(entry, "eventID",
+                                                    f"trig_ecb_{i}")
 
-            # relativeToEndOfClip
-            ch, nv = imgui.checkbox(
-                f"relativeToEndOfClip##trig_re_{i}",
-                bool(entry.get("relativeToEndOfClip", False)),
-            )
-            if ch:
-                entry["relativeToEndOfClip"] = nv
+                # relativeToEndOfClip
+                ch, nv = imgui.checkbox(
+                    f"relativeToEndOfClip##trig_re_{i}",
+                    bool(entry.get("relativeToEndOfClip", False)),
+                )
+                if ch:
+                    entry["relativeToEndOfClip"] = nv
 
-            # acyclic
-            ch, nv = imgui.checkbox(
-                f"acyclic##trig_ac_{i}",
-                bool(entry.get("acyclic", False)),
-            )
-            if ch:
-                entry["acyclic"] = nv
+                # acyclic
+                ch, nv = imgui.checkbox(
+                    f"acyclic##trig_ac_{i}",
+                    bool(entry.get("acyclic", False)),
+                )
+                if ch:
+                    entry["acyclic"] = nv
 
-            # isAnnotation
-            ch, nv = imgui.checkbox(
-                f"isAnnotation##trig_ia_{i}",
-                bool(entry.get("isAnnotation", False)),
-            )
-            if ch:
-                entry["isAnnotation"] = nv
+                # isAnnotation
+                ch, nv = imgui.checkbox(
+                    f"isAnnotation##trig_ia_{i}",
+                    bool(entry.get("isAnnotation", False)),
+                )
+                if ch:
+                    entry["isAnnotation"] = nv
 
-            if imgui.button(f"Remove##trig_rm_{i}"):
-                remove_idx = i
+                if imgui.button(f"Remove##trig_rm_{i}"):
+                    remove_idx = i
 
-            imgui.tree_pop()
+                imgui.tree_pop()
 
-        if remove_idx >= 0:
-            entries.pop(remove_idx)
+            if remove_idx >= 0:
+                entries.pop(remove_idx)
 
-        if imgui.button("+ Add Trigger##trig_add"):
-            entries.append({
-                "localTime": "0.000000",
-                "eventID": -1,
-                "relativeToEndOfClip": False,
-                "acyclic": False,
-                "isAnnotation": False,
-            })
+            if imgui.button("+ Add Trigger##trig_add"):
+                entries.append({
+                    "localTime": "0.000000",
+                    "eventID": -1,
+                    "relativeToEndOfClip": False,
+                    "acyclic": False,
+                    "isAnnotation": False,
+                })
 
-        imgui.unindent(8)
+            imgui.unindent(8)
 
     # -----------------------------------------------------------------------
     # 6. Range array (hkbEventRangeDataArray, type 36)
@@ -781,70 +783,70 @@ class PropertyEditorPanel:
     def _render_range_array(self, node: dict, prop_name: str):
         entries: list = node.setdefault(prop_name, [])
 
-        header_open = imgui.collapsing_header(
+        with expandable_section(
             f"Event Ranges ({len(entries)})##rng_header"
-        )
-        if not header_open:
-            return
+        ) as header_open:
+            if not header_open:
+                return
 
-        imgui.indent(8)
+            imgui.indent(8)
 
-        remove_idx = -1
-        for i, entry in enumerate(entries):
-            entry_open = imgui.tree_node(f"Range [{i}]##rng_{i}")
-            if not entry_open:
-                continue
+            remove_idx = -1
+            for i, entry in enumerate(entries):
+                entry_open = imgui.tree_node(f"Range [{i}]##rng_{i}")
+                if not entry_open:
+                    continue
 
-            # upperBound (float as string)
-            ub = str(entry.get("upperBound", "0.000000"))
-            ch, nv = imgui.input_text(f"upperBound##rng_ub_{i}", ub)
-            if ch:
-                entry["upperBound"] = nv
+                # upperBound (float as string)
+                ub = str(entry.get("upperBound", "0.000000"))
+                ch, nv = imgui.input_text(f"upperBound##rng_ub_{i}", ub)
+                if ch:
+                    entry["upperBound"] = nv
 
-            # eventID
-            eid = int(entry.get("eventID", -1))
-            ch, nv = imgui.input_int(f"eventID##rng_eid_{i}", eid)
-            if ch:
-                entry["eventID"] = nv
-            self._show_event_hint(eid)
+                # eventID
+                eid = int(entry.get("eventID", -1))
+                ch, nv = imgui.input_int(f"eventID##rng_eid_{i}", eid)
+                if ch:
+                    entry["eventID"] = nv
+                self._show_event_hint(eid)
 
-            if self._global_state and self._global_state.events:
-                self._render_inline_event_combo(entry, "eventID",
-                                                f"rng_ecb_{i}")
+                if self._global_state and self._global_state.events:
+                    self._render_inline_event_combo(entry, "eventID",
+                                                    f"rng_ecb_{i}")
 
-            # payloadID
-            pid = int(entry.get("payloadID", -1))
-            ch, nv = imgui.input_int(f"payloadID##rng_pid_{i}", pid)
-            if ch:
-                entry["payloadID"] = nv
-            self._show_payload_hint(pid)
+                # payloadID
+                pid = int(entry.get("payloadID", -1))
+                ch, nv = imgui.input_int(f"payloadID##rng_pid_{i}", pid)
+                if ch:
+                    entry["payloadID"] = nv
+                self._show_payload_hint(pid)
 
-            # eventMode combo
-            em = int(entry.get("eventMode", 0))
-            em = max(0, min(em, len(EVENT_RANGE_MODE_NAMES) - 1))
-            ch, new_em = imgui.combo(
-                f"eventMode##rng_em_{i}", em, EVENT_RANGE_MODE_NAMES
-            )
-            if ch:
-                entry["eventMode"] = new_em
+                # eventMode combo
+                em = int(entry.get("eventMode", 0))
+                em = max(0, min(em, len(EVENT_RANGE_MODE_NAMES) - 1))
+                ch, new_em = imgui.combo(
+                    f"eventMode##rng_em_{i}", em, EVENT_RANGE_MODE_NAMES
+                )
+                if ch:
+                    entry["eventMode"] = new_em
 
-            if imgui.button(f"Remove##rng_rm_{i}"):
-                remove_idx = i
+                if imgui.button(f"Remove##rng_rm_{i}"):
+                    remove_idx = i
 
-            imgui.tree_pop()
+                imgui.tree_pop()
 
-        if remove_idx >= 0:
-            entries.pop(remove_idx)
+            if remove_idx >= 0:
+                entries.pop(remove_idx)
 
-        if imgui.button("+ Add Range##rng_add"):
-            entries.append({
-                "upperBound": "0.000000",
-                "eventID": -1,
-                "payloadID": -1,
-                "eventMode": 0,
-            })
+            if imgui.button("+ Add Range##rng_add"):
+                entries.append({
+                    "upperBound": "0.000000",
+                    "eventID": -1,
+                    "payloadID": -1,
+                    "eventMode": 0,
+                })
 
-        imgui.unindent(8)
+            imgui.unindent(8)
 
     # -----------------------------------------------------------------------
     # 7. Bone indices (hkbBoneIndexArray, type 13)
@@ -853,30 +855,30 @@ class PropertyEditorPanel:
     def _render_bone_indices(self, node: dict, prop_name: str):
         entries: list = node.setdefault(prop_name, [])
 
-        header_open = imgui.collapsing_header(
+        with expandable_section(
             f"Bone Indices ({len(entries)})##bi_header"
-        )
-        if not header_open:
-            return
+        ) as header_open:
+            if not header_open:
+                return
 
-        imgui.indent(8)
+            imgui.indent(8)
 
-        remove_idx = -1
-        for i in range(len(entries)):
-            ch, nv = imgui.input_int(f"[{i}]##bi_{i}", int(entries[i]))
-            if ch:
-                entries[i] = nv
-            imgui.same_line()
-            if imgui.small_button(f"X##bi_rm_{i}"):
-                remove_idx = i
+            remove_idx = -1
+            for i in range(len(entries)):
+                ch, nv = imgui.input_int(f"[{i}]##bi_{i}", int(entries[i]))
+                if ch:
+                    entries[i] = nv
+                imgui.same_line()
+                if imgui.small_button(f"X##bi_rm_{i}"):
+                    remove_idx = i
 
-        if remove_idx >= 0:
-            entries.pop(remove_idx)
+            if remove_idx >= 0:
+                entries.pop(remove_idx)
 
-        if imgui.button("+ Add Bone Index##bi_add"):
-            entries.append(0)
+            if imgui.button("+ Add Bone Index##bi_add"):
+                entries.append(0)
 
-        imgui.unindent(8)
+            imgui.unindent(8)
 
     # -----------------------------------------------------------------------
     # 8. Bone weights (hkbBoneWeightArray, type 14) - float as string
@@ -885,31 +887,31 @@ class PropertyEditorPanel:
     def _render_bone_weights(self, node: dict, prop_name: str):
         entries: list = node.setdefault(prop_name, [])
 
-        header_open = imgui.collapsing_header(
+        with expandable_section(
             f"Bone Weights ({len(entries)})##bw_header"
-        )
-        if not header_open:
-            return
+        ) as header_open:
+            if not header_open:
+                return
 
-        imgui.indent(8)
+            imgui.indent(8)
 
-        remove_idx = -1
-        for i in range(len(entries)):
-            val = str(entries[i])
-            ch, nv = imgui.input_text(f"[{i}]##bw_{i}", val)
-            if ch:
-                entries[i] = nv
-            imgui.same_line()
-            if imgui.small_button(f"X##bw_rm_{i}"):
-                remove_idx = i
+            remove_idx = -1
+            for i in range(len(entries)):
+                val = str(entries[i])
+                ch, nv = imgui.input_text(f"[{i}]##bw_{i}", val)
+                if ch:
+                    entries[i] = nv
+                imgui.same_line()
+                if imgui.small_button(f"X##bw_rm_{i}"):
+                    remove_idx = i
 
-        if remove_idx >= 0:
-            entries.pop(remove_idx)
+            if remove_idx >= 0:
+                entries.pop(remove_idx)
 
-        if imgui.button("+ Add Bone Weight##bw_add"):
-            entries.append("0.000000")
+            if imgui.button("+ Add Bone Weight##bw_add"):
+                entries.append("0.000000")
 
-        imgui.unindent(8)
+            imgui.unindent(8)
 
     # -----------------------------------------------------------------------
     # 9. bIsActiveArray (BSIsActiveModifier, type 16) - fixed 10 bools
@@ -921,19 +923,19 @@ class PropertyEditorPanel:
         while len(entries) < 10:
             entries.append(False)
 
-        header_open = imgui.collapsing_header(
+        with expandable_section(
             f"bIsActive[10]##bia_header"
-        )
-        if not header_open:
-            return
+        ) as header_open:
+            if not header_open:
+                return
 
-        imgui.indent(8)
-        for i in range(10):
-            ch, nv = imgui.checkbox(f"bIsActive[{i}]##bia_{i}",
-                                    bool(entries[i]))
-            if ch:
-                entries[i] = nv
-        imgui.unindent(8)
+            imgui.indent(8)
+            for i in range(10):
+                ch, nv = imgui.checkbox(f"bIsActive[{i}]##bia_{i}",
+                                        bool(entries[i]))
+                if ch:
+                    entries[i] = nv
+            imgui.unindent(8)
 
     # -----------------------------------------------------------------------
     # 10. Fixed-length string arrays (floatVariable, floatValue) - 20 elements
@@ -944,32 +946,32 @@ class PropertyEditorPanel:
         while len(entries) < count:
             entries.append("0")
 
-        header_open = imgui.collapsing_header(
+        with expandable_section(
             f"{prop_name}[{count}]##fsa_{prop_name}_header"
-        )
-        if not header_open:
-            return
+        ) as header_open:
+            if not header_open:
+                return
 
-        imgui.indent(8)
+            imgui.indent(8)
 
-        # Show variable hints for floatVariable entries
-        is_var_ref = prop_name == "floatVariable"
+            # Show variable hints for floatVariable entries
+            is_var_ref = prop_name == "floatVariable"
 
-        for i in range(count):
-            val = str(entries[i])
-            ch, nv = imgui.input_text(f"[{i}]##fsa_{prop_name}_{i}", val)
-            if ch:
-                entries[i] = nv
+            for i in range(count):
+                val = str(entries[i])
+                ch, nv = imgui.input_text(f"[{i}]##fsa_{prop_name}_{i}", val)
+                if ch:
+                    entries[i] = nv
 
-            # For floatVariable, the value is a variable index encoded as str
-            if is_var_ref and self._global_state is not None:
-                try:
-                    var_idx = int(val)
-                    self._show_variable_hint(var_idx)
-                except (ValueError, TypeError):
-                    pass
+                # For floatVariable, the value is a variable index encoded as str
+                if is_var_ref and self._global_state is not None:
+                    try:
+                        var_idx = int(val)
+                        self._show_variable_hint(var_idx)
+                    except (ValueError, TypeError):
+                        pass
 
-        imgui.unindent(8)
+            imgui.unindent(8)
 
     # -----------------------------------------------------------------------
     # 11. Fixed-length int arrays (intVariable, intValue) - 4 elements
@@ -980,26 +982,26 @@ class PropertyEditorPanel:
         while len(entries) < count:
             entries.append(0)
 
-        header_open = imgui.collapsing_header(
+        with expandable_section(
             f"{prop_name}[{count}]##fia_{prop_name}_header"
-        )
-        if not header_open:
-            return
+        ) as header_open:
+            if not header_open:
+                return
 
-        imgui.indent(8)
+            imgui.indent(8)
 
-        is_var_ref = prop_name == "intVariable"
+            is_var_ref = prop_name == "intVariable"
 
-        for i in range(count):
-            ch, nv = imgui.input_int(f"[{i}]##fia_{prop_name}_{i}",
-                                     int(entries[i]))
-            if ch:
-                entries[i] = nv
+            for i in range(count):
+                ch, nv = imgui.input_int(f"[{i}]##fia_{prop_name}_{i}",
+                                         int(entries[i]))
+                if ch:
+                    entries[i] = nv
 
-            if is_var_ref and self._global_state is not None:
-                self._show_variable_hint(int(entries[i]))
+                if is_var_ref and self._global_state is not None:
+                    self._show_variable_hint(int(entries[i]))
 
-        imgui.unindent(8)
+            imgui.unindent(8)
 
     # -----------------------------------------------------------------------
     # Inline event combo (used by sub-editors)

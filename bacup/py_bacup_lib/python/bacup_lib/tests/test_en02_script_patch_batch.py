@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from bacup_lib.workflows.unified import (
+    _augment_fo76_to_fo4_script_skeleton,
     _fo76_to_fo4_script_type,
     _iter_top_level_papyrus_members,
     _merge_script_method_patches,
@@ -17,9 +18,9 @@ from creation_lib.pex.native_runtime import compile_psc
 
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
-OLD_PEX_ROOT = REPO_ROOT / "mods" / "SeventySixOld" / "data" / "Scripts"
-OLD_SOURCE_ROOT = (
-    REPO_ROOT / "mods" / "SeventySixOld" / "Scripts" / "Source" / "User"
+GENERATED_PEX_ROOT = REPO_ROOT / "mods" / "SeventySix" / "data" / "Scripts"
+GENERATED_SOURCE_ROOT = (
+    REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 )
 
 PATCH_CASES = {
@@ -100,8 +101,10 @@ PATCH_CASES = {
 
 MAIN_QUEST_SCRIPT = "Fragments:Quests:QF_EN02_MQ_Us_000293A3"
 MAIN_QUEST_SCENE_STAGES = {
-    1,
     7,
+    8,
+    10,
+    25,
     35,
     40,
     45,
@@ -113,10 +116,11 @@ MAIN_QUEST_SCENE_STAGES = {
     160,
     200,
     260,
+    267,
     270,
     280,
     300,
-    310,
+    315,
     330,
     400,
 }
@@ -166,7 +170,7 @@ def _fo4_base_source() -> Path | None:
 
 
 def _merged_source(script_name: str) -> str:
-    pex_path = OLD_PEX_ROOT / _script_relative_path(script_name, ".pex")
+    pex_path = GENERATED_PEX_ROOT / _script_relative_path(script_name, ".pex")
     assert pex_path.is_file(), pex_path
     skeleton = decompile_pex(
         pex_path,
@@ -177,7 +181,8 @@ def _merged_source(script_name: str) -> str:
     )
     patch = _script_patch_source(script_name)
     assert patch is not None
-    return _merge_script_method_patches(skeleton, patch)
+    augmented = _augment_fo76_to_fo4_script_skeleton(script_name, skeleton)
+    return _merge_script_method_patches(augmented, patch)
 
 
 @pytest.fixture(scope="module")
@@ -223,13 +228,30 @@ def test_en02_main_quest_patch_restores_scene_and_membership_stages():
     assert "playerRef.AddToFaction(EnclaveFaction)" in patch
 
 
-def test_en01_completion_directly_starts_en02_when_story_nodes_are_absent():
+def test_orbital_strike_counter_declaration_is_restored_before_patch_merge():
+    skeleton = "Scriptname EN02_OrbitalStrikeMarkerScript Extends ObjectReference\n"
+    augmented = _augment_fo76_to_fo4_script_skeleton(
+        "EN02_OrbitalStrikeMarkerScript", skeleton
+    )
+
+    assert augmented.count("Int remainingDelayCount") == 1
+    assert (
+        _augment_fo76_to_fo4_script_skeleton(
+            "EN02_OrbitalStrikeMarkerScript", augmented
+        )
+        == augmented
+    )
+
+
+def test_en01_completion_sends_bound_en02_story_event_with_player_subject():
     patch = _script_patch_source(EN01_START_SCRIPT)
     assert patch is not None
-    assert "EN02_QuestStartKeyword.SendStoryEvent" in patch
-    assert 'Game.GetFormFromFile(0x000293A3, "SeventySix.esm")' in patch
-    assert "en02MainQuest.Start()" in patch
-    assert "en02MainQuest.SetStage(5)" in patch
+    assert (
+        "EN02_QuestStartKeyword.SendStoryEvent(None, playerRef, playerRef)" in patch
+    )
+    assert 'Game.GetFormFromFile(0x000293A3, "SeventySix.esm")' not in patch
+    assert "en02MainQuest.Start()" not in patch
+    assert "en02MainQuest.SetStage" not in patch
 
 
 @pytest.mark.parametrize("script_name", ALL_PATCH_CASES)
@@ -244,7 +266,7 @@ def test_en02_merged_patch_native_compiles_for_fo4(
         _merged_source(script_name),
         imports=[
             str(merged_import_root),
-            str(OLD_SOURCE_ROOT),
+            str(GENERATED_SOURCE_ROOT),
             str(base_source),
         ],
         game="fo4",

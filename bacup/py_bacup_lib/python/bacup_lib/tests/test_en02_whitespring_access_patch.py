@@ -17,10 +17,10 @@ from creation_lib.pex.native_runtime import compile_psc
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 SCRIPT_NAME = "Fragments:Quests:QF_EN02_MQ_Us_000293A3"
-OLD_PEX = (
+GENERATED_PEX = (
     REPO_ROOT
     / "mods"
-    / "SeventySixOld"
+    / "SeventySix"
     / "data"
     / "Scripts"
     / _script_relative_path(SCRIPT_NAME, ".pex")
@@ -51,7 +51,7 @@ def _fo4_base_source() -> Path | None:
 
 def _merged_source() -> str:
     skeleton = decompile_pex(
-        OLD_PEX,
+        GENERATED_PEX,
         type_adapter=_fo76_to_fo4_script_type,
         drop_script_const=True,
         skip_internal_functions=True,

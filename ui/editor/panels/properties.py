@@ -13,6 +13,8 @@ import traceback
 
 from imgui_bundle import imgui
 
+from creation_lib.ui.widgets.modern import expandable_section
+
 from creation_lib.nif.nif_bsx_flags import BSX_FLAG_DEFS
 from .collision_info import (
     find_physics_system_shape,
@@ -334,12 +336,20 @@ class PropertiesPanel:
                 if first > 0:
                     imgui.dummy(imgui.ImVec2(0, first * item_height))
                 for i in range(first, last):
-                    self._draw_field(block, f"{name}[{i}]", value[i], None, schema)
+                    self._draw_field(block, f"{name}[{i}]", value[i], fdef, schema)
                 # Spacer for items below visible range
                 remaining = len(value) - last
                 if remaining > 0:
                     imgui.dummy(imgui.ImVec2(0, remaining * item_height))
                 imgui.end_child()
+                imgui.tree_pop()
+            return
+
+        # Arrays use the field definition as their element type.
+        if isinstance(value, list):
+            if imgui.tree_node(f"{name} [{len(value)}]"):
+                for i, item in enumerate(value):
+                    self._draw_field(block, f"{name}[{i}]", item, fdef, schema)
                 imgui.tree_pop()
             return
 
@@ -464,14 +474,6 @@ class PropertiesPanel:
                 changed, new_val = imgui.input_text(name, value)
                 if changed:
                     self._set_field(block, name, value, new_val)
-            return
-
-        # Small lists (e.g., short arrays)
-        if isinstance(value, list) and len(value) <= 20:
-            if imgui.tree_node(f"{name} [{len(value)}]"):
-                for i, item in enumerate(value):
-                    self._draw_field(block, f"{name}[{i}]", item, None, schema)
-                imgui.tree_pop()
             return
 
         # Fallback: display as text (truncated)
@@ -812,8 +814,19 @@ class PropertiesPanel:
     def _draw_struct(self, block, name: str, value: dict, fdef, schema):
         """Draw a generic struct as expandable tree."""
         if imgui.tree_node(f"{name} ({len(value)} fields)"):
+            nested_fdefs = {}
+            if fdef is not None and schema is not None:
+                from creation_lib.nif.schema import build_field_def_map
+
+                nested_fdefs = build_field_def_map(schema, fdef.type)
             for k, v in value.items():
-                self._draw_field(block, f"{name}.{k}", v, None, schema)
+                self._draw_field(
+                    block,
+                    f"{name}.{k}",
+                    v,
+                    nested_fdefs.get(k),
+                    schema,
+                )
             imgui.tree_pop()
 
     def _draw_vertex_table(self, block, name: str, value: list):
@@ -1003,75 +1016,75 @@ class PropertiesPanel:
 
     def _draw_transform_group(self, block):
         """Group Translation + Rotation + Scale into a collapsible Transform section."""
-        if imgui.tree_node_ex("Transform", imgui.TreeNodeFlags_.default_open.value):
-            trans = block.get_field("Translation") or {}
-            if isinstance(trans, dict):
-                self._draw_vector3(block, "Translation", trans)
+        with expandable_section("Transform", imgui.TreeNodeFlags_.default_open.value) as expanded:
+            if expanded:
+                trans = block.get_field("Translation") or {}
+                if isinstance(trans, dict):
+                    self._draw_vector3(block, "Translation", trans)
 
-            rot = block.get_field("Rotation") or {}
-            if isinstance(rot, dict) and _is_matrix33(rot):
-                self._draw_matrix33(block, "Rotation", rot)
+                rot = block.get_field("Rotation") or {}
+                if isinstance(rot, dict) and _is_matrix33(rot):
+                    self._draw_matrix33(block, "Rotation", rot)
 
-            scale = block.get_field("Scale")
-            if scale is not None:
-                changed, new_val = imgui.slider_float(
-                    "Scale", float(scale), 0.0, 10.0, "%.4f"
-                )
-                if changed:
-                    self._set_field_drag(block, "Scale", scale, new_val)
-                self._check_drag_release(block, "Scale", new_val if changed else scale)
-
-            # Reset Transform button
-            if imgui.small_button("Reset Transform"):
-                from creation_lib.nif.actions import SetFieldAction, CompositeAction
-
-                nif = self.app.nif_file
-                cmds = []
-                old_trans = block.get_field("Translation")
-                old_rot = block.get_field("Rotation")
-                old_scale = block.get_field("Scale")
-                identity_trans = {"x": 0.0, "y": 0.0, "z": 0.0}
-                identity_rot = {
-                    "m11": 1.0,
-                    "m12": 0.0,
-                    "m13": 0.0,
-                    "m21": 0.0,
-                    "m22": 1.0,
-                    "m23": 0.0,
-                    "m31": 0.0,
-                    "m32": 0.0,
-                    "m33": 1.0,
-                }
-                cmds.append(
-                    SetFieldAction(
-                        block_id=block.block_id,
-                        field_name="Translation",
-                        old_value=old_trans,
-                        new_value=identity_trans,
+                scale = block.get_field("Scale")
+                if scale is not None:
+                    changed, new_val = imgui.slider_float(
+                        "Scale", float(scale), 0.0, 10.0, "%.4f"
                     )
-                )
-                cmds.append(
-                    SetFieldAction(
-                        block_id=block.block_id,
-                        field_name="Rotation",
-                        old_value=old_rot,
-                        new_value=identity_rot,
-                    )
-                )
-                cmds.append(
-                    SetFieldAction(
-                        block_id=block.block_id,
-                        field_name="Scale",
-                        old_value=old_scale,
-                        new_value=1.0,
-                    )
-                )
-                comp = CompositeAction(children=cmds, _description="Reset Transform")
-                comp.execute(nif)
-                self.app.undo_manager.push(self.app.registry.active_id, comp)
-                self._mark_dirty()
+                    if changed:
+                        self._set_field_drag(block, "Scale", scale, new_val)
+                    self._check_drag_release(block, "Scale", new_val if changed else scale)
 
-            imgui.tree_pop()
+                # Reset Transform button
+                if imgui.small_button("Reset Transform"):
+                    from creation_lib.nif.actions import SetFieldAction, CompositeAction
+
+                    nif = self.app.nif_file
+                    cmds = []
+                    old_trans = block.get_field("Translation")
+                    old_rot = block.get_field("Rotation")
+                    old_scale = block.get_field("Scale")
+                    identity_trans = {"x": 0.0, "y": 0.0, "z": 0.0}
+                    identity_rot = {
+                        "m11": 1.0,
+                        "m12": 0.0,
+                        "m13": 0.0,
+                        "m21": 0.0,
+                        "m22": 1.0,
+                        "m23": 0.0,
+                        "m31": 0.0,
+                        "m32": 0.0,
+                        "m33": 1.0,
+                    }
+                    cmds.append(
+                        SetFieldAction(
+                            block_id=block.block_id,
+                            field_name="Translation",
+                            old_value=old_trans,
+                            new_value=identity_trans,
+                        )
+                    )
+                    cmds.append(
+                        SetFieldAction(
+                            block_id=block.block_id,
+                            field_name="Rotation",
+                            old_value=old_rot,
+                            new_value=identity_rot,
+                        )
+                    )
+                    cmds.append(
+                        SetFieldAction(
+                            block_id=block.block_id,
+                            field_name="Scale",
+                            old_value=old_scale,
+                            new_value=1.0,
+                        )
+                    )
+                    comp = CompositeAction(children=cmds, _description="Reset Transform")
+                    comp.execute(nif)
+                    self.app.undo_manager.push(self.app.registry.active_id, comp)
+                    self._mark_dirty()
+
 
     # -------------------------------------------------------------------
     # Path fields (texture paths, behavior paths, etc.)
@@ -1262,6 +1275,7 @@ def _is_matrix33(d: dict) -> bool:
 
 
 def _looks_like_ref(name: str) -> bool:
+    leaf_name = name.rsplit(".", 1)[-1].split("[", 1)[0]
     ref_names = {
         "Shader Property",
         "Alpha Property",
@@ -1277,7 +1291,7 @@ def _looks_like_ref(name: str) -> bool:
         "Root Node",
         "Manager",
     }
-    return name in ref_names or "Property" in name or "Ref" in name
+    return leaf_name in ref_names or "Property" in leaf_name or "Ref" in leaf_name
 
 
 def _ensure_color3(value) -> dict:

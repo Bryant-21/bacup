@@ -1,6 +1,7 @@
 """Conversion project panel for B.A.C.U.P."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
@@ -10,6 +11,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from imgui_bundle import imgui
+
+from creation_lib.ui.widgets.forms import (
+    begin_form, end_form, form_row_label as _form_row_label, draw_combo_field, draw_path_row,
+)
+from creation_lib.ui.widgets.modern import (
+    expandable_section,
+    action_button, heading, prepare_dialog, ring_stat, scaled, section, semantic_color, status_indicator, toggle,
+)
+from creation_lib.ui.widgets.images import image_in_box
 
 from creation_lib.build.archive_plan import discover_mod_archives
 from creation_lib.build.packer import pack_mod
@@ -22,11 +32,16 @@ from bacup_lib.input_preflight import (
 from bacup_lib.install_debug import audit_archive_ini, repair_archive_ini
 from bacup_lib.models import PhaseProgress
 from bacup_lib.regen_pipeline import RegenOptions, RegenPaths
+from bacup_lib.run_diagnostics import (
+    create_run_diagnostics_dir,
+    full_logging_scope,
+)
 from bacup_lib.runner import ConversionRunner, emit_runner_status
 from bacup_lib.source_pairs import (
     DEFAULT_PAIR_ID,
     SOURCE_PAIRS,
     get_pair,
+    required_exclude_signatures,
 )
 from bacup_lib.upgrade_manifest import (
     bundled_upgrade_manifest_path,
@@ -40,9 +55,15 @@ from bacup_lib.lod_settings import (
     PROFILE_HIGH_QUALITY,
     PROFILE_LABELS,
     PROFILE_PERFORMANCE,
+    available_profiles,
     load_profile_settings,
 )
-from ui.toolkit.app_paths import get_code_root, get_exe_dir, get_resource_dir
+from ui.toolkit.app_paths import (
+    get_code_root,
+    get_exe_dir,
+    get_logs_dir,
+    get_resource_dir,
+)
 from bacup_ui.setup import (
     _format_gb,
     clear_project_owned_extractions,
@@ -61,36 +82,18 @@ from bacup_ui.storage_cleanup import (
     windows_temp_dir,
 )
 from bacup_ui.conversion.widgets.runner_overlay import draw_runner_overlay
+from bacup_ui.conversion.progress import ProgressEstimate, estimated_phase_weights
+from bacup_ui.conversion.music import (
+    ConversionMusicPlayer,
+    format_music_time,
+    prepare_theme_tracks,
+    prioritize_music_tracks,
+)
 from creation_lib.core.fo4_version import detect_ba2_target
-from ui.toolkit.steam_install import SteamInstallResult, validate_steam_install_for_game
+from creation_lib.core.store_install import StoreInstallResult, validate_store_install_for_game
 
 _log = logging.getLogger("toolkit.appalachia")
 _NS = "##appalachia"
-_COL_OK = imgui.ImVec4(0.40, 0.85, 0.40, 1.0)     # verified / success
-_COL_ERR = imgui.ImVec4(0.95, 0.40, 0.40, 1.0)    # failed / missing
-_COL_WARN = imgui.ImVec4(1.00, 0.85, 0.30, 1.0)   # warnings
-_COL_ACCENT = imgui.ImVec4(0.55, 0.78, 1.00, 1.0)  # section / version accents
-_PHASE_ROWS = [
-    ("prepare_conversion", "Prepare Conversion"),
-    ("translate_records", "Translate Records"),
-    ("convert_terrain", "Convert Terrain"),
-    ("convert_terrain_assets", "Convert Terrain Assets"),
-    ("convert_nifs", "Convert NIFs"),
-    ("convert_textures", "Convert Textures"),
-    ("convert_materials", "Convert Materials"),
-    ("convert_havok", "Convert Havok"),
-    ("synthesize_drivers", "Synthesize Drivers"),
-    ("convert_animations", "Convert Animations"),
-    ("copy_sounds", "Copy Sounds"),
-    ("scaffold_mod", "Scaffold Mod"),
-    ("build_esp", "Build ESP"),
-    ("regenerate_modt", "Regenerate MODT"),
-    ("rebuild_cell_offsets", "Rebuild Cell Offsets"),
-    ("generate_anim_text_data", "Generate AnimTextData"),
-    ("lodgen", "Generate LOD"),
-    ("pack", "Pack BA2"),
-    ("deploy", "Deploy Mod"),
-]
 _PHASE_ALIASES = {
     "copy_sounds": ("copy_sounds", "Copy Sounds"),
     "convert_animations": ("convert_animations", "Convert Animations"),
@@ -101,10 +104,14 @@ _PHASE_ALIASES = {
     "convert_materials_v2": ("convert_materials", "Convert Materials"),
     "convert_nifs": ("convert_nifs", "Convert NIFs"),
     "convert_nifs_v2": ("convert_nifs", "Convert NIFs"),
+    "convert_gamebryo_nifs": ("convert_nifs", "Convert NIFs"),
+    "convert_skeleton": ("convert_skeleton", "Convert Skeleton"),
+    "copy_materialized_facegen": ("copy_materialized_facegen", "Copy FaceGen"),
     "convert_terrain": ("convert_terrain", "Convert Terrain"),
     "convert_textures": ("convert_textures", "Convert Textures"),
     "convert_textures_v2": ("convert_textures", "Convert Textures"),
     "deploy_mod": ("deploy", "Deploy Mod"),
+    "finalize_plugin_records": ("finalize_plugin_records", "Regenerate MODT / Finalize Plugin"),
     "generate_lod": ("lodgen", "Generate LOD"),
     "generate_animtextdata": ("generate_anim_text_data", "Generate AnimTextData"),
     "lod": ("lodgen", "Generate LOD"),
@@ -119,23 +126,58 @@ _PHASE_ALIASES = {
     "translate_records_rust": ("translate_records", "Translate Records"),
 }
 _LOD_PROFILE_VALUES = [PROFILE_HIGH_QUALITY, PROFILE_PERFORMANCE]
-_LOD_PROFILE_LABELS = [PROFILE_LABELS[p] for p in _LOD_PROFILE_VALUES]
-_DEFAULT_ARCHIVE_MAX_GB = 4
+
+
+def _lod_profile_values(pair_id: str) -> list[str]:
+    shipped = available_profiles(pair_id)
+    return [p for p in _LOD_PROFILE_VALUES if p in shipped]
+
+
+def _default_lod_mode(pair_id: str) -> str:
+    # hybrid-atlas consumes FO76 BTO tiles; every other pair generates from
+    # records, matching the mode regen.py forces for cross-game pairs.
+    return "hybrid-atlas" if pair_id == DEFAULT_PAIR_ID else "generate"
+_DEFAULT_ARCHIVE_MAX_GB = 8
 _ARCHIVE_MIN_GB = 1
 _ARCHIVE_MAX_GB = 16
 _APPALACHIA_ARCHIVE_MAX_BYTES = _DEFAULT_ARCHIVE_MAX_GB * 1024**3
+_UNLIMITED_ARCHIVE_MAX_BYTES = (1 << 63) - 1
 _ARCHIVE_MAX_GB_KEY = "archive_max_gb"
+_DEPLOY_FORMAT_KEY = "deploy_format"
+_DEPLOY_FORMAT_MIGRATION_KEY = "deploy_format_standard_default_v1"
+_DEFAULT_DEPLOY_FORMAT = "standard"
+_DEPLOY_FORMAT_VALUES = ["expanded", "standard", "loose"]
+_DEPLOY_MODE_VALUES = ["packed", "loose"]
+_DEPLOY_MODE_LABELS = ["Packed BA2", "Loose files"]
+_ARCHIVE_LAYOUT_VALUES = ["standard", "expanded"]
+_ARCHIVE_LAYOUT_LABELS = ["Standard (recommended)", "Expanded"]
 _BA2_TARGET_KEY = "ba2_target"
+_DEFAULT_BA2_TARGET = "og"
 _BA2_TARGET_VALUES = ["auto", "og", "nextgen"]
 _BA2_TARGET_LABELS = ["Auto (detect FO4)", "Force OG (v1)", "Force Next-Gen (v8)"]
+_BA2_COMPRESSION_KEY = "ba2_compression"
+_BA2_COMPRESSION_VALUES = [None, 1, 6, 9]
+_BA2_COMPRESSION_LABELS = [
+    "Default (recommended)",
+    "Fast (level 1)",
+    "Balanced (level 6)",
+    "High (level 9)",
+]
 _ATLAS_MIP_FLOODING_KEY = "atlas_mip_flooding"
 _TEXTURE_LANDSCAPE_MIP_FLOODING_KEY = "texture_landscape_mip_flooding"
 _GENERATE_PRECOMBINES_KEY = "generate_precombines"
+_FULL_LOGGING_KEY = "full_logging"
+_CONVERSION_MUSIC_MUTED_KEY = "conversion_music_muted"
+_CONVERSION_MUSIC_VOLUME_KEY = "conversion_music_volume"
+_DEFAULT_CONVERSION_MUSIC_VOLUME = 0.12
 _WORKERS_KEY = "workers"
 _LOD_PROFILE_KEY = "lod_profile"
 _INSTALL_LOCATION_KEY = "install_location"
 _INSTALL_LOCATION_VALUES = ["game", "mo2", "vortex", "none"]
 _INSTALL_LOCATION_LABELS = ["Game Dir", "MO2", "Vortex", "None"]
+_FO76_SOURCE_KEY = "fo76_source"
+_FO76_SOURCE_VALUES = ["retail", "playtest"]
+_FO76_SOURCE_LABELS = ["Fallout 76", "Fallout 76 Public Test Server"]
 _RECOVERY_PHASE_KEY = "recovery_phase"
 _RECOVERY_PHASE_VALUES = [
     "prepare",
@@ -189,14 +231,14 @@ _RECOVERY_FULL_REBUILD_PHASES = {
 }
 _COMPANION_MOD_NAME = "B21_TalesFromAppalachia"
 _COMPANION_ROOT_FILES = (f"{_COMPANION_MOD_NAME}.esp",)
-_COMPANION_DEPLOY_DIRS = ("PrismaUI_F4",)
-_COMPANION_EXCLUDED_SUFFIXES = {".pdb"}
-_STEAM_INSTALL_LABELS = {
+_COMPANION_DEPLOY_DIRS = ("PrismaUI_F4", "F4SE")
+_STORE_INSTALL_LABELS = {
     "fo4": "FO4",
     "fo76": "FO76",
     "fnv": "FNV",
     "fo3": "FO3",
     "skyrimse": "Skyrim SE",
+    "starfield": "Starfield",
 }
 _PROJECT_SETTINGS_KEY = "conversion_projects"
 _WORKSPACE_SETTINGS_ID = "appalachia"
@@ -204,11 +246,19 @@ _PROJECT_BY_PAIR = {
     "fo76:fo4": ("appalachia", "Tales From Appalachia"),
     "fnvfo3:fo4": ("wasteland", "Legends of the Wasteland"),
     "skyrimse:fo4": ("north", "Northern Lands"),
+    "starfield:fo4": ("stars", "To The Stars"),
 }
 _GIB = 1024**3
 _FO76_INSTALL_REFERENCE_BYTES = 180 * _GIB
 _LOOSE_WORKSPACE_PEAK_BYTES = 120 * _GIB
 _PACKED_MOD_PEAK_BYTES = 60 * _GIB
+# Reference measurements and headroom are recorded in bacup/docs/ui-modernization.md.
+_CONVERSION_SPACE_ESTIMATES = {
+    "fo76:fo4": (_LOOSE_WORKSPACE_PEAK_BYTES, _PACKED_MOD_PEAK_BYTES),
+    "fnvfo3:fo4": (25 * _GIB, 10 * _GIB),
+    "skyrimse:fo4": (25 * _GIB, 15 * _GIB),
+    "starfield:fo4": (75 * _GIB, 45 * _GIB),
+}
 _DISK_SPACE_MIN_HEADROOM_BYTES = 20 * _GIB
 
 
@@ -380,6 +430,16 @@ def _recovery_phase(value) -> str:
     return phase if phase in _RECOVERY_PHASE_VALUES else "lodgen"
 
 
+def _format_duration(seconds: float) -> str:
+    minutes, seconds = divmod(round(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m {seconds}s"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
 def _pick_folder(title: str, default_path: str = "") -> str | None:
     try:
         from creation_lib.ui.widgets.pick_folder import pick_folder
@@ -436,16 +496,43 @@ class RegenPanel:
             workspace_settings.get("mo2_use_profile_ini", True)
         )
         self.add_archives_to_ini = True
+        self.fo76_source = str(
+            workspace_settings.get(_FO76_SOURCE_KEY, "retail") or "retail"
+        ).strip().lower()
+        if self.fo76_source not in _FO76_SOURCE_VALUES:
+            self.fo76_source = "retail"
+        if not self._fo76_playtest_root():
+            self.fo76_source = "retail"
         self._install_audit = None
         self._install_audit_error = None
         self.archive_max_gb = _archive_max_gb(
             workspace_settings.get(_ARCHIVE_MAX_GB_KEY, _DEFAULT_ARCHIVE_MAX_GB)
         )
+        self.deploy_format = str(
+            workspace_settings.get(_DEPLOY_FORMAT_KEY, _DEFAULT_DEPLOY_FORMAT)
+        ).strip().lower()
+        if self.deploy_format not in _DEPLOY_FORMAT_VALUES:
+            self.deploy_format = _DEFAULT_DEPLOY_FORMAT
+        if not bool(workspace_settings.get(_DEPLOY_FORMAT_MIGRATION_KEY, False)):
+            if self.deploy_format == "expanded":
+                self.deploy_format = _DEFAULT_DEPLOY_FORMAT
+            self._set_workspace_settings(
+                {
+                    _DEPLOY_FORMAT_KEY: self.deploy_format,
+                    _DEPLOY_FORMAT_MIGRATION_KEY: True,
+                }
+            )
         self.ba2_target = str(
-            workspace_settings.get(_BA2_TARGET_KEY, "auto")
+            workspace_settings.get(_BA2_TARGET_KEY, _DEFAULT_BA2_TARGET)
         ).strip().lower()
         if self.ba2_target not in _BA2_TARGET_VALUES:
-            self.ba2_target = "auto"
+            self.ba2_target = _DEFAULT_BA2_TARGET
+        saved_compression = workspace_settings.get(_BA2_COMPRESSION_KEY)
+        self.ba2_compression_level = (
+            saved_compression
+            if saved_compression in _BA2_COMPRESSION_VALUES
+            else None
+        )
         self._ba2_detect_cache: tuple[str, tuple] | None = None
         self._preflight_report = None
         self._preflight_cache: tuple[str, object] | None = None
@@ -457,7 +544,7 @@ class RegenPanel:
             if isinstance(saved_workers, int)
             else min(self._worker_rec.recommended, max_workers)
         )
-        self.lod_mode = "hybrid-atlas"
+        self.lod_mode = _default_lod_mode(self.pair_id)
         self.lod_profile = str(
             workspace_settings.get(_LOD_PROFILE_KEY, PROFILE_HIGH_QUALITY)
         )
@@ -469,6 +556,23 @@ class RegenPanel:
         self.texture_landscape_mip_flooding = bool(
             workspace_settings.get(_TEXTURE_LANDSCAPE_MIP_FLOODING_KEY, False)
         )
+        self.full_logging = bool(workspace_settings.get(_FULL_LOGGING_KEY, False))
+        self.music_muted = bool(
+            workspace_settings.get(_CONVERSION_MUSIC_MUTED_KEY, True)
+        )
+        try:
+            configured_music_volume = float(
+                workspace_settings.get(
+                    _CONVERSION_MUSIC_VOLUME_KEY,
+                    _DEFAULT_CONVERSION_MUSIC_VOLUME,
+                )
+            )
+        except (TypeError, ValueError):
+            configured_music_volume = _DEFAULT_CONVERSION_MUSIC_VOLUME
+        self.music_volume = max(0.0, min(configured_music_volume, 1.0))
+        self._music_player = ConversionMusicPlayer(volume=self.music_volume)
+        self._conversion_music_session_active = False
+        self._music_missing_logged = False
         # Experimental precombine generation — default off (see
         # models.PhaseSelection.generate_precombines).
         self.generate_precombines = bool(
@@ -482,6 +586,7 @@ class RegenPanel:
         self._snam_cache: tuple[tuple, str] | None = None
         self._phases: list[dict] = []
         self._runner_status = "Starting conversion"
+        self._reset_progress()
         self._summary: dict | None = None
         self._completion: dict | None = None
         self._disk_usage_cache: tuple[float, dict[str, int]] | None = None
@@ -505,13 +610,18 @@ class RegenPanel:
         self._cleanup_error: str | None = None
         self._admin_restart_error: str | None = None
         self._is_admin = is_running_as_admin()
-        self._steam_install_cache: dict[str, tuple[str, SteamInstallResult]] = {}
-        self._status_log_frac = 0.30
+        self._store_install_cache: dict[str, tuple[str, StoreInstallResult]] = {}
+        self._status_log_frac = 0.44
         self.upgrade = False
         self._upgrade_user_toggled = False
 
     def _settings(self):
         return self._workspace._toolkit_settings
+
+    def _fo76_playtest_root(self) -> str:
+        return str(
+            self._settings().get_game_paths("fo76").get("pts_root_dir", "") or ""
+        ).strip()
 
     def _pair(self):
         pair_id = getattr(self, "fixed_pair_id", None) or getattr(
@@ -584,6 +694,127 @@ class RegenPanel:
             projects[self.project_id] = project_settings
             set_workspace(_WORKSPACE_SETTINGS_ID, {_PROJECT_SETTINGS_KEY: projects})
 
+    def _music_dir_groups_for_game(
+        self,
+        game_id: str,
+    ) -> tuple[tuple[str, tuple[Path, ...]], ...]:
+        game_paths = self._settings().get_game_paths(game_id)
+        extracted_dir = str(game_paths.get("extracted_dir", "") or "")
+        roots: list[Path] = []
+        if extracted_dir:
+            roots.append(Path(extracted_dir))
+        for root in (get_exe_dir(), get_code_root()):
+            roots.append(root / "extracted" / game_id)
+        if game_id == "fo76":
+            if extracted_dir:
+                roots.append(Path(extracted_dir).parent / "fo76sound")
+            for root in (get_exe_dir(), get_code_root()):
+                roots.append(root / "extracted" / "fo76sound")
+        unique_roots = tuple(dict.fromkeys(roots))
+        return (
+            (
+                "special",
+                tuple(root / "music" / "special" for root in unique_roots),
+            ),
+            (
+                "radio_licensed",
+                tuple(
+                    root / "sound" / "songs" / "radio" / "licensed"
+                    for root in unique_roots
+                ),
+            ),
+            (
+                "radio",
+                tuple(
+                    root / "sound" / "fx" / "mus" / "radio"
+                    for root in unique_roots
+                ),
+            ),
+        )
+
+    def _main_title_tracks_for_game(self, game_id: str) -> tuple[Path, ...]:
+        root_dir = str(
+            self._settings().get_game_paths(game_id).get("root_dir", "") or ""
+        )
+        if not root_dir:
+            return ()
+        main_title = Path(root_dir) / "MainTitle.wav"
+        return (main_title,) if main_title.is_file() else ()
+
+    def _conversion_music_tracks(self) -> tuple[Path, ...]:
+        pair = self._pair()
+        source_games = [pair.source_game]
+        if pair.merge is not None and pair.merge.grafted_game not in source_games:
+            source_games.append(pair.merge.grafted_game)
+        tracks: list[Path] = []
+        cache_root = get_exe_dir() / "cache" / "conversion" / "music"
+        for game_id in source_games:
+            tracks.extend(self._main_title_tracks_for_game(game_id))
+            for group_name, theme_dirs in self._music_dir_groups_for_game(game_id):
+                tracks.extend(
+                    prepare_theme_tracks(
+                        theme_dirs,
+                        cache_root / game_id / group_name,
+                    )
+                )
+        return prioritize_music_tracks(tracks)
+
+    def _sync_conversion_music(self) -> None:
+        player = getattr(self, "_music_player", None)
+        if player is None:
+            player = ConversionMusicPlayer(
+                volume=getattr(
+                    self,
+                    "music_volume",
+                    _DEFAULT_CONVERSION_MUSIC_VOLUME,
+                )
+            )
+            self._music_player = player
+        active = bool(getattr(self, "_conversion_music_session_active", False))
+        muted = bool(getattr(self, "music_muted", True))
+        if not active or muted:
+            player.stop()
+            return
+        try:
+            tracks = self._conversion_music_tracks()
+        except Exception as exc:
+            _log.warning("Unable to discover conversion music: %s", exc)
+            return
+        if not tracks:
+            if not getattr(self, "_music_missing_logged", False):
+                _log.warning(
+                    "No conversion themes were found for %s",
+                    self._pair().source_game,
+                )
+                self._music_missing_logged = True
+            return
+        self._music_missing_logged = False
+        player.start(tracks)
+
+    def _set_music_muted(self, muted: bool) -> None:
+        self.music_muted = bool(muted)
+        self._set_workspace_settings(
+            {_CONVERSION_MUSIC_MUTED_KEY: self.music_muted}
+        )
+        self._sync_conversion_music()
+
+    def _set_music_volume(self, volume: float) -> None:
+        self.music_volume = max(0.0, min(float(volume), 1.0))
+        self._music_player.set_volume(self.music_volume)
+        self._set_workspace_settings(
+            {_CONVERSION_MUSIC_VOLUME_KEY: self.music_volume}
+        )
+
+    def _begin_conversion_music_session(self) -> None:
+        self._conversion_music_session_active = True
+        self._sync_conversion_music()
+
+    def _end_conversion_music_session(self) -> None:
+        self._conversion_music_session_active = False
+        player = getattr(self, "_music_player", None)
+        if player is not None:
+            player.stop()
+
     @staticmethod
     def _phase_number(phase: dict) -> int:
         try:
@@ -593,6 +824,8 @@ class RegenPanel:
 
     @staticmethod
     def _phase_key_and_label(phase: dict) -> tuple[str, str]:
+        if phase.get("ui_key"):
+            return str(phase["ui_key"]), str(phase.get("phase_name") or phase["ui_key"])
         raw_name = phase.get("phase_name") or phase.get("phase") or ""
         slug = _phase_slug(raw_name)
         if slug in _PHASE_ALIASES:
@@ -612,9 +845,11 @@ class RegenPanel:
 
     @classmethod
     def _phase_rows(cls, phases: list[dict]) -> list[tuple[str, str]]:
-        rows = list(_PHASE_ROWS)
-        seen = {key for key, _label in rows}
+        rows = []
+        seen = set()
         for phase in phases:
+            if phase.get("status", "pending") in {"pending", "skipped"}:
+                continue
             key, label = cls._phase_key_and_label(phase)
             if key in seen:
                 continue
@@ -622,65 +857,32 @@ class RegenPanel:
             seen.add(key)
         return rows
 
-    @staticmethod
-    def _phase_item_fraction(phase: dict) -> float:
-        if phase.get("status") == "completed":
-            return 1.0
-        try:
-            total = int(phase.get("total_items", 0) or 0)
-            completed = int(phase.get("completed_items", 0) or 0)
-        except (TypeError, ValueError):
-            return 0.0
-        if total <= 0:
-            return 0.0
-        return max(0.0, min(completed / total, 1.0))
-
-    @classmethod
-    def _runner_progress(
-        cls,
-        phases: list[dict],
-        phase_rows: list[tuple[str, str]],
-        status_message: str = "",
-    ) -> tuple[float, str]:
-        total_phases = max(len(phase_rows), 1)
-        row_index = {key: index for index, (key, _label) in enumerate(phase_rows)}
-        active: dict | None = None
-        completed_keys: set[str] = set()
-        for phase in phases:
-            key, _label = cls._phase_key_and_label(phase)
-            status = phase.get("status", "pending")
-            if status == "completed":
-                completed_keys.add(key)
-            elif status == "running":
-                active = phase
-
-        if active is not None:
-            active_key, active_label = cls._phase_key_and_label(active)
-            progress_slots = float(row_index.get(active_key, len(phase_rows) - 1))
-            progress_slots += cls._phase_item_fraction(active)
-            phase_name = active_label
-            current_item = str(active.get("current_item", "") or "")
-            if current_item:
-                item_label = (
-                    os.path.basename(current_item)
-                    if os.path.sep in current_item or "/" in current_item
-                    else current_item
-                )
-                message = f"{phase_name}: {item_label}"
-            else:
-                message = str(phase_name)
-        else:
-            progress_slots = float(
-                sum(1 for key, _label in phase_rows if key in completed_keys)
+    def _reset_progress(self, start_phase: str = "prepare") -> None:
+        self._phase_scroll_frames = 0
+        self._progress_estimate = ProgressEstimate(
+            estimated_phase_weights(
+                self._pair().pair_id,
+                lod_mode=self.lod_mode,
+                packed=self.deploy_format != "loose",
+                deploy=self.deploy and self.install_location != "none",
+                precombines=getattr(self, "generate_precombines", False),
+                start_phase=start_phase,
             )
-            message = (
-                "Starting conversion"
-                if not completed_keys
-                else status_message or "Completing post-conversion work"
-            )
+        )
+        self._progress_succeeded = False
 
-        fraction = max(0.0, min(progress_slots / total_phases, 1.0))
-        return fraction, message
+    def _runner_progress(self) -> tuple[float, str]:
+        messages = []
+        for phase in self._phases:
+            if phase.get("status") != "running":
+                continue
+            _key, label = self._phase_key_and_label(phase)
+            item = str(phase.get("current_item") or "").replace("\\", "/").rsplit("/", 1)[-1]
+            messages.append(f"{label}: {item}" if item else label)
+        message = " | ".join(messages) or self._runner_status or "Starting conversion"
+        if self._progress_succeeded:
+            return 1.0, "Conversion complete"
+        return self._progress_estimate.fraction(advance=self._owns_active_runner()), message
 
     def build_paths(self) -> RegenPaths:
         s = self._settings()
@@ -688,6 +890,8 @@ class RegenPanel:
         source = s.get_game_paths(pair.source_game)
         target_game = s.get_game_paths(pair.target_game)
         source_root = source.get("root_dir", "") or ""
+        if pair.pair_id == DEFAULT_PAIR_ID and self.fo76_source == "playtest":
+            source_root = self._fo76_playtest_root() or source_root
         target_root = target_game.get("root_dir", "") or ""
         source_extracted = str(source.get("extracted_dir", "") or "")
         target_extracted = target_game.get("extracted_dir", "") or ""
@@ -719,7 +923,10 @@ class RegenPanel:
                 )
                 grafted_extracted = str(grafted.get("extracted_dir", "") or "")
                 if grafted_extracted:
-                    additional_source_asset_roots = (Path(grafted_extracted),)
+                    additional_source_asset_roots = (
+                        Path(grafted_extracted),
+                        grafted_data_dir,
+                    )
         protected_output_paths = (
             *((source_data_dir,) if source_root else ()),
             *((Path(source_extracted),) if source_extracted else ()),
@@ -744,6 +951,7 @@ class RegenPanel:
                 protected_output_paths,
             ),
             mod_name=pair.output_mod_name,
+            archive_base_name=Path(pair.output_plugin_name).stem,
             resource_dir=get_resource_dir(),
             deploy_data_dir=install_target.deploy_data_dir,
             runtime_ini_path=install_target.runtime_ini_path,
@@ -768,10 +976,19 @@ class RegenPanel:
         )
 
     def build_options(self) -> RegenOptions:
+        deploy_format = getattr(self, "deploy_format", _DEFAULT_DEPLOY_FORMAT)
+        deploy_loose = deploy_format == "loose"
+        standard_archives = deploy_format == "standard"
         options = RegenOptions(
             deploy=self.install_location.strip().lower() != "none",
-            ba2_mode="expanded",
-            archive_max_bytes=self.archive_max_gb * 1024**3,
+            ba2_mode="packed" if standard_archives else "expanded",
+            archive_max_bytes=(
+                _UNLIMITED_ARCHIVE_MAX_BYTES
+                if standard_archives
+                else self.archive_max_gb * 1024**3
+            ),
+            ba2_compression_level=getattr(self, "ba2_compression_level", None),
+            deploy_loose=deploy_loose,
             workers=self.workers or None,
             asset_workers=None,
             lod_mode=self.lod_mode,
@@ -787,18 +1004,21 @@ class RegenPanel:
             records_limit=None,
             generate_anim_text_data=True,
             anim_text_data_native=True,
-            direct_deploy_archives=True,
-            update_runtime_ini=self.add_archives_to_ini,
+            direct_deploy_archives=not deploy_loose,
+            update_runtime_ini=(
+                self.add_archives_to_ini if deploy_format == "expanded" else True
+            ),
             fo4_ba2_target=self.resolve_ba2_target(),
+            memory_report=bool(getattr(self, "full_logging", False)),
         )
-        # getattr guard: some tests construct RegenPanel via __new__ (bypassing
-        # __init__) and don't set the upgrade attributes -- default to the
-        # unchanged full-build path in that case, same as upgrade=False.
-        if getattr(self, "upgrade", False):
-            manifest = self._load_upgrade_manifest_cached()
-            if manifest is not None:
+        manifest = self._load_upgrade_manifest_cached()
+        if manifest is not None:
+            options.mod_version = manifest.current
+            # getattr guard: some tests construct RegenPanel via __new__
+            # (bypassing __init__) and don't set the upgrade attributes.
+            if getattr(self, "upgrade", False):
                 options.upgrade = True
-                options.mod_version = manifest.current
+                options.hydrate_upgrade_from_deployed = True
                 options.upgrade_from = None
                 options.upgrade_manifest_path = self.upgrade_manifest_path()
         return options
@@ -826,6 +1046,10 @@ class RegenPanel:
         )
         return settings
 
+    def _build_option_overrides(self) -> dict | None:
+        excluded = required_exclude_signatures(self._pair().pair_id)
+        return {"exclude_signatures": excluded} if excluded else None
+
     def can_convert(self) -> bool:
         if self._runner_running() or getattr(self, "_cleanup_status", "idle") == "deleting":
             return False
@@ -842,7 +1066,7 @@ class RegenPanel:
             grafted = s.get_game_paths(pair.merge.grafted_game)
             if not grafted.get("root_dir"):
                 return False
-        return self._steam_installs_ok()
+        return self._store_installs_ok()
 
     def generated_plugin_path(self) -> Path:
         return self.build_paths().output_root / self._pair().output_plugin_name
@@ -853,15 +1077,15 @@ class RegenPanel:
         fo4 = self._settings().get_game_paths("fo4")
         if not fo4.get("root_dir"):
             return False
-        return self._steam_installs_ok() and self.generated_plugin_path().is_file()
+        return self._store_installs_ok() and self.generated_plugin_path().is_file()
 
-    def _steam_install_result(self, game_id: str) -> SteamInstallResult:
+    def _store_install_result(self, game_id: str) -> StoreInstallResult:
         root = self._settings().get_game_paths(game_id).get("root_dir", "") or ""
-        cached = self._steam_install_cache.get(game_id)
+        cached = self._store_install_cache.get(game_id)
         if cached is not None and cached[0] == root:
             return cached[1]
-        result = validate_steam_install_for_game(game_id, root)
-        self._steam_install_cache[game_id] = (root, result)
+        result = validate_store_install_for_game(game_id, root)
+        self._store_install_cache[game_id] = (root, result)
         return result
 
     def _detect_ba2_target(self) -> tuple[str, str | None]:
@@ -885,7 +1109,7 @@ class RegenPanel:
     def _load_upgrade_manifest_cached(self):
         path = self.upgrade_manifest_path()
         key = str(path)
-        cached = self._upgrade_manifest_cache
+        cached = getattr(self, "_upgrade_manifest_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
         try:
@@ -951,8 +1175,19 @@ class RegenPanel:
         if plan.full_build:
             return "Full build (no reuse)."
         families = ", ".join(sorted(family_union))
-        labels = ", ".join(plan.swap_labels)
-        return f"Will regenerate: {families} -> swap {labels}; reuse rest"
+        output_format = {
+            "expanded": "Expanded BA2s",
+            "standard": "Standard BA2s",
+            "loose": "loose files",
+        }.get(
+            getattr(self, "deploy_format", _DEFAULT_DEPLOY_FORMAT),
+            "the selected format",
+        )
+        return (
+            f"Will regenerate: {families}; reuse complete local loose assets or "
+            f"restore them from the deployed BA2s; redeploy the complete mod as "
+            f"{output_format}."
+        )
 
     def _input_preflight_report(self):
         paths = self.build_paths()
@@ -983,7 +1218,7 @@ class RegenPanel:
                 source_root = Path(source_root_text) if source_root_text else None
                 if source_root is not None and source_root.is_dir():
                     continue
-                label = _STEAM_INSTALL_LABELS.get(game_id, game_id.upper())
+                label = _STORE_INSTALL_LABELS.get(game_id, game_id.upper())
                 report.required_missing.append(
                     MissingInput(
                         f"{label} extracted directory",
@@ -994,15 +1229,15 @@ class RegenPanel:
         self._preflight_cache = (key, report)
         return report
 
-    def _steam_installs_ok(self) -> bool:
+    def _store_installs_ok(self) -> bool:
         return all(
-            self._steam_install_result(game_id).ok
+            self._store_install_result(game_id).ok
             for game_id in self._required_game_ids()
         )
 
-    def _require_steam_installs(self) -> None:
+    def _require_store_installs(self) -> None:
         for game_id in self._required_game_ids():
-            result = self._steam_install_result(game_id)
+            result = self._store_install_result(game_id)
             if not result.ok:
                 raise RuntimeError(result.message)
 
@@ -1016,8 +1251,21 @@ class RegenPanel:
             self._workspace._runner_owner = self
             runner.start()
 
+    def _prepare_run_diagnostics(self, paths: RegenPaths) -> None:
+        if getattr(self, "full_logging", False):
+            paths.diagnostics_root = create_run_diagnostics_dir(
+                get_logs_dir(),
+                paths.mod_name,
+            )
+
+    def _run_logging_scope(self, paths: RegenPaths, runner: ConversionRunner):
+        if paths.diagnostics_root is None:
+            return contextlib.nullcontext(runner)
+        return full_logging_scope(paths.diagnostics_root, runner)
+
     def start_conversion(self) -> None:
         self._phases = []
+        self._reset_progress()
         self._runner_status = "Starting conversion"
         self._summary = None
         self._completion = None
@@ -1042,7 +1290,7 @@ class RegenPanel:
                 runner.emit_item_progress(preparation)
 
             try:
-                self._require_steam_installs()
+                self._require_store_installs()
                 advance_preparation(1, "Checking required conversion inputs")
 
                 report = self._input_preflight_report()
@@ -1057,6 +1305,7 @@ class RegenPanel:
                     return
 
                 paths = self.build_paths()
+                self._prepare_run_diagnostics(paths)
                 options = self.build_options()
                 pair = self._pair()
                 phases = PhaseSelection()
@@ -1084,40 +1333,52 @@ class RegenPanel:
             preparation.status = "completed"
             preparation.elapsed_seconds = time.perf_counter() - preparation_started
             runner.emit_phase_complete(preparation)
-            result = regen_pipeline.run_full_regen(
-                paths,
-                options,
-                pair=pair,
-                phases=phases,
-                runner=runner,
-                lod_settings=lod_settings,
-            )
-            companion_deployed = (
-                self._deploy_companion_mod(paths, runner)
-                if result.deployed and self._is_default_pair()
-                else []
-            )
-            if result.deployed:
-                emit_runner_status(runner, "Removing temporary conversion data")
-            cleanup_removed = self._cleanup_after_deploy(paths, result.deployed)
-            runner.emit_complete(
-                str(result.output_root),
-                {
-                    "deployed": result.deployed,
-                    "exit_code": result.exit_code,
-                    "companion_deployed": companion_deployed,
-                    "cleanup_removed": cleanup_removed,
-                },
-            )
+            self._begin_conversion_music_session()
+            try:
+                with self._run_logging_scope(paths, runner) as active_runner:
+                    result = regen_pipeline.run_full_regen(
+                        paths,
+                        options,
+                        pair=pair,
+                        phases=phases,
+                        runner=active_runner,
+                        lod_settings=lod_settings,
+                        build_option_overrides=self._build_option_overrides(),
+                    )
+                    companion_deployed = (
+                        self._deploy_companion_mod(paths, active_runner)
+                        if result.deployed and self._is_default_pair()
+                        else []
+                    )
+                    if result.deployed:
+                        emit_runner_status(
+                            active_runner,
+                            "Removing temporary conversion data",
+                        )
+                        self._end_conversion_music_session()
+                    cleanup_removed = self._cleanup_after_deploy(paths, result.deployed)
+                    active_runner.emit_complete(
+                        str(result.output_root),
+                        {
+                            "deployed": result.deployed,
+                            "exit_code": result.exit_code,
+                            "elapsed_seconds": time.perf_counter() - preparation_started,
+                            "companion_deployed": companion_deployed,
+                            "cleanup_removed": cleanup_removed,
+                        },
+                    )
+            finally:
+                self._end_conversion_music_session()
 
         self._start_runner(work)
 
     def start_deploy_existing(self) -> None:
         from bacup_lib import regen_pipeline
 
-        self._require_steam_installs()
+        self._require_store_installs()
 
         self._phases = []
+        self._reset_progress("deploy")
         self._runner_status = "Preparing existing mod deployment"
         self._summary = None
         self._completion = None
@@ -1125,11 +1386,12 @@ class RegenPanel:
         options = self.build_options()
 
         def work(runner: ConversionRunner) -> None:
+            started = time.perf_counter()
             emit_runner_status(runner, "Deploying existing converted mod")
             runner.emit_log("INFO", f"Deploying existing {self._project_label()} output...")
             result = regen_pipeline.deploy_existing(
                 paths,
-                update_runtime_ini=options.update_runtime_ini,
+                options=options,
             )
             if result.failures:
                 raise RuntimeError("; ".join(result.failures))
@@ -1147,6 +1409,7 @@ class RegenPanel:
                     "deployed": result.deployed,
                     "exit_code": result.exit_code,
                     "deploy_existing": True,
+                    "elapsed_seconds": time.perf_counter() - started,
                     "companion_deployed": companion_deployed,
                     "cleanup_removed": cleanup_removed,
                 },
@@ -1157,13 +1420,15 @@ class RegenPanel:
     def start_resume_from_phase(self) -> None:
         from bacup_lib import PhaseSelection, regen_pipeline
 
-        self._require_steam_installs()
+        self._require_store_installs()
 
         self._phases = []
+        self._reset_progress(_recovery_phase(self.recovery_phase))
         self._runner_status = "Preparing conversion recovery"
         self._summary = None
         self._completion = None
         paths = self.build_paths()
+        self._prepare_run_diagnostics(paths)
         options = self.build_options()
         phases = PhaseSelection()
         phases.lod_mode = options.lod_mode
@@ -1175,34 +1440,45 @@ class RegenPanel:
         )
 
         def work(runner: ConversionRunner) -> None:
-            result = regen_pipeline.run_resume_from_phase(
-                paths,
-                options,
-                start_phase=start_phase,
-                phases=phases,
-                runner=runner,
-                lod_settings=lod_settings,
-            )
-            if result.failures:
-                raise RuntimeError("; ".join(result.failures))
-            companion_deployed = (
-                self._deploy_companion_mod(paths, runner)
-                if result.deployed and self._is_default_pair()
-                else []
-            )
-            if result.deployed:
-                emit_runner_status(runner, "Removing temporary conversion data")
-            cleanup_removed = self._cleanup_after_deploy(paths, result.deployed)
-            runner.emit_complete(
-                str(result.output_root),
-                {
-                    "deployed": result.deployed,
-                    "exit_code": result.exit_code,
-                    "resume_from": start_phase,
-                    "companion_deployed": companion_deployed,
-                    "cleanup_removed": cleanup_removed,
-                },
-            )
+            started = time.perf_counter()
+            self._begin_conversion_music_session()
+            try:
+                with self._run_logging_scope(paths, runner) as active_runner:
+                    result = regen_pipeline.run_resume_from_phase(
+                        paths,
+                        options,
+                        start_phase=start_phase,
+                        phases=phases,
+                        runner=active_runner,
+                        lod_settings=lod_settings,
+                    )
+                    if result.failures:
+                        raise RuntimeError("; ".join(result.failures))
+                    companion_deployed = (
+                        self._deploy_companion_mod(paths, active_runner)
+                        if result.deployed and self._is_default_pair()
+                        else []
+                    )
+                    if result.deployed:
+                        emit_runner_status(
+                            active_runner,
+                            "Removing temporary conversion data",
+                        )
+                        self._end_conversion_music_session()
+                    cleanup_removed = self._cleanup_after_deploy(paths, result.deployed)
+                    active_runner.emit_complete(
+                        str(result.output_root),
+                        {
+                            "deployed": result.deployed,
+                            "exit_code": result.exit_code,
+                            "resume_from": start_phase,
+                            "elapsed_seconds": time.perf_counter() - started,
+                            "companion_deployed": companion_deployed,
+                            "cleanup_removed": cleanup_removed,
+                        },
+                    )
+            finally:
+                self._end_conversion_music_session()
 
         self._start_runner(work)
 
@@ -1217,6 +1493,7 @@ class RegenPanel:
                 (p for p in self._phases if p.get("ui_key") == phase_key),
                 None,
             )
+            previous_status = existing.get("status") if existing else None
             if existing:
                 if etype == "item_progress" and existing.get("status") in {
                     "completed",
@@ -1227,21 +1504,32 @@ class RegenPanel:
                 existing.update(data)
             else:
                 self._phases.append(dict(data))
+            if (
+                etype in {"phase_start", "phase_complete"}
+                or existing is None
+                or data.get("status", previous_status) != previous_status
+            ):
+                # A new scrollbar can reflow wrapped rows on the following frame.
+                self._phase_scroll_frames = 2
+            self._progress_estimate.update(existing or data)
         elif etype == "complete":
             summary = event.get("summary", {}) or {}
             preflight_report = summary.get("preflight_report")
             if preflight_report is not None:
                 self._preflight_report = preflight_report
                 return
+            if "exit_code" in summary:
+                self._progress_succeeded = summary["exit_code"] == 0
             deployed = bool(summary.get("deployed"))
             ini_snippet = None
-            if not deployed:
+            if not deployed and self.deploy_format != "standard":
                 ini_snippet = self._read_ini_snippet(Path(event.get("mod_path", "")))
             self._completion = {
                 "mod_path": event.get("mod_path", ""),
                 "deployed": deployed,
                 "deploy_existing": bool(summary.get("deploy_existing")),
                 "resume_from": summary.get("resume_from"),
+                "elapsed_seconds": summary.get("elapsed_seconds"),
                 "ini_snippet": ini_snippet,
                 "companion_deployed": summary.get("companion_deployed", []),
                 "cleanup_removed": summary.get("cleanup_removed", []),
@@ -1256,6 +1544,7 @@ class RegenPanel:
             return None
 
     def cleanup(self) -> None:
+        self._end_conversion_music_session()
         ws = self._workspace
         owner = getattr(ws, "_runner_owner", self)
         if owner is self and ws._runner is not None and not ws._runner.done:
@@ -1297,9 +1586,10 @@ class RegenPanel:
         direct_deploy_archives = (
             options.direct_deploy_archives if options is not None else True
         )
+        deploy_loose = bool(options and getattr(options, "deploy_loose", False))
         archive_root = (
             paths.deploy_data_dir or paths.target_data_dir
-            if deploy and direct_deploy_archives
+            if deploy and (direct_deploy_archives or deploy_loose)
             else paths.output_root
         )
         key = (
@@ -1316,6 +1606,7 @@ class RegenPanel:
     ) -> None:
         paths = paths or self.build_paths()
         space_key, archive_root = self._disk_space_target(paths, options)
+        loose_estimate, packed_estimate = _CONVERSION_SPACE_ESTIMATES[self._pair().pair_id]
         with self._disk_usage_lock:
             cached_space = getattr(self, "_disk_space_cache", None)
             cached_summary = (
@@ -1345,11 +1636,11 @@ class RegenPanel:
             def estimates(summary: dict[str, int]) -> tuple[int, int]:
                 return (
                     max(
-                        _LOOSE_WORKSPACE_PEAK_BYTES,
+                        loose_estimate,
                         summary["mod_output"] - summary["mod_ba2"],
                     ),
                     max(
-                        _PACKED_MOD_PEAK_BYTES,
+                        packed_estimate,
                         summary["mod_ba2"],
                         summary["deployed_ba2"],
                     ),
@@ -1439,11 +1730,6 @@ class RegenPanel:
         self.start_conversion()
 
     def _request_conversion(self) -> None:
-        if not self._is_default_pair():
-            self._waiting_for_space_check = False
-            self._low_space_warning = None
-            self.start_conversion()
-            return
         self._waiting_for_space_check = True
         self._low_space_warning = None
         with self._disk_usage_lock:
@@ -1480,43 +1766,99 @@ class RegenPanel:
         deploy_data_dir = paths.deploy_data_dir or paths.target_data_dir
         deploy_data_dir.mkdir(parents=True, exist_ok=True)
         deployed: list[str] = []
+        options = self.build_options()
+        from creation_lib.build.loose_deploy import (
+            MANIFEST_NAME,
+            deploy_loose_assets,
+            undeploy_loose_assets,
+        )
+
+        if (companion_root / MANIFEST_NAME).is_file():
+            try:
+                undeploy_loose_assets(
+                    _COMPANION_MOD_NAME,
+                    project_root=app_root,
+                )
+            except FileNotFoundError:
+                (companion_root / MANIFEST_NAME).unlink(missing_ok=True)
 
         if runner is not None:
-            emit_runner_status(runner, "Packing companion mod")
-            runner.emit_log("INFO", f"Packing companion mod {_COMPANION_MOD_NAME}...")
+            if options.deploy_loose:
+                emit_runner_status(runner, "Preparing loose companion mod")
+                runner.emit_log(
+                    "INFO",
+                    f"Preparing loose companion mod {_COMPANION_MOD_NAME}...",
+                )
+            else:
+                emit_runner_status(runner, "Packing companion mod")
+                runner.emit_log(
+                    "INFO",
+                    f"Packing companion mod {_COMPANION_MOD_NAME}...",
+                )
 
-        pack_mod(
-            _COMPANION_MOD_NAME,
-            game="fo4",
-            project_root=app_root,
-            archive_max_bytes=self.archive_max_gb * 1024**3,
-            archive_workers=self.workers,
-        )
-        companion_archives = discover_mod_archives(companion_root, _COMPANION_MOD_NAME)
-        if not companion_archives:
-            raise FileNotFoundError(
-                f"Companion mod archive not found after packing: {companion_root}"
+        companion_archives: list[Path] = []
+        if options.deploy_loose:
+            loose_result = deploy_loose_assets(
+                _COMPANION_MOD_NAME,
+                game="fo4",
+                game_data_dir=paths.target_data_dir,
+                deploy_data_dir=deploy_data_dir,
+                skip_build=True,
+                skip_validation=True,
+                skip_papyrus_compile=True,
+                workers=self.workers,
+                project_root=app_root,
             )
+            deployed.append(loose_result.plugin)
+        else:
+            pack_mod(
+                _COMPANION_MOD_NAME,
+                game="fo4",
+                project_root=app_root,
+                archive_max_bytes=_UNLIMITED_ARCHIVE_MAX_BYTES,
+                expanded_archives=False,
+                archive_workers=self.workers,
+                fo4_ba2_target=options.fo4_ba2_target,
+            )
+            companion_archives = discover_mod_archives(
+                companion_root,
+                _COMPANION_MOD_NAME,
+            )
+            if not companion_archives:
+                raise FileNotFoundError(
+                    "Companion mod archive not found after packing: "
+                    f"{companion_root}"
+                )
         if runner is not None:
             emit_runner_status(runner, "Deploying companion mod")
             runner.emit_log("INFO", f"Deploying companion mod {_COMPANION_MOD_NAME}...")
 
-        for filename in _COMPANION_ROOT_FILES:
-            src = companion_root / filename
-            if not src.is_file():
-                raise FileNotFoundError(f"Companion mod file not found: {src}")
-            dest = deploy_data_dir / filename
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
-            deployed.append(filename)
+        if not options.deploy_loose:
+            for filename in _COMPANION_ROOT_FILES:
+                src = companion_root / filename
+                if not src.is_file():
+                    raise FileNotFoundError(f"Companion mod file not found: {src}")
+                dest = deploy_data_dir / filename
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+                deployed.append(filename)
 
-        companion_archive_names = {archive.name for archive in companion_archives}
-        for stale_archive in discover_mod_archives(deploy_data_dir, _COMPANION_MOD_NAME):
-            if stale_archive.name not in companion_archive_names:
+        companion_archive_names = {
+            archive.name for archive in companion_archives
+        }
+        for stale_archive in discover_mod_archives(
+            deploy_data_dir,
+            _COMPANION_MOD_NAME,
+        ):
+            if (
+                options.deploy_loose
+                or stale_archive.name not in companion_archive_names
+            ):
                 stale_archive.unlink()
-        for archive in companion_archives:
-            shutil.copy2(archive, deploy_data_dir / archive.name)
-            deployed.append(archive.name)
+        if not options.deploy_loose:
+            for archive in companion_archives:
+                shutil.copy2(archive, deploy_data_dir / archive.name)
+                deployed.append(archive.name)
 
         for dirname in _COMPANION_DEPLOY_DIRS:
             src_root = companion_root / dirname
@@ -1524,7 +1866,7 @@ class RegenPanel:
                 raise FileNotFoundError(f"Companion mod directory not found: {src_root}")
             target_root = deploy_data_dir / dirname
             for src in sorted(src_root.rglob("*")):
-                if not src.is_file() or src.suffix.lower() in _COMPANION_EXCLUDED_SUFFIXES:
+                if not src.is_file():
                     continue
                 rel = src.relative_to(src_root)
                 dest = target_root / rel
@@ -1629,6 +1971,7 @@ class RegenPanel:
                     fo4_extracted_dir=(Path(fo4_extracted) if fo4_extracted else None),
                     fo76_extracted_dir=(Path(fo76_extracted) if fo76_extracted else None),
                     forbidden_roots=forbidden,
+                    game_roots=tuple(Path(root) for root in (fo4_root, fo76_root) if root),
                 )
                 targets = measure_cleanup_targets(targets)
                 error = None
@@ -1737,7 +2080,18 @@ class RegenPanel:
         self._draw_completion_popup()
 
     def _draw_header(self) -> None:
-        imgui.text(self._project_label())
+        from ui.toolkit.app_paths import get_resource_dir
+
+        logo = get_resource_dir() / "bacup" / "projects" / f"{self.project_id}.png"
+        pos, available = imgui.get_cursor_screen_pos(), imgui.get_content_region_avail()
+        logo_width = min(scaled(300), available.x * .32) if logo.is_file() else 0
+        if logo_width:
+            image_in_box(logo, (pos.x + available.x - logo_width, pos.y - scaled(4)),
+                         (logo_width, scaled(92)), trim_padding=True)
+            imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + available.x - logo_width - scaled(20))
+        heading(self._project_label(), size=30)
+        profile = get_project_profile(self.project_id)
+        imgui.text_disabled(f"{profile.source_label}  →  Fallout 4")
         _, exe_version = self._detect_ba2_target()
         pair = self._pair()
         target_root = (
@@ -1747,13 +2101,37 @@ class RegenPanel:
         exe_display = exe_version or f"unknown (checked: {target_root})"
         if self._is_default_pair():
             installed = self._detected_installed_version()
-            imgui.text_disabled(
+            status_indicator(
                 f"Installed: {installed}    |    Game (Fallout4.exe): {exe_display}"
             )
         else:
-            imgui.text_disabled(
+            status_indicator(
                 f"Pair: {pair.pair_id}    |    Game (Fallout4.exe): {exe_display}"
             )
+        if logo_width:
+            imgui.pop_text_wrap_pos()
+        imgui.spacing()
+
+    def _draw_overall_progress(self) -> None:
+        running = self._owns_active_runner()
+        if not running and not self._phases and not self._progress_succeeded:
+            return
+        fraction, message = self._runner_progress()
+        imgui.progress_bar(
+            fraction, imgui.ImVec2(-1, 0),
+            f"Overall progress{' (estimated)' if fraction < 1.0 else ''}: {fraction:.0%}",
+        )
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "Weighted by approximate phase durations. Parallel phases count "
+                "independently; 100% means conversion and final cleanup succeeded."
+            )
+        if running:
+            imgui.text_wrapped(message)
+        elif self._progress_succeeded:
+            imgui.text_wrapped(message)
+        else:
+            imgui.text_disabled("Conversion stopped before completion")
         imgui.separator()
 
     def _draw_split(self) -> None:
@@ -1764,22 +2142,39 @@ class RegenPanel:
         if not imgui.begin_table(f"{_NS}_split", 2, flags):
             return
         imgui.table_setup_column(
-            "Settings", imgui.TableColumnFlags_.width_stretch.value, 0.8
+            "Settings", imgui.TableColumnFlags_.width_stretch.value, 0.67
         )
         imgui.table_setup_column(
-            "Status", imgui.TableColumnFlags_.width_stretch.value, 0.2
+            "Status", imgui.TableColumnFlags_.width_stretch.value, 0.33
         )
         imgui.table_next_row()
         imgui.table_set_column_index(0)
-        if imgui.begin_child(f"{_NS}_settings_pane"):
+        available = imgui.get_content_region_avail()
+        spacing = imgui.get_style().item_spacing
+        action_rows = 1 if available.x >= scaled(330) + spacing.x else 2
+        action_height = action_rows * (scaled(52) + spacing.y)
+        hint = self._deploy_existing_hint()
+        if hint:
+            action_height += spacing.y + imgui.calc_text_size(hint, wrap_width=max(1, available.x)).y
+        imgui.push_style_color(imgui.Col_.child_bg, semantic_color("background"))
+        settings_visible = imgui.begin_child(
+            f"{_NS}_settings_pane", imgui.ImVec2(0, max(scaled(60), available.y - action_height)),
+        )
+        imgui.pop_style_color()
+        if settings_visible:
             self._draw_settings_column()
         imgui.end_child()
+        self._draw_actions()
         imgui.table_set_column_index(1)
         status_flags = (
             imgui.WindowFlags_.no_scrollbar.value
             | imgui.WindowFlags_.no_scroll_with_mouse.value
         )
-        if imgui.begin_child(f"{_NS}_status_pane", window_flags=status_flags):
+        imgui.push_style_color(imgui.Col_.child_bg, semantic_color("background"))
+        status_visible = imgui.begin_child(f"{_NS}_status_pane", window_flags=status_flags)
+        imgui.pop_style_color()
+        if status_visible:
+            self._draw_overall_progress()
             self._draw_status_column()
         imgui.end_child()
         imgui.end_table()
@@ -1789,36 +2184,38 @@ class RegenPanel:
 
         running = self._owns_active_runner()
         phase_rows = self._phase_rows(self._phases)
+        show_logs = getattr(self._workspace, "show_logs", False)
 
         avail = imgui.get_content_region_avail()
         try:
             avail_y = float(avail.y)
         except (TypeError, ValueError):
             avail_y = 0.0
-        splitter_h = 6.0
+        splitter_h = scaled(6)
         item_spacing_y = float(imgui.get_style().item_spacing.y)
-        log_h = max(80.0, self._status_log_frac * avail_y)
+        log_min = min(scaled(200), avail_y * .60)
+        log_h = max(log_min, self._status_log_frac * avail_y)
         top_h = max(
-            80.0,
+            scaled(80),
             avail_y - log_h - splitter_h - (2.0 * item_spacing_y),
-        )
+        ) if show_logs else 0
 
-        imgui.begin_child(f"progress{_NS}", imgui.ImVec2(0, top_h))
-        if running:
-            progress_fraction, progress_message = self._runner_progress(
-                self._phases,
-                phase_rows,
-                getattr(self, "_runner_status", ""),
-            )
-            imgui.text(
-                f"Converting {self._project_label()} — "
-                f"{int(round(progress_fraction * 100))}%"
-            )
-            spinner = "|/-\\"[int(imgui.get_time() * 8.0) % 4]
-            imgui.text_disabled(f"{spinner}  {progress_message}")
-            imgui.separator()
+        visible = imgui.begin_child(f"progress{_NS}", imgui.ImVec2(0, top_h), imgui.ChildFlags_.borders)
+        heading("Run status")
+        if not running and not self._phases:
+            imgui.text_wrapped("Ready to convert" if self.can_convert() else "Complete setup to convert")
+            imgui.text_disabled("No conversion running")
+        imgui.separator()
+        if not phase_rows:
+            imgui.text_disabled("Phases appear here as they start.")
         draw_phase_progress(_NS, phase_rows, self._phases)
+        if visible and phase_rows and self._phase_scroll_frames:
+            imgui.set_scroll_here_y(1.0)
+            self._phase_scroll_frames -= 1
         imgui.end_child()
+
+        if not show_logs:
+            return
 
         imgui.invisible_button(f"status_splitter{_NS}", imgui.ImVec2(-1, splitter_h))
         if imgui.is_item_active() and avail_y > 0.0:
@@ -1826,184 +2223,321 @@ class RegenPanel:
                 delta_y = float(imgui.get_io().mouse_delta.y)
             except (TypeError, ValueError):
                 delta_y = 0.0
-            new_log_h = min(max(log_h - delta_y, 0.12 * avail_y), 0.75 * avail_y)
+            new_log_h = min(max(log_h - delta_y, log_min), 0.75 * avail_y)
             self._status_log_frac = new_log_h / avail_y
         if imgui.is_item_hovered():
             imgui.set_mouse_cursor(imgui.MouseCursor_.resize_ns)
 
-        imgui.begin_child(f"log{_NS}", imgui.ImVec2(0, log_h))
+        imgui.begin_child(f"log{_NS}", imgui.ImVec2(0, log_h), imgui.ChildFlags_.borders)
+        heading("Conversion log")
         if self._log_panel is not None:
             self._log_panel.draw_body()
         imgui.end_child()
 
-    def _draw_settings_column(self) -> None:
-        from ui.tools.imgui_helpers import (
-            _form_row_label,
-            begin_form,
-            draw_combo_field,
-            draw_path_row,
-            end_form,
-        )
+    def _draw_music_controls(self) -> None:
+        from imgui_bundle import icons_fontawesome_6 as fa
 
-        ws = self._workspace
-        running = self._runner_running()
+        running = self._owns_active_runner()
+        music_enabled = not bool(getattr(self, "music_muted", True))
+        changed, music_enabled = toggle(
+            f"Conversion music{_NS}",
+            music_enabled,
+        )
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "Plays themes extracted from the selected source game during "
+                "conversion. Music and volume preferences are remembered."
+            )
+        if changed:
+            self._set_music_muted(not music_enabled)
+        player = getattr(self, "_music_player", None)
+        if music_enabled and player is not None:
+            music_state = player.snapshot()
+            imgui.push_text_wrap_pos(0)
+            if music_state.current_track is not None:
+                imgui.text_disabled(
+                    f"{music_state.track_index + 1}/{music_state.track_count}  ·  "
+                    f"{music_state.current_track.stem}"
+                )
+            elif running:
+                imgui.text_disabled("Preparing source-game soundtrack...")
+            else:
+                imgui.text_disabled("Playback starts with conversion.")
+
+            imgui.pop_text_wrap_pos()
+
+            transport_disabled = not music_state.active
+            if transport_disabled:
+                imgui.begin_disabled()
+            if imgui.button(
+                f"{getattr(fa, 'ICON_FA_BACKWARD_STEP', '|<')}{_NS}_music_previous"
+            ):
+                player.previous()
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("Previous track")
+            imgui.same_line()
+            play_icon = (
+                getattr(fa, "ICON_FA_PLAY", ">")
+                if music_state.paused
+                else getattr(fa, "ICON_FA_PAUSE", "||")
+            )
+            if imgui.button(f"{play_icon}{_NS}_music_pause"):
+                if music_state.paused:
+                    player.resume()
+                else:
+                    player.pause()
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("Resume" if music_state.paused else "Pause")
+            imgui.same_line()
+            if imgui.button(
+                f"{getattr(fa, 'ICON_FA_FORWARD_STEP', '>|')}{_NS}_music_next"
+            ):
+                player.next()
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("Next track")
+            if transport_disabled:
+                imgui.end_disabled()
+
+            imgui.text_disabled("Volume")
+            imgui.same_line()
+            imgui.set_next_item_width(-1)
+            changed, music_volume = imgui.slider_float(
+                f"##conversion_music_volume{_NS}",
+                music_state.volume * 100.0,
+                0.0,
+                100.0,
+                format="%.0f%%",
+            )
+            if changed:
+                self._set_music_volume(music_volume / 100.0)
+
+            timeline_disabled = (
+                not music_state.active or music_state.duration_seconds <= 0.0
+            )
+            if timeline_disabled:
+                imgui.begin_disabled()
+            imgui.text_disabled(
+                f"{format_music_time(music_state.position_seconds)} / "
+                f"{format_music_time(music_state.duration_seconds)}"
+            )
+            imgui.set_next_item_width(-1)
+            changed, music_progress = imgui.slider_float(
+                f"##conversion_music_timeline{_NS}",
+                music_state.progress,
+                0.0,
+                1.0,
+                format="",
+            )
+            if changed:
+                player.seek(music_progress)
+            if timeline_disabled:
+                imgui.end_disabled()
+
+    def _draw_settings_column(self) -> None:
+        for identifier, title, draw in (
+            ("storage", "Storage and maintenance", self._draw_storage),
+            ("options", "Conversion settings", self._draw_options),
+        ):
+            with section(f"{identifier}{_NS}", title) as visible:
+                if visible:
+                    draw()
+        with expandable_section(f"Game install information{_NS}",
+            description=f"{get_project_profile(self.project_id).source_label} → Fallout 4") as expanded:
+            if expanded:
+                self._draw_install_information()
+        self._draw_advanced()
+
+    def _draw_install_information(self) -> None:
+        from creation_lib.core.game_profiles import GAME_PROFILES
+
+        games = self._required_game_ids()
+        if imgui.begin_table(f"{_NS}_install_summary", len(games), imgui.TableFlags_.sizing_stretch_same):
+            for game_id in games:
+                imgui.table_next_column()
+                imgui.text_wrapped(GAME_PROFILES[game_id].display_name)
+                result = self._store_install_result(game_id)
+                imgui.text_colored(semantic_color("success" if result.ok else "error"),
+                                   "Verified" if result.ok else "Setup required")
+                if imgui.is_item_hovered() and not result.ok:
+                    imgui.set_tooltip(result.message)
+            imgui.end_table()
+        self._draw_install_details()
+
+    def _draw_install_details(self) -> None:
         s = self._settings()
         pair = self._pair()
         paths = self.build_paths()
-        install_target = self._resolve_install_target(
-            paths.target_data_dir, paths.target_custom_ini_path
-        )
+        install_target = self._resolve_install_target(paths.target_data_dir, paths.target_custom_ini_path)
 
-        # -- A. Install Info --------------------------------------------------
-        diag = imgui.collapsing_header(
-            f"Install Info{_NS}", imgui.TreeNodeFlags_.default_open.value
-        )
-        if isinstance(diag, tuple):
-            diag = diag[0]
-        if diag and begin_form(f"{_NS}_diag", 200):
+        if begin_form(f"{_NS}_diag", 200):
             _form_row_label(f"{pair.source_game.upper()} source")
-            imgui.text(
+            imgui.text_wrapped(
                 s.get_game_paths(pair.source_game).get("extracted_dir", "?")
             )
             _form_row_label(f"{pair.target_game.upper()} target")
-            imgui.text(s.get_game_paths(pair.target_game).get("root_dir", "?"))
+            imgui.text_wrapped(s.get_game_paths(pair.target_game).get("root_dir", "?"))
             for game_id in self._required_game_ids():
-                steam_result = self._steam_install_result(game_id)
-                label = _STEAM_INSTALL_LABELS.get(game_id, game_id.upper())
-                _form_row_label(f"{label} Steam install")
-                if steam_result.ok:
-                    imgui.text_colored(_COL_OK, "verified")
+                store_result = self._store_install_result(game_id)
+                label = _STORE_INSTALL_LABELS.get(game_id, game_id.upper())
+                _form_row_label(f"{label} store install")
+                if store_result.ok:
+                    store_name = "GOG" if store_result.store == "gog" else "Steam"
+                    imgui.text_colored(semantic_color("success"), f"verified ({store_name})")
                 else:
-                    imgui.text_colored(_COL_ERR, steam_result.message)
+                    imgui.text_colored(semantic_color("error"), store_result.message)
             deploy_data_dir = paths.deploy_data_dir or paths.target_data_dir
             _form_row_label("Deploy folder")
-            imgui.text(f"{deploy_data_dir}")
-            _form_row_label("INI")
-            imgui.text(f"{install_target.runtime_ini_path or '(none)'}")
-            if install_target.warning:
-                _form_row_label("Warning")
-                imgui.text_colored(_COL_WARN, install_target.warning)
-            detected_target, detected_version = self._detect_ba2_target()
-            _form_row_label("Detected FO4")
-            imgui.text_colored(
-                _COL_ACCENT,
-                f"{detected_version or 'unknown'}  ·  {detected_target}  ·  "
-                f"packing: {self.resolve_ba2_target()}",
+            imgui.text_wrapped(f"{deploy_data_dir}")
+            if self.deploy_format != "standard":
+                _form_row_label("INI")
+                imgui.text(f"{install_target.runtime_ini_path or '(none)'}")
+            show_install_warning = install_target.warning and (
+                self.deploy_format != "standard"
+                or "ini" not in install_target.warning.lower()
             )
-            sizes = self.disk_usage_summary()
-            _form_row_label("Disk use")
-            if self.disk_usage_loading():
-                imgui.text_disabled("checking built archives...")
+            if show_install_warning:
+                _form_row_label("Warning")
+                imgui.text_colored(semantic_color("warning"), install_target.warning)
+            end_form()
+
+    def _draw_storage(self) -> None:
+        running = self._runner_running()
+        paths = self.build_paths()
+        sizes = self.disk_usage_summary()
+        if self.disk_usage_loading():
+            archive_detail = "Checking built archives..."
+        else:
+            packed_now = sizes["mod_ba2"] + sizes["deployed_ba2"]
+            archive_detail = f"Built BA2s: {_format_gb(packed_now)}"
+        if self._is_default_pair():
+            archive_detail += (
+                "\n"
+                f"Footprint guide: FO76 ~{_format_gb(_FO76_INSTALL_REFERENCE_BYTES)} already installed; "
+                f"loose workspace ~{_format_gb(_LOOSE_WORKSPACE_PEAK_BYTES)}; "
+                f"packed mod ~{_format_gb(_PACKED_MOD_PEAK_BYTES)}. "
+                "Projected use includes the additional conversion reserve."
+            )
+        else:
+            loose_estimate, packed_estimate = _CONVERSION_SPACE_ESTIMATES[self._pair().pair_id]
+            archive_detail += (
+                f"\nFootprint guide: loose workspace ~{_format_gb(loose_estimate)}; "
+                f"packed mod ~{_format_gb(packed_estimate)}. "
+                "Based on an existing conversion, with 25% headroom and rounded up. "
+                "Projected use includes the additional conversion reserve."
+            )
+        self._draw_storage_charts(paths, archive_detail)
+        self._ensure_cleanup_state()
+        cleanup_status = self._cleanup_status
+        cleanup_busy = cleanup_status != "idle"
+        restart_disabled = running or cleanup_status == "deleting"
+        cleanup_disabled = running or cleanup_busy
+        show_ini_controls = self.deploy_format != "standard"
+        if imgui.begin_table(
+            f"{_NS}_install_maintenance",
+            3 if show_ini_controls else 2,
+            imgui.TableFlags_.sizing_stretch_same.value,
+        ):
+            imgui.table_next_row()
+            imgui.table_next_column()
+            if self._is_admin:
+                imgui.begin_disabled()
+                imgui.button(
+                    f"Running as administrator{_NS}", imgui.ImVec2(-1, 0)
+                )
+                imgui.end_disabled()
             else:
-                packed_now = sizes["mod_ba2"] + sizes["deployed_ba2"]
-                imgui.text_disabled(
-                    f"Built BA2s: {_format_gb(packed_now)} · planning reserves "
-                    f"~{_format_gb(_LOOSE_WORKSPACE_PEAK_BYTES)} for loose workspace"
-                )
-            if self._is_default_pair():
-                _form_row_label("Footprint guide")
-                imgui.text_wrapped(
-                    f"FO76 ~{_format_gb(_FO76_INSTALL_REFERENCE_BYTES)} already installed · "
-                    f"loose workspace ~{_format_gb(_LOOSE_WORKSPACE_PEAK_BYTES)} · "
-                    f"packed mod ~{_format_gb(_PACKED_MOD_PEAK_BYTES)}"
-                )
-                projection = self._disk_space_projection(
-                    paths=paths,
-                )
-                if projection is None:
-                    _form_row_label("Available space")
-                    imgui.text_disabled("measuring in background...")
-                else:
-                    for volume in projection:
-                        _form_row_label(f"Space {volume.key or volume.path.anchor}")
-                        bar_color = {
-                            "green": _COL_OK,
-                            "yellow": _COL_WARN,
-                            "red": _COL_ERR,
-                        }[volume.space_level]
-                        imgui.push_style_color(imgui.Col_.plot_histogram, bar_color)
-                        imgui.push_style_color(
-                            imgui.Col_.plot_histogram_hovered, bar_color
-                        )
-                        if volume.unavailable:
-                            imgui.progress_bar(
-                                0.0,
-                                imgui.ImVec2(-1, 0),
-                                "available space could not be measured",
-                            )
-                            imgui.pop_style_color(2)
-                            continue
-                        status = {
-                            "green": "",
-                            "yellow": "TIGHT — ",
-                            "red": "LOW — ",
-                        }[volume.space_level]
-                        imgui.progress_bar(
-                            volume.projected_fill_fraction,
-                            imgui.ImVec2(-1, 0),
-                            f"{status}{_format_gb(volume.required_bytes)} needed · "
-                            f"{_format_gb(volume.free_bytes)} free",
-                        )
-                        imgui.pop_style_color(2)
-            self._ensure_cleanup_state()
-            cleanup_status = self._cleanup_status
-            cleanup_busy = cleanup_status != "idle"
-            restart_disabled = running or cleanup_status == "deleting"
-            repair_disabled = running
-            cleanup_disabled = running or cleanup_busy
-            _form_row_label("Maintenance")
-            if imgui.begin_table(
-                f"{_NS}_install_maintenance",
-                3,
-                imgui.TableFlags_.sizing_stretch_same.value,
-            ):
-                imgui.table_next_row()
-                imgui.table_next_column()
-                if self._is_admin:
+                if restart_disabled:
                     imgui.begin_disabled()
-                    imgui.button(
-                        f"Running as administrator{_NS}", imgui.ImVec2(-1, 0)
-                    )
+                if imgui.button(
+                    f"Restart as administrator{_NS}", imgui.ImVec2(-1, 0)
+                ):
+                    self._restart_elevated()
+                if restart_disabled:
                     imgui.end_disabled()
-                else:
-                    if restart_disabled:
-                        imgui.begin_disabled()
-                    if imgui.button(
-                        f"Restart as administrator{_NS}", imgui.ImVec2(-1, 0)
-                    ):
-                        self._restart_elevated()
-                    if restart_disabled:
-                        imgui.end_disabled()
+            if show_ini_controls:
                 imgui.table_next_column()
-                if repair_disabled:
+                if running:
                     imgui.begin_disabled()
                 if imgui.button(
                     f"Check / repair INI{_NS}_audit", imgui.ImVec2(-1, 0)
                 ):
                     self._run_install_audit()
-                if repair_disabled:
+                if running:
                     imgui.end_disabled()
-                imgui.table_next_column()
-                if cleanup_disabled:
-                    imgui.begin_disabled()
-                if imgui.button(
-                    f"Free up space...{_NS}", imgui.ImVec2(-1, 0)
-                ):
-                    self._open_cleanup_dialog()
-                if cleanup_disabled:
-                    imgui.end_disabled()
-                imgui.end_table()
-            end_form()
-            if self._admin_restart_error:
-                imgui.text_colored(_COL_ERR, self._admin_restart_error)
+            imgui.table_next_column()
+            if cleanup_disabled:
+                imgui.begin_disabled()
+            if imgui.button(
+                f"Free up space...{_NS}", imgui.ImVec2(-1, 0)
+            ):
+                self._open_cleanup_dialog()
+            if cleanup_disabled:
+                imgui.end_disabled()
+            imgui.end_table()
+        if self._admin_restart_error:
+            imgui.text_colored(semantic_color("error"), self._admin_restart_error)
+        if show_ini_controls:
             self._draw_install_audit()
-        imgui.separator()
+
+    def _draw_storage_charts(self, paths: RegenPaths, archive_detail: str) -> None:
+        projection = self._disk_space_projection(paths=paths)
+        multiple_drives = projection is not None and len(projection) > 1
+        columns = 2 if imgui.get_content_region_avail().x >= scaled(500) else 1
+        if not imgui.begin_table(f"storage_charts{_NS}", columns, imgui.TableFlags_.sizing_stretch_same):
+            return
+        for index, volume in enumerate(projection or (None,)):
+            measured = volume is not None and not volume.unavailable and volume.total_bytes > 0
+            estimated = measured
+            current = (volume.total_bytes - volume.free_bytes) / volume.total_bytes if measured else None
+            projected = volume.projected_fill_fraction if estimated else None
+            drive = (volume.key.upper() or volume.path.anchor) if volume is not None else ""
+            suffix = f" · {drive}" if drive else ""
+            current_detail = f"{_format_gb(volume.free_bytes)} free" if measured else "Measuring..." if volume is None else "Space unavailable"
+            if estimated:
+                remaining = volume.free_bytes - volume.required_bytes
+                projected_detail = (
+                    f"{_format_gb(volume.required_bytes)} estimated\n"
+                    + (f"{_format_gb(remaining)} free after" if remaining >= 0 else f"{_format_gb(-remaining)} short")
+                )
+                role = {"green": "success", "yellow": "warning", "red": "error"}[volume.space_level]
+            else:
+                projected_detail = "Measuring..." if volume is None else "Estimate unavailable"
+                role = "muted"
+            tooltip = archive_detail
+            if volume is not None:
+                tooltip += f"\n{volume.path}\n{', '.join(volume.labels)}"
+                if measured:
+                    tooltip += f"\nTotal capacity: {_format_gb(volume.total_bytes)}"
+                    tooltip += f"\nCurrent use: {current:.0%}"
+                if estimated:
+                    tooltip += f"\nAdditional conversion reserve: {_format_gb(volume.required_bytes)}"
+            imgui.push_id(index)
+            if multiple_drives:
+                imgui.table_next_column()
+                if estimated:
+                    detail = (f"{_format_gb(volume.free_bytes)} free now\n"
+                              + (f"{_format_gb(remaining)} free after" if remaining >= 0
+                                 else f"{_format_gb(-remaining)} short"))
+                else:
+                    detail = current_detail + "\nEstimate unavailable"
+                ring_stat("drive", f"{drive} · {'projected use' if estimated else 'current use'}",
+                          projected if estimated else current, detail=detail,
+                          role=role if estimated else "accent" if measured else "muted", tooltip=tooltip)
+            else:
+                imgui.table_next_column()
+                ring_stat("current", f"Current use{suffix}", current, detail=current_detail, tooltip=tooltip)
+                imgui.table_next_column()
+                ring_stat("projected", f"After conversion{suffix}", projected,
+                          detail=projected_detail, role=role, tooltip=tooltip)
+            imgui.pop_id()
+        imgui.end_table()
+
+    def _draw_options(self) -> None:
+        running = self._runner_running()
 
         if running:
             imgui.begin_disabled()
 
-        # -- B. Settings ------------------------------------------------------
-        imgui.text_colored(_COL_ACCENT, "Settings")
         if begin_form(f"{_NS}_settings", 200):
             if getattr(self, "fixed_pair_id", None) is None:
                 pair_ids = sorted(SOURCE_PAIRS)
@@ -2019,13 +2553,26 @@ class RegenPanel:
                     self._upgrade_user_toggled = False
                     self._preflight_report = None
                     self._preflight_cache = None
+            playtest_root = self._fo76_playtest_root()
+            if self._pair().pair_id == DEFAULT_PAIR_ID and playtest_root:
+                source_idx = _FO76_SOURCE_VALUES.index(self.fo76_source)
+                changed, source_idx = draw_combo_field(
+                    "FO76 source", _FO76_SOURCE_LABELS, source_idx
+                )
+                if changed:
+                    self.fo76_source = _FO76_SOURCE_VALUES[source_idx]
+                    self._preflight_report = None
+                    self._preflight_cache = None
+                    self._set_workspace_settings(
+                        {_FO76_SOURCE_KEY: self.fo76_source}
+                    )
             install_idx = (
                 _INSTALL_LOCATION_VALUES.index(self.install_location)
                 if self.install_location in _INSTALL_LOCATION_VALUES
                 else 0
             )
             changed, install_idx = draw_combo_field(
-                "Install location", _INSTALL_LOCATION_LABELS, install_idx
+                "Deploy To:", _INSTALL_LOCATION_LABELS, install_idx
             )
             if changed:
                 self.install_location = _INSTALL_LOCATION_VALUES[install_idx]
@@ -2038,9 +2585,31 @@ class RegenPanel:
                     if picked:
                         self.install_path = os.path.normpath(picked)
                         self._set_workspace_settings({"install_path": self.install_path})
-            if self.install_location == "mo2":
+            deploy_mode = "loose" if self.deploy_format == "loose" else "packed"
+            deploy_mode_idx = _DEPLOY_MODE_VALUES.index(deploy_mode)
+            changed, deploy_mode_idx = draw_combo_field(
+                "Assets",
+                _DEPLOY_MODE_LABELS,
+                deploy_mode_idx,
+            )
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "Packed writes standard BA2 archives. Loose copies the converted "
+                    "asset tree directly into the install folder. Advanced archive "
+                    "layout controls are available below."
+                )
+            if changed:
+                self.deploy_format = (
+                    "loose"
+                    if _DEPLOY_MODE_VALUES[deploy_mode_idx] == "loose"
+                    else _DEFAULT_DEPLOY_FORMAT
+                )
+                self._set_workspace_settings(
+                    {_DEPLOY_FORMAT_KEY: self.deploy_format}
+                )
+            if self.install_location == "mo2" and self.deploy_format != "standard":
                 _form_row_label("MO2 profile INI")
-                changed, self.mo2_use_profile_ini = imgui.checkbox(
+                changed, self.mo2_use_profile_ini = toggle(
                     "##mo2ini", self.mo2_use_profile_ini
                 )
                 if imgui.is_item_hovered():
@@ -2053,26 +2622,29 @@ class RegenPanel:
                     self._set_workspace_settings(
                         {"mo2_use_profile_ini": self.mo2_use_profile_ini}
                     )
-            ini_label = (
-                "Update MO2 Custom.ini"
-                if self.install_location == "mo2" and self.mo2_use_profile_ini
-                else "Update Fallout4Custom.ini"
-            )
-            _form_row_label(ini_label)
-            _, self.add_archives_to_ini = imgui.checkbox(
-                "##addba2ini", self.add_archives_to_ini
-            )
-            _form_row_label("Max BA2 size")
-            imgui.set_next_item_width(-1)
-            changed, archive_max_gb = imgui.slider_int(
-                "##maxba2gb",
-                self.archive_max_gb,
-                _ARCHIVE_MIN_GB,
-                _ARCHIVE_MAX_GB,
-            )
-            if changed:
-                self.archive_max_gb = _archive_max_gb(archive_max_gb)
-                self._set_workspace_settings({_ARCHIVE_MAX_GB_KEY: self.archive_max_gb})
+            if self.deploy_format != "standard":
+                ini_label = (
+                    "Update MO2 Custom.ini"
+                    if self.install_location == "mo2" and self.mo2_use_profile_ini
+                    else "Update Fallout4Custom.ini"
+                )
+                _form_row_label(ini_label)
+                manages_archive_registration = self.deploy_format == "expanded"
+                if not manages_archive_registration:
+                    imgui.begin_disabled()
+                changed, add_archives_to_ini = toggle(
+                    "##addba2ini",
+                    self.add_archives_to_ini if manages_archive_registration else False,
+                )
+                if manages_archive_registration and changed:
+                    self.add_archives_to_ini = add_archives_to_ini
+                if not manages_archive_registration:
+                    imgui.end_disabled()
+                    if imgui.is_item_hovered():
+                        imgui.set_tooltip(
+                            "Loose deployment does not register BA2 archives. Existing "
+                            "entries for this mod are removed automatically when possible."
+                        )
             target_idx = (
                 _BA2_TARGET_VALUES.index(self.ba2_target)
                 if self.ba2_target in _BA2_TARGET_VALUES
@@ -2084,18 +2656,39 @@ class RegenPanel:
             if changed:
                 self.ba2_target = _BA2_TARGET_VALUES[target_idx]
                 self._set_workspace_settings({_BA2_TARGET_KEY: self.ba2_target})
-            profile_idx = (
-                _LOD_PROFILE_VALUES.index(self.lod_profile)
-                if self.lod_profile in _LOD_PROFILE_VALUES
-                else 0
-            )
-            changed, profile_idx = draw_combo_field(
-                "LOD quality", _LOD_PROFILE_LABELS, profile_idx
-            )
-            self.lod_profile = _LOD_PROFILE_VALUES[profile_idx]
-            if changed:
-                self._set_workspace_settings({_LOD_PROFILE_KEY: self.lod_profile})
-            self.lod_mode = "hybrid-atlas"
+            pair_id = self._pair().pair_id
+            profile_values = _lod_profile_values(pair_id)
+            if profile_values:
+                profile_idx = (
+                    profile_values.index(self.lod_profile)
+                    if self.lod_profile in profile_values
+                    else 0
+                )
+                changed, profile_idx = draw_combo_field(
+                    "LOD quality",
+                    [PROFILE_LABELS[p] for p in profile_values],
+                    profile_idx,
+                )
+                self.lod_profile = profile_values[profile_idx]
+                if changed:
+                    self._set_workspace_settings({_LOD_PROFILE_KEY: self.lod_profile})
+            else:
+                _form_row_label("LOD quality")
+                imgui.text_disabled("Engine defaults")
+            self.lod_mode = _default_lod_mode(pair_id)
+            if required_exclude_signatures(pair_id):
+                _form_row_label("Record scope")
+                fnv_quest_gate = pair_id == "fnvfo3:fo4"
+                imgui.text_disabled(
+                    "All non-quest records" if fnv_quest_gate else "World only"
+                )
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(
+                        "Only quest, dialogue, and scene runtime records remain gated."
+                        if fnv_quest_gate
+                        else "Actors, quests, dialogue, weapons, and packages are "
+                        "excluded. This pair converts world content only for now."
+                    )
             _form_row_label("Workers")
             imgui.set_next_item_width(-1)
             max_workers = max(1, (os.cpu_count() or 2) - 1)
@@ -2109,9 +2702,16 @@ class RegenPanel:
             if not self._upgrade_user_toggled:
                 self.upgrade = self._deployed_esm_exists()
             _form_row_label("Upgrade mode")
-            changed, self.upgrade = imgui.checkbox(
+            changed, self.upgrade = toggle(
                 f"Upgrade existing deployment{_NS}", self.upgrade
             )
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "Reuses the BACUP workspace when all eight loose-asset folders "
+                    "are present; otherwise extracts the currently deployed BA2s. "
+                    "Then converts changed assets and redeploys the complete mod "
+                    "using the selected BA2 format."
+                )
             if changed:
                 self._upgrade_user_toggled = True
             manifest = self._load_upgrade_manifest_cached()
@@ -2128,131 +2728,206 @@ class RegenPanel:
         if running:
             imgui.end_disabled()
 
-        # -- C. Actions -------------------------------------------------------
-        imgui.separator()
+    def _draw_actions(self) -> None:
+        from imgui_bundle import icons_fontawesome_6 as fa
+
+        ws = self._workspace
+        running = self._runner_running()
+
         can_start_conversion = self.can_convert()
         can_deploy_existing = self.can_deploy_existing()
-        if imgui.begin_table(
-            f"{_NS}_actions", 2, imgui.TableFlags_.sizing_stretch_same.value
+        available = imgui.get_content_region_avail().x
+        gap = imgui.get_style().item_spacing.x
+        side_by_side = available >= scaled(330) + gap
+        convert_width = min(scaled(200), available - gap - scaled(220) if side_by_side else available)
+        secondary_width = min(scaled(220), available)
+        button_height = scaled(52)
+        if action_button(
+            f"Convert{_NS}", primary=True, width=convert_width, height=button_height,
+            icon=fa.ICON_FA_PLAY, enabled=can_start_conversion,
         ):
-            imgui.table_next_row()
-            imgui.table_next_column()
-            if not can_start_conversion:
-                imgui.begin_disabled()
-            if imgui.button(
-                f"Convert {self._project_label()}{_NS}", imgui.ImVec2(-1, 0)
-            ):
-                self._request_conversion()
-            if not can_start_conversion:
-                imgui.end_disabled()
-            imgui.table_next_column()
-            if running and self._owns_active_runner():
-                if imgui.button(f"Cancel{_NS}", imgui.ImVec2(-1, 0)):
-                    ws._runner.cancel()
-            else:
-                if not can_deploy_existing:
-                    imgui.begin_disabled()
-                if imgui.button(f"Deploy existing mod{_NS}", imgui.ImVec2(-1, 0)):
-                    self.start_deploy_existing()
-                if not can_deploy_existing:
-                    imgui.end_disabled()
-            imgui.end_table()
-        if not self.generated_plugin_path().is_file():
-            imgui.text_disabled(
-                "Deploy existing mod is available after "
-                f"{self._pair().output_plugin_name} exists."
-            )
-
-        # -- D. Advanced ------------------------------------------------------
-        imgui.separator()
-        expanded = imgui.collapsing_header(f"Advanced{_NS}")
-        if isinstance(expanded, tuple):
-            expanded = expanded[0]
-        if expanded:
-            if running:
-                imgui.begin_disabled()
-            changed, self.atlas_mip_flooding = imgui.checkbox(
-                f"Atlas mip flooding{_NS}",
-                self.atlas_mip_flooding,
-            )
-            if imgui.is_item_hovered():
-                imgui.set_tooltip(
-                    "Flood atlas base RGB through transparent pixels in Rust before normal DDS "
-                    "mip generation. Alpha-bearing BC1 atlases are promoted to BC3 so flooded "
-                    "RGB survives compression; infinite dilation is the fallback."
-                )
-            if changed:
-                self._set_workspace_settings(
-                    {_ATLAS_MIP_FLOODING_KEY: self.atlas_mip_flooding}
-                )
-            changed, self.texture_landscape_mip_flooding = imgui.checkbox(
-                f"Landscape diffuse mip flooding{_NS}",
-                self.texture_landscape_mip_flooding,
-            )
-            if imgui.is_item_hovered():
-                imgui.set_tooltip(
-                    "Flood converted landscape *_d.dds base RGB through transparent pixels "
-                    "before normal DDS mip generation. Alpha-bearing BC1 inputs are promoted "
-                    "to BC3; effects and other texture folders are not changed."
-                )
-            if changed:
-                self._set_workspace_settings(
-                    {
-                        _TEXTURE_LANDSCAPE_MIP_FLOODING_KEY: (
-                            self.texture_landscape_mip_flooding
-                        )
-                    }
-                )
-            changed, self.generate_precombines = imgui.checkbox(
-                f"Generate precombines (experimental){_NS}",
-                self.generate_precombines,
-            )
-            if imgui.is_item_hovered():
-                imgui.set_tooltip(
-                    "EXPERIMENTAL. Bake interior precombined meshes (*_OC.nif) and "
-                    "stamp CELL PCMB/XCRI + REFR VC into the built ESM after the "
-                    "asset waves. Off by default; leave unchecked unless testing."
-                )
-            if changed:
-                self._set_workspace_settings(
-                    {_GENERATE_PRECOMBINES_KEY: self.generate_precombines}
-                )
-            imgui.separator()
-            recovery_idx = (
-                _RECOVERY_PHASE_VALUES.index(self.recovery_phase)
-                if self.recovery_phase in _RECOVERY_PHASE_VALUES
-                else _RECOVERY_PHASE_VALUES.index("lodgen")
-            )
-            imgui.set_next_item_width(200)
-            changed, recovery_idx = imgui.combo(
-                f"Resume from{_NS}",
-                recovery_idx,
-                _RECOVERY_PHASE_LABELS,
-            )
-            if changed:
-                self.recovery_phase = _RECOVERY_PHASE_VALUES[recovery_idx]
-                self._set_workspace_settings({_RECOVERY_PHASE_KEY: self.recovery_phase})
+            self._request_conversion()
+        if side_by_side:
             imgui.same_line()
-            needs_full_rebuild = self.recovery_phase in _RECOVERY_FULL_REBUILD_PHASES
-            can_resume = self._is_default_pair() and (
-                self.can_convert() if needs_full_rebuild else self.can_deploy_existing()
-            )
-            if not can_resume:
-                imgui.begin_disabled()
-            if imgui.button(f"Resume{_NS}"):
-                self.start_resume_from_phase()
-            if not can_resume:
-                imgui.end_disabled()
-            if needs_full_rebuild:
-                imgui.text_disabled(
-                    "No durable ESP exists at this point; recovery reruns record conversion."
+        if running and self._owns_active_runner():
+            if action_button(f"Cancel{_NS}", width=secondary_width, height=button_height,
+                             icon=fa.ICON_FA_STOP):
+                ws._runner.cancel()
+        elif action_button(
+            f"Deploy existing mod{_NS}", width=secondary_width, height=button_height,
+            icon=fa.ICON_FA_FOLDER_OPEN, enabled=can_deploy_existing,
+        ):
+            self.start_deploy_existing()
+        hint = self._deploy_existing_hint()
+        if hint:
+            imgui.text_wrapped(hint)
+
+    def _deploy_existing_hint(self) -> str:
+        if self.generated_plugin_path().is_file():
+            return ""
+        return f"Deploy existing mod is available after {self._pair().output_plugin_name} exists."
+
+    def _draw_advanced(self) -> None:
+        running = self._runner_running()
+
+        with expandable_section(f"Advanced{_NS}",
+            description="Archive layout, compression & textures") as expanded:
+            if expanded:
+                if running:
+                    imgui.begin_disabled()
+                if self.deploy_format != "loose":
+                    archive_layout_idx = (
+                        _ARCHIVE_LAYOUT_VALUES.index(self.deploy_format)
+                        if self.deploy_format in _ARCHIVE_LAYOUT_VALUES
+                        else 0
+                    )
+                    imgui.set_next_item_width(scaled(220))
+                    changed, archive_layout_idx = imgui.combo(
+                        f"BA2 layout{_NS}",
+                        archive_layout_idx,
+                        _ARCHIVE_LAYOUT_LABELS,
+                    )
+                    if imgui.is_item_hovered():
+                        imgui.set_tooltip(
+                            "Standard writes one Main and one Textures BA2 and should "
+                            "almost always be used. Expanded creates family archives "
+                            "and requires runtime INI registration."
+                        )
+                    if changed:
+                        self.deploy_format = _ARCHIVE_LAYOUT_VALUES[archive_layout_idx]
+                        self._set_workspace_settings(
+                            {_DEPLOY_FORMAT_KEY: self.deploy_format}
+                        )
+                    if self.deploy_format == "expanded":
+                        imgui.set_next_item_width(scaled(220))
+                        changed, archive_max_gb = imgui.slider_int(
+                            f"Max BA2 size (GiB){_NS}",
+                            self.archive_max_gb,
+                            _ARCHIVE_MIN_GB,
+                            _ARCHIVE_MAX_GB,
+                        )
+                        if changed:
+                            self.archive_max_gb = _archive_max_gb(archive_max_gb)
+                            self._set_workspace_settings(
+                                {_ARCHIVE_MAX_GB_KEY: self.archive_max_gb}
+                            )
+                compression_level = getattr(self, "ba2_compression_level", None)
+                compression_idx = (
+                    _BA2_COMPRESSION_VALUES.index(compression_level)
+                    if compression_level in _BA2_COMPRESSION_VALUES
+                    else 0
                 )
-            else:
-                imgui.text_disabled(
-                    "Resume overwrites outputs from the selected phase onward."
+                imgui.set_next_item_width(scaled(220))
+                changed, compression_idx = imgui.combo(
+                    f"BA2 compression{_NS}",
+                    compression_idx,
+                    _BA2_COMPRESSION_LABELS,
                 )
-            if running:
-                imgui.end_disabled()
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(
+                        "Higher levels make smaller BA2s but take longer to pack. "
+                        "Default preserves the format-specific levels (general 6, textures 4)."
+                    )
+                if changed:
+                    self.ba2_compression_level = _BA2_COMPRESSION_VALUES[compression_idx]
+                    self._set_workspace_settings(
+                        {_BA2_COMPRESSION_KEY: self.ba2_compression_level}
+                    )
+                changed, self.atlas_mip_flooding = toggle(
+                    f"Atlas mip flooding{_NS}",
+                    self.atlas_mip_flooding,
+                )
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(
+                        "Flood atlas base RGB through transparent pixels in Rust before normal DDS "
+                        "mip generation. Alpha-bearing BC1 atlases are promoted to BC3 so flooded "
+                        "RGB survives compression; infinite dilation is the fallback."
+                    )
+                if changed:
+                    self._set_workspace_settings(
+                        {_ATLAS_MIP_FLOODING_KEY: self.atlas_mip_flooding}
+                    )
+                changed, self.texture_landscape_mip_flooding = toggle(
+                    f"Landscape diffuse mip flooding{_NS}",
+                    self.texture_landscape_mip_flooding,
+                )
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(
+                        "Flood converted landscape *_d.dds base RGB through transparent pixels "
+                        "before normal DDS mip generation. Alpha-bearing BC1 inputs are promoted "
+                        "to BC3; effects and other texture folders are not changed."
+                    )
+                if changed:
+                    self._set_workspace_settings(
+                        {
+                            _TEXTURE_LANDSCAPE_MIP_FLOODING_KEY: (
+                                self.texture_landscape_mip_flooding
+                            )
+                        }
+                    )
+                changed, self.generate_precombines = toggle(
+                    f"Generate precombines (experimental){_NS}",
+                    self.generate_precombines,
+                )
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(
+                        "EXPERIMENTAL. Bake interior precombined meshes (*_OC.nif) and "
+                        "stamp CELL PCMB/XCRI + REFR VC into the built ESM after the "
+                        "asset waves. Off by default; leave unchecked unless testing."
+                    )
+                if changed:
+                    self._set_workspace_settings(
+                        {_GENERATE_PRECOMBINES_KEY: self.generate_precombines}
+                    )
+                changed, self.full_logging = toggle(
+                    f"Full logging{_NS}",
+                    self.full_logging,
+                )
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(
+                        "Write per-conversion INFO logs, native stderr, memory/timing "
+                        "reports, and terrain debug output. Per-record drop tracing is "
+                        "included only when MODBOX_TRACE_DROPS is set and can use "
+                        "substantial disk space."
+                    )
+                if changed:
+                    self._set_workspace_settings({_FULL_LOGGING_KEY: self.full_logging})
+                imgui.separator()
+                recovery_idx = (
+                    _RECOVERY_PHASE_VALUES.index(self.recovery_phase)
+                    if self.recovery_phase in _RECOVERY_PHASE_VALUES
+                    else _RECOVERY_PHASE_VALUES.index("lodgen")
+                )
+                imgui.set_next_item_width(scaled(200))
+                changed, recovery_idx = imgui.combo(
+                    f"Resume from{_NS}",
+                    recovery_idx,
+                    _RECOVERY_PHASE_LABELS,
+                )
+                if changed:
+                    self.recovery_phase = _RECOVERY_PHASE_VALUES[recovery_idx]
+                    self._set_workspace_settings({_RECOVERY_PHASE_KEY: self.recovery_phase})
+                imgui.same_line()
+                needs_full_rebuild = self.recovery_phase in _RECOVERY_FULL_REBUILD_PHASES
+                can_resume = self._is_default_pair() and (
+                    self.can_convert() if needs_full_rebuild else self.can_deploy_existing()
+                )
+                if not can_resume:
+                    imgui.begin_disabled()
+                if imgui.button(f"Resume{_NS}"):
+                    self.start_resume_from_phase()
+                if not can_resume:
+                    imgui.end_disabled()
+                if needs_full_rebuild:
+                    imgui.text_disabled(
+                        "No durable ESP exists at this point; recovery reruns record conversion."
+                    )
+                else:
+                    imgui.text_disabled(
+                        "Resume overwrites outputs from the selected phase onward."
+                    )
+                if running:
+                    imgui.end_disabled()
 
     def _run_install_audit(self):
         try:
@@ -2298,20 +2973,20 @@ class RegenPanel:
     def _draw_install_audit(self) -> None:
         if self._install_audit_error:
             imgui.text_colored(
-                imgui.ImVec4(1.0, 0.4, 0.4, 1.0), self._install_audit_error
+                semantic_color("error"), self._install_audit_error
             )
             return
         report = self._install_audit
         if report is None:
             return
         if report.note:
-            imgui.text_colored(imgui.ImVec4(1.0, 0.9, 0.3, 1.0), report.note)
+            imgui.text_colored(semantic_color("warning"), report.note)
         for row in report.rows:
             ok = row.deployed and (row.registered is True or row.registered is None)
             color = (
-                imgui.ImVec4(0.4, 0.8, 0.4, 1.0)
+                semantic_color("success")
                 if ok
-                else imgui.ImVec4(1.0, 0.4, 0.4, 1.0)
+                else semantic_color("error")
             )
             imgui.text_colored(
                 color,
@@ -2321,7 +2996,7 @@ class RegenPanel:
         stale_registration = getattr(report, "stale_registration", [])
         for name in stale_registration:
             imgui.text_colored(
-                imgui.ImVec4(1.0, 0.7, 0.3, 1.0),
+                semantic_color("warning"),
                 f"STALE  {name}  (no matching deployed archive)",
             )
         if (
@@ -2334,13 +3009,14 @@ class RegenPanel:
         report = self._preflight_report
         if report is None:
             return
+        prepare_dialog(640, 440)
         if imgui.begin(f"Missing conversion inputs{_NS}_preflight"):
             imgui.text_wrapped(
                 "Conversion cannot start until these inputs are extracted:"
             )
             imgui.separator()
             for item in report.required_missing:
-                imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(1.0, 0.9, 0.3, 1.0))
+                imgui.push_style_color(imgui.Col_.text, semantic_color("warning"))
                 imgui.text(item.label)
                 imgui.pop_style_color()
                 imgui.text_wrapped(item.checked_path)
@@ -2362,6 +3038,7 @@ class RegenPanel:
 
     def _draw_low_space_modal(self) -> None:
         if getattr(self, "_waiting_for_space_check", False):
+            prepare_dialog(560, 210)
             if imgui.begin(f"Measuring available disk space{_NS}_disk_space_wait"):
                 imgui.text_wrapped(
                     "Checking the conversion and install drives before starting."
@@ -2374,6 +3051,7 @@ class RegenPanel:
         volumes = getattr(self, "_low_space_warning", None)
         if not volumes:
             return
+        prepare_dialog(640, 380)
         if imgui.begin(f"Not enough free space{_NS}_disk_space"):
             imgui.text_wrapped(
                 "The conversion may run out of disk space. The estimate includes the "
@@ -2384,7 +3062,7 @@ class RegenPanel:
             for volume in volumes:
                 if volume.unavailable:
                     imgui.text_colored(
-                        _COL_WARN,
+                        semantic_color("warning"),
                         f"{volume.key or volume.path.anchor}: available space "
                         "could not be measured",
                     )
@@ -2393,7 +3071,7 @@ class RegenPanel:
                     imgui.separator()
                     continue
                 imgui.text_colored(
-                    _COL_WARN,
+                    semantic_color("warning"),
                     f"{volume.key or volume.path.anchor}: "
                     f"{_format_gb(volume.required_bytes)} needed, "
                     f"{_format_gb(volume.free_bytes)} free",
@@ -2418,7 +3096,7 @@ class RegenPanel:
             selected = set(self._cleanup_selected)
             message = self._cleanup_message
             error = self._cleanup_error
-        imgui.set_next_window_size(imgui.ImVec2(720, 430), imgui.Cond_.appearing)
+        prepare_dialog(720, 430)
         window_flags = (
             imgui.WindowFlags_.no_scrollbar.value
             | imgui.WindowFlags_.no_scroll_with_mouse.value
@@ -2442,8 +3120,8 @@ class RegenPanel:
                 | imgui.TableFlags_.sizing_stretch_prop.value
             )
             table_height = max(
-                120.0,
-                min(240.0, imgui.get_content_region_avail().y - 82.0),
+                scaled(120),
+                min(scaled(240), imgui.get_content_region_avail().y - scaled(82)),
             )
             if imgui.begin_table(
                 f"{_NS}_cleanup_grid",
@@ -2454,9 +3132,9 @@ class RegenPanel:
                 fixed = imgui.TableColumnFlags_.width_fixed.value
                 stretch = imgui.TableColumnFlags_.width_stretch.value
                 no_resize = imgui.TableColumnFlags_.no_resize.value
-                imgui.table_setup_column("", fixed | no_resize, 34.0)
+                imgui.table_setup_column("", fixed | no_resize, scaled(34))
                 imgui.table_setup_column("Cleanup category", stretch | no_resize)
-                imgui.table_setup_column("Space saved", fixed | no_resize, 120.0)
+                imgui.table_setup_column("Space saved", fixed | no_resize, scaled(120))
                 imgui.table_headers_row()
                 for target in targets:
                     imgui.table_next_row()
@@ -2476,10 +3154,10 @@ class RegenPanel:
                         else:
                             selected.discard(target.key)
                     imgui.table_set_column_index(1)
-                    imgui.text(target.label)
+                    imgui.text_wrapped(target.label)
                     imgui.table_set_column_index(2)
                     if target.size_bytes > 0:
-                        imgui.text_colored(_COL_OK, _format_gb(target.size_bytes))
+                        imgui.text_colored(semantic_color("success"), _format_gb(target.size_bytes))
                     else:
                         imgui.text_disabled(_format_gb(0))
                 imgui.end_table()
@@ -2506,9 +3184,9 @@ class RegenPanel:
                 except OSError as exc:
                     self._cleanup_error = str(exc)
             if message:
-                imgui.text_colored(_COL_OK, message)
+                imgui.text_colored(semantic_color("success"), message)
             if error:
-                imgui.text_colored(_COL_ERR, error)
+                imgui.text_colored(semantic_color("error"), error)
             if busy:
                 imgui.end_disabled()
             if status == "scanning":
@@ -2528,8 +3206,15 @@ class RegenPanel:
     def _draw_completion_popup(self) -> None:
         if not self._completion:
             return
+        prepare_dialog(600, 360)
         if imgui.begin(f"Conversion complete{_NS}_done"):
             c = self._completion
+            if c.get("elapsed_seconds") is not None:
+                operation = "deployment" if c.get("deploy_existing") else (
+                    "recovery" if c.get("resume_from") else "conversion"
+                )
+                heading(f"Total {operation} time: {_format_duration(c['elapsed_seconds'])}")
+                imgui.separator()
             if c["deployed"]:
                 if c.get("deploy_existing"):
                     imgui.text("Existing mod deployed.")
@@ -2552,7 +3237,7 @@ class RegenPanel:
                     import os
 
                     os.startfile(c["mod_path"])  # noqa: S606 (Windows-only UI)
-                if c.get("ini_snippet"):
+                if self.deploy_format != "standard" and c.get("ini_snippet"):
                     imgui.separator()
                     imgui.text("Add these lines to Fallout4Custom.ini:")
                     imgui.text_wrapped(c["ini_snippet"])

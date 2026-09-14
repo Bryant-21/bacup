@@ -21,7 +21,7 @@ from creation_lib.ui.shell import BaseWorkspace, make_window
 from ui.toolkit.app_paths import get_resource_dir
 from creation_lib.ui.widgets import pick_folder
 from creation_lib.ui.widgets.audio_player import InlineAudioPlayer as _InlineAudioPlayer
-from ui.tools.imgui_helpers import pick_file
+from creation_lib.ui.widgets.forms import pick_file
 
 _log = logging.getLogger("ui.bsa_viewer")
 

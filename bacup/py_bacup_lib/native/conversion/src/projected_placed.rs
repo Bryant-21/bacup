@@ -1,16 +1,12 @@
 //! Native orchestration of the projected placed-children copy and the
 //! worldspace persistent-cell synthesis.
 //!
-//! Previously Python (`workflows/unified.py`) drove these phases by pulling
-//! the full worldspace topology (3.2M+ placed-ref form keys for Appalachia)
-//! across the PyO3 boundary as JSON, remapping it in Python, and pushing it
-//! back — ~400s of marshalling around ~13s of native mutation, and the
-//! persistent phase repeated the identical source scan. Here the topology
-//! never leaves Rust: one collection feeds both phases (seed keys are cached
-//! on the run), the grid routing is native, and the mapper lookup uses the
-//! run's own `mapper_state`. The esp-crate mutation kernels
-//! (`copy_cell_slice_children_payload` / `synthesize_worldspace_persistent_cell_payload`)
-//! are the same production copy path as before — only the transport moved.
+//! The worldspace topology (3.2M+ placed-ref form keys for Appalachia) stays in
+//! Rust; marshalling it through Python as JSON costs ~400s against ~13s of
+//! native mutation. One collection feeds both phases (seed keys are cached on
+//! the run), grid routing is native, and lookups use the run's `mapper_state`.
+//! The mutation kernels are the esp crate's `copy_cell_slice_children_payload`
+//! and `synthesize_worldspace_persistent_cell_payload`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
@@ -18,8 +14,8 @@ use std::time::Instant;
 use esp_authoring_core::plugin_runtime::{
     CellChildrenPayload, CellSliceInsertPayload, CellSliceRootsPayload,
     SynthesizePersistentCellPayload, collect_cell_grid_form_keys, collect_cell_slice_roots_payload,
-    collect_worldspace_persistent_base_keys, copy_cell_slice_children_payload,
-    synthesize_worldspace_persistent_cell_payload,
+    collect_worldspace_persistent_base_keys, copy_cell_slice_children_payload_with_workers,
+    synthesize_worldspace_persistent_cell_payload_with_workers,
 };
 use pyo3::PyResult;
 use pyo3::exceptions::PyValueError;
@@ -98,6 +94,26 @@ fn run_handles(run_id: u64) -> PyResult<(u64, u64)> {
     .map_err(|err| PyValueError::new_err(format!("projected placed: run lookup failed: {err:?}")))
 }
 
+fn effective_worker_count(run_id: u64, requested: Option<usize>) -> PyResult<usize> {
+    let configured = with_run(run_id, |run| {
+        Ok::<_, RunError>(run.config.conversion_workers.filter(|workers| *workers > 0))
+    })
+    .map_err(|err| {
+        PyValueError::new_err(format!("projected placed: worker lookup failed: {err:?}"))
+    })?;
+    let requested = requested.filter(|workers| *workers > 0);
+    Ok(bounded_worker_count(configured, requested))
+}
+
+fn bounded_worker_count(configured: Option<usize>, requested: Option<usize>) -> usize {
+    match (configured, requested) {
+        (Some(limit), Some(requested)) => requested.min(limit),
+        (Some(limit), None) => limit,
+        (None, Some(requested)) => requested,
+        (None, None) => 1,
+    }
+}
+
 fn cell_slice_form_key_map_key(plugin: &str, local: u32) -> String {
     format!(
         "{}:{:06X}",
@@ -147,6 +163,7 @@ pub fn copy_projected_placed_children(
     worker_count: Option<usize>,
 ) -> PyResult<String> {
     let (source_handle_id, target_handle_id) = run_handles(run_id)?;
+    let worker_count = effective_worker_count(run_id, worker_count)?;
     let mut timing: BTreeMap<String, u128> = BTreeMap::new();
 
     // include_worldspace_persistent_cell=true (the legacy copy collected with
@@ -162,7 +179,7 @@ pub fn copy_projected_placed_children(
         bounds.2,
         bounds.3,
         true,
-        worker_count,
+        Some(worker_count),
     )?;
     timing.insert(
         "collect_source_roots_ms".to_string(),
@@ -177,13 +194,13 @@ pub fn copy_projected_placed_children(
     );
 
     let seed_keys = build_map_sources(&roots);
+    let t = Instant::now();
+    let form_key_map = lookup_form_key_map(run_id, &seed_keys)?;
+    timing.insert("form_key_map_ms".to_string(), t.elapsed().as_millis());
     with_run(run_id, |run| {
         run.projected_seed_cache.insert(
             source_worldspace.to_string(),
-            ProjectedSeedCacheEntry {
-                bounds,
-                seed_keys: seed_keys.clone(),
-            },
+            ProjectedSeedCacheEntry { bounds, seed_keys },
         );
         Ok::<_, RunError>(())
     })
@@ -191,16 +208,19 @@ pub fn copy_projected_placed_children(
         PyValueError::new_err(format!("projected placed: seed cache failed: {err:?}"))
     })?;
 
-    let t = Instant::now();
-    let form_key_map = lookup_form_key_map(run_id, &seed_keys)?;
-    timing.insert("form_key_map_ms".to_string(), t.elapsed().as_millis());
-
     let mut children_by_target_cell: BTreeMap<String, CellChildrenPayload> = BTreeMap::new();
     let mut source_cells = 0usize;
     let mut matched_cells = 0usize;
     let mut placed = 0usize;
-    for (cell_key, sections) in &roots.cell_children {
-        if roots.worldspace_persistent_children_key.as_deref() == Some(cell_key.as_str()) {
+    let CellSliceRootsPayload {
+        worldspace_persistent_children_key,
+        cell_grids,
+        cell_children,
+        warnings: collect_warnings,
+        ..
+    } = roots;
+    for (cell_key, sections) in cell_children {
+        if worldspace_persistent_children_key.as_deref() == Some(cell_key.as_str()) {
             continue;
         }
         if sections.persistent.is_empty() && sections.temporary.is_empty() {
@@ -208,41 +228,40 @@ pub fn copy_projected_placed_children(
         }
         source_cells += 1;
         placed += sections.persistent.len() + sections.temporary.len();
-        let grid_match = roots
-            .cell_grids
-            .get(cell_key)
+        let grid_match = cell_grids
+            .get(&cell_key)
             .and_then(|grid| target_by_grid.get(&(grid.x, grid.y)))
             .cloned();
         if grid_match.is_some() {
             matched_cells += 1;
         }
         let target_cell_key =
-            grid_match.unwrap_or_else(|| preserved_target_form_key(cell_key, &target_plugin_name));
+            grid_match.unwrap_or_else(|| preserved_target_form_key(&cell_key, &target_plugin_name));
         let entry = children_by_target_cell.entry(target_cell_key).or_default();
         entry.persistent.extend(
             sections
                 .persistent
-                .iter()
-                .map(|key| preserved_target_form_key(key, &target_plugin_name)),
+                .into_iter()
+                .map(|key| preserved_target_form_key(&key, &target_plugin_name)),
         );
         entry.temporary.extend(
             sections
                 .temporary
-                .iter()
-                .map(|key| preserved_target_form_key(key, &target_plugin_name)),
+                .into_iter()
+                .map(|key| preserved_target_form_key(&key, &target_plugin_name)),
         );
     }
-
     let copy = if children_by_target_cell.is_empty() {
         None
     } else {
         let t = Instant::now();
-        let payload = copy_cell_slice_children_payload(
+        let payload = copy_cell_slice_children_payload_with_workers(
             source_handle_id,
             target_handle_id,
             children_by_target_cell,
             offset,
             form_key_map,
+            Some(worker_count),
         )?;
         timing.insert("native_copy_ms".to_string(), t.elapsed().as_millis());
         Some(payload)
@@ -253,7 +272,7 @@ pub fn copy_projected_placed_children(
         placed,
         source_cells,
         matched_cells,
-        collect_warnings: roots.warnings,
+        collect_warnings,
         timing,
     };
     serde_json::to_string(&report)
@@ -268,6 +287,7 @@ pub fn synthesize_projected_persistent_cell(
     worker_count: Option<usize>,
 ) -> PyResult<String> {
     let (source_handle_id, target_handle_id) = run_handles(run_id)?;
+    let worker_count = effective_worker_count(run_id, worker_count)?;
     let mut timing: BTreeMap<String, u128> = BTreeMap::new();
 
     let t = Instant::now();
@@ -288,7 +308,7 @@ pub fn synthesize_projected_persistent_cell(
                 full_bounds.2,
                 full_bounds.3,
                 true,
-                worker_count,
+                Some(worker_count),
             )?;
             (build_map_sources(&roots), false)
         }
@@ -320,12 +340,13 @@ pub fn synthesize_projected_persistent_cell(
     timing.insert("form_key_map_ms".to_string(), t.elapsed().as_millis());
 
     let t = Instant::now();
-    let synth = synthesize_worldspace_persistent_cell_payload(
+    let synth = synthesize_worldspace_persistent_cell_payload_with_workers(
         source_handle_id,
         target_handle_id,
         source_worldspace,
         offset,
         form_key_map,
+        Some(worker_count),
     )?;
     timing.insert("native_synth_ms".to_string(), t.elapsed().as_millis());
 
@@ -389,5 +410,13 @@ mod tests {
             cell_slice_form_key_map_key("SeventySix.esm", 0x0100_0034),
             "seventysix.esm:000034"
         );
+    }
+
+    #[test]
+    fn configured_workers_are_the_hard_limit() {
+        assert_eq!(bounded_worker_count(Some(4), Some(12)), 4);
+        assert_eq!(bounded_worker_count(Some(4), Some(2)), 2);
+        assert_eq!(bounded_worker_count(Some(4), None), 4);
+        assert_eq!(bounded_worker_count(None, None), 1);
     }
 }

@@ -26,6 +26,39 @@ fn string_value(value: &FieldValue, interner: &StringInterner) -> Option<String>
 /// `Actors\Character\Behaviors\*` graphs, so a subgraph's core-behavior path names
 /// `Character` and cannot identify the race that owns the animation project.
 fn race_dir_from_skeletal_model(record: &Record, interner: &StringInterner) -> Option<String> {
+    fn project_dir(value: &FieldValue, interner: &StringInterner) -> Option<String> {
+        match value {
+            FieldValue::String(sym) => {
+                let path = interner.resolve(*sym)?.replace('/', "\\");
+                if path.to_ascii_lowercase().ends_with(".hkx") {
+                    path.rsplit_once('\\').map(|(dir, _)| dir.to_string())
+                } else {
+                    None
+                }
+            }
+            FieldValue::Struct(fields) => fields.iter().find_map(|(name, value)| {
+                if interner.resolve(*name) == Some("MODL")
+                    || matches!(value, FieldValue::Struct(_) | FieldValue::List(_))
+                {
+                    project_dir(value, interner)
+                } else {
+                    None
+                }
+            }),
+            FieldValue::List(values) => {
+                values.iter().find_map(|value| project_dir(value, interner))
+            }
+            _ => None,
+        }
+    }
+    if let Some(dir) = record
+        .fields
+        .iter()
+        .filter(|entry| entry.sig.as_str() != "SGNM" && entry.sig.as_str() != "SAPT")
+        .find_map(|entry| project_dir(&entry.value, interner))
+    {
+        return Some(dir);
+    }
     let anam = SubrecordSig::from_str("ANAM").ok()?;
     record
         .fields
@@ -179,17 +212,15 @@ pub fn atke_events_from_race_record(record: &Record, interner: &StringInterner) 
         .collect()
 }
 
-/// Whether an IDLE `ENAM` event is an AI-initiated combat event by NAME prefix — a
-/// proxy for the recipe's root-AACT whitelist (`ActionEvade`/`ActionDodge`/`ActionFire*`/
-/// dynamic-anim), which classifies by walking `ANAM` up to a vanilla `AACT`.
+/// Whether an IDLE `ENAM` event is an AI-initiated combat event, by name prefix.
 ///
-/// The dispatcher cannot perform that walk: AACT records live in the master
-/// (`Fallout4.esm`) and the session decodes only the active plugin. This name proxy
-/// admits exactly the AI-combat event families (their event names carry the action
-/// semantics: `evadeLeft`/`dodgeBack`/`FireSingle`/`DynamicAnim`) and excludes
-/// hit-react/death/locomotion/weapon-handling idles — matching the converted-creature
-/// oracles (Snallygaster `DynamicAnim`/`FireSingle`/`evade*`). KNOWN-GAP: the precise
-/// SET membership is in-game-gated; the byte-exact resolver maps whatever survives.
+/// Stands in for the recipe's root-AACT whitelist (`ActionEvade`/`ActionDodge`/
+/// `ActionFire*`/dynamic-anim), which walks `ANAM` up to a vanilla `AACT`; AACT
+/// records live in `Fallout4.esm` and the session decodes only the active plugin.
+/// Admits the `evade`/`dodge`/`fire`/`dynamic` families and excludes hit-react,
+/// death, locomotion and weapon-handling idles, matching the converted-creature
+/// oracles (Snallygaster `DynamicAnim`/`FireSingle`/`evade*`). Known gap: the
+/// exact set is unverified in game.
 fn is_ai_combat_idle_event(name: &str) -> bool {
     let lc = name.to_ascii_lowercase();
     ["evade", "dodge", "fire", "dynamic"]
@@ -204,7 +235,7 @@ fn is_ai_combat_idle_event(name: &str) -> bool {
 /// SAPT-chain override resolution). The caller owns the handle lifecycle (load
 /// before, close after). Returns the total number of bucket files written.
 ///
-/// Emitted (CK-free, byte-exact format — RE specs in `scratchpad/atd_re/`):
+/// Emitted (CK-free, byte-exact format):
 /// * `AnimationFileData/<id>.txt` — per subgraph (clip→anim file list).
 /// * `AnimationFileData/<projectname>.txt` — main flag-0 project manifest.
 /// * `AnimationFileData/<name>fx.txt` — FX project manifest (from
@@ -277,15 +308,18 @@ pub fn generate_anim_text_data_for_handle_with_progress(
     progress: &mut dyn FnMut(&str),
 ) -> Result<u32, String> {
     let inputs = decode_anim_text_data_inputs_for_handle(handle_id, base_race_handle_ids)?;
-    generate_anim_text_data_with_progress(
+    let report = generate_anim_text_data_with_progress(
         &inputs,
         src_meshes_root,
         out_meshes_root,
         base_meshes_root,
         mod_prefix,
         progress,
-    )
-    .map(|report| report.written)
+    )?;
+    crate::fixups::creature::player_fear::write_selection_timing(
+        &inputs.subgraphs, src_meshes_root, out_meshes_root,
+    )?;
+    Ok(report.written)
 }
 
 fn decode_anim_text_data_inputs_for_handle(
@@ -346,8 +380,18 @@ fn decode_anim_text_data_inputs_for_handle(
         }
     }
 
-    // IDLE `GNAM` wildcard animation paths feed DynamicIdleData; IDLE `ENAM` (the idle
-    // event name) feeds the AnimEventInfo candidate set when AI-combat-classified.
+    let furniture_cores: std::collections::BTreeSet<_> = weapon_profiles
+        .iter()
+        .filter(|profile| profile.stance.sraf.role == 2)
+        .map(|profile| {
+            profile
+                .subgraph
+                .core_behavior
+                .replace('/', "\\")
+                .to_ascii_lowercase()
+        })
+        .collect();
+    // Furniture actions need event metadata before the engine can select an entry point.
     let mut idle_globs: Vec<String> = Vec::new();
     if let (Ok(idle_sig), Ok(gnam_sig), Ok(enam_sig)) = (
         SigCode::from_str("IDLE"),
@@ -357,6 +401,13 @@ fn decode_anim_text_data_inputs_for_handle(
         if let Ok(idle_fks) = session.form_keys_of_sig(idle_sig, &interner) {
             for fk in &idle_fks {
                 if let Ok(rec) = session.record_decoded(fk, schema.as_ref(), &interner) {
+                    let furniture_idle = rec.fields.iter().any(|field| {
+                        field.sig.as_str() == "DNAM"
+                            && string_value(&field.value, &interner).is_some_and(|path| {
+                                furniture_cores
+                                    .contains(&path.replace('/', "\\").to_ascii_lowercase())
+                            })
+                    });
                     for f in &rec.fields {
                         if f.sig == gnam_sig {
                             if let Some(s) = string_value(&f.value, &interner) {
@@ -366,7 +417,8 @@ fn decode_anim_text_data_inputs_for_handle(
                             }
                         } else if f.sig == enam_sig {
                             if let Some(s) = string_value(&f.value, &interner) {
-                                if is_ai_combat_idle_event(&s) {
+                                if is_ai_combat_idle_event(&s) || (furniture_idle && !s.is_empty())
+                                {
                                     event_candidates.push(s);
                                 }
                             }
@@ -495,6 +547,69 @@ mod tests {
     }
 
     #[test]
+    fn furniture_events_match_the_standalone_decoder() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("B21_Furniture.esp");
+        let handle =
+            PluginHandle(plugin_handle_new_native("B21_Furniture.esp", Some("fo4")).unwrap());
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle.0).unwrap();
+            insert_parsed_record_in_slot(
+                slot,
+                raw_record(
+                    "RACE",
+                    0x800,
+                    vec![
+                        raw_zstring("EDID", "B21_FurnitureRace"),
+                        raw_form_id("STKD", 0x810),
+                        raw_zstring(
+                            "SGNM",
+                            r"Actors\Character\Behaviors\B21_WorkbenchFurniture.hkx",
+                        ),
+                        raw_zstring("SAPT", r"Actors\Character\Animations\B21_Tinkers"),
+                        raw_bytes("SRAF", &[2, 0, 0, 0]),
+                    ],
+                ),
+            );
+            for (index, event) in ["sitStartFromStand", "standStart", ""].iter().enumerate() {
+                insert_parsed_record_in_slot(
+                    slot,
+                    raw_record(
+                        "IDLE",
+                        0x900 + index as u32,
+                        vec![
+                            raw_zstring("EDID", &format!("B21_FurnitureAction{index}")),
+                            raw_zstring(
+                                "DNAM",
+                                "actors/character/behaviors/b21_workbenchfurniture.hkx",
+                            ),
+                            raw_zstring("ENAM", event),
+                        ],
+                    ),
+                );
+            }
+            insert_parsed_record_in_slot(
+                slot,
+                raw_record(
+                    "IDLE",
+                    0x903,
+                    vec![
+                        raw_zstring("DNAM", r"Actors\Character\Behaviors\Unrelated.hkx"),
+                        raw_zstring("ENAM", "IdleStop"),
+                    ],
+                ),
+            );
+        }
+        plugin_handle_save_no_py(handle.0, path.to_str().unwrap()).unwrap();
+        let via_ck =
+            AnimTextDataInputs::from(subgraph_inputs_from_plugin(&path, "fo4", &[]).unwrap());
+        let via_session = decode_anim_text_data_inputs_for_handle(handle.0, &[]).unwrap();
+        assert_eq!(via_ck.event_candidates, ["sitStartFromStand", "standStart"]);
+        assert_eq!(via_ck, via_session);
+    }
+
+    #[test]
     fn ck_race_decode_matches_session_decode_for_race_idle_and_master_form_ids() {
         let temp = tempfile::tempdir().unwrap();
         let plugin = write_race_idle_fixture(temp.path());
@@ -591,5 +706,28 @@ mod tests {
         assert_eq!(subs[1].id(), 3419542945344999723);
         assert_eq!(subs[2].id(), 9947826212300345643);
         assert_eq!(subs[3].id(), 3632382008203366699);
+    }
+
+    #[test]
+    fn private_behavior_project_takes_precedence_over_original_skeleton_directory() {
+        let interner = StringInterner::new();
+        let mut race = make_snally_race(&interner);
+        race.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("ANAM").unwrap(),
+            value: FieldValue::String(
+                interner.intern(r"Actors\Snallygaster\CharacterAssets\skeleton.nif"),
+            ),
+        });
+        race.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("MODL").unwrap(),
+            value: FieldValue::String(
+                interner.intern(r"Actors\B21_FO76\Snallygaster\SnallygasterProject.hkx"),
+            ),
+        });
+        assert!(
+            subgraphs_from_race_record(&race, &interner)
+                .iter()
+                .all(|s| { s.race_dir.as_deref() == Some(r"Actors\B21_FO76\Snallygaster") })
+        );
     }
 }

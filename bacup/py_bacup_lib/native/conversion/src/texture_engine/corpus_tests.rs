@@ -80,6 +80,7 @@ fn task_quota_key(task: &TextureTask) -> &'static str {
         TextureTask::Single { .. } => "per_texel",
         TextureTask::Bundle { .. } => "bundle",
         TextureTask::SpecGloss { .. } => "specgloss",
+        TextureTask::StarfieldPbr { .. } => "starfield_pbr",
         TextureTask::SingleResidue { .. } => "residue",
         TextureTask::LegacySpecGloss { .. } => "legacy_specgloss",
         TextureTask::CubemapNormalize { .. } => "cubemap",
@@ -239,8 +240,10 @@ fn sample_equivalence_vs_legacy() {
                 }
                 // This corpus is FO76-only, so the Gamebryo task classes cannot
                 // be produced here and have no legacy counterpart to diff against.
-                TextureTask::LegacySpecGloss { .. } | TextureTask::CubemapNormalize { .. } => {
-                    panic!("Gamebryo task class in an FO76 corpus sample")
+                TextureTask::LegacySpecGloss { .. }
+                | TextureTask::CubemapNormalize { .. }
+                | TextureTask::StarfieldPbr { .. } => {
+                    panic!("non-FO76 task class in an FO76 corpus sample")
                 }
                 TextureTask::Bundle { .. }
                 | TextureTask::SpecGloss { .. }
@@ -307,6 +310,7 @@ fn full_corpus_timed() {
     let use_gpu = std::env::var("MODBOX_PLAN5_CPU").ok().as_deref() != Some("1");
     let params = TextureEngineParams {
         source_extracted: src.clone(),
+        source_inventory: None,
         data_root: out.join("data"),
         source_game: "fo76".to_string(),
         target_game: "fo4".to_string(),
@@ -323,6 +327,7 @@ fn full_corpus_timed() {
             Vec::new()
         },
         target_assets: None,
+        base_overwrite_prefixes: Vec::new(),
         skip_existing: false,
         use_gpu,
         gpu_min_pixels: 512 * 512,
@@ -351,6 +356,7 @@ fn full_corpus_timed() {
         super::materials::run_materials_engine(super::materials::MaterialsEngineParams {
             mod_path: out.clone(),
             source_extracted: src.clone(),
+            source_inventory: None,
             target_extracted: if fo4.is_dir() {
                 Some(fo4.clone())
             } else {
@@ -367,6 +373,7 @@ fn full_corpus_timed() {
             source_materialsdb: None,
             overwrite_existing: true,
             target_asset_paths: HashSet::new(),
+            base_overwrite_prefixes: Vec::new(),
         });
     let materials_secs = m_started.elapsed().as_secs();
 

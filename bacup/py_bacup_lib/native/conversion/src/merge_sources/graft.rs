@@ -134,6 +134,7 @@ fn container_group_type(record: &ParsedRecord) -> Option<i32> {
         "WRLD" => Some(1),
         "CELL" => Some(6),
         "DIAL" => Some(7),
+        "QUST" => Some(10),
         _ => None,
     }
 }

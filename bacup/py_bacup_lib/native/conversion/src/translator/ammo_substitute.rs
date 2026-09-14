@@ -1,9 +1,5 @@
-//! Ammo substitute table — FNV ammo EditorID → FO4 FormKey mapping.
-//!
-//!
-//! Loads `record/translation_maps/ammo_fnv_to_fo4.yaml` and exposes a
-//! `lookup` function that returns the FO4 FormKey string for a given FNV
-//! ammo EditorID.
+//! Ammo substitute table: FNV ammo EditorID → FO4 FormKey mapping, loaded
+//! from `embedded/translation_maps/ammo_fnv_to_fo4.yaml`.
 //!
 //! # YAML format
 //!
@@ -21,17 +17,6 @@
 //!
 //! The `form_id` is a hex string (with leading zeros). The canonical FO4
 //! FormKey is formatted as `<form_id>@<master>`, e.g. `0001F276@Fallout4.esm`.
-//!
-//! # Usage
-//!
-//! ```no_run
-//! use esp_authoring_core::conversion::translator::ammo_substitute::AmmoSubstituteTable;
-//!
-//! let table = AmmoSubstituteTable::from_yaml(yaml_str).unwrap();
-//! if let Some(fk) = table.lookup("Ammo10mm") {
-//!     println!("FO4 ammo FormKey: {fk}");
-//! }
-//! ```
 
 use rustc_hash::FxHashMap;
 
@@ -62,12 +47,9 @@ pub struct AmmoSubstituteTable {
 }
 
 impl AmmoSubstituteTable {
-    /// Parse the YAML text of `ammo_fnv_to_fo4.yaml` into a table.
-    ///
-    /// Parses via `serde_saphyr` (the project's YAML parser) into a
-    /// `serde_json::Value` map. Returns an empty table (not an error) when
-    /// the YAML is empty, missing the `ammo` key, or the key maps to a
-    /// non-mapping value.
+    /// Parse the YAML text of `ammo_fnv_to_fo4.yaml` into a table. Returns an
+    /// empty table (not an error) when the YAML is empty, missing the `ammo`
+    /// key, or the key maps to a non-mapping value.
     pub fn from_yaml(yaml_text: &str) -> Result<Self, String> {
         if yaml_text.trim().is_empty() {
             return Ok(Self::default());

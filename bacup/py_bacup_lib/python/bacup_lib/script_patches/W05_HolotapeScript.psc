@@ -1,9 +1,55 @@
 Event OnQuestInit()
     Actor player = Game.GetPlayer()
     If player
-        RegisterForRemoteEvent(player, "OnItemAdded")
+        RegisterForRemoteEvent(player, "OnPlayerLoadGame")
+        ResetTriggeringTapeListener(player)
     EndIf
 EndEvent
+
+Event Actor.OnPlayerLoadGame(Actor akSender)
+    If akSender == Game.GetPlayer()
+        ResetTriggeringTapeListener(akSender)
+    EndIf
+EndEvent
+
+Event OnReset()
+    Actor player = Game.GetPlayer()
+    If player
+        RegisterForRemoteEvent(player, "OnPlayerLoadGame")
+        ResetTriggeringTapeListener(player)
+    EndIf
+EndEvent
+
+Event OnQuestShutdown()
+    Actor player = Game.GetPlayer()
+    If player
+        UnregisterForRemoteEvent(player, "OnPlayerLoadGame")
+    EndIf
+    DisarmTriggeringTapeListener()
+EndEvent
+
+Function ResetTriggeringTapeListener(ObjectReference player)
+    DisarmTriggeringTapeListener()
+    Holotape firstTape = GetFirstTriggeringTape()
+    Holotape secondTape = GetSecondTriggeringTape()
+    If firstTape
+        AddInventoryEventFilter(firstTape)
+    EndIf
+    If secondTape && secondTape != firstTape
+        AddInventoryEventFilter(secondTape)
+    EndIf
+    If player && (firstTape || secondTape)
+        RegisterForRemoteEvent(player, "OnItemAdded")
+    EndIf
+EndFunction
+
+Function DisarmTriggeringTapeListener()
+    Actor player = Game.GetPlayer()
+    If player
+        UnregisterForRemoteEvent(player, "OnItemAdded")
+    EndIf
+    RemoveAllInventoryEventFilters()
+EndFunction
 
 Event ObjectReference.OnHolotapePlay(ObjectReference akSender, ObjectReference akTerminalRef)
     Holotape playedTape = GetPlayedHolotape(akSender)
@@ -55,5 +101,13 @@ Bool Function IsTriggeringTape(Holotape playedTape)
     If !playedTape
         Return False
     EndIf
-    Return playedTape == Game.GetFormFromFile(0x00569C98, "SeventySix.esm") || playedTape == Game.GetFormFromFile(0x005852F0, "SeventySix.esm")
+    Return playedTape == GetFirstTriggeringTape() || playedTape == GetSecondTriggeringTape()
+EndFunction
+
+Holotape Function GetFirstTriggeringTape()
+    Return Game.GetFormFromFile(0x00569C98, "SeventySix.esm") as Holotape
+EndFunction
+
+Holotape Function GetSecondTriggeringTape()
+    Return Game.GetFormFromFile(0x005852F0, "SeventySix.esm") as Holotape
 EndFunction

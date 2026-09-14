@@ -24,17 +24,13 @@ SOURCE_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 # the raw FO76 client extraction.
 FO76_EXTRACTED_SCRIPTS = REPO_ROOT / "extracted" / "fo76" / "scripts" / "client"
 
-# Every script patched by shard
-# w2-vault-systems-activator-enable-disable-toggle-linked-ref. VaultDotMatrixPrinterScript's
-# member is state-scoped ("waiting"); Vault79RaRaVentSoundScript's three members are
-# all top-level (OnLoad/OnUnload/OnTimer). Rows 4/5 (Vault79ReactorSecurityActivateScript,
-# Vault79ReactorVentilationScript) resolved to evidence-blocked after re-trace; the
-# remaining 5 rows resolved to non-defect. See
-# bacup/docs/stub_restoration/contracts/w2-vault-systems-activator-enable-disable-toggle-linked-ref.md
-# for full per-row evidence — only the two scripts below are patched/covered here.
+# Stateful Vault-system repairs covered by this focused merger/compiler suite.
 PATCH_CASES = (
+    "V94_3_GearRoomIDCardCaseScript",
     "VaultDotMatrixPrinterScript",
+    "Vault79ReactorVentilationScript",
     "Vault79RaRaVentSoundScript",
+    "Vault79SentryBotDeathScript",
 )
 
 
@@ -63,9 +59,11 @@ def _merged_source(script_name: str) -> str:
     patch = _script_patch_source(script_name)
     assert source_path.is_file(), source_path
     assert patch is not None
-    return _merge_script_method_patches(
+    merged = _merge_script_method_patches(
         source_path.read_text(encoding="utf-8"), patch
     )
+    assert _merge_script_method_patches(merged, patch) == merged
+    return merged
 
 
 def _state_block(source: str, state_name: str) -> str:
@@ -127,15 +125,119 @@ def test_dot_matrix_printer_active_state_is_untouched_by_the_patch():
     assert not re.search(r"State\s+active\b", patch, re.IGNORECASE)
 
 
+def test_reactor_ventilation_restores_the_bound_local_sequence_and_stage_handoff():
+    patch = _script_patch_source("Vault79ReactorVentilationScript")
+    assert patch is not None
+    assert "IsActivationBlocked()" in patch
+    assert "BlockActivation(True, True)" in patch
+    assert "myKlaxonDummy.Activate(akActionRef)" in patch
+    assert patch.count("myDoorDummy.Activate(akActionRef)") == 2
+    assert "Utility.Wait(4.0)" in patch
+    assert "myFanOffEnableTrigger.Disable()" in patch
+    assert "myFanOnEnableTrigger.Enable()" in patch
+    assert "myKillTrigger.Enable()" in patch
+    assert "myRadDisableTrigger.Disable()" in patch
+    assert "myVentilationSoundRef.Enable()" in patch
+    assert "myMachineHumRef.Enable()" in patch
+    assert "myFanOnSound.Play(myFanOnSoundRef)" in patch
+    assert "myFanOnSound2.Play(myFanOnSoundRef)" in patch
+    assert "mySecurityDummy.Activate(akActionRef)" in patch
+    assert 'Game.GetFormFromFile(0x0054EDB9, "SeventySix.esm") as Quest' in patch
+    assert "secretsRevealed.IsStageDone(400)" in patch
+    assert "!secretsRevealed.IsStageDone(450)" in patch
+    assert "secretsRevealed.SetStage(450)" in patch
+
+
+def test_reactor_ventilation_is_player_only_and_one_shot():
+    patch = _script_patch_source("Vault79ReactorVentilationScript")
+    assert patch is not None
+    assert "akActionRef != Game.GetPlayer() || IsActivationBlocked()" in patch
+    assert "BlockActivation(True, True)" in patch
+    assert "BlockActivation(False)" not in patch
+
+
+def test_reactor_ventilation_warns_before_enabling_the_lethal_transition():
+    patch = _script_patch_source("Vault79ReactorVentilationScript")
+    assert patch is not None
+    wait = patch.index("Utility.Wait(4.0)")
+    assert patch.index("myKlaxonDummy.Activate(akActionRef)") < wait
+    assert patch.index("myDoorDummy.Activate(akActionRef)") < wait
+    assert wait < patch.index("myKillTrigger.Enable()")
+    assert wait < patch.index("mySecurityDummy.Activate(akActionRef)")
+    stage = patch.index("secretsRevealed.SetStage(450)")
+    assert patch.index("myKillTrigger.Enable()") < stage
+    assert patch.index("mySecurityDummy.Activate(akActionRef)") < stage
+    assert stage < patch.rindex("myDoorDummy.Activate(akActionRef)")
+    assert stage < patch.rindex("myKlaxonDummy.Activate(akActionRef)")
+
+
+def test_sentry_bot_death_sets_both_supported_single_player_signal_carriers():
+    merged = _merged_source("Vault79SentryBotDeathScript")
+    assert merged.count("Event OnDeath(Actor akKiller)") == 1
+    assert "If myActorValue == None" in merged
+    actor_write = merged.index("SetValue(myActorValue, 1.0)")
+    player_guard = merged.index("playerRef != None && playerRef != Self")
+    player_write = merged.index("playerRef.SetValue(myActorValue, 1.0)")
+    assert actor_write < player_guard < player_write
+
+
+def test_v94_card_case_grants_the_bound_card_before_advancing_the_bound_stage():
+    patch = _script_patch_source("V94_3_GearRoomIDCardCaseScript")
+    assert patch is not None
+    on_activate = patch[: patch.index("Function InitializeCardCase()")]
+    grant = on_activate.index(
+        "playerRef.AddItem(myV94_3QI.V94_3_SecurityIDCard, 1, True)"
+    )
+    handoff = on_activate.index("CompleteSecurityIdPickup()", grant)
+    assert grant < handoff
+    assert "ITMKeycardPickup.Play(Self)" in on_activate[grant:handoff]
+    assert "V94_3_GearRoomIDCardCaseMessageHasCard.Show()" in on_activate
+
+    complete = patch[
+        patch.index("Function CompleteSecurityIdPickup()") :
+        patch.index("Function FinishActivation()")
+    ]
+    stage = complete.index("myV94_3QI.SetStage(completionStage)")
+    objective_completed = complete.index("myV94_3QI.SetObjectiveCompleted(20)")
+    objective_displayed = complete.index("myV94_3QI.SetObjectiveDisplayed(21)")
+    assert stage < objective_completed < objective_displayed
+
+
+def test_v94_card_case_uses_the_existing_busy_state_and_unlocks_every_exit():
+    patch = _script_patch_source("V94_3_GearRoomIDCardCaseScript")
+    assert patch is not None
+    on_activate = patch[: patch.index("Function InitializeCardCase()")]
+    block = on_activate.index("BlockActivation(True, True)")
+    busy = on_activate.index('GoToState("processingactivation")')
+    assert block < busy
+    assert on_activate.count("FinishActivation()") == 3
+    assert on_activate.count("Return") == 3
+    processing = _state_block(patch, "processingactivation")
+    assert "Event OnActivate(ObjectReference akActionRef)" in processing
+    finish = patch[patch.index("Function FinishActivation()") :]
+    ready = finish.index('GoToState("waitingforactivation")')
+    unblock = finish.index("BlockActivation(False)")
+    assert ready < unblock
+
+
+def test_v94_card_case_initializes_from_the_exact_live_quest_and_link_chain():
+    patch = _script_patch_source("V94_3_GearRoomIDCardCaseScript")
+    assert patch is not None
+    assert (
+        'Game.GetFormFromFile(0x0046F0DD, "SeventySix.esm") as '
+        "V94_3_VaultMissionQuestScript_Access"
+    ) in patch
+    assert "myFauxIDCards = GetLinkedRefChain()" in patch
+    assert "myFauxIDCards[myFauxIDCardIndex].Disable()" in patch
+
+
 def test_rara_vent_sound_declares_a_nonzero_fallback_helper_per_cue_family():
-    # CRITICAL fix (SHARD_PROTOCOL.md lesson #12, caught before review): wiki,
-    # verbatim, "Timers on ObjectReference scripts must have an explicit aiTimerID
-    # parameter, the default implicit timer ID 0 will never start." Every sampled
-    # live record binds DustDelayTimerId/BugKillDelayTimerId/KnifeDelayTimerId to
-    # the Papyrus Int default, 0 — so a raw StartTimer(length, XxxDelayTimerId)
-    # call is a silent no-op on every one of the 25 live instances. Each cue family
-    # must instead go through a helper that falls back to a distinct nonzero
-    # constant when the bound Id reads 0.
+    # Per the CK wiki, an ObjectReference timer with the implicit ID 0 never
+    # starts. Every sampled live record binds DustDelayTimerId/BugKillDelayTimerId/
+    # KnifeDelayTimerId to the Papyrus Int default 0, so a raw
+    # StartTimer(length, XxxDelayTimerId) is a silent no-op on all 25 live
+    # instances. Each cue family goes through a helper that falls back to a
+    # distinct nonzero constant when the bound Id reads 0.
     patch = _script_patch_source("Vault79RaRaVentSoundScript")
     assert patch is not None
     assert "Int Function EffectiveDustTimerId()" in patch
@@ -155,12 +257,10 @@ def test_rara_vent_sound_declares_a_nonzero_fallback_helper_per_cue_family():
 
 
 def test_rara_vent_sound_no_call_site_passes_a_bare_timer_id_property():
-    # Regression guard for the exact bug caught before review: StartTimer,
-    # CancelTimer, and the OnTimer id-match must ALL go through the
-    # EffectiveXxxTimerId() helpers, never the raw (always-0-on-live-data)
-    # DustDelayTimerId/BugKillDelayTimerId/KnifeDelayTimerId property directly —
-    # a single missed call site would silently reintroduce the no-op bug at that
-    # one site even with the helpers correctly defined elsewhere.
+    # StartTimer, CancelTimer, and the OnTimer id-match must all use the
+    # EffectiveXxxTimerId() helpers, never the raw (0 on live data)
+    # DustDelayTimerId/BugKillDelayTimerId/KnifeDelayTimerId properties; one missed
+    # call site is a no-op timer there.
     patch = _script_patch_source("Vault79RaRaVentSoundScript")
     assert patch is not None
     assert "StartTimer(DustDelayTimerLength, DustDelayTimerId)" not in patch
@@ -194,11 +294,10 @@ def test_rara_vent_sound_onload_arms_a_timer_per_bound_cue():
 
 
 def test_rara_vent_sound_onunload_cancels_every_timer_onload_could_have_armed():
-    # Coordinator-directed lifecycle fix: up to 24 simultaneously-loaded placed
-    # instances each arming up to 3 perpetual OnTimer loops means dozens of timers
-    # that must not survive a cell unload. OnUnload must mirror OnLoad's exact
-    # three guards (and the same Effective*TimerId() calls) so arm/cancel stay
-    # symmetric across repeated load/unload cycles.
+    # Up to 24 loaded instances each arm up to 3 perpetual OnTimer loops, and none
+    # may survive a cell unload. OnUnload mirrors OnLoad's three guards and
+    # Effective*TimerId() calls so arm/cancel stay symmetric across load/unload
+    # cycles.
     patch = _script_patch_source("Vault79RaRaVentSoundScript")
     assert patch is not None
     onunload = patch[patch.index("Event OnUnload(") : patch.index("Event OnTimer(")]
@@ -227,13 +326,8 @@ def test_rara_vent_sound_ontimer_dispatches_and_reschedules_each_cue():
 
 
 def test_rara_vent_sound_ontimer_reguards_bound_state_not_just_id_match():
-    # Residual collision mitigation (now secondary to the 0-never-starts fix, but
-    # still load-bearing): a CK author on an unsampled record could still set two
-    # cues' bound Id properties to the same positive value, or to a value that
-    # collides with another cue's 1/2/3 fallback constant. Each OnTimer branch
-    # must re-check its own Sound-bound guard (not just the id) so a collision
-    # degrades to "whichever bound cue matches first plays" instead of a
-    # None-reference call.
+    # Two cues can share an Id; each OnTimer branch re-checks its own Sound guard so a
+    # collision plays the first matching cue instead of calling on None.
     patch = _script_patch_source("Vault79RaRaVentSoundScript")
     assert patch is not None
     assert "aiTimerID == EffectiveDustTimerId() && mySound != None" in patch

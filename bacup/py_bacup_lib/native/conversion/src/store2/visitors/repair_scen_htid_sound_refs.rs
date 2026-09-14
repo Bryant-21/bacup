@@ -34,8 +34,11 @@ impl RecordVisitor for RepairScenHtidSoundRefsVisitor {
             master_cache.master_objid_sets(session, &config.target_master_handle_ids)?;
         let resolver =
             HtidResolver::build_with_master_objids(session, mapper.interner, master_objids)?;
-        // Degenerate-guard parity: need at least one output SNDR to repair to.
-        let candidate_sigs = if resolver.output_sndr_objids.is_empty() {
+        // Degenerate-guard parity: need at least one output SNDR or SOPM to
+        // repair to.
+        let candidate_sigs = if resolver.output_sndr_objids.is_empty()
+            && resolver.output_sopm_objids.is_empty()
+        {
             Vec::new()
         } else {
             vec![SigCode::from_str("SCEN").map_err(|e| FixupError::SchemaError(e.to_string()))?]
@@ -59,6 +62,7 @@ impl RecordVisitor for RepairScenHtidSoundRefsVisitor {
             .expect("htid resolver index");
         let mut patches = Vec::new();
         let mut occurrence = 0usize;
+        let mut dmax_occurrence = 0usize;
         let mut saw_topic = false;
         let mut saw_looping_max = false;
         for (sig, data) in subrecords {
@@ -70,6 +74,19 @@ impl RecordVisitor for RepairScenHtidSoundRefsVisitor {
                 "DATA" => saw_topic = true,
                 "DMAX" => saw_looping_max = true,
                 _ => {}
+            }
+            if *sig == "DMAX" {
+                let this = dmax_occurrence;
+                dmax_occurrence += 1;
+                let mut buf = data.to_vec();
+                if resolver.repair_dmax_bytes(&mut buf) {
+                    patches.push(SubrecordPatch {
+                        sig: "DMAX",
+                        occurrence: this,
+                        new_bytes: buf,
+                    });
+                }
+                continue;
             }
             if *sig != "HTID" {
                 continue;

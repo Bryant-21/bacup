@@ -1,13 +1,10 @@
 """Verifies that conversion_run_phase releases the GIL during phase execution.
 
-If a phase body ever uses Python::with_gil or holds a Py<PyAny>, the
-background-thread counter below will stall while the phase runs.
+Canary for the "no GIL contact from phase code" rule: if a phase body uses
+Python::with_gil or holds a Py<PyAny>, the background-thread counter stalls.
 
-This test is the canary for the "no GIL contact from phase code" rule.
-
-Note: We use sentinel handle IDs (not real plugins). The translate phase will
-fail quickly since the handles don't point to real plugins, but the GIL is
-released before the failure. We assert the ticker advanced to confirm this.
+The handles are sentinels, so the translate phase fails quickly, but only after
+releasing the GIL; the test asserts the ticker advanced.
 """
 from __future__ import annotations
 

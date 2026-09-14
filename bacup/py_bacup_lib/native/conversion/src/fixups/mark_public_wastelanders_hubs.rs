@@ -1,4 +1,4 @@
-//! Mark the three Wastelanders social hubs as public FO4 interior cells.
+//! Mark FO76 social hubs as public FO4 interior cells.
 //!
 //! Fallout 76 relies on online faction/runtime access rules for these cells.
 //! In Fallout 4, a faction-owned interior without CELL.DATA `Public Area`
@@ -13,11 +13,12 @@ use crate::sym::StringInterner;
 const CELL_OBJECT_ID_MASK: u32 = 0x00FF_FFFF;
 const FO4_CELL_PUBLIC_AREA_FLAG: u16 = 0x0020;
 
-/// Source-local CELL object ids for the public Wastelanders hubs.
-pub(crate) const WASTELANDERS_PUBLIC_HUB_CELL_LOCAL_IDS: [u32; 3] = [
+/// Source-local CELL object ids for public social hubs.
+pub(crate) const PUBLIC_SOCIAL_HUB_CELL_LOCAL_IDS: [u32; 4] = [
     0x0040_41F2, // The Wayward
     0x0040_A2C1, // Crater Core
     0x003F_880F, // Foundation Interior
+    0x0003_AAB,  // Fort Atlas
 ];
 
 /// Set FO4's CELL.DATA Public Area flag for an allowlisted source cell.
@@ -25,13 +26,13 @@ pub(crate) const WASTELANDERS_PUBLIC_HUB_CELL_LOCAL_IDS: [u32; 3] = [
 /// Returns true only when this invocation changes the DATA flags.  The helper
 /// intentionally has no access to XOWN, so ownership cannot be cleared or
 /// replaced as a side effect.
-pub(crate) fn mark_wastelanders_public_hub(
+pub(crate) fn mark_public_social_hub(
     source_local: u32,
     target_cell: &mut Record,
     interner: &StringInterner,
 ) -> bool {
     if target_cell.sig.0 != *b"CELL"
-        || !WASTELANDERS_PUBLIC_HUB_CELL_LOCAL_IDS.contains(&(source_local & CELL_OBJECT_ID_MASK))
+        || !PUBLIC_SOCIAL_HUB_CELL_LOCAL_IDS.contains(&(source_local & CELL_OBJECT_ID_MASK))
     {
         return false;
     }
@@ -131,12 +132,14 @@ mod tests {
     }
 
     #[test]
-    fn changes_exactly_the_three_allowlisted_cells_and_preserves_owners() {
+    fn changes_exactly_the_allowlisted_cells_and_preserves_owners() {
         let interner = StringInterner::new();
         let locals = [
-            WASTELANDERS_PUBLIC_HUB_CELL_LOCAL_IDS[0],
-            WASTELANDERS_PUBLIC_HUB_CELL_LOCAL_IDS[1],
-            WASTELANDERS_PUBLIC_HUB_CELL_LOCAL_IDS[2],
+            PUBLIC_SOCIAL_HUB_CELL_LOCAL_IDS[0],
+            PUBLIC_SOCIAL_HUB_CELL_LOCAL_IDS[1],
+            PUBLIC_SOCIAL_HUB_CELL_LOCAL_IDS[2],
+            PUBLIC_SOCIAL_HUB_CELL_LOCAL_IDS[3],
+            0x005A_7C2E, // FortAtlasDungeon01 remains private.
             0x0040_41F3,
         ];
         let mut cells: Vec<_> = locals
@@ -149,15 +152,16 @@ mod tests {
         let changed = cells
             .iter_mut()
             .zip(locals)
-            .map(|(cell, local)| mark_wastelanders_public_hub(local, cell, &interner))
+            .map(|(cell, local)| mark_public_social_hub(local, cell, &interner))
             .filter(|changed| *changed)
             .count();
 
-        assert_eq!(changed, 3);
-        for cell in &cells[..3] {
+        assert_eq!(changed, 4);
+        for cell in &cells[..4] {
             assert_eq!(data_flags(cell), 0x0001 | FO4_CELL_PUBLIC_AREA_FLAG);
         }
-        assert_eq!(data_flags(&cells[3]), 0x0001);
+        assert_eq!(data_flags(&cells[4]), 0x0001);
+        assert_eq!(data_flags(&cells[5]), 0x0001);
         assert_eq!(
             cells.iter().map(owner_value).collect::<Vec<_>>(),
             owners_before,
@@ -168,15 +172,15 @@ mod tests {
     #[test]
     fn source_id_match_is_independent_of_target_form_id_and_idempotent() {
         let interner = StringInterner::new();
-        let source_local = WASTELANDERS_PUBLIC_HUB_CELL_LOCAL_IDS[0];
+        let source_local = PUBLIC_SOCIAL_HUB_CELL_LOCAL_IDS[0];
         let mut relocated_target = cell(&interner, 0x0000_0800, 0x0001, 0x0001_1000);
 
-        assert!(mark_wastelanders_public_hub(
+        assert!(mark_public_social_hub(
             source_local,
             &mut relocated_target,
             &interner
         ));
-        assert!(!mark_wastelanders_public_hub(
+        assert!(!mark_public_social_hub(
             source_local,
             &mut relocated_target,
             &interner

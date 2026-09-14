@@ -5,7 +5,7 @@ Event OnLoad()
     parentScript = GetLinkedRef() as ArcadeBottleBlaster
 EndEvent
 
-Event OnHit(ObjectReference akTarget, ObjectReference akAggressor, Form akSource, Projectile akProjectile, Bool abPowerAttack, Bool abSneakAttack, Bool abBashAttack, Bool abHitBlocked, Bool abCritAttack, String asMaterialName)
+Event OnHit(ObjectReference akTarget, ObjectReference akAggressor, Form akSource, Projectile akProjectile, Bool abPowerAttack, Bool abSneakAttack, Bool abBashAttack, Bool abHitBlocked, String asMaterialName)
     Actor attacker = akAggressor as Actor
     If attacker != None && parentScript != None
         Int earnedScore = CalculateScore(attacker)

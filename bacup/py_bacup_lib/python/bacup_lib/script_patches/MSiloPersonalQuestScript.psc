@@ -4,6 +4,52 @@ Event OnQuestInit()
     parentQuest = MSilo
 EndEvent
 
+Bool Function PrepareSiloAliases(Location akLocation)
+    Actor player = Game.GetPlayer()
+    Quest managerQuest = MSilo
+    Quest personalQuest = Self as Quest
+    If player == None || managerQuest == None || personalQuest == None || akLocation == None
+        Return False
+    EndIf
+    If !personalQuest.IsRunning() && (personalQuest.IsCompleted() || personalQuest.IsStageDone(1000))
+        personalQuest.Reset()
+    EndIf
+
+    MSiloQuestScript_Main manager = managerQuest as MSiloQuestScript_Main
+    If manager == None
+        Return False
+    EndIf
+    manager.SelectLocation(akLocation)
+    LocationAlias managerLocationAlias = managerQuest.GetAlias(2) as LocationAlias
+    Location canonicalLocation = akLocation
+    If managerLocationAlias != None && managerLocationAlias.GetLocation() != None
+        canonicalLocation = managerLocationAlias.GetLocation()
+    EndIf
+
+    ReferenceAlias playerAlias = personalQuest.GetAlias(0) as ReferenceAlias
+    If playerAlias != None
+        playerAlias.ForceRefTo(player)
+    EndIf
+    MSiloLocation.ForceLocationTo(canonicalLocation)
+
+    questPlayer = player
+    questLocation = canonicalLocation
+    parentQuest = managerQuest
+    Return True
+EndFunction
+
+Bool Function EnsureSiloStarted(Location akLocation)
+    Quest managerQuest = MSilo
+    Quest personalQuest = Self as Quest
+    If managerQuest == None || personalQuest == None || akLocation == None
+        Return False
+    EndIf
+    If !PrepareSiloAliases(akLocation)
+        Return False
+    EndIf
+    Return (managerQuest.IsRunning() || managerQuest.IsCompleted()) && (personalQuest.IsRunning() || personalQuest.IsCompleted())
+EndFunction
+
 Function BeginSilo(Location akLocation)
     questPlayer = Game.GetPlayer()
     questLocation = akLocation
@@ -14,6 +60,10 @@ Function BeginSilo(Location akLocation)
 EndFunction
 
 Function TryToSetStage(Int aiStage)
+    Quest personalQuest = Self as Quest
+    If personalQuest == None || !personalQuest.IsRunning()
+        Return
+    EndIf
     If !IsStageDone(aiStage)
         SetStage(aiStage)
     EndIf
@@ -62,6 +112,9 @@ Function HandleStage(Int aiStage)
         CompleteObjective(170)
         HideObjective(110)
         (MSilo as MSiloQuestScript_Residential).SetLaserGridsOpen(True)
+        TryToSetStage(198)
+    ElseIf aiStage == 198
+        TryToSetStage(199)
     ElseIf aiStage == 200
         SetObjectiveDisplayed(210)
     ElseIf aiStage == 210
@@ -82,11 +135,17 @@ Function HandleStage(Int aiStage)
     ElseIf aiStage == 250
         CompleteObjective(240)
         (MSilo as MSiloQuestScript_Reactor).OpenSecurityDoors()
+        TryToSetStage(298)
+    ElseIf aiStage == 298
+        TryToSetStage(299)
     ElseIf aiStage == 300
         SetObjectiveDisplayed(310)
     ElseIf aiStage == 320
         CompleteObjective(310)
         (MSilo as MSiloQuestScript_Operations).SetLaserGridsOpen(True)
+        TryToSetStage(398)
+    ElseIf aiStage == 398
+        TryToSetStage(399)
     ElseIf aiStage == 400
         SetObjectiveDisplayed(410)
     ElseIf aiStage == 419
@@ -102,6 +161,9 @@ Function HandleStage(Int aiStage)
     ElseIf aiStage == 440
         CompleteObjective(430)
         (MSilo as MSiloQuestScript_Storage).OpenSecurityDoor(False)
+        TryToSetStage(498)
+    ElseIf aiStage == 498
+        TryToSetStage(499)
     ElseIf aiStage == 500
         SetObjectiveDisplayed(510)
     ElseIf aiStage == 520
@@ -115,7 +177,11 @@ Function HandleStage(Int aiStage)
         CompleteObjective(522)
         CompleteObjective(10)
         (MSilo as MSiloQuestScript_Control).CompleteLaunchPrep()
+        TryToSetStage(598)
+    ElseIf aiStage == 598
+        TryToSetStage(599)
     ElseIf aiStage == 1000
         CompleteAllObjectives()
+        Stop()
     EndIf
 EndFunction

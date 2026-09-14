@@ -18,6 +18,7 @@ pub const EVENTS_FO76_TO_FO4: &str =
 pub const FNV_TO_FO4: &str = include_str!("embedded/translation_maps/fnv_to_fo4.yaml");
 pub const FO3_TO_FO4: &str = include_str!("embedded/translation_maps/fo3_to_fo4.yaml");
 pub const FO4_TO_SKYRIMSE: &str = include_str!("embedded/translation_maps/fo4_to_skyrimse.yaml");
+pub const FO4_TO_STARFIELD: &str = include_str!("embedded/translation_maps/fo4_to_starfield.yaml");
 pub const FO76_TO_FNV: &str = include_str!("embedded/translation_maps/fo76_to_fnv.yaml");
 pub const FO76_TO_FO4: &str = include_str!("embedded/translation_maps/fo76_to_fo4.yaml");
 pub const FO76_TO_SKYRIMSE: &str = include_str!("embedded/translation_maps/fo76_to_skyrimse.yaml");
@@ -29,6 +30,8 @@ pub const SKELETON_FO3_TO_FO4: &str =
     include_str!("embedded/translation_maps/skeleton_fo3_to_fo4.yaml");
 pub const SKELETON_FO3_TO_FO4_CREATURES: &str =
     include_str!("embedded/translation_maps/skeleton_fo3_to_fo4_creatures.yaml");
+pub const SKELETON_SKYRIMSE_TO_FO4: &str =
+    include_str!("embedded/translation_maps/skeleton_skyrimse_to_fo4.yaml");
 pub const SKYRIMSE_TO_FO4: &str = include_str!("embedded/translation_maps/skyrimse_to_fo4.yaml");
 pub const STARFIELD_TO_FO4: &str = include_str!("embedded/translation_maps/starfield_to_fo4.yaml");
 
@@ -65,6 +68,7 @@ pub const PRIMARY_MAPS: &[(&str, &str)] = &[
     ("fnv_to_fo4", FNV_TO_FO4),
     ("fo3_to_fo4", FO3_TO_FO4),
     ("fo4_to_skyrimse", FO4_TO_SKYRIMSE),
+    ("fo4_to_starfield", FO4_TO_STARFIELD),
     ("fo76_to_fnv", FO76_TO_FNV),
     ("fo76_to_fo4", FO76_TO_FO4),
     ("fo76_to_skyrimse", FO76_TO_SKYRIMSE),
@@ -81,6 +85,7 @@ pub const ALL_YAMLS: &[(&str, &str)] = &[
     ("fnv_to_fo4", FNV_TO_FO4),
     ("fo3_to_fo4", FO3_TO_FO4),
     ("fo4_to_skyrimse", FO4_TO_SKYRIMSE),
+    ("fo4_to_starfield", FO4_TO_STARFIELD),
     ("fo76_to_fnv", FO76_TO_FNV),
     ("fo76_to_fo4", FO76_TO_FO4),
     ("fo76_to_skyrimse", FO76_TO_SKYRIMSE),
@@ -94,6 +99,7 @@ pub const ALL_YAMLS: &[(&str, &str)] = &[
         "skeleton_fo3_to_fo4_creatures",
         SKELETON_FO3_TO_FO4_CREATURES,
     ),
+    ("skeleton_skyrimse_to_fo4", SKELETON_SKYRIMSE_TO_FO4),
     ("skyrimse_to_fo4", SKYRIMSE_TO_FO4),
     ("starfield_to_fo4", STARFIELD_TO_FO4),
     ("whitelist_fnv", WHITELIST_FNV),

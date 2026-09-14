@@ -1,15 +1,14 @@
 //! `ConversionRun` — per-conversion-run state, plus a thread-safe run registry.
 //!
 //! A `ConversionRun` is the long-lived object for one mod conversion. It owns the
-//! string interner, schemas, translator, decision/warning accumulators, and deferred
-//! record list. A `FormKeyMapper` is NOT stored here (it borrows `&mut interner`);
-//! instead it is constructed at the start of each translate phase and dropped at
-//! the end.
+//! string interner, schemas, translator, decision/warning accumulators, deferred
+//! record list, and `MapperState`. `FormKeyMapper` views borrow the interner, so
+//! they are built per phase instead of stored.
 //!
-//! The registry maps monotonic `u64` run IDs to `ConversionRun` values behind a
-//! process-wide `Mutex`.
+//! The registry maps monotonic `u64` run IDs to per-run lock slots (see
+//! "Registry" below).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex, OnceLock,
@@ -22,6 +21,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::errors::RecordReadError;
 use crate::fixups::{FixupConfig, FixupContext, FixupError, FixupRegistry, FixupReport};
+use crate::fnv_legacy_scripting::record_identity::{
+    LegacyRecordIdentity, LegacyRecordTopology, PreparedLegacyRecordPayload,
+};
 use crate::fnv_legacy_scripting::{
     FnvLegacyScriptingContext, FnvLegacyScriptingResult, FnvScriptingError, translate_all_dial,
     translate_all_qust, translate_all_scen,
@@ -50,10 +52,14 @@ use crate::sym::StringInterner;
 use crate::sym::Sym;
 use crate::target_normalize::{TargetRecordNormalization, TargetRecordNormalizer};
 use crate::target_write::{
-    add_projected_navmeshes_chunk_native, add_quest_child_record_native, add_record_native,
-    add_topic_child_record_native, encode_form_key_for_handle,
-    rebuild_projected_navi_from_source_native, rebuild_projected_navi_from_source_with_nver_native,
-    rebuild_projected_navi_native, rebuild_worldspace_groups_from_source_native,
+    ExistingAuthoringRecordPlacement, add_projected_navmeshes_chunk_native,
+    add_quest_child_record_indexed_native, add_quest_child_record_native, add_record_native,
+    add_topic_child_record_indexed_native, add_topic_child_record_native,
+    begin_quest_child_insert_session_native, begin_topic_child_insert_session_native,
+    encode_form_key_for_handle, existing_authoring_record_placement_native,
+    plugin_header_flags_native, rebuild_projected_navi_from_source_native,
+    rebuild_projected_navi_from_source_with_nver_native, rebuild_projected_navi_native,
+    rebuild_worldspace_groups_from_source_native, relocate_authoring_record_native,
     replace_record_contents_native,
 };
 use crate::translator::TranslateResult;
@@ -186,6 +192,8 @@ pub struct RunConfig {
     pub use_base_game_assets: bool,
     /// Preserve the source object-id when the id is free in the output plugin.
     pub preserve_source_ids: bool,
+    /// Replace existing generated output assets during an explicit overwrite run.
+    pub overwrite_existing: bool,
     /// First object-id to use for freshly generated records.
     pub generated_object_id_floor: u32,
     /// Output plugin filename, e.g. `"Output.esm"`.
@@ -204,7 +212,13 @@ pub struct RunConfig {
     /// the source game's BA2/BSA archives. Havok fixups use this to locate
     /// reference rigs/behaviors that aren't shipped with the mod itself.
     pub source_extracted_dir: Option<std::path::PathBuf>,
+    pub additional_source_asset_roots: Vec<std::path::PathBuf>,
+    pub legacy_music_tracks: Vec<LegacyMusicTrackRow>,
     pub target_extracted_dir: Option<std::path::PathBuf>,
+    /// Root of a prepared membership tree for a single asset class. Narrow by
+    /// construction, so it never replaces `target_extracted_dir` — fixups that
+    /// resolve real base-game paths need the full extracted root.
+    pub target_membership_root: Option<std::path::PathBuf>,
     pub target_data_dir: Option<std::path::PathBuf>,
     pub target_asset_catalog_path: Option<std::path::PathBuf>,
     pub target_asset_cache_dir: Option<std::path::PathBuf>,
@@ -218,6 +232,10 @@ pub struct RunConfig {
     /// Data-relative mesh subtrees (e.g. "meshes/landscape") whose FO76↔FO4
     /// path collisions drive asset relocation. Empty ⇒ FO76→FO4 default.
     pub base_asset_relocation_mesh_roots: Vec<String>,
+    /// Data-relative subtrees whose source assets deliberately overwrite the
+    /// target game's at the same path, instead of being skipped as base-owned.
+    /// Empty ⇒ pair default.
+    pub base_overwrite_prefixes: Vec<String>,
     /// Worldspace XYZ offset applied to emitted projected-navmesh geometry
     /// (NVNM vertices, grid bounds, waypoints) so the navmesh stays co-spatial
     /// with placed records, which receive the same offset. The parent cell index
@@ -227,6 +245,13 @@ pub struct RunConfig {
     /// into `translator.maps.skip_records` at run creation. The full-plugin path
     /// uses this to skip placed records (REFR/ACHR/...) for debug bisection.
     pub skip_record_signatures: Vec<String>,
+    /// Exact source records allowed through an active MVP signature fence.
+    /// A pair's exception set is useful only when its complete audited closure
+    /// is present; partial sets remain inactive.
+    pub mvp_record_exceptions: Vec<MvpRecordExceptionRow>,
+    /// Restrict generic translation to zero records so the dedicated audited
+    /// `mvp_melee` phase is the only record producer.
+    pub mvp_melee_only: bool,
     /// True only for whole-plugin FO76→FO4 worldspace runs (the phase-6
     /// cell-slice copy re-inserts placed children AFTER fixups). Passed into
     /// `FixupConfig::defer_placed_child_ref_class` so the pre-copy own-plugin
@@ -237,6 +262,49 @@ pub struct RunConfig {
     pub legacy_pack_raw_source_counts: Option<LegacyPackExpectedCounts>,
     pub legacy_pack_expected_counts: Option<LegacyPackExpectedCounts>,
     pub legacy_pack_provenance_required: bool,
+    pub legacy_runtime_origins: Vec<crate::merge_sources::LegacyRuntimeOriginRow>,
+    /// Enables only the audited FNV quest dependency closure supplied below.
+    pub fnv_quest_slice: bool,
+    pub fnv_quest_slice_records: HashMap<String, Vec<u32>>,
+    /// Explicit authoritative FO4 PACK donor for the audited Renolds dialogue
+    /// package. The library resolves this only from already-open target masters.
+    pub fnv_force_greet_donor_form_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MvpRecordExceptionRow {
+    pub signature: String,
+    pub local_form_id: u32,
+    pub source_plugin: String,
+}
+
+const SKYRIMSE_FO4_MVP_WEAPON_CLOSURE: &[(&str, u32, &str)] = &[
+    ("WEAP", 0x01_3984, "Skyrim.esm"),
+    ("STAT", 0x02_0E27, "Skyrim.esm"),
+];
+const FNV_FO4_MVP_WEAPON_CLOSURE: &[(&str, u32, &str)] = &[
+    ("WEAP", 0x11_A8E4, "FalloutNV.esm"),
+    ("STAT", 0x11_A8E3, "FalloutNV.esm"),
+];
+
+fn expected_mvp_weapon_closure(
+    source: Game,
+    target: Game,
+) -> Option<&'static [(&'static str, u32, &'static str)]> {
+    match (source, target) {
+        (Game::SkyrimSe, Game::Fo4) => Some(SKYRIMSE_FO4_MVP_WEAPON_CLOSURE),
+        (Game::Fnv, Game::Fo4) => Some(FNV_FO4_MVP_WEAPON_CLOSURE),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct LegacyMusicTrackRow {
+    pub legacy_relative_path: String,
+    pub source_path: String,
+    pub asset_path: String,
+    pub track_path: String,
 }
 
 impl RunConfig {
@@ -247,6 +315,125 @@ impl RunConfig {
                 "QUST" | "DIAL" | "INFO"
             )
         })
+    }
+
+    fn validate_mvp_record_exceptions(&mut self, source: Game, target: Game) -> Result<(), String> {
+        if self.mvp_record_exceptions.is_empty() {
+            return Ok(());
+        }
+        let expected = expected_mvp_weapon_closure(source, target).ok_or_else(|| {
+            format!(
+                "mvp_record_exceptions are unsupported for {} -> {}",
+                source.as_str(),
+                target.as_str()
+            )
+        })?;
+        let mut seen = FxHashSet::default();
+        for row in &mut self.mvp_record_exceptions {
+            row.signature = row.signature.trim().to_ascii_uppercase();
+            row.source_plugin = row.source_plugin.trim().to_string();
+            if !matches!(row.signature.as_str(), "WEAP" | "STAT") {
+                return Err(format!(
+                    "mvp_record_exceptions signature must be WEAP or STAT, got {:?}",
+                    row.signature
+                ));
+            }
+            if row.local_form_id > 0x00FF_FFFF {
+                return Err(format!(
+                    "mvp_record_exceptions local_form_id is not 24-bit: {:08X}",
+                    row.local_form_id
+                ));
+            }
+            let Some((_, _, expected_plugin)) =
+                expected.iter().find(|(signature, local, plugin)| {
+                    *signature == row.signature
+                        && *local == row.local_form_id
+                        && plugin.eq_ignore_ascii_case(&row.source_plugin)
+                })
+            else {
+                return Err(format!(
+                    "unexpected mvp_record_exceptions row {} {:06X}@{} for {} -> {}",
+                    row.signature,
+                    row.local_form_id,
+                    row.source_plugin,
+                    source.as_str(),
+                    target.as_str()
+                ));
+            };
+            row.source_plugin = (*expected_plugin).to_string();
+            let key = format!(
+                "{}:{:06X}:{}",
+                row.signature,
+                row.local_form_id,
+                row.source_plugin.to_ascii_lowercase()
+            );
+            if !seen.insert(key) {
+                return Err(format!(
+                    "duplicate mvp_record_exceptions row {} {:06X}@{}",
+                    row.signature, row.local_form_id, row.source_plugin
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_mvp_melee_only(&self, source: Game, target: Game) -> Result<(), String> {
+        if !self.mvp_melee_only {
+            return Ok(());
+        }
+        if !matches!((source, target), (Game::SkyrimSe | Game::Fnv, Game::Fo4)) {
+            return Err(format!(
+                "mvp_melee_only is unsupported for {} -> {}",
+                source.as_str(),
+                target.as_str()
+            ));
+        }
+        if self.fnv_quest_slice {
+            return Err("mvp_melee_only cannot be combined with fnv_quest_slice".to_string());
+        }
+        if !self
+            .skip_record_signatures
+            .iter()
+            .any(|signature| signature.trim().eq_ignore_ascii_case("WEAP"))
+        {
+            return Err("mvp_melee_only requires WEAP in skip_record_signatures".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_complete_mvp_weapon_closure(&self, source: Game, target: Game) -> bool {
+        let Some(expected) = expected_mvp_weapon_closure(source, target) else {
+            return false;
+        };
+        self.skip_record_signatures
+            .iter()
+            .any(|signature| signature.trim().eq_ignore_ascii_case("WEAP"))
+            && self.mvp_record_exceptions.len() == expected.len()
+            && expected.iter().all(|(signature, local, plugin)| {
+                self.mvp_record_exceptions.iter().any(|row| {
+                    row.signature == *signature
+                        && row.local_form_id == *local
+                        && row.source_plugin.eq_ignore_ascii_case(plugin)
+                })
+            })
+    }
+
+    pub(crate) fn is_mvp_record_exception(
+        &self,
+        source: Game,
+        target: Game,
+        form_key: FormKey,
+        signature: SigCode,
+        interner: &StringInterner,
+    ) -> bool {
+        self.has_complete_mvp_weapon_closure(source, target)
+            && interner.resolve(form_key.plugin).is_some_and(|plugin| {
+                self.mvp_record_exceptions.iter().any(|row| {
+                    row.signature == signature.as_str()
+                        && row.local_form_id == form_key.local
+                        && row.source_plugin.eq_ignore_ascii_case(plugin)
+                })
+            })
     }
 }
 
@@ -268,6 +455,338 @@ pub(crate) struct TargetMasterRecordContext {
 pub struct FnvScriLink {
     pub target_form_key: String,
     pub source_scpt_form_key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FnvDedicatedTopicTargets {
+    pub keyword: FormKey,
+    pub topic: FormKey,
+}
+
+#[derive(Default)]
+struct TypedFnvDialoguePlan {
+    top_level_records: Vec<Record>,
+    topics: Vec<Record>,
+    infos: Vec<(Record, FormKey)>,
+    direct_sources: FxHashSet<String>,
+    voice_manifest: crate::fnv_legacy_scripting::voice::FnvVoiceManifest,
+    scene_manifest_records: usize,
+    dedicated_runtime_records: FxHashSet<FormKey>,
+    synthetic_targets:
+        BTreeMap<crate::quest_runtime::QuestRecordKey, crate::quest_runtime::QuestRecordKey>,
+}
+
+fn first_record_form_key(value: &FieldValue) -> Option<FormKey> {
+    match value {
+        FieldValue::FormKey(form_key) => Some(*form_key),
+        FieldValue::List(values) => values.iter().find_map(first_record_form_key),
+        FieldValue::Struct(fields) => fields
+            .iter()
+            .find_map(|(_, value)| first_record_form_key(value)),
+        _ => None,
+    }
+}
+
+fn exact_record_form_key(record: &Record, signature: &[u8; 4]) -> Result<FormKey, String> {
+    let values = record
+        .fields
+        .iter()
+        .filter(|field| &field.sig.0 == signature)
+        .filter_map(|field| first_record_form_key(&field.value))
+        .collect::<Vec<_>>();
+    let [value] = values.as_slice() else {
+        return Err(format!(
+            "must contain exactly one {} FormKey",
+            String::from_utf8_lossy(signature)
+        ));
+    };
+    Ok(*value)
+}
+
+fn parse_legacy_form_key_text(text: &str, interner: &StringInterner) -> Result<FormKey, String> {
+    if text.contains('@') {
+        return FormKey::parse(text, interner);
+    }
+    let (local, plugin) = text
+        .split_once(':')
+        .ok_or_else(|| format!("legacy FormKey missing ':' or '@': {text:?}"))?;
+    let local = u32::from_str_radix(local.trim_start_matches("0x"), 16)
+        .map_err(|error| format!("legacy FormKey hex parse error in {text:?}: {error}"))?;
+    if plugin.is_empty() {
+        return Err(format!("legacy FormKey plugin name is empty: {text:?}"));
+    }
+    Ok(FormKey {
+        local,
+        plugin: interner.intern(plugin),
+    })
+}
+
+fn map_info_fragment_properties(
+    properties: &[crate::fnv_legacy_scripting::dialogue::InfoFragmentProperty],
+    mapper_state: &MapperState,
+    interner: &StringInterner,
+    source_text: &str,
+) -> Result<Vec<crate::fnv_legacy_scripting::vmad::ScriptProperty>, FnvScriptingError> {
+    properties
+        .iter()
+        .map(|property| {
+            let source_property = parse_legacy_form_key_text(&property.source_form_key, interner)
+                .map_err(|error| {
+                FnvScriptingError::Setup(format!(
+                    "INFO {source_text} property {} has invalid source FormKey: {error}",
+                    property.name
+                ))
+            })?;
+            let target_property = mapper_state
+                .source_to_target
+                .get(&source_property)
+                .copied()
+                .ok_or_else(|| {
+                    FnvScriptingError::Translate(format!(
+                        "INFO {source_text} property {} source {} has no target mapping",
+                        property.name, property.source_form_key
+                    ))
+                })?;
+            let target_property =
+                form_key_to_legacy_str(target_property, interner).ok_or_else(|| {
+                    FnvScriptingError::Setup(format!(
+                        "INFO {source_text} property {} target cannot be rendered",
+                        property.name
+                    ))
+                })?;
+            Ok(crate::fnv_legacy_scripting::vmad::ScriptProperty {
+                name: property.name.clone(),
+                prop_type: "Quest".to_string(),
+                value: Some(serde_json::Value::String(target_property)),
+            })
+        })
+        .collect()
+}
+
+fn map_quest_fragment_properties(
+    properties: &[crate::fnv_legacy_scripting::quest::QuestFragmentProperty],
+    mapper_state: &MapperState,
+    interner: &StringInterner,
+    source_text: &str,
+) -> Result<Vec<crate::fnv_legacy_scripting::vmad::ScriptProperty>, FnvScriptingError> {
+    properties
+        .iter()
+        .map(|property| {
+            let source_property = parse_legacy_form_key_text(&property.source_form_key, interner)
+                .map_err(|error| {
+                FnvScriptingError::Setup(format!(
+                    "QUST {source_text} property {} has invalid source FormKey: {error}",
+                    property.name
+                ))
+            })?;
+            let target_property = mapper_state
+                .source_to_target
+                .get(&source_property)
+                .copied()
+                .ok_or_else(|| {
+                    FnvScriptingError::Translate(format!(
+                        "QUST {source_text} property {} source {} has no target mapping",
+                        property.name, property.source_form_key
+                    ))
+                })?;
+            let target_property =
+                form_key_to_legacy_str(target_property, interner).ok_or_else(|| {
+                    FnvScriptingError::Setup(format!(
+                        "QUST {source_text} property {} target cannot be rendered",
+                        property.name
+                    ))
+                })?;
+            Ok(crate::fnv_legacy_scripting::vmad::ScriptProperty {
+                name: property.name.clone(),
+                prop_type: property.papyrus_type.clone(),
+                value: Some(serde_json::Value::String(target_property)),
+            })
+        })
+        .collect()
+}
+
+fn source_form_key_local(value: &str) -> Option<u32> {
+    value
+        .split([':', '@'])
+        .next()
+        .and_then(|local| u32::from_str_radix(local.trim_start_matches("0x"), 16).ok())
+}
+
+fn account_fnv_quest_fragment_adaptations(
+    source_form_key: &str,
+    editor_id: &str,
+    adaptations: &[crate::fnv_legacy_scripting::quest::QuestFragmentAdaptation],
+    fragments: &[crate::fnv_legacy_scripting::quest::StageFragment],
+) -> Result<Vec<String>, FnvScriptingError> {
+    if source_form_key.eq_ignore_ascii_case("11F935:FalloutNV.esm") {
+        if !editor_id.eq_ignore_ascii_case("VTechatticup") {
+            return Err(FnvScriptingError::Translate(format!(
+                "strict QUST {source_form_key} target-native adaptation has unexpected EditorID {editor_id}"
+            )));
+        }
+        let [adaptation] = adaptations else {
+            return Err(FnvScriptingError::Translate(format!(
+                "strict QUST {source_form_key} expected exactly one target-native fragment adaptation, observed {}",
+                adaptations.len()
+            )));
+        };
+        if adaptation.stage_index != 110
+            || adaptation.stage_item_index != 0
+            || adaptation.source_command != "StopQuest VMS20"
+            || !adaptation
+                .source_dependency_form_key
+                .eq_ignore_ascii_case("10E908:FalloutNV.esm")
+            || adaptation.kind
+                != crate::fnv_legacy_scripting::quest::QuestFragmentAdaptationKind::TargetNativeNoOp
+            || adaptation.reason
+                != "VMS20 is outside the selected slice; the selected quest's FailQuest stage remains authoritative in FO4"
+        {
+            return Err(FnvScriptingError::Translate(format!(
+                "strict QUST {source_form_key} has an unexpected target-native fragment adaptation: {adaptation:?}"
+            )));
+        }
+        let adapted_fragments = fragments
+            .iter()
+            .filter(|fragment| fragment.stage_index == 110 && fragment.stage_item_index == 0)
+            .collect::<Vec<_>>();
+        if adapted_fragments.len() != 1 || adapted_fragments[0].body.trim() != "Return" {
+            return Err(FnvScriptingError::Translate(format!(
+                "strict QUST {source_form_key} target-native adaptation did not emit exactly one stage 110 item 0 Return fragment"
+            )));
+        }
+        return Ok(vec![
+            "target_native_qust_adaptation:11F935:FalloutNV.esm:stage=110:item=0:StopQuest VMS20:dependency=10E908:FalloutNV.esm"
+                .to_string(),
+        ]);
+    }
+
+    if source_form_key.eq_ignore_ascii_case("06136D:FalloutNV.esm") {
+        if !editor_id.eq_ignore_ascii_case("FreeformPowerArmor") {
+            return Err(FnvScriptingError::Translate(format!(
+                "strict QUST {source_form_key} has unexpected EditorID {editor_id}"
+            )));
+        }
+        if !adaptations.is_empty() {
+            return Err(FnvScriptingError::Translate(format!(
+                "strict QUST {source_form_key} must not carry target-native fragment adaptations"
+            )));
+        }
+        return Ok(Vec::new());
+    }
+
+    if adaptations.is_empty() {
+        Ok(Vec::new())
+    } else {
+        Err(FnvScriptingError::Translate(format!(
+            "QUST {source_form_key} carries unaudited target-native fragment adaptations"
+        )))
+    }
+}
+
+fn register_fnv_quest_record_dependency_mappings(
+    record: &serde_json::Value,
+    source_form_key: &str,
+    editor_id: &str,
+    mapper_state: &mut MapperState,
+    interner: &StringInterner,
+) -> Result<Vec<String>, FnvScriptingError> {
+    let mappings = crate::fnv_legacy_scripting::quest::exact_quest_record_dependency_mappings(
+        record,
+        editor_id,
+        source_form_key,
+    )?;
+    if source_form_key.eq_ignore_ascii_case("06136D:FalloutNV.esm") {
+        let [mapping] = mappings.as_slice() else {
+            return Err(FnvScriptingError::Translate(format!(
+                "strict QUST {source_form_key} expected exactly one record dependency mapping, observed {}",
+                mappings.len()
+            )));
+        };
+        if !editor_id.eq_ignore_ascii_case("FreeformPowerArmor")
+            || mapping.scope != "root CTDA run-on reference"
+            || mapping.evidence_hex != "0000000000000000C1010000DF8F0500000000000200000014000000"
+            || !mapping
+                .source_dependency_form_key
+                .eq_ignore_ascii_case("000014:FalloutNV.esm")
+            || !mapping
+                .target_dependency_form_key
+                .eq_ignore_ascii_case("000014:Fallout4.esm")
+        {
+            return Err(FnvScriptingError::Translate(format!(
+                "strict QUST {source_form_key} has an unexpected record dependency mapping: {mapping:?}"
+            )));
+        }
+
+        let source_dependency =
+            parse_legacy_form_key_text(&mapping.source_dependency_form_key, interner).map_err(
+                |error| {
+                    FnvScriptingError::Setup(format!(
+                        "QUST {source_form_key} record dependency source is invalid: {error}"
+                    ))
+                },
+            )?;
+        let target_dependency =
+            parse_legacy_form_key_text(&mapping.target_dependency_form_key, interner).map_err(
+                |error| {
+                    FnvScriptingError::Setup(format!(
+                        "QUST {source_form_key} record dependency target is invalid: {error}"
+                    ))
+                },
+            )?;
+        let raw_source = mapper_state
+            .options
+            .source_form_key_for_raw_formid(0x000014, interner)
+            .ok_or_else(|| {
+                FnvScriptingError::Setup(format!(
+                    "QUST {source_form_key} cannot resolve audited raw Player FormID 000014"
+                ))
+            })?;
+        if raw_source != source_dependency {
+            return Err(FnvScriptingError::Setup(format!(
+                "QUST {source_form_key} raw Player FormID resolved to {:?}, expected {:?}",
+                raw_source, source_dependency
+            )));
+        }
+        let target_plugin = interner.resolve(target_dependency.plugin).ok_or_else(|| {
+            FnvScriptingError::Setup(
+                "QUST Player dependency target plugin is not interned".to_string(),
+            )
+        })?;
+        if !mapper_state
+            .options
+            .target_master_names
+            .iter()
+            .any(|master| master.eq_ignore_ascii_case(target_plugin))
+        {
+            return Err(FnvScriptingError::Setup(format!(
+                "QUST {source_form_key} Player dependency target master {target_plugin} is not loaded"
+            )));
+        }
+        if let Some(existing) = mapper_state.source_to_target.get(&source_dependency) {
+            if *existing != target_dependency {
+                return Err(FnvScriptingError::Translate(format!(
+                    "QUST {source_form_key} Player dependency conflicts with existing mapper target {:?}",
+                    existing
+                )));
+            }
+        } else {
+            mapper_state
+                .source_to_target
+                .insert(source_dependency, target_dependency);
+        }
+        return Ok(vec![
+            "mapped_qust_record_dependency:06136D:FalloutNV.esm:root_ctda_run_on:000014:FalloutNV.esm->000014:Fallout4.esm"
+                .to_string(),
+        ]);
+    }
+
+    if mappings.is_empty() {
+        Ok(Vec::new())
+    } else {
+        Err(FnvScriptingError::Translate(format!(
+            "QUST {source_form_key} carries unaudited record dependency mappings"
+        )))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -330,6 +849,20 @@ enum RecordWriteMode {
     TopicChildInfo,
 }
 
+fn allocation_editor_id_for_parent(
+    editor_id: Option<Sym>,
+    write_mode: RecordWriteMode,
+    target_parent: Option<FormKey>,
+    output_plugin: Sym,
+) -> Option<Sym> {
+    if matches!(write_mode, RecordWriteMode::TopicChildInfo)
+        && target_parent.is_some_and(|parent| parent.plugin == output_plugin)
+    {
+        return None;
+    }
+    editor_id
+}
+
 struct PreparedProjectedNavmesh {
     source_fk: FormKey,
     source_sig: SigCode,
@@ -343,6 +876,243 @@ struct PreparedNavmeshMeta {
     source_fk: FormKey,
     source_sig: SigCode,
     full_plugin_snapshot: Option<Record>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingScptProperty {
+    source_scpt_form_key: String,
+    script_class_name: String,
+    property: crate::fnv_legacy_scripting::vmad::ScriptProperty,
+}
+
+#[derive(Debug, Clone)]
+struct SkyrimPackLiveProjection {
+    source_form_key: FormKey,
+    target_form_key: FormKey,
+    target_template: FormKey,
+    lowering: crate::skyrimse_fo4_runtime::package::SkyrimPackLowering,
+    reference_mappings: BTreeMap<String, FormKey>,
+    template_evidence:
+        crate::skyrimse_fo4_runtime::package::SkyrimPackTemplateMaterializationEvidence,
+    materialization: crate::skyrimse_fo4_runtime::package::SkyrimPackMaterialization,
+}
+
+#[derive(Debug, Clone)]
+struct SkyrimDialogueLiveProjection {
+    component_id: String,
+    projection: crate::skyrimse_fo4_runtime::dialogue::SkyrimDialogueProjection,
+}
+
+#[derive(Debug, Clone)]
+struct SkyrimStoryManagerLiveProjection {
+    component_id: String,
+    source_records: Vec<Record>,
+    event_mapping: crate::skyrimse_fo4_runtime::story_manager::SkyrimStoryEventMapping,
+    projection: Option<crate::skyrimse_fo4_runtime::story_manager::SkyrimStoryManagerProjection>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SkyrimQuestRuntimeAssetManifestInput {
+    output_plugin: String,
+    intents: Vec<SkyrimQuestRuntimeVoiceIntentInput>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SkyrimQuestRuntimeVoiceIntentInput {
+    source_info: String,
+    target_info: String,
+    source_speaker: String,
+    target_speaker: String,
+    response_number: u8,
+    transcript: String,
+    voice_type: SkyrimQuestRuntimeVoiceTypeInput,
+    source_fuz: SkyrimQuestRuntimeAssetEvidenceInput,
+    source_lip: SkyrimQuestRuntimeAssetEvidenceInput,
+    target_audio: SkyrimQuestRuntimeTargetAudioInput,
+    target_lip: SkyrimQuestRuntimeAssetEvidenceInput,
+    sequence: Option<SkyrimQuestRuntimeSequenceInput>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SkyrimQuestRuntimeVoiceTypeInput {
+    source_voice_type: String,
+    target_voice_type: String,
+    target_identity: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SkyrimQuestRuntimeAssetEvidenceInput {
+    relative_path: String,
+    exists: bool,
+    byte_len: u64,
+    blake3: String,
+    provenance: SkyrimQuestRuntimeAssetProvenanceInput,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+enum SkyrimQuestRuntimeAssetProvenanceInput {
+    SourceArchive {
+        archive: String,
+    },
+    LooseFile,
+    Converted {
+        source_blake3: String,
+        converter: String,
+    },
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SkyrimQuestRuntimeTargetAudioInput {
+    format: String,
+    evidence: SkyrimQuestRuntimeAssetEvidenceInput,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SkyrimQuestRuntimeSequenceInput {
+    kind: String,
+    source_seq: SkyrimQuestRuntimeAssetEvidenceInput,
+    target_seq: SkyrimQuestRuntimeAssetEvidenceInput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct SkyrimQuestRuntimeAssetCopyReceipt {
+    rows: Vec<SkyrimQuestRuntimeAssetCopyRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
+struct SkyrimQuestRuntimeAssetCopyRow {
+    semantic_role: String,
+    source_path: String,
+    target_path: String,
+    source_root: String,
+    size: u64,
+    blake3: String,
+    source_blake3: String,
+}
+
+impl SkyrimQuestRuntimeAssetEvidenceInput {
+    fn into_voice_evidence(self) -> crate::skyrimse_fo4_runtime::voice::SkyrimVoiceAssetEvidence {
+        use crate::skyrimse_fo4_runtime::voice::SkyrimVoiceAssetProvenance;
+
+        let provenance = match self.provenance {
+            SkyrimQuestRuntimeAssetProvenanceInput::SourceArchive { archive } => {
+                SkyrimVoiceAssetProvenance::SourceArchive { archive }
+            }
+            SkyrimQuestRuntimeAssetProvenanceInput::LooseFile => {
+                SkyrimVoiceAssetProvenance::LooseFile
+            }
+            SkyrimQuestRuntimeAssetProvenanceInput::Converted {
+                source_blake3,
+                converter,
+            } => SkyrimVoiceAssetProvenance::Converted {
+                source_blake3,
+                converter,
+            },
+        };
+        crate::skyrimse_fo4_runtime::voice::SkyrimVoiceAssetEvidence {
+            relative_path: self.relative_path,
+            exists: self.exists,
+            byte_len: self.byte_len,
+            blake3: self.blake3,
+            provenance,
+        }
+    }
+}
+
+fn skyrim_voice_evidence_json(
+    evidence: &crate::skyrimse_fo4_runtime::voice::SkyrimVoiceAssetEvidence,
+) -> serde_json::Value {
+    use crate::skyrimse_fo4_runtime::voice::SkyrimVoiceAssetProvenance;
+
+    let provenance = match &evidence.provenance {
+        SkyrimVoiceAssetProvenance::SourceArchive { archive } => {
+            serde_json::json!({"kind": "source_archive", "archive": archive})
+        }
+        SkyrimVoiceAssetProvenance::LooseFile => serde_json::json!({"kind": "loose_file"}),
+        SkyrimVoiceAssetProvenance::Converted {
+            source_blake3,
+            converter,
+        } => serde_json::json!({
+            "kind": "converted",
+            "source_blake3": source_blake3,
+            "converter": converter,
+        }),
+    };
+    serde_json::json!({
+        "relative_path": evidence.relative_path,
+        "exists": evidence.exists,
+        "byte_len": evidence.byte_len,
+        "blake3": evidence.blake3,
+        "provenance": provenance,
+    })
+}
+
+fn skyrim_voice_receipt_json(
+    receipt: &crate::skyrimse_fo4_runtime::voice::SkyrimDialogueVoiceAssetReceipt,
+    interner: &StringInterner,
+) -> serde_json::Value {
+    use crate::skyrimse_fo4_runtime::voice::{
+        SkyrimSequencePlaybackKind, SkyrimVoiceAdmission, SkyrimVoiceAudioFormat,
+    };
+
+    let intents = receipt
+        .intents
+        .iter()
+        .map(|intent| {
+            let voice_type = intent.voice_type.as_ref().map(|voice_type| {
+                serde_json::json!({
+                    "source_voice_type": voice_type.source_voice_type.format(interner),
+                    "target_voice_type": voice_type.target_voice_type.format(interner),
+                    "target_identity": voice_type.target_identity,
+                })
+            });
+            let target_audio = intent.target_audio.as_ref().map(|(format, evidence)| {
+                serde_json::json!({
+                    "format": match format {
+                        SkyrimVoiceAudioFormat::Xwm => "xwm",
+                        SkyrimVoiceAudioFormat::Wav => "wav",
+                    },
+                    "evidence": skyrim_voice_evidence_json(evidence),
+                })
+            });
+            let sequence = intent.sequence.as_ref().map(|sequence| {
+                serde_json::json!({
+                    "kind": match sequence.kind {
+                        SkyrimSequencePlaybackKind::Scene => "scene",
+                        SkyrimSequencePlaybackKind::StartGameEnabledQuest => {
+                            "start_game_enabled_quest"
+                        }
+                    },
+                    "source_seq": skyrim_voice_evidence_json(&sequence.source_seq),
+                    "target_seq": skyrim_voice_evidence_json(&sequence.target_seq),
+                })
+            });
+            serde_json::json!({
+                "source_info": intent.source_info.format(interner),
+                "target_info": intent.target_info.format(interner),
+                "source_speaker": intent.source_speaker.format(interner),
+                "target_speaker": intent.target_speaker.format(interner),
+                "response_number": intent.response_number,
+                "transcript": intent.transcript,
+                "voice_type": voice_type,
+                "target_voice_path": intent.target_voice_path,
+                "source_fuz": intent.source_fuz.as_ref().map(skyrim_voice_evidence_json),
+                "source_lip": intent.source_lip.as_ref().map(skyrim_voice_evidence_json),
+                "target_audio": target_audio,
+                "target_lip": intent.target_lip.as_ref().map(skyrim_voice_evidence_json),
+                "sequence": sequence,
+                "admission": match &intent.admission {
+                    SkyrimVoiceAdmission::Ready => "ready".to_string(),
+                    SkyrimVoiceAdmission::Rejected(reason) => format!("rejected:{reason}"),
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "output_plugin": receipt.output_plugin,
+        "intents": intents,
+    })
 }
 
 #[derive(Default)]
@@ -360,8 +1130,8 @@ struct ProjectedNavmeshPrepareResult {
 
 /// All state for one mod conversion run.
 ///
-/// `mapper_state` is lazily initialised at the start of `translate_all` and
-/// reused by fixups so mappings persist across both phases.
+/// `mapper_state` is lazily initialised before dependency reservations or at
+/// the start of translation and reused by fixups so mappings persist.
 pub struct ConversionRun {
     pub source: Game,
     pub target: Game,
@@ -374,9 +1144,10 @@ pub struct ConversionRun {
     pub schema_target: Arc<AuthoringSchema>,
     pub translator: Translator,
     pub config: RunConfig,
-    /// Long-lived mapper state: persists from translate_all through fixups.
-    /// None before translate_all is first called.
+    /// Long-lived mapper state: persists from dependency planning or
+    /// translation through fixups.
     pub mapper_state: Option<MapperState>,
+    pub(crate) script_reference_state: Option<crate::script_references::ScriptReferenceState>,
     generated_object_id_reservations: FxHashSet<u32>,
     pub(crate) legacy_serial_normalization:
         crate::translator::pair_hooks::fnv_fo4::LegacySerialNormalizationState,
@@ -391,6 +1162,58 @@ pub struct ConversionRun {
     pub deferred: Vec<(FormKey, DeferredKind)>,
     /// Native FNV SCRI links captured before the FNV pair hook drops SCRI.
     pub fnv_scri_links: Vec<FnvScriLink>,
+    pub(crate) legacy_placed_actor_aliases:
+        crate::translator::pair_hooks::fnv_fo4::PlacedActorAliasResolver,
+    pub(crate) fnv_dedicated_topic_targets: Option<FnvDedicatedTopicTargets>,
+    fnv_pending_vmad_targets: Vec<(String, String)>,
+    fnv_pending_vmad_scripts:
+        Vec<crate::fnv_legacy_scripting::script_synthesizer::TranslatedScript>,
+    fnv_pending_quest_fragments:
+        Vec<crate::fnv_legacy_scripting::vmad::PendingQuestFragmentBinding>,
+    fnv_pending_helper_scripts: Vec<crate::fnv_legacy_scripting::vmad::PendingObjectScriptBinding>,
+    fnv_pending_scpt_properties: Vec<PendingScptProperty>,
+    fnv_pending_info_fragments: Vec<crate::fnv_legacy_scripting::vmad::PendingInfoFragmentBinding>,
+    fnv_pending_scene_fragments:
+        Vec<crate::fnv_legacy_scripting::vmad::PendingSceneFragmentBinding>,
+    fnv_quest_runtime_component_plans: Vec<crate::quest_runtime::QuestRuntimeComponentPlan>,
+    fnv_quest_runtime_expected_receipts: Vec<crate::quest_runtime::QuestRuntimeExpectedReceipt>,
+    fnv_quest_runtime_synthetic_targets:
+        BTreeMap<crate::quest_runtime::QuestRecordKey, crate::quest_runtime::QuestRecordKey>,
+    fnv_quest_runtime_compiler_evidence:
+        Vec<crate::fnv_legacy_scripting::vmad::CompiledScriptEvidence>,
+    fnv_quest_runtime_receipts_finalized: bool,
+    skyrim_runtime_capability_plan:
+        Option<crate::skyrimse_fo4_runtime::planner::SkyrimCapabilityPlan>,
+    skyrim_runtime_receipt: Option<crate::skyrimse_fo4_runtime::SkyrimRuntimeReceipt>,
+    skyrim_minimal_quest_action_requests:
+        HashMap<String, Vec<crate::skyrimse_fo4_runtime::planner::SkyrimMinimalQuestActionSpec>>,
+    skyrim_minimal_quest_class_prefix: Option<String>,
+    skyrim_minimal_quest_projections:
+        Vec<crate::skyrimse_fo4_runtime::quest::SkyrimQuestProjection>,
+    skyrim_minimal_alias_projections:
+        Vec<crate::skyrimse_fo4_runtime::alias::SkyrimAliasProjection>,
+    skyrim_pack_projections: Vec<SkyrimPackLiveProjection>,
+    skyrim_scene_projections: Vec<crate::skyrimse_fo4_runtime::scene::SkyrimSceneProjection>,
+    skyrim_dialogue_projections: Vec<SkyrimDialogueLiveProjection>,
+    skyrim_story_manager_projections: Vec<SkyrimStoryManagerLiveProjection>,
+    skyrim_quest_runtime_voice_receipt:
+        Option<crate::skyrimse_fo4_runtime::voice::SkyrimDialogueVoiceAssetReceipt>,
+    skyrim_quest_runtime_asset_copy_receipt: Option<SkyrimQuestRuntimeAssetCopyReceipt>,
+    skyrim_minimal_quest_compiler_evidence:
+        Vec<crate::skyrimse_fo4_runtime::papyrus::SkyrimPscCompilerEvidence>,
+    skyrim_minimal_quest_receipts_finalized: bool,
+    bulk_melee_v1_receipts: Vec<crate::phase::mvp_melee::MvpMeleeReceipt>,
+    creature_dependency_plan_installed: bool,
+    creature_dependency_admissions: FxHashMap<FormKey, CreatureDependencyAdmission>,
+    creature_dependency_terminals: FxHashSet<FormKey>,
+    creature_primary_npc_reservations: Vec<CreaturePrimaryNpcReservation>,
+    creature_ancillary_npc_reservations: Vec<CreatureAncillaryNpcReservation>,
+    skyrim_creature_record_reservations: Vec<SkyrimCreatureRecordReservation>,
+    skyrim_creature_batch_owned_sources: FxHashSet<FormKey>,
+    skyrim_creature_ancillary_reservations: Vec<SkyrimCreatureAncillaryReservationReceipt>,
+    skyrim_creature_ancillary_reservations_installed: bool,
+    creature_actor_action_reservations: Vec<CreatureActorActionReservationReceipt>,
+    creature_actor_action_reservations_installed: bool,
     /// Optional Python progress callback `(records_processed: int) -> bool`.
     /// Called every 1000 records during `translate_all`. Return False to cancel.
     pub progress_callback: Option<Py<PyAny>>,
@@ -409,25 +1232,154 @@ pub struct ConversionRun {
     /// Terrain bundles discovered by the record phase and executed later by
     /// `convert_textures_v2` in the asset run.
     pub terrain_texture_jobs: Vec<crate::terrain_textures::manifest::TerrainTextureJob>,
+    /// Deterministic, non-draining FO76→FO4 Story Manager route discovery seed.
+    pub story_manager_route_seed: crate::phase::story_manager::StoryManagerRouteSeedReport,
     /// Per-worldspace seed form keys collected by the projected placed-child
     /// copy, consumed by the persistent-cell synthesis to skip its (otherwise
     /// identical) full-worldspace source scan.
     pub projected_seed_cache:
         std::collections::HashMap<String, crate::projected_placed::ProjectedSeedCacheEntry>,
+    /// Interior placed children are translated outside the parallel cell-slice
+    /// copier. Carry their exact FormKeys into the post-copy leveled-base repair
+    /// so it never has to rediscover them by walking the finished plugin.
+    interior_placed_ref_candidates: Vec<FormKey>,
+    /// Offsets `emit_interior_cells` applied to interiors past FO4's coordinate
+    /// limit; the later NAVI and door repairs move data that points into them.
+    pub(crate) interior_recentre: crate::fixups::recentre_far_interiors::InteriorRecentre,
     /// Normalized data-relative paths (meshes/textures/materials) that collide
     /// with FO4 base assets and must be relocated under `base_asset_namespace`.
     /// Built once at run-init from the configured mesh roots + cascade closure.
     pub relocation_members: std::collections::HashSet<String>,
+    /// Subset of `relocation_members` relocated for geometry + collision only;
+    /// the NIF phase leaves their material/texture slots un-namespaced.
+    pub relocation_mesh_only_members: std::collections::HashSet<String>,
+    pub nif_dependencies: Arc<crate::relocation::NifDependencyCache>,
+    pub(crate) relocation_preparation: Option<Arc<crate::relocation::RelocationPreparation>>,
+    pub output_nif_dependencies: Arc<crate::modt_manifest::OutputNifDependencies>,
     /// Warnings emitted while building `relocation_members` (e.g. FO4 extracted
     /// dir missing). Surfaced into a phase report so Python logs them.
     pub relocation_warnings: Vec<String>,
     pub target_assets: Option<std::sync::Arc<crate::target_assets::TargetAssetStore>>,
+    pub(crate) source_asset_inventory:
+        Option<Arc<crate::source_inventory::SourceAssetInventory>>,
     /// Output sinks (loose + BA2 spill streaming). None = legacy
     /// behavior everywhere; attached via `sinks_attach_run`.
     pub output_sink: Option<std::sync::Arc<crate::sinks::SinkSet>>,
     owned_handles: Option<OwnedRunHandles>,
     pub default_target_path: Option<PathBuf>,
     pub(crate) target_mode: TargetMode,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CreatureDependencyAdmission {
+    pub source_form_key: FormKey,
+    pub source_signature: SigCode,
+    pub owner_family_ids: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CreaturePrimaryNpcReservation {
+    pub source: FormKey,
+    pub target: FormKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CreatureAncillaryNpcReservation {
+    pub source: FormKey,
+    pub target: FormKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum SkyrimCreatureReservedRecordKind {
+    Race,
+    Npc,
+    Armor,
+    ArmorAddon,
+    BodyPartData,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SkyrimCreatureReservationOwner {
+    pub source_race: FormKey,
+    pub motion_family_id: String,
+    pub normalized_project_path: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SkyrimCreatureReservationSource {
+    pub source: FormKey,
+    pub kind: SkyrimCreatureReservedRecordKind,
+    pub owners: Vec<SkyrimCreatureReservationOwner>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SkyrimCreatureRecordReservation {
+    pub source: FormKey,
+    pub target: FormKey,
+    pub kind: SkyrimCreatureReservedRecordKind,
+    pub owners: Vec<SkyrimCreatureReservationOwner>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum SkyrimCreatureAncillaryRecordKind {
+    SyntheticNpc,
+    NpcVariant,
+    ArmorVariant,
+    ArmorAddonVariant,
+    BodyPartDataVariant,
+    Weapon,
+    Projectile,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SkyrimCreatureAncillaryReservationRequest {
+    pub source_race: FormKey,
+    pub event: String,
+    pub ordinal: u32,
+    pub kind: SkyrimCreatureAncillaryRecordKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SkyrimCreatureAncillaryReservationReceipt {
+    pub source_race: FormKey,
+    pub event: String,
+    pub ordinal: u32,
+    pub kind: SkyrimCreatureAncillaryRecordKind,
+    pub target: FormKey,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CreatureActorActionReservationRequest {
+    pub family_id: String,
+    pub requirement: crate::source_rig::ActorActionRequirement,
+    pub editor_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CreatureActorActionReservationReceipt {
+    pub family_id: String,
+    pub requirement: crate::source_rig::ActorActionRequirement,
+    pub editor_id: String,
+    pub target: FormKey,
+}
+
+impl CreatureActorActionReservationReceipt {
+    pub(crate) fn record_plan(
+        &self,
+        interner: &StringInterner,
+    ) -> Result<crate::source_rig::CreatureActorActionRecordPlan, String> {
+        let plugin = interner.resolve(self.target.plugin).ok_or_else(|| {
+            format!(
+                "Actor Action reservation {:06X} has an unresolved target plugin",
+                self.target.local
+            )
+        })?;
+        Ok(crate::source_rig::CreatureActorActionRecordPlan {
+            requirement: self.requirement.clone(),
+            form_key: crate::source_rig::TargetFormKey::new(self.target.local, plugin),
+            editor_id: self.editor_id.clone(),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -635,6 +1587,546 @@ impl TranslateStats {
     }
 }
 
+fn validate_total_skyrim_actor_translation(
+    plan: &crate::skyrimse_fo4_runtime::planner::SkyrimCapabilityPlan,
+    stats: &TranslateStats,
+    creature_batch_owned: &FxHashSet<FormKey>,
+) -> Result<(), String> {
+    for signature in ["RACE", "NPC_", "ACHR"] {
+        let expected = plan
+            .record_signatures
+            .iter()
+            .filter(|(form_key, candidate)| {
+                candidate.as_str() == signature && !creature_batch_owned.contains(form_key)
+            })
+            .count() as u32;
+        let actual = stats
+            .by_signature
+            .get(signature)
+            .cloned()
+            .unwrap_or_default();
+        let completed = actual.translated + actual.vanilla_remapped;
+        if completed != expected {
+            return Err(format!(
+                "Skyrim actor conversion incomplete for {signature}: expected={expected} completed={completed} translated={} vanilla_remapped={} dropped={} deferred={} failed={}",
+                actual.translated,
+                actual.vanilla_remapped,
+                actual.dropped,
+                actual.deferred,
+                actual.failed,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn skyrim_projected_quest_action(
+    action: crate::skyrimse_fo4_runtime::planner::SkyrimMinimalQuestActionSpec,
+) -> crate::skyrimse_fo4_runtime::quest::SkyrimQuestFragmentAction {
+    use crate::skyrimse_fo4_runtime::planner::SkyrimMinimalQuestActionSpec as Source;
+    use crate::skyrimse_fo4_runtime::quest::SkyrimQuestFragmentAction as Target;
+    match action {
+        Source::SetObjectiveDisplayed { index, displayed } => {
+            Target::SetObjectiveDisplayed { index, displayed }
+        }
+        Source::SetObjectiveCompleted { index, completed } => {
+            Target::SetObjectiveCompleted { index, completed }
+        }
+        Source::SetStage { index } => Target::SetStage(index),
+        Source::CompleteQuest => Target::CompleteQuest,
+        Source::Stop => Target::Stop,
+    }
+}
+
+fn hash_len_prefixed(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+fn hash_skyrim_pack_field_value(
+    hasher: &mut blake3::Hasher,
+    value: &FieldValue,
+    interner: &StringInterner,
+) -> Result<(), String> {
+    match value {
+        FieldValue::None => {
+            hasher.update(&[0]);
+        }
+        FieldValue::Bool(value) => {
+            hasher.update(&[1, u8::from(*value)]);
+        }
+        FieldValue::Int(value) => {
+            hasher.update(&[2]);
+            hasher.update(&value.to_le_bytes());
+        }
+        FieldValue::Uint(value) => {
+            hasher.update(&[3]);
+            hasher.update(&value.to_le_bytes());
+        }
+        FieldValue::Float(value) => {
+            hasher.update(&[4]);
+            hasher.update(&value.to_bits().to_le_bytes());
+        }
+        FieldValue::String(value) => {
+            hasher.update(&[5]);
+            let value = interner
+                .resolve(*value)
+                .ok_or_else(|| "Skyrim PACK evidence contains an unresolved string".to_string())?;
+            hash_len_prefixed(hasher, value.as_bytes());
+        }
+        FieldValue::Bytes(value) => {
+            hasher.update(&[6]);
+            hash_len_prefixed(hasher, value);
+        }
+        FieldValue::FormKey(value) => {
+            hasher.update(&[7]);
+            hash_len_prefixed(hasher, value.format(interner).as_bytes());
+        }
+        FieldValue::List(values) => {
+            hasher.update(&[8]);
+            hasher.update(&(values.len() as u64).to_le_bytes());
+            for value in values {
+                hash_skyrim_pack_field_value(hasher, value, interner)?;
+            }
+        }
+        FieldValue::Struct(fields) => {
+            hasher.update(&[9]);
+            hasher.update(&(fields.len() as u64).to_le_bytes());
+            for (name, value) in fields {
+                let name = interner.resolve(*name).ok_or_else(|| {
+                    "Skyrim PACK evidence contains an unresolved struct field".to_string()
+                })?;
+                hash_len_prefixed(hasher, name.as_bytes());
+                hash_skyrim_pack_field_value(hasher, value, interner)?;
+            }
+        }
+    };
+    Ok(())
+}
+
+fn skyrim_pack_record_blake3(record: &Record, interner: &StringInterner) -> Result<String, String> {
+    let mut hasher = blake3::Hasher::new();
+    hash_len_prefixed(&mut hasher, record.sig.as_str().as_bytes());
+    hash_len_prefixed(&mut hasher, record.form_key.format(interner).as_bytes());
+    hasher.update(&record.flags.bits().to_le_bytes());
+    hasher.update(&(record.fields.len() as u64).to_le_bytes());
+    for field in &record.fields {
+        hash_len_prefixed(&mut hasher, field.sig.as_str().as_bytes());
+        hash_skyrim_pack_field_value(&mut hasher, &field.value, interner)?;
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn skyrim_pack_source_template(
+    record: &Record,
+    interner: &StringInterner,
+) -> Result<FormKey, String> {
+    let mut pkcu = record
+        .fields
+        .iter()
+        .filter(|field| field.sig.as_str() == "PKCU");
+    let value = &pkcu
+        .next()
+        .ok_or_else(|| "Skyrim PACK has no PKCU procedure template".to_string())?
+        .value;
+    if pkcu.next().is_some() {
+        return Err("Skyrim PACK has duplicate PKCU procedure templates".to_string());
+    }
+    let FieldValue::Struct(fields) = value else {
+        return Err("Skyrim PACK PKCU is not decoded as a struct".to_string());
+    };
+    let mut templates = fields.iter().filter_map(|(name, value)| {
+        interner
+            .resolve(*name)
+            .is_some_and(|name| name.eq_ignore_ascii_case("package_template"))
+            .then_some(value)
+    });
+    let Some(FieldValue::FormKey(template)) = templates.next() else {
+        return Err("Skyrim PACK PKCU has no decoded package_template".to_string());
+    };
+    if templates.next().is_some() {
+        return Err("Skyrim PACK PKCU has duplicate package_template fields".to_string());
+    }
+    Ok(*template)
+}
+
+fn skyrim_pack_family(
+    record: &Record,
+) -> Result<crate::skyrimse_fo4_runtime::package::SkyrimPackProcedureFamily, String> {
+    let locations = record
+        .fields
+        .iter()
+        .filter(|field| field.sig.as_str() == "PLDT")
+        .count();
+    let targets = record
+        .fields
+        .iter()
+        .filter(|field| field.sig.as_str() == "PTDA")
+        .count();
+    match (locations, targets) {
+        (1, 0) => Ok(crate::skyrimse_fo4_runtime::package::SkyrimPackProcedureFamily::Travel),
+        (0, 1) => Ok(crate::skyrimse_fo4_runtime::package::SkyrimPackProcedureFamily::Patrol),
+        _ => Err("Skyrim PACK is neither the exact Travel nor Patrol shape".to_string()),
+    }
+}
+
+fn authoring_script_attachments(value: &serde_json::Value) -> Vec<(String, BTreeSet<String>)> {
+    fn property_names(value: &serde_json::Value, output: &mut BTreeSet<String>) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if let Some(name) = object
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("propertyName"))
+                    .and_then(|(_, value)| value.as_str())
+                {
+                    output.insert(name.to_string());
+                }
+                for child in object.values() {
+                    property_names(child, output);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for child in values {
+                    property_names(child, output);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk(value: &serde_json::Value, output: &mut Vec<(String, BTreeSet<String>)>) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if let Some(class_name) = object
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("ScriptName"))
+                    .and_then(|(_, value)| value.as_str())
+                {
+                    let mut properties = BTreeSet::new();
+                    if let Some(value) = object
+                        .iter()
+                        .find(|(key, _)| key.eq_ignore_ascii_case("Properties"))
+                        .map(|(_, value)| value)
+                    {
+                        property_names(value, &mut properties);
+                    }
+                    output.push((class_name.to_string(), properties));
+                }
+                for child in object.values() {
+                    walk(child, output);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for child in values {
+                    walk(child, output);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut output = Vec::new();
+    walk(value, &mut output);
+    output
+}
+
+fn authoring_top_level_vmad_script_attachments(
+    value: &serde_json::Value,
+) -> Result<Vec<(String, BTreeSet<String>)>, String> {
+    fn object_value_ci<'a>(
+        value: &'a serde_json::Value,
+        key: &str,
+    ) -> Option<&'a serde_json::Value> {
+        value
+            .as_object()?
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
+            .map(|(_, value)| value)
+    }
+
+    fn attachment(value: &serde_json::Value) -> Result<Option<(String, BTreeSet<String>)>, String> {
+        let Some(class_name) = object_value_ci(value, "ScriptName")
+            .and_then(serde_json::Value::as_str)
+            .filter(|class_name| !class_name.trim().is_empty())
+        else {
+            return Ok(None);
+        };
+        let properties = object_value_ci(value, "Properties")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|property| {
+                object_value_ci(property, "propertyName")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect::<BTreeSet<_>>();
+        Ok(Some((class_name.to_string(), properties)))
+    }
+
+    let fields = value
+        .get("fields")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "authoring QUST has no field array".to_string())?;
+    let vmads = fields
+        .iter()
+        .filter_map(|field| {
+            field.as_object().and_then(|object| {
+                object
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("VirtualMachineAdapter"))
+                    .map(|(_, value)| value)
+            })
+        })
+        .collect::<Vec<_>>();
+    let [vmad] = vmads.as_slice() else {
+        return Err(format!(
+            "authoring QUST requires exactly one VMAD field, found {}",
+            vmads.len()
+        ));
+    };
+    let mut by_class = BTreeMap::<String, BTreeSet<String>>::new();
+    if let Some(scripts) = object_value_ci(vmad, "Scripts").and_then(serde_json::Value::as_array) {
+        for script in scripts {
+            if let Some((class_name, properties)) = attachment(script)? {
+                by_class.entry(class_name).or_default().extend(properties);
+            }
+        }
+    }
+    if let Some(fragment_script) = object_value_ci(vmad, "Script Fragments")
+        .and_then(|fragments| object_value_ci(fragments, "Script"))
+    {
+        if let Some((class_name, properties)) = attachment(fragment_script)? {
+            by_class.entry(class_name).or_default().extend(properties);
+        }
+    }
+    Ok(by_class.into_iter().collect())
+}
+
+fn resolve_fnv_expected_receipt(
+    expected: &crate::quest_runtime::QuestRuntimeExpectedReceipt,
+    synthetic_targets: &BTreeMap<
+        crate::quest_runtime::QuestRecordKey,
+        crate::quest_runtime::QuestRecordKey,
+    >,
+) -> Result<crate::quest_runtime::QuestRuntimeExpectedReceipt, String> {
+    use crate::quest_runtime::{
+        LocalizedStringReceipt, QuestRecordKey, QuestRuntimeExpectedReceipt, StartRouteReceipt,
+        TopologyPlacement, VmadAttachmentReceipt,
+    };
+
+    for record in &expected.emitted_records {
+        if record.form_key.starts_with("intent:fnv:") && !synthetic_targets.contains_key(record) {
+            return Err(format!(
+                "FNV quest runtime synthetic intent {} {} has no live allocation",
+                record.signature, record.form_key
+            ));
+        }
+    }
+    let resolve_record = |record: &QuestRecordKey| {
+        synthetic_targets
+            .get(record)
+            .cloned()
+            .unwrap_or_else(|| record.clone())
+    };
+    let resolve_group_path = |path: &[String]| {
+        path.iter()
+            .map(|segment| {
+                synthetic_targets
+                    .iter()
+                    .fold(segment.clone(), |value, (intent, target)| {
+                        value.replace(&intent.form_key, &target.form_key)
+                    })
+            })
+            .collect::<Vec<_>>()
+    };
+
+    Ok(QuestRuntimeExpectedReceipt {
+        emitted_records: expected
+            .emitted_records
+            .iter()
+            .map(resolve_record)
+            .collect(),
+        placements: expected
+            .placements
+            .iter()
+            .map(|placement| TopologyPlacement {
+                record: resolve_record(&placement.record),
+                group_path: resolve_group_path(&placement.group_path),
+            })
+            .collect(),
+        localized_strings: expected
+            .localized_strings
+            .iter()
+            .map(|localized| LocalizedStringReceipt {
+                owner: resolve_record(&localized.owner),
+                field: localized.field.clone(),
+                table: localized.table.clone(),
+                string_id: localized.string_id,
+            })
+            .collect(),
+        scripts: expected.scripts.clone(),
+        vmad_attachments: expected
+            .vmad_attachments
+            .iter()
+            .map(|attachment| VmadAttachmentReceipt {
+                owner: resolve_record(&attachment.owner),
+                script_class: attachment.script_class.clone(),
+                property_names: attachment.property_names.clone(),
+                compiler_evidence_id: attachment.compiler_evidence_id.clone(),
+            })
+            .collect(),
+        routes: expected
+            .routes
+            .iter()
+            .map(|route| StartRouteReceipt {
+                route_id: route.route_id.clone(),
+                quest: resolve_record(&route.quest),
+                producer_evidence_id: route.producer_evidence_id.clone(),
+                node_chain: route.node_chain.iter().map(resolve_record).collect(),
+            })
+            .collect(),
+    })
+}
+
+fn validate_fnv_synthetic_target_set(
+    receipts: &[crate::quest_runtime::QuestRuntimeExpectedReceipt],
+    synthetic_targets: &BTreeMap<
+        crate::quest_runtime::QuestRecordKey,
+        crate::quest_runtime::QuestRecordKey,
+    >,
+) -> Result<(), String> {
+    let expected = receipts
+        .iter()
+        .flat_map(|receipt| &receipt.emitted_records)
+        .filter(|record| record.form_key.starts_with("intent:fnv:"))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let actual = synthetic_targets.keys().cloned().collect::<BTreeSet<_>>();
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(format!(
+            "FNV quest runtime synthetic allocation set differs from admission: expected={} actual={}",
+            expected.len(),
+            actual.len()
+        ))
+    }
+}
+
+fn expected_placement_matches(
+    placement: &crate::quest_runtime::TopologyPlacement,
+    actual: ExistingAuthoringRecordPlacement,
+    handle_id: u64,
+    interner: &StringInterner,
+) -> Result<bool, String> {
+    let owner = |group_type: u32| {
+        placement
+            .group_path
+            .iter()
+            .find_map(|segment| segment.strip_prefix(&format!("GRUP:type={group_type}:owner=")))
+            .map(|value| parse_legacy_or_native_form_key(value, interner))
+            .transpose()
+    };
+    match actual {
+        ExistingAuthoringRecordPlacement::TopLevel => {
+            Ok(placement.group_path == [format!("GRUP:{}", placement.record.signature)])
+        }
+        ExistingAuthoringRecordPlacement::QuestChild {
+            parent_quest_form_id,
+        } => Ok(owner(10)?
+            .map(|parent| encode_form_key_for_handle(handle_id, parent, interner))
+            .transpose()
+            .map_err(|error| error.to_string())?
+            == Some(parent_quest_form_id)),
+        ExistingAuthoringRecordPlacement::TopicChild {
+            parent_dialogue_form_id,
+        } => Ok(owner(7)?
+            .map(|parent| encode_form_key_for_handle(handle_id, parent, interner))
+            .transpose()
+            .map_err(|error| error.to_string())?
+            == Some(parent_dialogue_form_id)),
+    }
+}
+
+fn authoring_quest_starts_enabled(record: &serde_json::Value) -> bool {
+    let Some(fields) = record.get("fields").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    fields.iter().any(|field| {
+        field
+            .as_object()
+            .and_then(|object| {
+                object
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("DNAM"))
+                    .map(|(_, value)| value)
+            })
+            .is_some_and(|dnam| {
+                authoring_named_u64(dnam, "flags").is_some_and(|flags| flags & 1 != 0)
+            })
+    })
+}
+
+fn clear_skyrim_projected_quest_start_enabled(
+    record: &mut Record,
+    interner: &StringInterner,
+) -> Result<(), String> {
+    let mut dnams = record
+        .fields
+        .iter_mut()
+        .filter(|field| field.sig.as_str() == "DNAM")
+        .collect::<Vec<_>>();
+    let [dnam] = dnams.as_mut_slice() else {
+        return Err("projected Skyrim Story Manager QUST requires exactly one DNAM".to_string());
+    };
+    let FieldValue::Struct(fields) = &mut dnam.value else {
+        return Err("projected Skyrim Story Manager QUST DNAM is not structured".to_string());
+    };
+    let Some((_, FieldValue::Uint(flags))) = fields.iter_mut().find(|(name, _)| {
+        interner
+            .resolve(*name)
+            .is_some_and(|name| name.eq_ignore_ascii_case("flags"))
+    }) else {
+        return Err("projected Skyrim Story Manager QUST DNAM has no flags".to_string());
+    };
+    if *flags & 1 == 0 {
+        return Err(
+            "projected Skyrim Story Manager QUST was not autostart before routing".to_string(),
+        );
+    }
+    *flags &= !1;
+    Ok(())
+}
+
+fn authoring_named_u64(value: &serde_json::Value, name: &str) -> Option<u64> {
+    match value {
+        serde_json::Value::Object(object) => object
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .and_then(|(_, value)| value.as_u64())
+            .or_else(|| {
+                object
+                    .values()
+                    .find_map(|child| authoring_named_u64(child, name))
+            }),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .find_map(|child| authoring_named_u64(child, name)),
+        _ => None,
+    }
+}
+
+pub(crate) fn is_mandatory_skyrim_actor_record(
+    source: Game,
+    target: Game,
+    signature: SigCode,
+) -> bool {
+    source == Game::SkyrimSe
+        && target == Game::Fo4
+        && matches!(signature.as_str(), "RACE" | "NPC_" | "ACHR")
+}
+
 // ---------------------------------------------------------------------------
 // Registry — per-run lock slots
 // ---------------------------------------------------------------------------
@@ -813,6 +2305,7 @@ fn set_record_editor_id(record: &mut Record, interner: &StringInterner, editor_i
 pub(crate) fn rename_fo76_target_editor_id_collision(
     record: &mut Record,
     target_eid_index: &FxHashMap<Sym, Vec<(FormKey, crate::ids::SigCode)>>,
+    vanilla_remap_blocked_source_form_keys: &FxHashSet<FormKey>,
     interner: &StringInterner,
     force_same_signature_rename: bool,
 ) -> Option<(String, String)> {
@@ -824,12 +2317,17 @@ pub(crate) fn rename_fo76_target_editor_id_collision(
     let same_signature =
         target_editor_id_has_same_signature(target_eid_index, interner, &original, record.sig);
     let static_marker = is_static_marker_editor_id(record.sig, &original);
+    let decal_texture_set = is_fo76_decal_texture_set(record.sig, &original);
+    let source_record_blocked = vanilla_remap_blocked_source_form_keys.contains(&record.form_key);
     let should_rename =
         if !target_editor_id_collides_any_signature(target_eid_index, interner, &original) {
             false
+        } else if source_record_blocked {
+            true
         } else if same_signature && static_marker {
             false
         } else if force_same_signature_rename
+            || decal_texture_set
             || record.sig.as_str() == "CELL"
             || !allows_editor_id_vanilla_remap(record.sig)
         {
@@ -852,18 +2350,82 @@ pub(crate) fn rename_fo76_target_editor_id_collision(
 }
 
 const FO76_FO4_DEFAULT_BASE_ASSET_NAMESPACE: &str = "FO76";
+const SKYRIMSE_FO4_DEFAULT_BASE_ASSET_NAMESPACE: &str = "Skyrim";
+
+fn is_fo76_decal_texture_set(sig: crate::ids::SigCode, editor_id: &str) -> bool {
+    sig.as_str() == "TXST"
+        && editor_id
+            .as_bytes()
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"decal"))
+}
 
 /// Signatures whose target editor-id collisions should stay source-owned instead
 /// of vanilla-remapping onto an FO4 base record. This is the editor-id concern
 /// only; asset relocation is driven entirely by the collision index
 /// (`ConversionRun::relocation_members`), not by signature.
-const FO76_FO4_VANILLA_REMAP_BLOCKED_SIGS: &[&str] = &["STAT", "SCOL", "MSTT"];
+/// INNR is here because FO76 and FO4 share object-ids for `dn_PowerArmor`,
+/// `dn_CommonGun`, `dn_CommonArmor`, `dn_CommonMelee`, `dn_Clothes`, and
+/// `dn_VaultSuit` while their rulesets describe entirely different content
+/// (FO76's `dn_PowerArmor` carries 357 rules to FO4's 120, keyed on FO76
+/// keywords). Remapping onto the FO4 record leaves FO76 gear unnamed.
+const FO76_FO4_VANILLA_REMAP_BLOCKED_SIGS: &[&str] = &["STAT", "SCOL", "MSTT", "INNR"];
+
+/// Records that define placed world objects must retain their source record and
+/// converted assets. ALCH and AMMO are intentionally absent: those are gameplay
+/// inventory equivalents with dedicated/expected FO4 reuse.
+///
+/// The EID index only means "same record" for FO76, which inherits Fallout 4's
+/// record set. Every other source game merely shares Bethesda's naming habits,
+/// so a namesake is a false friend: Skyrim's `RockCliff04` and FO4's are both
+/// `Landscape\Rocks\RockCliff04.nif` and are entirely different rocks. Starfield
+/// repeats it (`CloudDistant04`, `BeachUmbrella01`), and so does FNV
+/// (`CaveHall2Way01`, `IBeam01`).
+const CROSS_GAME_FO4_WORLD_OBJECT_VANILLA_REMAP_BLOCKED_SIGS: &[&str] = &[
+    "ACTI", "ADDN", "ARMO", "BOOK", "CONT", "DOOR", "FLOR", "FURN", "GRAS", "HAZD", "IDLM", "KEYM",
+    "DIAL", "INFO", "LIGH", "LVLC", "LVLI", "MISC", "MSTT", "NOTE", "NPC_", "QUST", "SCEN", "SCOL",
+    "SCPT", "SOUN", "STAT", "TACT", "TERM", "TREE", "WEAP",
+];
+
+/// FO76 records whose matching Fallout 4 EditorID identifies different content.
+/// Keeping these source-owned lets the normal collision relocation pipeline
+/// namespace their meshes, materials, and textures.
+const FO76_FO4_VANILLA_REMAP_BLOCKED_FORM_IDS: &[u32] = &[
+    0x0001_A4B9, // Newspaper01: Charleston Herald, not Fallout 4's Boston Bugle
+    // These FO76 OMODs are empty; their FO4 namesakes change already-authored ranges.
+    // The shotgun's -2/-4 modifiers make converted weapon instance ranges negative.
+    0x0004_98A1, // mod_UniversalOffset_Range_Shotgun
+    0x0004_98A2, // mod_UniversalOffset_Range_BoltAction
+    0x0011_14F8, // DLC03_mod_UniversalOffset_Range_LeverGun
+    // FO76 inherited FO4's four `AnimsGrip*` keywords at the same object ids, so the
+    // EditorID index would collapse them onto Fallout 4's records. Every converted weapon
+    // would then carry the keyword FO4's generic third-person fan is gated on (48 blocks
+    // answer `AnimsGripRifleStraight` alone), and vanilla's blocks beat the one emitted for
+    // the weapon's own animation keyword. Keeping them source-owned (the collision rename
+    // adds a `fo76` suffix) makes that fan unreachable; `KWDA`, OMOD keyword properties
+    // and the emitted subgraph blocks all follow the FormKey map.
+    //
+    // Weapons with no block of their own still need that fan: FO76 ships many reskins of
+    // FO4 weapon types with no animation keyword. `restore_generic_grips_on_unowned_weapons`
+    // in `fixups::face::generate_additive_races` puts FO4's keyword back for those.
+    0x0001_F948, // AnimsGripPistol
+    0x0001_F947, // AnimsGripRifleAssault
+    0x0004_64EF, // AnimsGripRifleStraight
+    0x000A_A937, // AnimsGripShoulderFired
+    // The Fixer/combat shotgun family must retain its FO76 GunBehavior route.
+    0x000B_9560, // AnimsCombatShotgun
+    // Automatron's namesake template belongs to the Mechanist's `DLC01MechBotFaction`, which
+    // has no relation to RobotFaction; FO76's is a RobotFaction member. Remapped, every
+    // converted robobrain attacks every other robot on sight.
+    0x0035_3D54, // DLC01EncRoboBrain01Template
+];
 
 /// Signatures that should receive a `fo76` EDID suffix when they are emitted
 /// despite a same-signature target-master collision. ARMO/ARMA are not globally
 /// remap-blocked because wearable armor should still reuse FO4 records, but
 /// protected creature skin records that are emitted still need unique EDIDs.
-const FO76_FO4_FORCE_COLLISION_RENAME_SIGS: &[&str] = &["STAT", "SCOL", "MSTT", "ARMO", "ARMA"];
+const FO76_FO4_FORCE_COLLISION_RENAME_SIGS: &[&str] =
+    &["STAT", "SCOL", "MSTT", "ARMO", "ARMA", "INNR"];
 
 fn editor_id_vanilla_remap_blocked_sigs(source: Game, target: Game) -> Vec<String> {
     let mut blocked = Vec::new();
@@ -874,10 +2436,38 @@ fn editor_id_vanilla_remap_blocked_sigs(source: Game, target: Game) -> Vec<Strin
                 .map(|sig| (*sig).to_owned()),
         );
     }
+    // Every source but FO76 — FNV/FO3, Skyrim, Starfield, and any pair added
+    // later. FO76 is the sole exception because it alone inherits Fallout 4's
+    // records; for everyone else a shared EditorID is a naming coincidence.
+    if source != Game::Fo76 && source != target && target == Game::Fo4 {
+        blocked.extend(
+            CROSS_GAME_FO4_WORLD_OBJECT_VANILLA_REMAP_BLOCKED_SIGS
+                .iter()
+                .map(|sig| (*sig).to_owned()),
+        );
+    }
     if source != target && target == Game::Fo4 {
         blocked.push("CELL".to_owned());
     }
     blocked
+}
+
+fn editor_id_vanilla_remap_blocked_source_form_keys(
+    source: Game,
+    target: Game,
+    interner: &StringInterner,
+) -> FxHashSet<FormKey> {
+    if source != Game::Fo76 || target != Game::Fo4 {
+        return FxHashSet::default();
+    }
+    let source_plugin = interner.intern(FO76_MASTER_PLUGIN_NAME);
+    FO76_FO4_VANILLA_REMAP_BLOCKED_FORM_IDS
+        .iter()
+        .map(|&local| FormKey {
+            local,
+            plugin: source_plugin,
+        })
+        .collect()
 }
 
 pub(crate) fn is_editor_id_collision_rename_forced(
@@ -905,6 +2495,9 @@ pub(crate) fn base_asset_namespace<'a>(
     if source == Game::Fo76 && target == Game::Fo4 {
         return Some(FO76_FO4_DEFAULT_BASE_ASSET_NAMESPACE);
     }
+    if source == Game::SkyrimSe && target == Game::Fo4 {
+        return Some(SKYRIMSE_FO4_DEFAULT_BASE_ASSET_NAMESPACE);
+    }
     None
 }
 
@@ -914,6 +2507,28 @@ pub fn base_asset_namespace_for_run(run: &ConversionRun) -> String {
     base_asset_namespace(&run.config, run.source, run.target)
         .unwrap_or("")
         .to_string()
+}
+
+/// Normalized base-overwrite prefixes for a run: explicit config wins, else the
+/// pair default. Shared by the material and texture base-owned gates so the two
+/// can never disagree about which kits overwrite.
+pub fn base_overwrite_prefixes_for_run(run: &ConversionRun) -> Vec<String> {
+    let configured = &run.config.base_overwrite_prefixes;
+    let source: Vec<String> = if !configured.is_empty() {
+        configured.clone()
+    } else if run.source == Game::Fo76 && run.target == Game::Fo4 {
+        crate::relocation::FO76_FO4_DEFAULT_BASE_OVERWRITE_PREFIXES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    source
+        .iter()
+        .map(|prefix| materials_native::convert::normalize_base_overwrite_prefix(prefix))
+        .filter(|prefix| !prefix.is_empty())
+        .collect()
 }
 
 const BASE_ASSET_MODEL_FIELD_SIGS: &[&str] = &["MODL", "MOD2", "MOD3", "MOD4", "MOD5"];
@@ -1050,6 +2665,113 @@ fn namespaced_mesh_model_path(path: &str, namespace: &str) -> Option<String> {
     Some(namespaced.replace('/', "\\"))
 }
 
+fn relocation_material_key(path: &str) -> String {
+    let rel = crate::relocation::normalize_rel(path);
+    if rel.is_empty() || rel.starts_with("materials/") {
+        rel
+    } else {
+        format!("materials/{rel}")
+    }
+}
+
+pub(crate) fn namespace_base_asset_decal_material_path(
+    record: &mut Record,
+    relocation_members: &std::collections::HashSet<String>,
+    namespace: &str,
+    interner: &StringInterner,
+) -> usize {
+    if record.sig.as_str() != "TXST" || relocation_members.is_empty() || namespace.trim().is_empty()
+    {
+        return 0;
+    }
+    let mut updated = 0;
+    for field in record
+        .fields
+        .iter_mut()
+        .filter(|field| field.sig.as_str() == "MNAM")
+    {
+        updated += namespace_decal_material_value(
+            &mut field.value,
+            relocation_members,
+            namespace,
+            interner,
+        );
+    }
+    updated
+}
+
+fn namespace_decal_material_value(
+    value: &mut FieldValue,
+    relocation_members: &std::collections::HashSet<String>,
+    namespace: &str,
+    interner: &StringInterner,
+) -> usize {
+    match value {
+        FieldValue::String(sym) => {
+            let Some(current) = interner.resolve(*sym) else {
+                return 0;
+            };
+            if !relocation_members.contains(&relocation_material_key(current)) {
+                return 0;
+            }
+            let Some(namespaced) = namespaced_material_path(current, namespace) else {
+                return 0;
+            };
+            *sym = interner.intern(&namespaced);
+            1
+        }
+        FieldValue::Bytes(bytes) => {
+            let had_nul = bytes.last().is_some_and(|byte| *byte == 0);
+            let current = String::from_utf8_lossy(bytes.as_slice());
+            let current = current.trim_end_matches('\0');
+            if !relocation_members.contains(&relocation_material_key(current)) {
+                return 0;
+            }
+            let Some(namespaced) = namespaced_material_path(current, namespace) else {
+                return 0;
+            };
+            bytes.clear();
+            bytes.extend_from_slice(namespaced.as_bytes());
+            if had_nul {
+                bytes.push(0);
+            }
+            1
+        }
+        _ => 0,
+    }
+}
+
+fn namespaced_material_path(path: &str, namespace: &str) -> Option<String> {
+    let namespace = namespace.trim().trim_matches(|c| c == '/' || c == '\\');
+    if namespace.is_empty() {
+        return None;
+    }
+    let normalized = path.trim().trim_matches('\0').replace('\\', "/");
+    if normalized.is_empty() || normalized.contains(':') {
+        return None;
+    }
+    let mut parts: Vec<&str> = normalized
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    if parts.is_empty() || parts.iter().any(|part| *part == "..") {
+        return None;
+    }
+    let insert_at = usize::from(
+        parts
+            .first()
+            .is_some_and(|part| part.eq_ignore_ascii_case("materials")),
+    );
+    if parts
+        .get(insert_at)
+        .is_some_and(|part| part.eq_ignore_ascii_case(namespace))
+    {
+        return None;
+    }
+    parts.insert(insert_at, namespace);
+    Some(parts.join("\\"))
+}
+
 fn strip_ascii_prefix(value: String, prefix: &str) -> String {
     if value.len() >= prefix.len() && value[..prefix.len()].eq_ignore_ascii_case(prefix) {
         value[prefix.len()..].to_owned()
@@ -1064,7 +2786,11 @@ fn allows_source_target_preflight_remap(
     sig: crate::ids::SigCode,
     editor_id: &str,
 ) -> bool {
-    if source == Game::Fo76 && target == Game::Fo4 && sig.as_str() == "CELL" {
+    // INFO identity depends on parent-DIAL topology, which is unavailable during preflight.
+    if source == Game::Fo76 && target == Game::Fo4 && matches!(sig.as_str(), "CELL" | "INFO") {
+        return false;
+    }
+    if source == Game::Fo76 && target == Game::Fo4 && is_fo76_decal_texture_set(sig, editor_id) {
         return false;
     }
     if source == Game::Fo76 && target == Game::Fo4 && is_static_marker_editor_id(sig, editor_id) {
@@ -1074,7 +2800,7 @@ fn allows_source_target_preflight_remap(
         vanilla_remap_blocked_signatures: editor_id_vanilla_remap_blocked_sigs(source, target),
         ..Default::default()
     };
-    mapper_allows_editor_id_vanilla_remap(&mapper_options, sig)
+    mapper_allows_editor_id_vanilla_remap(&mapper_options, sig, Some(editor_id))
 }
 
 fn mapper_entries_from_preflight(
@@ -1142,7 +2868,7 @@ fn allows_fo76_fo4_weap_local_alias(
 
 fn fo76_fo4_collision_layer_alias(editor_id: &str) -> Option<&'static str> {
     match editor_id {
-        "l_proj_no_collide_proj" => Some("l_coneprojectile"),
+        "l_proj_no_collide_proj" => Some("l_spell"),
         _ => None,
     }
 }
@@ -1159,20 +2885,33 @@ fn fo76_fo4_collision_layer_alias(editor_id: &str) -> Option<&'static str> {
 /// through — resolve each reference (and the standalone KYWD's own identity, so
 /// it is vanilla-remapped rather than re-emitted) to the FO4 vanilla keyword.
 ///
-/// Append ARMO/ARMA appearance/material attach-point rows here when armor
-/// support lands — the substitution is record-type agnostic by design.
+/// FO76's generic armor-paint and power-armor associations resolve to the FO4
+/// keywords carried by the corresponding FO4 armor records.
 const FO76_FO4_FORCED_KEYWORD_SUBSTITUTIONS: &[(u32, &str, u32)] = &[
     (0x0011_4364, "Fallout4.esm", 0x0024_A0D8), // ap_gun_Appearance   -> ap_WeaponMaterial
     (0x0037_D0B2, "Fallout4.esm", 0x0024_A0D7), // ma_Gun_Appearance   -> ma_WeaponMaterialSwaps
     (0x001A_001E, "Fallout4.esm", 0x001A_001E), // ap_melee_Appearance -> ap_melee_Material
     (0x0011_3855, "DLCNukaWorld.esm", 0x0003_3B61), // DLC04_ma_HandmadeAssaultRifle
+    (0x0045_2EF4, "Fallout4.esm", 0x0024_A0FA), // ma_armor_Generic_Paint -> ap_armor_Paint
+    (0x0053_03FE, "Fallout4.esm", 0x0018_DFCB), // ma_PowerArmorMod    -> ma_PA_Material
+    // Linked-ref keywords FO76 renamed but kept at their FO4 object id. FO4
+    // master packages and scripts look for the FO4 keyword on placed refs, so an
+    // own-plugin copy leaves those links invisible to them.
+    (0x001C_A8CF, "Fallout4.esm", 0x001C_A8CF), // DMP_Sandbox -> DMP_Sandbox_Prim
+    (0x0004_21F8, "Fallout4.esm", 0x0004_21F8), // DMP_Suspicious_Sandbox -> DMP_Suspicious_Sandbox_512
+    (0x0004_2241, "Fallout4.esm", 0x0004_2241), // DMP_Combat_HoldPosition -> DMP_Combat_HoldPosition_128
+    (0x0006_6510, "Fallout4.esm", 0x0006_6510), // TurfSystemLinkToSleep -> EMSystemLinkToSleep
+    (0x0018_12F6, "Fallout4.esm", 0x0018_12F6), // TurfSystemLinkToTurf -> EMSystemLinkToTurf
+    (0x001C_5EDD, "Fallout4.esm", 0x001C_5EDD), // WorkshopStackedItemParent -> WorkshopStackedItemParentKEYWORD
+    (0x000F_9E1B, "Fallout4.esm", 0x000F_9E1B), // LinkTerminalRobot -> LinkTerminalProtectron
+    (0x000F_9E13, "Fallout4.esm", 0x000F_9E13), // LinkCaptive -> DefaultCaptiveLink
 ];
 
 /// Forced FO76→FO4 race substitutions as `(FO76 SeventySix.esm object-id,
-/// FO4 Fallout4.esm object-id)`.
-const FO76_FO4_FORCED_RACE_SUBSTITUTIONS: &[(u32, u32)] = &[
-    (0x0079_CCE7, 0x000E_AFB6), // GHL_PlayerGhoulRace -> GhoulRace
-    (0x0077_2F32, 0x000D_FB33), // ProtectronFastRace -> ProtectronRace
+/// target plugin name, target object-id)`.
+const FO76_FO4_FORCED_RACE_SUBSTITUTIONS: &[(u32, &str, u32)] = &[
+    (0x0079_CCE7, "Fallout4.esm", 0x000E_AFB6), // GHL_PlayerGhoulRace -> GhoulRace
+    (0x0077_2F32, "DLCRobot.esm", 0x0000_1129), // ProtectronFastRace -> DLC01RoboBrainRace
 ];
 
 const FO4_HUMAN_RACE_LOCAL: u32 = 0x0001_3746;
@@ -1225,6 +2964,12 @@ const FNV_FO3_FO4_HUMANOID_RACE_SUBSTITUTIONS: &[(&str, u32)] = &[
     ("AfricanAmericanTribal", FO4_HUMAN_RACE_LOCAL),
 ];
 
+/// Skyrim humanoids use target-native FO4 race records. Human and child heads
+/// are projected onto the corresponding FO4 topology; beast and Dremora heads
+/// keep their baked source topology inside a converted FO4 FaceGeom asset.
+const SKYRIMSE_FO4_HUMANOID_RACE_SUBSTITUTIONS: &[(&str, u32)] =
+    crate::skyrimse_fo4_runtime::humanoid::SUPPORTED_SOURCE_HUMANOID_RACES;
+
 /// Forced FO76→FO4 base-object substitutions as `(FO76 SeventySix.esm object-id,
 /// FO4 Fallout4.esm object-id)`.
 const FO76_FO4_FORCED_BASE_OBJECT_SUBSTITUTIONS: &[(u32, u32)] = &[
@@ -1266,7 +3011,22 @@ fn fo76_fo4_forced_keyword_substitution_mappings(
 fn fo76_fo4_forced_race_substitution_mappings(
     interner: &StringInterner,
 ) -> Vec<(FormKey, FormKey)> {
-    fo76_fo4_forced_substitution_mappings(interner, FO76_FO4_FORCED_RACE_SUBSTITUTIONS)
+    let source_plugin = interner.intern(FO76_MASTER_PLUGIN_NAME);
+    FO76_FO4_FORCED_RACE_SUBSTITUTIONS
+        .iter()
+        .map(|&(source_local, target_plugin_name, target_local)| {
+            (
+                FormKey {
+                    local: source_local,
+                    plugin: source_plugin,
+                },
+                FormKey {
+                    local: target_local,
+                    plugin: interner.intern(target_plugin_name),
+                },
+            )
+        })
+        .collect()
 }
 
 fn fnv_fo3_fo4_humanoid_race_substitution_mappings(
@@ -1296,6 +3056,51 @@ fn fnv_fo3_fo4_humanoid_race_substitution_mappings(
                 *source_form_key,
                 FormKey {
                     local: *target_local,
+                    plugin: target_plugin,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn skyrimse_fo4_humanoid_race_substitution_mappings(
+    source_entries: &[(Sym, FormKey, crate::ids::SigCode)],
+    interner: &StringInterner,
+    source: Game,
+    target: Game,
+) -> Vec<(FormKey, FormKey)> {
+    if source != Game::SkyrimSe || target != Game::Fo4 {
+        return Vec::new();
+    }
+    let Ok(race_sig) = SigCode::from_str("RACE") else {
+        return Vec::new();
+    };
+    let target_plugin = interner.intern(FO4_MASTER_PLUGIN_NAME);
+    source_entries
+        .iter()
+        .filter_map(|(editor_id, source_form_key, signature)| {
+            if *signature != race_sig {
+                return None;
+            }
+            let editor_id = interner.resolve(*editor_id)?;
+            let target_local =
+                match crate::skyrimse_fo4_runtime::humanoid::source_humanoid_face_kind(editor_id)? {
+                    crate::skyrimse_fo4_runtime::humanoid::SkyrimHumanoidFaceKind::Human => {
+                        FO4_HUMAN_RACE_LOCAL
+                    }
+                    crate::skyrimse_fo4_runtime::humanoid::SkyrimHumanoidFaceKind::Child => {
+                        FO4_HUMAN_CHILD_RACE_LOCAL
+                    }
+                    crate::skyrimse_fo4_runtime::humanoid::SkyrimHumanoidFaceKind::Argonian
+                    | crate::skyrimse_fo4_runtime::humanoid::SkyrimHumanoidFaceKind::Khajiit
+                    | crate::skyrimse_fo4_runtime::humanoid::SkyrimHumanoidFaceKind::Dremora => {
+                        return None;
+                    }
+                };
+            Some((
+                *source_form_key,
+                FormKey {
+                    local: target_local,
                     plugin: target_plugin,
                 },
             ))
@@ -1414,9 +3219,13 @@ fn source_target_mappings_from_preflight_with_skips(
         }
     }
 
+    let pair_blocked_source_form_keys =
+        editor_id_vanilla_remap_blocked_source_form_keys(source, target, interner);
     let mut mappings = Vec::new();
     for (source_editor_id, source_form_key, source_signature) in source_entries {
-        if blocked_source_form_keys.contains(&source_form_key) {
+        if blocked_source_form_keys.contains(&source_form_key)
+            || pair_blocked_source_form_keys.contains(&source_form_key)
+        {
             continue;
         }
         let original_editor_id_str = interner.resolve(source_editor_id).unwrap_or("");
@@ -1613,6 +3422,132 @@ fn field_value_formkey(value: &FieldValue, key: Sym) -> Option<FormKey> {
     }
 }
 
+fn record_base_formkey(record: &Record, interner: &StringInterner) -> Option<FormKey> {
+    let name_sig = SubrecordSig::from_str("NAME").ok()?;
+    let base_sym = interner.intern("Base");
+    record
+        .fields
+        .iter()
+        .find(|entry| entry.sig == name_sig)
+        .and_then(|entry| field_value_formkey(&entry.value, base_sym))
+}
+
+pub(crate) fn capture_fnv_scri_target_text(
+    record: &Record,
+    interner: &StringInterner,
+    raw_form_id_resolver: &dyn Fn(u32) -> Option<FormKey>,
+) -> Result<Option<String>, String> {
+    let scri_sig = SubrecordSig::from_str("SCRI").map_err(|error| error.to_string())?;
+    let mut entries = record.fields.iter().filter(|entry| entry.sig == scri_sig);
+    let Some(entry) = entries.next() else {
+        return Ok(None);
+    };
+    if entries.next().is_some() {
+        return Err(format!(
+            "{} {:06X} has multiple SCRI fields",
+            record.sig.as_str(),
+            record.form_key.local
+        ));
+    }
+    match &entry.value {
+        FieldValue::FormKey(form_key) => form_key_to_legacy_str(*form_key, interner)
+            .map(Some)
+            .ok_or_else(|| {
+                format!(
+                    "{} {:06X} SCRI FormKey plugin cannot be rendered",
+                    record.sig.as_str(),
+                    record.form_key.local
+                )
+            }),
+        FieldValue::String(symbol) => {
+            let value = interner.resolve(*symbol).ok_or_else(|| {
+                format!(
+                    "{} {:06X} SCRI string cannot be resolved",
+                    record.sig.as_str(),
+                    record.form_key.local
+                )
+            })?;
+            let value = value.trim();
+            Ok((!value.is_empty()).then(|| value.to_string()))
+        }
+        FieldValue::Bytes(bytes) => {
+            let raw: [u8; 4] = bytes.as_slice().try_into().map_err(|_| {
+                format!(
+                    "{} {:06X} SCRI raw value has {} bytes, expected 4",
+                    record.sig.as_str(),
+                    record.form_key.local,
+                    bytes.len()
+                )
+            })?;
+            let raw = u32::from_le_bytes(raw);
+            if raw == 0 {
+                return Ok(None);
+            }
+            let form_key = raw_form_id_resolver(raw).ok_or_else(|| {
+                format!(
+                    "{} {:06X} SCRI raw FormID {raw:08X} cannot be resolved",
+                    record.sig.as_str(),
+                    record.form_key.local
+                )
+            })?;
+            form_key_to_legacy_str(form_key, interner)
+                .map(Some)
+                .ok_or_else(|| {
+                    format!(
+                        "{} {:06X} SCRI raw FormID {raw:08X} plugin cannot be rendered",
+                        record.sig.as_str(),
+                        record.form_key.local
+                    )
+                })
+        }
+        other => Err(format!(
+            "{} {:06X} SCRI has unsupported decoded value {other:?}",
+            record.sig.as_str(),
+            record.form_key.local
+        )),
+    }
+}
+
+pub(crate) fn append_fnv_scri_link(
+    links: &mut Vec<FnvScriLink>,
+    target_form_key: FormKey,
+    source_scpt_form_key: &str,
+    interner: &StringInterner,
+) -> Result<(), String> {
+    let target_form_key = form_key_to_legacy_str(target_form_key, interner)
+        .ok_or_else(|| "SCRI attachment target FormKey cannot be rendered".to_string())?;
+    if let Some(existing) = links
+        .iter()
+        .find(|link| link.target_form_key.eq_ignore_ascii_case(&target_form_key))
+    {
+        if existing
+            .source_scpt_form_key
+            .eq_ignore_ascii_case(source_scpt_form_key)
+        {
+            return Ok(());
+        }
+        return Err(format!(
+            "SCRI attachment target {target_form_key} resolves to both {} and {source_scpt_form_key}",
+            existing.source_scpt_form_key
+        ));
+    }
+    links.push(FnvScriLink {
+        target_form_key,
+        source_scpt_form_key: source_scpt_form_key.to_string(),
+    });
+    Ok(())
+}
+
+fn is_supported_fo4_humanoid_race(fk: FormKey, interner: &StringInterner) -> bool {
+    interner
+        .resolve(fk.plugin)
+        .is_some_and(|plugin| plugin.eq_ignore_ascii_case(FO4_MASTER_PLUGIN_NAME))
+        && matches!(
+            fk.local,
+            FO4_HUMAN_RACE_LOCAL | FO4_HUMAN_CHILD_RACE_LOCAL | FO4_GHOUL_RACE_LOCAL
+        )
+}
+
 fn collect_formkeys_from_value(value: &FieldValue, out: &mut FxHashSet<FormKey>) {
     match value {
         FieldValue::FormKey(fk) => {
@@ -1674,22 +3609,64 @@ pub(crate) fn capture_target_master_context(
     (target_master_syms, first_target_master_sym)
 }
 
-const FO76_TERRAIN_OWNED_RECORD_SIGS: &[&str] = &["LTEX", "GRAS"];
+const TERRAIN_OWNED_RECORD_SIGS: &[&str] = &["LTEX", "GRAS"];
 
 fn supports_source_worldspace_topology_rebuild(source: Game, target: Game) -> bool {
     target == Game::Fo4 && matches!(source, Game::Fnv | Game::Fo3 | Game::SkyrimSe)
 }
 
-fn apply_fo76_terrain_owned_record_skips(
+fn collect_fo76_decal_material_members(source_handle_id: u64) -> Result<Vec<String>, String> {
+    let form_keys =
+        esp_authoring_core::plugin_runtime::plugin_handle_record_form_keys_by_signature_no_py(
+            source_handle_id,
+            "TXST",
+        )?;
+    let mut members = BTreeSet::new();
+    for form_key in form_keys {
+        let values = esp_authoring_core::plugin_runtime::plugin_handle_read_raw_subrecords_no_py(
+            source_handle_id,
+            &form_key,
+            "MNAM",
+        )?;
+        for value in values {
+            let path = String::from_utf8_lossy(&value);
+            let mut member = crate::relocation::normalize_rel(&path);
+            if member.is_empty() {
+                continue;
+            }
+            if !member.starts_with("materials/") {
+                member = format!("materials/{member}");
+            }
+            if member.ends_with(".bgsm") || member.ends_with(".bgem") {
+                members.insert(member);
+            }
+        }
+    }
+    Ok(members.into_iter().collect())
+}
+
+fn needs_fo4_placed_ref_target_repair(source: Game, target: Game) -> bool {
+    target == Game::Fo4 && matches!(source, Game::Fo76 | Game::Starfield)
+}
+
+/// Both BTD-driven pairs route LTEX/GRAS through the terrain-texture phase,
+/// which emits them itself. Leaving the generic writer enabled makes each
+/// record appear twice under different object ids; the `TerrainRecordRemaps`
+/// dedupe does not cover it, because `target_record_reuse` is populated only
+/// for FO76 (`phase::terrain::should_collect_source_terrain_ids`).
+fn apply_terrain_owned_record_skips(
     translator: &mut Translator,
     source: Game,
     target: Game,
     config: &RunConfig,
 ) {
-    if source != Game::Fo76 || target != Game::Fo4 || !config.asset_phases.terrain {
+    if target != Game::Fo4
+        || !matches!(source, Game::Fo76 | Game::Starfield)
+        || !config.asset_phases.terrain
+    {
         return;
     }
-    for sig in FO76_TERRAIN_OWNED_RECORD_SIGS {
+    for sig in TERRAIN_OWNED_RECORD_SIGS {
         translator.maps.skip_records.insert((*sig).to_owned());
     }
 }
@@ -1714,9 +3691,15 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
         .map_err(|e| RunError::InvalidConfig(format!("target schema: {e}")))?;
 
     let mut config = params.config;
+    config
+        .validate_mvp_record_exceptions(params.source, params.target)
+        .map_err(RunError::InvalidConfig)?;
+    config
+        .validate_mvp_melee_only(params.source, params.target)
+        .map_err(RunError::InvalidConfig)?;
     let mut translator = Translator::new(params.source, params.target)
         .map_err(|e| RunError::InvalidConfig(format!("translator: {e}")))?;
-    apply_fo76_terrain_owned_record_skips(&mut translator, params.source, params.target, &config);
+    apply_terrain_owned_record_skips(&mut translator, params.source, params.target, &config);
     for sig in &config.skip_record_signatures {
         let sig = sig.trim().to_uppercase();
         if !sig.is_empty() {
@@ -1761,15 +3744,34 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
         let membership_root = store
             .prepare_membership_tree("textures/effects/gobos/", ".dds")
             .map_err(RunError::InvalidConfig)?;
-        config.target_extracted_dir = Some(membership_root.to_path_buf());
+        config.target_membership_root = Some(membership_root.to_path_buf());
     }
 
-    let relocation = if params.source == Game::Fo76 && params.target == Game::Fo4 {
+    let (decal_materials, decal_material_scan_warning) = if params.source == Game::Fo76
+        && params.target == Game::Fo4
+        && config.source_extracted_dir.is_some()
+    {
+        match collect_fo76_decal_material_members(params.source_handle_id) {
+            Ok(materials) => (materials, None),
+            Err(error) => (
+                Vec::new(),
+                Some(format!("relocation: TXST material scan failed: {error}")),
+            ),
+        }
+    } else {
+        (Vec::new(), None)
+    };
+
+    let mut relocation = if matches!(params.source, Game::Fo76 | Game::SkyrimSe)
+        && params.target == Game::Fo4
+    {
         let roots: Vec<String> = if config.base_asset_relocation_mesh_roots.is_empty() {
-            crate::relocation::FO76_FO4_DEFAULT_RELOCATION_MESH_ROOTS
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect()
+            let defaults = if params.source == Game::Fo76 {
+                crate::relocation::FO76_FO4_DEFAULT_RELOCATION_MESH_ROOTS
+            } else {
+                crate::relocation::SKYRIMSE_FO4_DEFAULT_RELOCATION_MESH_ROOTS
+            };
+            defaults.iter().map(|s| (*s).to_string()).collect()
         } else {
             config.base_asset_relocation_mesh_roots.clone()
         };
@@ -1787,6 +3789,7 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
                         "relocation: target asset catalog/overlay unset — collision detection disabled"
                             .to_string(),
                     ],
+                    ..Default::default()
                 },
             },
             _ => crate::relocation::RelocationBuildResult {
@@ -1795,11 +3798,39 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
                     "relocation: source extracted dir unset — collision detection disabled"
                         .to_string(),
                 ],
+                ..Default::default()
             },
         }
     } else {
         crate::relocation::RelocationBuildResult::default()
     };
+
+    if params.source == Game::Fo76
+        && params.target == Game::Fo4
+        && let Some(source_dir) = config.source_extracted_dir.as_deref()
+    {
+        let warnings = if let Some(store) = target_assets.as_deref() {
+            crate::relocation::extend_with_changed_decal_assets_from_target_store(
+                &mut relocation.members,
+                &decal_materials,
+                source_dir,
+                store,
+            )
+        } else if let Some(target_dir) = config.target_extracted_dir.as_deref() {
+            crate::relocation::extend_with_changed_decal_assets(
+                &mut relocation.members,
+                &decal_materials,
+                source_dir,
+                target_dir,
+            )
+        } else {
+            Vec::new()
+        };
+        relocation.warnings.extend(warnings);
+    }
+    if let Some(warning) = decal_material_scan_warning {
+        relocation.warnings.push(warning);
+    }
 
     let target_master_record_contexts = params
         .master_handle_ids
@@ -1828,6 +3859,7 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
         translator,
         config,
         mapper_state: None,
+        script_reference_state: None,
         generated_object_id_reservations: FxHashSet::default(),
         legacy_serial_normalization: Default::default(),
         legacy_pack_preflight_report: None,
@@ -1836,6 +3868,46 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
         warnings: Vec::new(),
         deferred: Vec::new(),
         fnv_scri_links: Vec::new(),
+        legacy_placed_actor_aliases: Default::default(),
+        fnv_dedicated_topic_targets: None,
+        fnv_pending_vmad_targets: Vec::new(),
+        fnv_pending_vmad_scripts: Vec::new(),
+        fnv_pending_quest_fragments: Vec::new(),
+        fnv_pending_helper_scripts: Vec::new(),
+        fnv_pending_scpt_properties: Vec::new(),
+        fnv_pending_info_fragments: Vec::new(),
+        fnv_pending_scene_fragments: Vec::new(),
+        fnv_quest_runtime_component_plans: Vec::new(),
+        fnv_quest_runtime_expected_receipts: Vec::new(),
+        fnv_quest_runtime_synthetic_targets: BTreeMap::new(),
+        fnv_quest_runtime_compiler_evidence: Vec::new(),
+        fnv_quest_runtime_receipts_finalized: false,
+        skyrim_runtime_capability_plan: None,
+        skyrim_runtime_receipt: None,
+        skyrim_minimal_quest_action_requests: HashMap::new(),
+        skyrim_minimal_quest_class_prefix: None,
+        skyrim_minimal_quest_projections: Vec::new(),
+        skyrim_minimal_alias_projections: Vec::new(),
+        skyrim_pack_projections: Vec::new(),
+        skyrim_scene_projections: Vec::new(),
+        skyrim_dialogue_projections: Vec::new(),
+        skyrim_story_manager_projections: Vec::new(),
+        skyrim_quest_runtime_voice_receipt: None,
+        skyrim_quest_runtime_asset_copy_receipt: None,
+        skyrim_minimal_quest_compiler_evidence: Vec::new(),
+        skyrim_minimal_quest_receipts_finalized: false,
+        bulk_melee_v1_receipts: Vec::new(),
+        creature_dependency_plan_installed: false,
+        creature_dependency_admissions: FxHashMap::default(),
+        creature_dependency_terminals: FxHashSet::default(),
+        creature_primary_npc_reservations: Vec::new(),
+        creature_ancillary_npc_reservations: Vec::new(),
+        skyrim_creature_record_reservations: Vec::new(),
+        skyrim_creature_batch_owned_sources: FxHashSet::default(),
+        skyrim_creature_ancillary_reservations: Vec::new(),
+        skyrim_creature_ancillary_reservations_installed: false,
+        creature_actor_action_reservations: Vec::new(),
+        creature_actor_action_reservations_installed: false,
         progress_callback: None,
         navi_warnings: Vec::new(),
         event_tx,
@@ -1844,10 +3916,21 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
         dependency_graph: None,
         full_plugin_state: FullPluginRunState::default(),
         terrain_texture_jobs: Vec::new(),
+        story_manager_route_seed: crate::phase::story_manager::StoryManagerRouteSeedReport::empty(
+            params.source,
+            params.target,
+        ),
         projected_seed_cache: std::collections::HashMap::new(),
+        interior_placed_ref_candidates: Vec::new(),
+        interior_recentre: Default::default(),
         relocation_members: relocation.members,
+        relocation_mesh_only_members: relocation.mesh_only_members,
+        nif_dependencies: relocation.nif_dependencies,
+        relocation_preparation: relocation.preparation,
+        output_nif_dependencies: Arc::default(),
         relocation_warnings: relocation.warnings,
         target_assets,
+        source_asset_inventory: None,
         output_sink: None,
         owned_handles: None,
         default_target_path: None,
@@ -1929,6 +4012,463 @@ where
 // ---------------------------------------------------------------------------
 
 impl ConversionRun {
+    pub(crate) fn read_target_record_if_available(
+        &self,
+        form_key: FormKey,
+    ) -> Result<Option<Record>, RunError> {
+        let plugin = self.interner.resolve(form_key.plugin).ok_or_else(|| {
+            RunError::InvalidConfig(format!(
+                "unresolved target record plugin for {:06X}",
+                form_key.local
+            ))
+        })?;
+        let handle_id = if plugin.eq_ignore_ascii_case(&self.config.output_plugin_name) {
+            Some(self.target_handle_id)
+        } else {
+            self.target_master_record_contexts
+                .iter()
+                .find(|context| context.plugin_name.eq_ignore_ascii_case(plugin))
+                .map(|context| context.handle_id)
+        };
+        let Some(handle_id) = handle_id else {
+            return Ok(None);
+        };
+        match read_record_relayout_by_form_key(
+            handle_id,
+            &form_key,
+            &self.schema_target,
+            &self.interner,
+            None,
+        ) {
+            Ok(record) => Ok(Some(record)),
+            Err(RecordReadError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(crate) fn reserve_legacy_creature_primary_npcs(
+        &mut self,
+        primary_creature_sources: &[FormKey],
+        expected_candidates: usize,
+    ) -> Result<(), RunError> {
+        if !matches!(self.source, Game::Fnv | Game::Fo3) || self.target != Game::Fo4 {
+            return Err(RunError::InvalidConfig(
+                "legacy creature NPC reservations require FNV/FO3 -> FO4".to_string(),
+            ));
+        }
+        if !self.creature_primary_npc_reservations.is_empty() {
+            return Err(RunError::InvalidConfig(
+                "legacy creature NPC reservations are already installed".to_string(),
+            ));
+        }
+        let state = self.mapper_state.as_mut().ok_or_else(|| {
+            RunError::InvalidConfig(
+                "mapper state must be initialized before creature primary reservations".to_string(),
+            )
+        })?;
+        self.creature_primary_npc_reservations = allocate_creature_primary_npc_reservations(
+            state,
+            &self.interner,
+            primary_creature_sources,
+            expected_candidates,
+        )
+        .map_err(RunError::InvalidConfig)?;
+        Ok(())
+    }
+
+    pub(crate) fn creature_primary_npc_reservations(&self) -> &[CreaturePrimaryNpcReservation] {
+        &self.creature_primary_npc_reservations
+    }
+
+    pub(crate) fn creature_ancillary_npc_reservations(&self) -> &[CreatureAncillaryNpcReservation] {
+        &self.creature_ancillary_npc_reservations
+    }
+
+    pub(crate) fn install_legacy_creature_dependency_plan(
+        &mut self,
+        admissions: Vec<CreatureDependencyAdmission>,
+        primary_creature_sources: &[FormKey],
+        ancillary_npc_sources: &[FormKey],
+        expected_candidates: usize,
+    ) -> Result<(), RunError> {
+        if self.creature_dependency_plan_installed {
+            return Err(RunError::InvalidConfig(
+                "creature dependency plan is already installed".to_string(),
+            ));
+        }
+        let mapper_state = self.mapper_state.clone();
+        let dependency_plan_installed = self.creature_dependency_plan_installed;
+        let primary_reservations = self.creature_primary_npc_reservations.clone();
+        let ancillary_reservations = self.creature_ancillary_npc_reservations.clone();
+        let installed_admissions = self.creature_dependency_admissions.clone();
+        let terminals = self.creature_dependency_terminals.clone();
+        let result = self
+            .reserve_legacy_creature_primary_npcs(primary_creature_sources, expected_candidates)
+            .and_then(|()| self.reserve_legacy_creature_ancillary_npcs(ancillary_npc_sources))
+            .and_then(|()| self.install_creature_dependency_admissions(admissions));
+        if let Err(error) = result {
+            self.mapper_state = mapper_state;
+            self.creature_dependency_plan_installed = dependency_plan_installed;
+            self.creature_primary_npc_reservations = primary_reservations;
+            self.creature_ancillary_npc_reservations = ancillary_reservations;
+            self.creature_dependency_admissions = installed_admissions;
+            self.creature_dependency_terminals = terminals;
+            return Err(error);
+        }
+        self.creature_dependency_plan_installed = true;
+        Ok(())
+    }
+
+    fn reserve_legacy_creature_ancillary_npcs(
+        &mut self,
+        ancillary_npc_sources: &[FormKey],
+    ) -> Result<(), RunError> {
+        if !matches!(self.source, Game::Fnv | Game::Fo3) || self.target != Game::Fo4 {
+            return Err(RunError::InvalidConfig(
+                "legacy ancillary NPC reservations require FNV/FO3 -> FO4".to_string(),
+            ));
+        }
+        if !self.creature_ancillary_npc_reservations.is_empty() {
+            return Err(RunError::InvalidConfig(
+                "legacy ancillary NPC reservations are already installed".to_string(),
+            ));
+        }
+        let state = self.mapper_state.as_mut().ok_or_else(|| {
+            RunError::InvalidConfig(
+                "mapper state must be initialized before ancillary NPC reservations".to_string(),
+            )
+        })?;
+        self.creature_ancillary_npc_reservations = allocate_creature_ancillary_npc_reservations(
+            state,
+            &self.interner,
+            ancillary_npc_sources,
+        )
+        .map_err(RunError::InvalidConfig)?;
+        Ok(())
+    }
+
+    pub(crate) fn reserve_skyrim_creature_records(
+        &mut self,
+        sources: Vec<SkyrimCreatureReservationSource>,
+        expected_candidates: usize,
+    ) -> Result<(), RunError> {
+        if self.source != Game::SkyrimSe || self.target != Game::Fo4 {
+            return Err(RunError::InvalidConfig(
+                "Skyrim creature record reservations require Skyrim SE -> FO4".to_string(),
+            ));
+        }
+        if !self.skyrim_creature_record_reservations.is_empty() {
+            return Err(RunError::InvalidConfig(
+                "Skyrim creature record reservations are already installed".to_string(),
+            ));
+        }
+        let state = self.mapper_state.as_mut().ok_or_else(|| {
+            RunError::InvalidConfig(
+                "mapper state must be initialized before Skyrim creature reservations".to_string(),
+            )
+        })?;
+        self.skyrim_creature_record_reservations = allocate_skyrim_creature_record_reservations(
+            state,
+            &self.interner,
+            sources,
+            expected_candidates,
+        )
+        .map_err(RunError::InvalidConfig)?;
+        Ok(())
+    }
+
+    pub(crate) fn skyrim_creature_record_reservations(&self) -> &[SkyrimCreatureRecordReservation] {
+        &self.skyrim_creature_record_reservations
+    }
+
+    pub(crate) fn reserve_skyrim_creature_ancillary_records(
+        &mut self,
+        requests: Vec<SkyrimCreatureAncillaryReservationRequest>,
+    ) -> Result<(), RunError> {
+        if self.source != Game::SkyrimSe || self.target != Game::Fo4 {
+            return Err(RunError::InvalidConfig(
+                "Skyrim creature ancillary reservations require Skyrim SE -> FO4".to_string(),
+            ));
+        }
+        if self.skyrim_creature_ancillary_reservations_installed {
+            return Err(RunError::InvalidConfig(
+                "Skyrim creature ancillary reservations are already installed".to_string(),
+            ));
+        }
+        let state = self.mapper_state.as_mut().ok_or_else(|| {
+            RunError::InvalidConfig(
+                "mapper state must be initialized before Skyrim creature ancillary reservations"
+                    .to_string(),
+            )
+        })?;
+        self.skyrim_creature_ancillary_reservations =
+            allocate_skyrim_creature_ancillary_reservations(
+                state,
+                &self.interner,
+                &self.skyrim_creature_record_reservations,
+                requests,
+            )
+            .map_err(RunError::InvalidConfig)?;
+        self.skyrim_creature_ancillary_reservations_installed = true;
+        Ok(())
+    }
+
+    pub(crate) fn skyrim_creature_ancillary_reservations(
+        &self,
+    ) -> &[SkyrimCreatureAncillaryReservationReceipt] {
+        &self.skyrim_creature_ancillary_reservations
+    }
+
+    pub(crate) fn reserve_creature_actor_action_records(
+        &mut self,
+        requests: Vec<CreatureActorActionReservationRequest>,
+    ) -> Result<(), RunError> {
+        if !matches!(
+            (self.source, self.target),
+            (Game::SkyrimSe | Game::Fnv | Game::Fo3, Game::Fo4)
+        ) {
+            return Err(RunError::InvalidConfig(format!(
+                "creature Actor Action reservations are unsupported for {} -> {}",
+                self.source.as_str(),
+                self.target.as_str()
+            )));
+        }
+        if self.creature_actor_action_reservations_installed {
+            return Err(RunError::InvalidConfig(
+                "creature Actor Action reservations are already installed".to_string(),
+            ));
+        }
+        let state = self.mapper_state.as_mut().ok_or_else(|| {
+            RunError::InvalidConfig(
+                "mapper state must be initialized before creature Actor Action reservations"
+                    .to_string(),
+            )
+        })?;
+        self.creature_actor_action_reservations =
+            allocate_creature_actor_action_reservations(state, &self.interner, requests)
+                .map_err(RunError::InvalidConfig)?;
+        self.creature_actor_action_reservations_installed = true;
+        Ok(())
+    }
+
+    pub(crate) fn creature_actor_action_reservations(
+        &self,
+    ) -> &[CreatureActorActionReservationReceipt] {
+        &self.creature_actor_action_reservations
+    }
+
+    pub(crate) fn install_skyrim_creature_dependency_plan(
+        &mut self,
+        admissions: Vec<CreatureDependencyAdmission>,
+        sources: Vec<SkyrimCreatureReservationSource>,
+        expected_candidates: usize,
+    ) -> Result<(), RunError> {
+        if self.creature_dependency_plan_installed {
+            return Err(RunError::InvalidConfig(
+                "creature dependency plan is already installed".to_string(),
+            ));
+        }
+        let mapper_state = self.mapper_state.clone();
+        let dependency_plan_installed = self.creature_dependency_plan_installed;
+        let reservations = self.skyrim_creature_record_reservations.clone();
+        let batch_owned_sources = self.skyrim_creature_batch_owned_sources.clone();
+        let installed_admissions = self.creature_dependency_admissions.clone();
+        let terminals = self.creature_dependency_terminals.clone();
+        let result = self
+            .reserve_skyrim_creature_records(sources, expected_candidates)
+            .and_then(|()| self.install_creature_dependency_admissions(admissions));
+        if let Err(error) = result {
+            self.mapper_state = mapper_state;
+            self.creature_dependency_plan_installed = dependency_plan_installed;
+            self.skyrim_creature_record_reservations = reservations;
+            self.skyrim_creature_batch_owned_sources = batch_owned_sources;
+            self.creature_dependency_admissions = installed_admissions;
+            self.creature_dependency_terminals = terminals;
+            return Err(error);
+        }
+        self.skyrim_creature_batch_owned_sources = self
+            .skyrim_creature_record_reservations
+            .iter()
+            .filter(|reservation| {
+                matches!(
+                    reservation.kind,
+                    SkyrimCreatureReservedRecordKind::Race | SkyrimCreatureReservedRecordKind::Npc
+                )
+            })
+            .map(|reservation| reservation.source)
+            .collect();
+        self.creature_dependency_plan_installed = true;
+        Ok(())
+    }
+
+    pub(crate) fn install_creature_dependency_admissions(
+        &mut self,
+        admissions: Vec<CreatureDependencyAdmission>,
+    ) -> Result<(), RunError> {
+        if !matches!(
+            (self.source, self.target),
+            (Game::SkyrimSe | Game::Fnv | Game::Fo3, Game::Fo4)
+        ) {
+            return Err(RunError::InvalidConfig(format!(
+                "creature dependency admissions are unsupported for {} -> {}",
+                self.source.as_str(),
+                self.target.as_str()
+            )));
+        }
+        let mut installed = FxHashMap::default();
+        for mut admission in admissions {
+            admission
+                .owner_family_ids
+                .sort_by_key(|owner| owner.to_ascii_lowercase());
+            admission
+                .owner_family_ids
+                .dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+            if admission.owner_family_ids.is_empty() {
+                return Err(RunError::InvalidConfig(format!(
+                    "creature dependency {} {:06X} has no owning family",
+                    admission.source_signature.as_str(),
+                    admission.source_form_key.local
+                )));
+            }
+            let source_form_key = admission.source_form_key;
+            if installed.insert(source_form_key, admission).is_some() {
+                return Err(RunError::InvalidConfig(format!(
+                    "duplicate creature dependency admission {:06X}",
+                    source_form_key.local
+                )));
+            }
+        }
+        self.creature_dependency_admissions = installed;
+        self.creature_dependency_terminals.clear();
+        Ok(())
+    }
+
+    pub(crate) fn is_admitted_creature_dependency(
+        &self,
+        form_key: FormKey,
+        signature: SigCode,
+    ) -> bool {
+        self.creature_dependency_admissions
+            .get(&form_key)
+            .is_some_and(|admission| admission.source_signature == signature)
+    }
+
+    pub(crate) fn creature_dependency_failure(
+        &self,
+        form_key: FormKey,
+        signature: SigCode,
+        disposition: &str,
+    ) -> RunError {
+        let owners = self
+            .creature_dependency_admissions
+            .get(&form_key)
+            .map(|admission| admission.owner_family_ids.join(","))
+            .unwrap_or_else(|| "unknown".to_string());
+        RunError::InvalidConfig(format!(
+            "creature_dependency_terminal:{}:{:06X}:{}:owners={owners}",
+            signature.as_str(),
+            form_key.local,
+            disposition
+        ))
+    }
+
+    pub(crate) fn record_creature_dependency_terminal(&mut self, form_key: FormKey) {
+        if self.creature_dependency_admissions.contains_key(&form_key) {
+            self.creature_dependency_terminals.insert(form_key);
+        }
+    }
+
+    pub(crate) fn validate_creature_dependency_accounting(&self) -> Result<(), RunError> {
+        let mut missing = self
+            .creature_dependency_admissions
+            .values()
+            .filter(|admission| {
+                !self
+                    .creature_dependency_terminals
+                    .contains(&admission.source_form_key)
+            })
+            .collect::<Vec<_>>();
+        missing.sort_by_key(|admission| {
+            (
+                admission.source_signature.as_str().to_string(),
+                admission.source_form_key.local,
+            )
+        });
+        if let Some(admission) = missing.first() {
+            return Err(self.creature_dependency_failure(
+                admission.source_form_key,
+                admission.source_signature,
+                "missing_from_translation_enumeration",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn bulk_melee_v1_receipts(&self) -> &[crate::phase::mvp_melee::MvpMeleeReceipt] {
+        &self.bulk_melee_v1_receipts
+    }
+
+    pub(crate) fn clear_bulk_melee_v1_receipts(&mut self) {
+        self.bulk_melee_v1_receipts.clear();
+    }
+
+    pub(crate) fn commit_bulk_melee_v1_receipts(
+        &mut self,
+        receipts: Vec<crate::phase::mvp_melee::MvpMeleeReceipt>,
+    ) {
+        self.bulk_melee_v1_receipts = receipts;
+    }
+
+    pub(crate) fn is_skyrim_runtime_planned_record(
+        &self,
+        form_key: FormKey,
+        signature: SigCode,
+    ) -> bool {
+        self.source == Game::SkyrimSe
+            && self.target == Game::Fo4
+            && ((crate::skyrimse_fo4_runtime::planner::is_managed_signature(signature.as_str())
+                && (is_mandatory_skyrim_actor_record(self.source, self.target, signature)
+                    || !self
+                        .translator
+                        .maps
+                        .skip_records
+                        .contains(signature.as_str())))
+                || self.config.is_mvp_record_exception(
+                    self.source,
+                    self.target,
+                    form_key,
+                    signature,
+                    &self.interner,
+                ))
+    }
+
+    pub(crate) fn is_admitted_mvp_weapon_record(&self, record: &Record) -> bool {
+        if !self.config.is_mvp_record_exception(
+            self.source,
+            self.target,
+            record.form_key,
+            record.sig,
+            &self.interner,
+        ) {
+            return false;
+        }
+        match (self.source, record.sig.as_str()) {
+            (Game::SkyrimSe, "WEAP") => {
+                crate::skyrimse_fo4_runtime::weapon::simple_melee_weapon_source(
+                    record,
+                    &self.interner,
+                )
+                .is_some()
+            }
+            (Game::Fnv, "WEAP") => {
+                crate::translator::pair_hooks::fnv_fo4::classify_hatchet(record, &self.interner)
+                    .is_some()
+            }
+            (_, "STAT") => true,
+            _ => false,
+        }
+    }
+
     pub fn source_handle(&self) -> Option<u64> {
         (self.source_handle_id != 0).then_some(self.source_handle_id)
     }
@@ -2018,17 +4558,49 @@ impl ConversionRun {
         Ok(())
     }
 
-    /// Translate every record in the source plugin into the target plugin.
-    ///
-    /// Iterates every signature in the source plugin and dispatches each
-    /// record through the shared `translate_fks` body. Used by the unified
-    /// whole-plugin pipeline.
+    pub(crate) fn read_explicit_target_master_record(
+        &self,
+        form_key_text: &str,
+    ) -> Result<Record, FnvScriptingError> {
+        let form_key = FormKey::parse(form_key_text, &self.interner).map_err(|error| {
+            FnvScriptingError::Setup(format!(
+                "invalid explicit target donor {form_key_text}: {error}"
+            ))
+        })?;
+        let plugin = self.interner.resolve(form_key.plugin).ok_or_else(|| {
+            FnvScriptingError::Setup(format!(
+                "explicit target donor plugin is unresolved: {form_key_text}"
+            ))
+        })?;
+        let context = self
+            .target_master_record_contexts
+            .iter()
+            .find(|context| context.plugin_name.eq_ignore_ascii_case(plugin))
+            .ok_or_else(|| {
+                FnvScriptingError::Setup(format!(
+                    "explicit target donor master is not loaded: {plugin}"
+                ))
+            })?;
+        read_record_relayout_by_form_key(
+            context.handle_id,
+            &form_key,
+            &self.schema_target,
+            &self.interner,
+            None,
+        )
+        .map_err(|error| {
+            FnvScriptingError::Setup(format!(
+                "read explicit target donor {form_key_text}: {error}"
+            ))
+        })
+    }
+
     /// Emit a one-line status string through the Python progress callback, if
     /// one is set. Bypasses the phase event channel, which is starved while
     /// `translate_all` holds the run-registry lock (the event Drainer blocks on
-    /// that same lock for the whole call). Used to make the otherwise-silent
-    /// translate_all setup (mapper-state build + form-key enumeration) visible
-    /// during multi-hour whole-plugin runs. Callback errors are ignored.
+    /// it), so the otherwise-silent setup (mapper-state build, form-key
+    /// enumeration) shows during multi-hour whole-plugin runs. Callback errors
+    /// are ignored.
     fn emit_status(&self, message: &str) {
         let Some(cb) = self.progress_callback.as_ref() else {
             return;
@@ -2069,8 +4641,77 @@ impl ConversionRun {
         coverage
     }
 
+    pub(crate) fn preallocate_fnv_quest_slice_pack_identities(
+        &mut self,
+    ) -> Result<LegacyFormKeyPreallocationCoverage, RunError> {
+        if !self.config.fnv_quest_slice || self.source != Game::Fnv || self.target != Game::Fo4 {
+            return Ok(LegacyFormKeyPreallocationCoverage::default());
+        }
+        let locals = self
+            .config
+            .fnv_quest_slice_records
+            .iter()
+            .find(|(signature, _)| signature.eq_ignore_ascii_case("PACK"))
+            .map(|(_, locals)| locals.clone())
+            .unwrap_or_default();
+        if locals.is_empty() {
+            return Ok(LegacyFormKeyPreallocationCoverage::default());
+        }
+        let source_plugin_name = self
+            .mapper_state
+            .as_ref()
+            .expect("mapper_state initialized before legacy preallocation")
+            .options
+            .source_plugin_name
+            .clone();
+        let source_plugin = self.interner.intern(&source_plugin_name);
+        let pack_sig = SigCode::from_str("PACK")
+            .map_err(|error| RunError::InvalidConfig(format!("PACK signature: {error}")))?;
+        let mut intents = Vec::with_capacity(locals.len());
+        for local in locals {
+            let source_fk = FormKey {
+                local: local & 0x00FF_FFFF,
+                plugin: source_plugin,
+            };
+            let record = read_record_relayout_by_form_key(
+                self.source_handle_id,
+                &source_fk,
+                &self.schema_source,
+                &self.interner,
+                None,
+            )
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "selected PACK {:06X} preallocation read failed: {error}",
+                    source_fk.local
+                ))
+            })?;
+            if record.sig != pack_sig {
+                return Err(RunError::InvalidConfig(format!(
+                    "selected PACK {:06X} preallocation resolved as {}",
+                    source_fk.local,
+                    record.sig.as_str()
+                )));
+            }
+            intents.push(LegacyFormKeyAllocationIntent {
+                source_fk,
+                editor_id: record.eid,
+                target_sig: pack_sig,
+            });
+        }
+        let coverage = self.preallocate_legacy_form_key_intents(intents);
+        if coverage.missing != 0 || coverage.mapped != coverage.eligible {
+            return Err(RunError::InvalidConfig(format!(
+                "selected PACK identity preallocation incomplete: eligible={} mapped={} missing={}",
+                coverage.eligible, coverage.mapped, coverage.missing
+            )));
+        }
+        Ok(coverage)
+    }
+
     pub(crate) fn legacy_pack_gate_active(&self) -> bool {
         self.config.is_whole_plugin
+            && !self.config.fnv_quest_slice
             && matches!(self.source, Game::Fnv | Game::Fo3)
             && self.target == Game::Fo4
     }
@@ -2089,7 +4730,7 @@ impl ConversionRun {
             _ => return None,
         };
         let require_explicit_origins = self.config.legacy_pack_provenance_required
-            || source_plugin_name.eq_ignore_ascii_case("FNV_FO3_Merged.esm");
+            || source_plugin_name.eq_ignore_ascii_case("FalloutNV.esm");
         let raw_expected = if require_explicit_origins {
             LegacyPackExpectedCounts::audited_merged()
         } else {
@@ -2233,6 +4874,7 @@ impl ConversionRun {
         self.prepare_legacy_output_allocation_domain(
             form_keys.iter().map(|form_key| form_key.local),
         )?;
+        self.preallocate_fnv_quest_slice_pack_identities()?;
         let relayout_target_schema = self.schema_target.clone();
         let relayout_ctx = crate::struct_relayout::StructRelayoutCtx {
             target_schema: &relayout_target_schema,
@@ -2255,28 +4897,52 @@ impl ConversionRun {
             ) else {
                 continue;
             };
+            let admitted_mvp_weapon_record = self.is_admitted_mvp_weapon_record(&source_record);
             {
-                let mut ctx = PairCtx {
-                    interner: &self.interner,
-                };
+                let mut ctx = PairCtx::new(&self.interner);
                 let _ = self.translator.pre_translate(&mut ctx, &mut source_record);
             }
-            let TranslateResult::Translated(translated) =
-                self.translator.translate(&source_record, &self.interner)
-            else {
-                continue;
-            };
-            if self
-                .schema_target
-                .record_def(translated.sig.as_str())
-                .is_none()
+            if matches!(self.source, Game::Fnv | Game::Fo3)
+                && self.target == Game::Fo4
+                && source_record.sig.as_str() == "ACRE"
+                && !self
+                    .translator
+                    .maps
+                    .skip_records
+                    .contains(source_record.sig.as_str())
             {
-                continue;
+                crate::translator::pair_hooks::fnv_fo4::lower_acre_signature(&mut source_record)
+                    .map_err(|error| RunError::InvalidConfig(format!("legacy_acre:{error}")))?;
             }
+            let translated = if admitted_mvp_weapon_record {
+                self.translator.translate_ignoring_skip(
+                    &source_record,
+                    &self.interner,
+                    source_record.sig.as_str(),
+                )
+            } else {
+                self.translator.translate(&source_record, &self.interner)
+            };
+            let (editor_id, target_sig) = match translated {
+                TranslateResult::Translated(translated) => {
+                    if self
+                        .schema_target
+                        .record_def(translated.sig.as_str())
+                        .is_none()
+                    {
+                        continue;
+                    }
+                    (translated.eid, translated.sig)
+                }
+                TranslateResult::Deferred(DeferredKind::FnvLegacyScripting) => {
+                    (source_record.eid, source_record.sig)
+                }
+                _ => continue,
+            };
             intents.push(LegacyFormKeyAllocationIntent {
                 source_fk,
-                editor_id: translated.eid,
-                target_sig: translated.sig,
+                editor_id,
+                target_sig,
             });
             if intents.len() == crate::store2::translate_v2::CHUNK {
                 let coverage = self.preallocate_legacy_form_key_intents(intents.drain(..));
@@ -2304,12 +4970,3107 @@ impl ConversionRun {
         Ok(())
     }
 
+    /// Publish the source plugin's FO76 named condition forms (`CNDF`) so the
+    /// FO76→FO4 pair hook can inline condition-function 875 references. The
+    /// hook sees only one `Record` at a time, so this cross-record index has to
+    /// be handed to it out of band.
+    fn index_fo76_condition_forms(&mut self) {
+        if self.source != Game::Fo76 || self.target != Game::Fo4 {
+            return;
+        }
+        match crate::translator::pair_hooks::fo76_fo4::build_condition_form_catalog(
+            self.source_handle_id,
+            &self.interner,
+        ) {
+            Ok(catalog) => {
+                let indexed = catalog.len();
+                crate::translator::pair_hooks::fo76_fo4::install_condition_form_catalog(catalog);
+                self.emit_status(&format!(
+                    "translate_all: indexed {indexed} FO76 condition forms (CNDF)"
+                ));
+            }
+            Err(err) => self.emit_status(&format!(
+                "translate_all: FO76 condition-form (CNDF) index unavailable: {err}"
+            )),
+        }
+    }
+
+    /// Publish the donor object-template block for each FO76 NPC that inherits
+    /// one through the FO76-only `TPTA` slot 13 / `ACBS` bit `0x2000` pair. FO4
+    /// has no encoding for "inherit the object template without inheriting
+    /// traits", so those records must carry a materialized copy or they render
+    /// without the body the template supplies.
+    fn index_fo76_inherited_object_templates(&mut self) {
+        if self.source != Game::Fo76 || self.target != Game::Fo4 {
+            return;
+        }
+        match crate::translator::pair_hooks::fo76_fo4::build_inherited_object_template_catalog(
+            self.source_handle_id,
+            &self.interner,
+        ) {
+            Ok(catalog) => {
+                let indexed = catalog.len();
+                crate::translator::pair_hooks::fo76_fo4::install_inherited_object_template_catalog(
+                    catalog,
+                );
+                self.emit_status(&format!(
+                    "translate_all: resolved {indexed} inherited NPC object templates"
+                ));
+            }
+            Err(err) => self.emit_status(&format!(
+                "translate_all: inherited NPC object-template index unavailable: {err}"
+            )),
+        }
+    }
+
+    fn plan_skyrim_runtime_components(&mut self, form_keys: &[FormKey]) -> Result<(), RunError> {
+        if self.source != Game::SkyrimSe || self.target != Game::Fo4 {
+            return Ok(());
+        }
+        if self.skyrim_runtime_capability_plan.is_some() {
+            return Err(RunError::InvalidConfig(
+                "Skyrim runtime components were already planned for this run".to_string(),
+            ));
+        }
+        let mut records = Vec::with_capacity(form_keys.len());
+        for form_key in form_keys {
+            let record = read_record_relayout_by_form_key(
+                self.source_handle_id,
+                form_key,
+                &self.schema_source,
+                &self.interner,
+                None,
+            )
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "read Skyrim runtime component member {:06X}: {error}",
+                    form_key.local
+                ))
+            })?;
+            if self.is_skyrim_runtime_planned_record(record.form_key, record.sig) {
+                records.push(record);
+            }
+        }
+        self.plan_skyrim_runtime_records(records)
+    }
+
+    pub(crate) fn skyrim_minimal_quest_candidate_manifest_json(
+        &mut self,
+    ) -> Result<String, RunError> {
+        if self.source != Game::SkyrimSe || self.target != Game::Fo4 {
+            return Ok("[]".to_string());
+        }
+        let signature = SigCode::from_str("QUST")
+            .map_err(|error| RunError::InvalidConfig(format!("QUST signature: {error}")))?;
+        let form_keys =
+            iter_form_keys_of_sig(self.source_handle_id, signature, &mut self.interner)?;
+        let mut rows = Vec::new();
+        for form_key in form_keys {
+            let Ok(record) = read_record_relayout_by_form_key(
+                self.source_handle_id,
+                &form_key,
+                &self.schema_source,
+                &self.interner,
+                None,
+            ) else {
+                continue;
+            };
+            if let Ok(row) = crate::skyrimse_fo4_runtime::planner::minimal_quest_candidate_manifest(
+                &record,
+                &self.interner,
+            ) {
+                rows.push(row);
+            }
+        }
+        rows.sort_by(|left, right| left.component_id.cmp(&right.component_id));
+        serde_json::to_string(&rows)
+            .map_err(|error| RunError::InvalidConfig(format!("Skyrim quest manifest: {error}")))
+    }
+
+    pub(crate) fn install_skyrim_minimal_quest_actions(
+        &mut self,
+        class_prefix: &str,
+        requests: Vec<crate::skyrimse_fo4_runtime::planner::SkyrimMinimalQuestActionRequest>,
+    ) -> Result<(), RunError> {
+        if self.source != Game::SkyrimSe || self.target != Game::Fo4 {
+            return Err(RunError::InvalidConfig(
+                "Skyrim minimal quest actions require SkyrimSE -> FO4".to_string(),
+            ));
+        }
+        if self.skyrim_runtime_capability_plan.is_some() {
+            return Err(RunError::InvalidConfig(
+                "Skyrim minimal quest actions must be installed before translate_v2".to_string(),
+            ));
+        }
+        if class_prefix.is_empty()
+            || !class_prefix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err(RunError::InvalidConfig(
+                "Skyrim minimal quest class prefix is invalid".to_string(),
+            ));
+        }
+        let mut installed = HashMap::new();
+        for request in requests {
+            if request.component_id.trim().is_empty() || request.actions.is_empty() {
+                return Err(RunError::InvalidConfig(
+                    "Skyrim minimal quest action request is incomplete".to_string(),
+                ));
+            }
+            if installed
+                .insert(request.component_id.clone(), request.actions)
+                .is_some()
+            {
+                return Err(RunError::InvalidConfig(format!(
+                    "duplicate Skyrim minimal quest action request {}",
+                    request.component_id
+                )));
+            }
+        }
+        self.skyrim_minimal_quest_action_requests = installed;
+        self.skyrim_minimal_quest_class_prefix = Some(class_prefix.to_string());
+        Ok(())
+    }
+
+    fn skyrim_pack_donor_evidence(
+        &self,
+        source: &Record,
+    ) -> Result<
+        (
+            crate::skyrimse_fo4_runtime::package::SkyrimPackProcedureEvidence,
+            crate::skyrimse_fo4_runtime::package::SkyrimPackTemplateMaterializationEvidence,
+            FormKey,
+        ),
+        RunError,
+    > {
+        use crate::skyrimse_fo4_runtime::package::{
+            SkyrimPackBlueprintKind, SkyrimPackFo4TemplateBlueprint, SkyrimPackProcedureEvidence,
+            SkyrimPackProcedureFamily, SkyrimPackTemplateMaterializationEvidence,
+        };
+
+        let family = skyrim_pack_family(source).map_err(RunError::InvalidConfig)?;
+        let (target_template_text, blueprint) = match family {
+            SkyrimPackProcedureFamily::Travel => (
+                "002CB0@Fallout4.esm",
+                SkyrimPackFo4TemplateBlueprint::TravelV1,
+            ),
+            SkyrimPackProcedureFamily::Patrol => (
+                "002CE0@Fallout4.esm",
+                SkyrimPackFo4TemplateBlueprint::PatrolV2,
+            ),
+        };
+        let donor = self
+            .read_explicit_target_master_record(target_template_text)
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "Skyrim PACK canonical donor {target_template_text} is unavailable: {error}"
+                ))
+            })?;
+        if donor.sig.as_str() != "PACK"
+            || !donor
+                .form_key
+                .format(&self.interner)
+                .eq_ignore_ascii_case(target_template_text)
+            || donor.fields.is_empty()
+            || !donor.warnings.is_empty()
+        {
+            return Err(RunError::InvalidConfig(format!(
+                "Skyrim PACK canonical donor {target_template_text} failed structural validation"
+            )));
+        }
+        let source_template =
+            skyrim_pack_source_template(source, &self.interner).map_err(RunError::InvalidConfig)?;
+        let source_digest =
+            skyrim_pack_record_blake3(source, &self.interner).map_err(RunError::InvalidConfig)?;
+        let target_digest =
+            skyrim_pack_record_blake3(&donor, &self.interner).map_err(RunError::InvalidConfig)?;
+        let evidence_id = format!(
+            "skyrim-pack-blueprint:{}:{}:{}",
+            source.form_key.format(&self.interner),
+            &source_digest[..16],
+            &target_digest[..16]
+        );
+        let procedure = SkyrimPackProcedureEvidence {
+            family,
+            source_template: source_template.format(&self.interner),
+            target_template: donor.form_key.format(&self.interner),
+            kind: SkyrimPackBlueprintKind::ExactSemanticBlueprint,
+            evidence_id: evidence_id.clone(),
+            source_blueprint_blake3: source_digest,
+            target_blueprint_blake3: target_digest.clone(),
+        };
+        let materialization = SkyrimPackTemplateMaterializationEvidence {
+            family,
+            blueprint,
+            evidence_id: format!("{evidence_id}:materialization"),
+            target_template: donor.form_key.format(&self.interner),
+            target_blueprint_blake3: target_digest,
+        };
+        Ok((procedure, materialization, donor.form_key))
+    }
+
+    fn validate_skyrim_story_manager_target_event_root(
+        &self,
+        event: crate::skyrimse_fo4_runtime::story_manager::SkyrimFo4StoryEvent,
+        target: FormKey,
+    ) -> Result<(), RunError> {
+        let (expected_local, expected_editor_id) = event
+            .canonical_fo4_root()
+            .ok_or_else(|| RunError::InvalidConfig(event.unsupported_reason()))?;
+        let plugin = self.interner.resolve(target.plugin).unwrap_or_default();
+        if target.local != expected_local || !plugin.eq_ignore_ascii_case("Fallout4.esm") {
+            return Err(RunError::InvalidConfig(format!(
+                "Skyrim Story Manager event {} is not mapped to its canonical FO4 SMEN root",
+                event.name()
+            )));
+        }
+        let record = self.read_target_record_if_available(target)?.ok_or_else(|| {
+            RunError::InvalidConfig(format!(
+                "Skyrim Story Manager canonical target {}@Fallout4.esm is absent from the loaded target master",
+                format_args!("{expected_local:06X}")
+            ))
+        })?;
+        let editor_id = record
+            .eid
+            .and_then(|value| self.interner.resolve(value))
+            .unwrap_or_default();
+        let event_codes = record
+            .fields
+            .iter()
+            .filter(|field| field.sig.as_str() == "ENAM")
+            .filter_map(|field| match &field.value {
+                FieldValue::Uint(value) => u32::try_from(*value).ok(),
+                FieldValue::Int(value) => u32::try_from(*value).ok(),
+                FieldValue::Bytes(bytes) if bytes.len() == 4 => {
+                    Some(u32::from_le_bytes(bytes[..4].try_into().ok()?))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if record.sig.as_str() != "SMEN"
+            || !editor_id.eq_ignore_ascii_case(expected_editor_id)
+            || event_codes.as_slice() != [event.code()]
+        {
+            return Err(RunError::InvalidConfig(format!(
+                "Skyrim Story Manager canonical target {expected_local:06X}@Fallout4.esm does not match SMEN/{}/{}",
+                event.name(),
+                expected_editor_id
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn plan_skyrim_runtime_records(
+        &mut self,
+        records: Vec<Record>,
+    ) -> Result<(), RunError> {
+        if self.source != Game::SkyrimSe || self.target != Game::Fo4 {
+            return Ok(());
+        }
+        if self.skyrim_runtime_capability_plan.is_some() {
+            return Err(RunError::InvalidConfig(
+                "Skyrim runtime components were already planned for this run".to_string(),
+            ));
+        }
+        let mut by_local = HashMap::with_capacity(records.len());
+        for record in &records {
+            if by_local.insert(record.form_key.local, record).is_some() {
+                return Err(RunError::InvalidConfig(format!(
+                    "Skyrim runtime component preflight has duplicate local FormID {:06X}",
+                    record.form_key.local
+                )));
+            }
+        }
+        let mut topology = Vec::new();
+        if records.iter().any(|record| record.sig.as_str() == "INFO") {
+            let info_parents =
+                crate::target_write::build_source_info_to_dialogue_index(self.source_handle_id)
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!(
+                            "build Skyrim runtime INFO parent topology: {error}"
+                        ))
+                    })?;
+            for (info_local, dial_local) in info_parents {
+                let info_local = info_local & 0x00FF_FFFF;
+                let dial_local = dial_local & 0x00FF_FFFF;
+                let (Some(info), Some(dial)) =
+                    (by_local.get(&info_local), by_local.get(&dial_local))
+                else {
+                    continue;
+                };
+                if info.sig.as_str() == "INFO" && dial.sig.as_str() == "DIAL" {
+                    topology.push(crate::skyrimse_fo4_runtime::planner::SourceTopologyEdge {
+                        parent: dial.form_key,
+                        child: info.form_key,
+                        kind: crate::skyrimse_fo4_runtime::receipt::RuntimeTopologyKind::TopicChild,
+                    });
+                }
+            }
+        }
+        if records.iter().any(|record| record.sig.as_str() == "ACHR") {
+            let cell_sig = SigCode::from_str("CELL")
+                .map_err(|error| RunError::InvalidConfig(format!("CELL signature: {error}")))?;
+            let cells = iter_form_keys_of_sig(self.source_handle_id, cell_sig, &mut self.interner)?;
+            let cell_ids = cells
+                .iter()
+                .map(|cell| cell.local)
+                .collect::<FxHashSet<_>>();
+            let cell_by_local = cells
+                .into_iter()
+                .map(|cell| (cell.local, cell))
+                .collect::<HashMap<_, _>>();
+            let children = crate::source_read::collect_interior_cell_children(
+                self.source_handle_id,
+                &cell_ids,
+            )?;
+            for (cell_local, children) in children {
+                let Some(parent) = cell_by_local.get(&cell_local).copied() else {
+                    continue;
+                };
+                for (locals, kind) in [
+                    (
+                        &children.persistent,
+                        crate::skyrimse_fo4_runtime::receipt::RuntimeTopologyKind::PersistentCellChild,
+                    ),
+                    (
+                        &children.temporary,
+                        crate::skyrimse_fo4_runtime::receipt::RuntimeTopologyKind::TemporaryCellChild,
+                    ),
+                ] {
+                    for child_local in locals {
+                        let Some(child) = by_local.get(child_local) else {
+                            continue;
+                        };
+                        if child.sig.as_str() == "ACHR" {
+                            topology.push(
+                                crate::skyrimse_fo4_runtime::planner::SourceTopologyEdge {
+                                    parent,
+                                    child: child.form_key,
+                                    kind,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let mut capability_plan = crate::skyrimse_fo4_runtime::planner::plan_components(
+            records.clone(),
+            &topology,
+            &self.interner,
+        )
+        .map_err(RunError::InvalidConfig)?;
+        self.skyrim_minimal_quest_projections.clear();
+        self.skyrim_minimal_alias_projections.clear();
+        self.skyrim_pack_projections.clear();
+        self.skyrim_scene_projections.clear();
+        self.skyrim_dialogue_projections.clear();
+        self.skyrim_story_manager_projections.clear();
+        self.skyrim_quest_runtime_voice_receipt = None;
+        self.skyrim_quest_runtime_asset_copy_receipt = None;
+        let class_prefix = self
+            .skyrim_minimal_quest_class_prefix
+            .clone()
+            .unwrap_or_else(|| "Skyrim".to_string());
+        let requests = self.skyrim_minimal_quest_action_requests.clone();
+        let mut admitted_requests = FxHashSet::default();
+        for record in records
+            .iter()
+            .filter(|record| record.sig.as_str() == "QUST")
+        {
+            let Ok(manifest) =
+                crate::skyrimse_fo4_runtime::planner::minimal_quest_candidate_manifest(
+                    record,
+                    &self.interner,
+                )
+            else {
+                continue;
+            };
+            let Some(actions) = requests.get(&manifest.component_id).cloned() else {
+                continue;
+            };
+            let component = capability_plan
+                .components
+                .iter()
+                .find(|component| {
+                    component
+                        .members
+                        .iter()
+                        .any(|member| member.form_key.eq_ignore_ascii_case(&manifest.source_quest))
+                })
+                .ok_or_else(|| {
+                    RunError::InvalidConfig(format!(
+                        "{} has no Skyrim runtime component",
+                        manifest.component_id
+                    ))
+                })?;
+            let component_form_keys = component
+                .members
+                .iter()
+                .map(|member| FormKey::parse(&member.form_key, &self.interner))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(RunError::InvalidConfig)?;
+            let component_records = component_form_keys
+                .iter()
+                .map(|form_key| {
+                    records
+                        .iter()
+                        .find(|candidate| candidate.form_key == *form_key)
+                        .ok_or_else(|| {
+                            RunError::InvalidConfig(format!(
+                                "{} component member {} is unavailable",
+                                manifest.component_id,
+                                form_key.format(&self.interner)
+                            ))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let package_records = component_records
+                .iter()
+                .copied()
+                .filter(|member| member.sig.as_str() == "PACK")
+                .collect::<Vec<_>>();
+            let scene_records = component_records
+                .iter()
+                .copied()
+                .filter(|member| member.sig.as_str() == "SCEN")
+                .collect::<Vec<_>>();
+            let dialogue_records = component_records
+                .iter()
+                .copied()
+                .filter(|member| matches!(member.sig.as_str(), "DLVW" | "DLBR" | "DIAL" | "INFO"))
+                .collect::<Vec<_>>();
+            let story_records = component_records
+                .iter()
+                .copied()
+                .filter(|member| matches!(member.sig.as_str(), "SMEN" | "SMBN" | "SMQN"))
+                .collect::<Vec<_>>();
+            let story_route = if story_records.is_empty() {
+                None
+            } else {
+                let roots = story_records
+                    .iter()
+                    .copied()
+                    .filter(|story| story.sig.as_str() == "SMEN")
+                    .collect::<Vec<_>>();
+                let [source_root] = roots.as_slice() else {
+                    return Err(RunError::InvalidConfig(format!(
+                        "{} Story Manager component requires exactly one SMEN",
+                        manifest.component_id
+                    )));
+                };
+                let event_codes = source_root
+                    .fields
+                    .iter()
+                    .filter(|field| field.sig.as_str() == "ENAM")
+                    .filter_map(|field| match &field.value {
+                        FieldValue::Uint(value) => u32::try_from(*value).ok(),
+                        FieldValue::Int(value) => u32::try_from(*value).ok(),
+                        FieldValue::Bytes(bytes) if bytes.len() == 4 => {
+                            Some(u32::from_le_bytes(bytes[..4].try_into().ok()?))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                let [event_code] = event_codes.as_slice() else {
+                    return Err(RunError::InvalidConfig(format!(
+                        "{} Story Manager SMEN requires exactly one decoded ENAM event identity",
+                        manifest.component_id
+                    )));
+                };
+                let event =
+                    crate::skyrimse_fo4_runtime::story_manager::SkyrimFo4StoryEvent::from_code(
+                        *event_code,
+                    )
+                    .map_err(RunError::InvalidConfig)?;
+                let (target_local, _) = event
+                    .canonical_fo4_root()
+                    .ok_or_else(|| RunError::InvalidConfig(event.unsupported_reason()))?;
+                let target = FormKey {
+                    local: target_local,
+                    plugin: self.interner.intern("Fallout4.esm"),
+                };
+                self.validate_skyrim_story_manager_target_event_root(event, target)?;
+                Some((source_root.form_key, event, target))
+            };
+            if component_records.iter().any(|member| {
+                !matches!(
+                    member.sig.as_str(),
+                    "QUST"
+                        | "PACK"
+                        | "SCEN"
+                        | "DLVW"
+                        | "DLBR"
+                        | "DIAL"
+                        | "INFO"
+                        | "SMEN"
+                        | "SMBN"
+                        | "SMQN"
+                )
+            }) || component_records
+                .iter()
+                .filter(|member| member.sig.as_str() == "QUST")
+                .count()
+                != 1
+            {
+                return Err(RunError::InvalidConfig(format!(
+                    "{} owns unsupported quest runtime dependency records",
+                    manifest.component_id
+                )));
+            }
+            let mut package_inputs = Vec::with_capacity(package_records.len());
+            for package_record in package_records {
+                let (procedure_evidence, template_evidence, target_template) =
+                    self.skyrim_pack_donor_evidence(package_record)?;
+                let classification = crate::skyrimse_fo4_runtime::package::classify_skyrim_pack(
+                    package_record,
+                    &procedure_evidence,
+                    &self.interner,
+                )
+                .map_err(|reason| {
+                    RunError::InvalidConfig(format!(
+                        "{} package {} classification rejected: {reason:?}",
+                        manifest.component_id,
+                        package_record.form_key.format(&self.interner)
+                    ))
+                })?;
+                package_inputs.push((
+                    (*package_record).clone(),
+                    classification,
+                    template_evidence,
+                    target_template,
+                ));
+            }
+            let dependencies =
+                crate::skyrimse_fo4_runtime::planner::minimal_quest_dependency_form_keys(
+                    record,
+                    &self.interner,
+                )
+                .map_err(RunError::InvalidConfig)?;
+            let mut allocation_records = vec![record.clone()];
+            for dependency in dependencies {
+                let dependency_record = read_record_relayout_by_form_key(
+                    self.source_handle_id,
+                    &dependency,
+                    &self.schema_source,
+                    &self.interner,
+                    None,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "{} dependency {:06X} cannot be read: {error}",
+                        manifest.component_id, dependency.local
+                    ))
+                })?;
+                allocation_records.push(dependency_record);
+            }
+            let minimal_allocation_keys = allocation_records
+                .iter()
+                .map(|record| record.form_key)
+                .collect::<FxHashSet<_>>();
+            allocation_records.extend(
+                package_inputs
+                    .iter()
+                    .map(|(package, _, _, _)| package.clone()),
+            );
+            allocation_records.extend(scene_records.iter().map(|scene| (*scene).clone()));
+            allocation_records.extend(dialogue_records.iter().map(|dialogue| (*dialogue).clone()));
+            allocation_records.extend(story_records.iter().map(|story| (*story).clone()));
+            let mut allocated = allocation_records
+                .iter()
+                .map(|record| record.form_key)
+                .collect::<FxHashSet<_>>();
+            for (_, classification, _, _) in &package_inputs {
+                for dependency in &classification.dependencies {
+                    if dependency
+                        .eq_ignore_ascii_case(&classification.procedure_evidence.source_template)
+                        || dependency.eq_ignore_ascii_case(
+                            &classification.procedure_evidence.target_template,
+                        )
+                    {
+                        continue;
+                    }
+                    let dependency = FormKey::parse(dependency, &self.interner)
+                        .map_err(RunError::InvalidConfig)?;
+                    if !allocated.insert(dependency) {
+                        continue;
+                    }
+                    let dependency_record = read_record_relayout_by_form_key(
+                        self.source_handle_id,
+                        &dependency,
+                        &self.schema_source,
+                        &self.interner,
+                        None,
+                    )
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!(
+                            "{} package dependency {} cannot be read: {error}",
+                            manifest.component_id,
+                            dependency.format(&self.interner)
+                        ))
+                    })?;
+                    allocation_records.push(dependency_record);
+                }
+            }
+            let coverage = self.preallocate_legacy_form_key_intents(
+                allocation_records
+                    .iter()
+                    .filter(|record| record.sig.as_str() != "SMEN")
+                    .map(|record| LegacyFormKeyAllocationIntent {
+                        source_fk: record.form_key,
+                        editor_id: record.eid,
+                        target_sig: record.sig,
+                    }),
+            );
+            if coverage.mapped != coverage.eligible || coverage.missing != 0 {
+                return Err(RunError::InvalidConfig(format!(
+                    "{} target FormID preallocation is incomplete",
+                    manifest.component_id
+                )));
+            }
+            let mapper = self.mapper_state.as_ref().expect("mapper initialized");
+            let target_by_source = allocation_records
+                .iter()
+                .map(|record| {
+                    let target = if record.sig.as_str() == "SMEN" {
+                        story_route
+                            .filter(|(source, _, _)| *source == record.form_key)
+                            .map(|(_, _, target)| target)
+                            .expect("Story Manager root was validated before allocation")
+                    } else {
+                        mapper.source_to_target[&record.form_key]
+                    };
+                    (record.form_key, (target, record.sig))
+                })
+                .collect::<HashMap<_, _>>();
+            let mut admission = crate::skyrimse_fo4_runtime::planner::admit_minimal_quest(
+                record,
+                &target_by_source
+                    .iter()
+                    .filter(|(source, _)| minimal_allocation_keys.contains(source))
+                    .map(|(source, target)| (*source, *target))
+                    .collect::<HashMap<_, _>>(),
+                &class_prefix,
+                actions.clone(),
+                &self.interner,
+            )
+            .map_err(RunError::InvalidConfig)?;
+            let minimal_projection_plan = admission.plan.clone();
+            let component_owned_sources = component_records
+                .iter()
+                .filter(|member| member.sig.as_str() != "QUST")
+                .map(|member| member.form_key)
+                .collect::<FxHashSet<_>>();
+            for allocation in &allocation_records {
+                if minimal_allocation_keys.contains(&allocation.form_key) {
+                    continue;
+                }
+                let target = target_by_source[&allocation.form_key].0;
+                let source_key = crate::quest_runtime::QuestRecordKey::new(
+                    allocation.sig.as_str(),
+                    allocation.form_key.format(&self.interner),
+                );
+                let target_key = crate::quest_runtime::QuestRecordKey::new(
+                    allocation.sig.as_str(),
+                    target.format(&self.interner),
+                );
+                admission
+                    .plan
+                    .mappings
+                    .push(crate::quest_runtime::SourceTargetFormMapping {
+                        source: source_key.clone(),
+                        target: target_key.clone(),
+                    });
+                if component_owned_sources.contains(&allocation.form_key) {
+                    admission.plan.owned_records.push(source_key.clone());
+                    let placements = match allocation.sig.as_str() {
+                        "SCEN" => Some((
+                            crate::skyrimse_fo4_runtime::scene::scene_placement(
+                                &source_key,
+                                &admission.plan.root_quest,
+                            ),
+                            crate::skyrimse_fo4_runtime::scene::scene_placement(
+                                &target_key,
+                                &admission
+                                    .plan
+                                    .mappings
+                                    .iter()
+                                    .find(|mapping| mapping.source == admission.plan.root_quest)
+                                    .expect("root quest mapping validated")
+                                    .target,
+                            ),
+                        )),
+                        "PACK" => Some((
+                            crate::quest_runtime::TopologyPlacement {
+                                record: source_key,
+                                group_path: vec!["GRUP:PACK".to_string()],
+                            },
+                            crate::quest_runtime::TopologyPlacement {
+                                record: target_key.clone(),
+                                group_path: vec!["GRUP:PACK".to_string()],
+                            },
+                        )),
+                        "SMEN" | "SMBN" | "SMQN" => Some((
+                            crate::quest_runtime::TopologyPlacement {
+                                record: source_key.clone(),
+                                group_path: vec![format!("GRUP:{}", allocation.sig.as_str())],
+                            },
+                            crate::quest_runtime::TopologyPlacement {
+                                record: target_key.clone(),
+                                group_path: vec![format!("GRUP:{}", allocation.sig.as_str())],
+                            },
+                        )),
+                        _ => None,
+                    };
+                    if allocation.sig.as_str() != "SMEN" {
+                        admission
+                            .plan
+                            .expected_receipt
+                            .emitted_records
+                            .insert(target_key.clone());
+                    }
+                    if let Some((source_placement, target_placement)) = placements {
+                        admission.plan.source_topology.insert(source_placement);
+                        admission
+                            .plan
+                            .target_topology
+                            .insert(target_placement.clone());
+                        if allocation.sig.as_str() != "SMEN" {
+                            admission
+                                .plan
+                                .expected_receipt
+                                .placements
+                                .insert(target_placement);
+                        }
+                    }
+                } else {
+                    admission.plan.shared_records.insert(source_key.clone());
+                    admission
+                        .plan
+                        .dependencies
+                        .direct
+                        .insert(source_key.clone());
+                    admission.plan.dependencies.recursive.insert(source_key);
+                }
+            }
+            admission.plan.mappings.sort();
+            let mut dialogue_projections = Vec::new();
+            if !dialogue_records.is_empty() {
+                let dialogue_keys = dialogue_records
+                    .iter()
+                    .map(|dialogue| dialogue.form_key)
+                    .collect::<FxHashSet<_>>();
+                let mut source_topic_children = HashMap::<FormKey, Vec<FormKey>>::new();
+                for edge in &topology {
+                    if matches!(
+                        edge.kind,
+                        crate::skyrimse_fo4_runtime::receipt::RuntimeTopologyKind::TopicChild
+                    ) && dialogue_keys.contains(&edge.parent)
+                        && dialogue_keys.contains(&edge.child)
+                    {
+                        source_topic_children
+                            .entry(edge.parent)
+                            .or_default()
+                            .push(edge.child);
+                    }
+                }
+                for children in source_topic_children.values_mut() {
+                    children.sort_by_key(|child| child.local);
+                    children.dedup();
+                }
+                let dialogue_plan =
+                    crate::skyrimse_fo4_runtime::dialogue::SkyrimDialoguePlan::derive(
+                        &dialogue_records
+                            .iter()
+                            .map(|record| (*record).clone())
+                            .collect::<Vec<_>>(),
+                        &source_topic_children,
+                        &self.interner,
+                    )
+                    .map_err(RunError::InvalidConfig)?;
+                if let Some(reason) = dialogue_plan.unsupported_reason() {
+                    return Err(RunError::InvalidConfig(format!(
+                        "{} dialogue admission rejected: {reason}",
+                        manifest.component_id
+                    )));
+                }
+                let dialogue_target_by_source = target_by_source
+                    .iter()
+                    .map(|(source, (target, _))| (*source, *target))
+                    .collect::<HashMap<_, _>>();
+                let fallout4_master = self.interner.intern("Fallout4.esm");
+                let projection = crate::skyrimse_fo4_runtime::dialogue::project_dialogue(
+                    &dialogue_plan,
+                    &dialogue_target_by_source,
+                    fallout4_master,
+                    &self.interner,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "{} dialogue projection rejected: {error}",
+                        manifest.component_id
+                    ))
+                })?;
+                if !projection.receipt.fragment_intents.is_empty() {
+                    return Err(RunError::InvalidConfig(format!(
+                        "{} dialogue requires fragment compiler evidence",
+                        manifest.component_id
+                    )));
+                }
+                for edge in &projection.receipt.topology {
+                    use crate::skyrimse_fo4_runtime::dialogue::SkyrimDialogueTopologyKind;
+                    let signature = dialogue_records
+                        .iter()
+                        .find(|record| record.form_key == edge.source_child)
+                        .expect("dialogue source topology record exists")
+                        .sig
+                        .as_str();
+                    let source_child = crate::quest_runtime::QuestRecordKey::new(
+                        signature,
+                        edge.source_child.format(&self.interner),
+                    );
+                    let target_child = crate::quest_runtime::QuestRecordKey::new(
+                        signature,
+                        edge.target_child.format(&self.interner),
+                    );
+                    let (source_path, target_path) = match edge.kind {
+                        SkyrimDialogueTopologyKind::TopLevel => {
+                            (vec!["GRUP:DLVW".to_string()], vec!["GRUP:DLVW".to_string()])
+                        }
+                        SkyrimDialogueTopologyKind::QuestChild => (
+                            vec![
+                                "QUST".to_string(),
+                                edge.source_parent.format(&self.interner),
+                                "children:10".to_string(),
+                            ],
+                            vec![
+                                "QUST".to_string(),
+                                edge.target_parent.format(&self.interner),
+                                "children:10".to_string(),
+                            ],
+                        ),
+                        SkyrimDialogueTopologyKind::TopicChild => (
+                            vec![
+                                "DIAL".to_string(),
+                                edge.source_parent.format(&self.interner),
+                                "children:7".to_string(),
+                            ],
+                            vec![
+                                "DIAL".to_string(),
+                                edge.target_parent.format(&self.interner),
+                                "children:7".to_string(),
+                            ],
+                        ),
+                    };
+                    admission.plan.source_topology.insert(
+                        crate::quest_runtime::TopologyPlacement {
+                            record: source_child,
+                            group_path: source_path,
+                        },
+                    );
+                    let target_placement = crate::quest_runtime::TopologyPlacement {
+                        record: target_child,
+                        group_path: target_path,
+                    };
+                    admission
+                        .plan
+                        .target_topology
+                        .insert(target_placement.clone());
+                    admission
+                        .plan
+                        .expected_receipt
+                        .placements
+                        .insert(target_placement);
+                }
+                dialogue_projections.push(SkyrimDialogueLiveProjection {
+                    component_id: manifest.component_id.clone(),
+                    projection,
+                });
+            }
+            let mut story_projection = None;
+            if !story_records.is_empty() {
+                let (source_root_form_key, story_event, _) =
+                    story_route.expect("Story Manager route was validated before allocation");
+                let source_root = story_records
+                    .iter()
+                    .copied()
+                    .find(|story| story.form_key == source_root_form_key)
+                    .expect("validated Story Manager root exists");
+                if story_records.len() != 3
+                    || story_records
+                        .iter()
+                        .filter(|story| story.sig.as_str() == "SMBN")
+                        .count()
+                        != 1
+                    || story_records
+                        .iter()
+                        .filter(|story| story.sig.as_str() == "SMQN")
+                        .count()
+                        != 1
+                {
+                    return Err(RunError::InvalidConfig(format!(
+                        "{} Story Manager component requires one SMEN, SMBN, and SMQN",
+                        manifest.component_id
+                    )));
+                }
+                let source_root_key = crate::quest_runtime::QuestRecordKey::new(
+                    "SMEN",
+                    source_root.form_key.format(&self.interner),
+                );
+                let target_root_key = crate::quest_runtime::QuestRecordKey::new(
+                    "SMEN",
+                    target_by_source[&source_root.form_key]
+                        .0
+                        .format(&self.interner),
+                );
+                let route_id = format!("skyrim-story-route:{:06X}", record.form_key.local);
+                admission
+                    .plan
+                    .semantics
+                    .start_flags
+                    .remove(&crate::quest_runtime::QuestStartFlag::StartGameEnabled);
+                admission.plan.inbound_producers.clear();
+                admission.plan.expected_receipt.routes.clear();
+                admission.plan.inbound_producers.insert(
+                    crate::quest_runtime::StartProducerIntent {
+                        producer_id: route_id.clone(),
+                        carrier: source_root_key,
+                        producer_kind: "native_story_event".to_string(),
+                        evidence_id: format!("fo4-native-event:{}", story_event.name()),
+                        proven: true,
+                    },
+                );
+                admission.plan.start_disposition =
+                    Some(crate::quest_runtime::StartDisposition::StoryManager {
+                        route_id: route_id.clone(),
+                    });
+                let mut source_records = story_records
+                    .iter()
+                    .map(|story| (*story).clone())
+                    .collect::<Vec<_>>();
+                source_records.push(record.clone());
+                story_projection = Some(SkyrimStoryManagerLiveProjection {
+                    component_id: manifest.component_id.clone(),
+                    source_records,
+                    event_mapping:
+                        crate::skyrimse_fo4_runtime::story_manager::SkyrimStoryEventMapping {
+                            event: story_event,
+                            target_event_root: target_root_key,
+                            producer_id: route_id,
+                        },
+                    projection: None,
+                });
+            }
+            let issues = admission.plan.validation_issues();
+            if !issues.is_empty() {
+                return Err(RunError::InvalidConfig(format!(
+                    "{} expanded component contract is invalid: {}",
+                    manifest.component_id,
+                    serde_json::to_string(&issues).unwrap_or_default()
+                )));
+            }
+            let reference_mappings = target_by_source
+                .iter()
+                .map(|(source, (target, _))| (source.format(&self.interner), *target))
+                .collect::<BTreeMap<_, _>>();
+            let mut package_projections = Vec::with_capacity(package_inputs.len());
+            for (package, classification, template_evidence, target_template) in package_inputs {
+                let target_form_key = target_by_source[&package.form_key].0;
+                let lowering = crate::skyrimse_fo4_runtime::package::lower_skyrim_pack(
+                    &classification,
+                    &crate::skyrimse_fo4_runtime::package::SkyrimPackLoweringRequest {
+                        component_id: manifest.component_id.clone(),
+                        quest_component_admitted: true,
+                        source_owned_by_component: true,
+                        target_record: target_form_key.format(&self.interner),
+                        script_projections: Vec::new(),
+                    },
+                )
+                .map_err(|reason| {
+                    RunError::InvalidConfig(format!(
+                        "{} package {} lowering rejected: {reason:?}",
+                        manifest.component_id,
+                        package.form_key.format(&self.interner)
+                    ))
+                })?;
+                let materialization =
+                    crate::skyrimse_fo4_runtime::package::materialize_skyrim_pack(
+                        &lowering,
+                        package.form_key,
+                        target_form_key,
+                        target_template,
+                        &reference_mappings,
+                        &template_evidence,
+                        &self.interner,
+                    )
+                    .map_err(|reason| {
+                        RunError::InvalidConfig(format!(
+                            "{} package {} materialization rejected: {reason:?}",
+                            manifest.component_id,
+                            package.form_key.format(&self.interner)
+                        ))
+                    })?;
+                if !materialization.pending_script_projections.is_empty()
+                    || materialization.receipt.vmad_attached
+                {
+                    return Err(RunError::InvalidConfig(format!(
+                        "{} package {} crossed the compiler/VMAD boundary",
+                        manifest.component_id,
+                        package.form_key.format(&self.interner)
+                    )));
+                }
+                package_projections.push(SkyrimPackLiveProjection {
+                    source_form_key: package.form_key,
+                    target_form_key,
+                    target_template,
+                    lowering,
+                    reference_mappings: reference_mappings.clone(),
+                    template_evidence,
+                    materialization,
+                });
+            }
+            let mut scene_projections = Vec::with_capacity(scene_records.len());
+            for scene in scene_records {
+                let scene_admission = crate::skyrimse_fo4_runtime::scene::admit_scene_record(
+                    &admission.plan,
+                    scene,
+                    &crate::skyrimse_fo4_runtime::scene::SkyrimSceneAdmissionEvidence::default(),
+                    &self.interner,
+                )
+                .map_err(|rejection| {
+                    RunError::InvalidConfig(format!(
+                        "{} scene {} admission rejected: {rejection}",
+                        manifest.component_id,
+                        scene.form_key.format(&self.interner)
+                    ))
+                })?;
+                let scene_projection = crate::skyrimse_fo4_runtime::scene::project_scene(
+                    &scene_admission.plan,
+                    &self.interner,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "{} scene {} projection rejected: {error}",
+                        manifest.component_id,
+                        scene.form_key.format(&self.interner)
+                    ))
+                })?;
+                if !scene_projection.pending_vmad.is_empty() {
+                    return Err(RunError::InvalidConfig(format!(
+                        "{} scene {} requires fragment compiler evidence",
+                        manifest.component_id,
+                        scene.form_key.format(&self.interner)
+                    )));
+                }
+                scene_projections.push(scene_projection);
+            }
+            let target_local = target_by_source[&record.form_key].0.local;
+            let fragment = crate::skyrimse_fo4_runtime::quest::SkyrimQuestFragmentSource {
+                fragment_id: admission.fragment_id.clone(),
+                stage_index: admission.stage_index,
+                stage_item_index: admission.stage_item_index,
+                actions: admission
+                    .actions
+                    .iter()
+                    .cloned()
+                    .map(skyrim_projected_quest_action)
+                    .collect(),
+            };
+            let mut projection = crate::skyrimse_fo4_runtime::quest::project_minimal_quest(
+                &minimal_projection_plan,
+                &admission.editor_id,
+                admission.priority,
+                admission.title.clone(),
+                fragment,
+                &class_prefix,
+                &self.interner,
+            )
+            .map_err(RunError::InvalidConfig)?;
+            if story_projection.is_some() {
+                clear_skyrim_projected_quest_start_enabled(&mut projection.record, &self.interner)
+                    .map_err(RunError::InvalidConfig)?;
+            }
+            let alias_projection = crate::skyrimse_fo4_runtime::alias::project_quest_aliases(
+                &admission.plan,
+                &admission.alias_evidence,
+                &[],
+            )
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "{} alias projection rejected: {error}",
+                    manifest.component_id
+                ))
+            })?;
+            let alias_application =
+                crate::skyrimse_fo4_runtime::alias::apply_alias_projection_to_qust(
+                    &mut projection.record,
+                    &alias_projection,
+                    &self.interner,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "{} alias materialization rejected: {error}",
+                        manifest.component_id
+                    ))
+                })?;
+            if alias_application.receipt.preserved_quest_vmad_count != 0
+                || alias_application.receipt.alias_vmad_attachment_count != 0
+            {
+                return Err(RunError::InvalidConfig(format!(
+                    "{} alias materialization crossed the pre-compile VMAD boundary",
+                    manifest.component_id
+                )));
+            }
+            if projection.record.form_key.local != target_local {
+                return Err(RunError::InvalidConfig(format!(
+                    "{} projector changed the preallocated target FormID",
+                    manifest.component_id
+                )));
+            }
+            for member in &component_form_keys {
+                let disposition = capability_plan
+                    .by_record
+                    .get_mut(member)
+                    .expect("planned component member has disposition");
+                disposition.supported = true;
+                disposition.reason = None;
+                disposition.component_ids = vec![manifest.component_id.clone()];
+            }
+            let component = capability_plan
+                .components
+                .iter_mut()
+                .find(|component| {
+                    component
+                        .members
+                        .iter()
+                        .any(|member| member.form_key.eq_ignore_ascii_case(&manifest.source_quest))
+                })
+                .expect("planned QUST component exists");
+            component.component_id = manifest.component_id.clone();
+            component.family = "quest".to_string();
+            component.decision =
+                crate::skyrimse_fo4_runtime::receipt::RuntimeComponentDecision::Supported;
+            component.reason = None;
+            capability_plan
+                .minimal_quests
+                .insert(record.form_key, admission);
+            self.skyrim_minimal_alias_projections.push(alias_projection);
+            self.skyrim_pack_projections.extend(package_projections);
+            self.skyrim_scene_projections.extend(scene_projections);
+            self.skyrim_dialogue_projections
+                .extend(dialogue_projections);
+            if let Some(story_projection) = story_projection {
+                self.skyrim_story_manager_projections.push(story_projection);
+            }
+            self.skyrim_minimal_quest_projections.push(projection);
+            admitted_requests.insert(manifest.component_id);
+        }
+        let mut missing = requests
+            .keys()
+            .filter(|component_id| !admitted_requests.contains(*component_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        missing.sort();
+        if !missing.is_empty() {
+            return Err(RunError::InvalidConfig(format!(
+                "Skyrim minimal quest action requests were not admitted: {}",
+                missing.join(",")
+            )));
+        }
+        self.skyrim_runtime_capability_plan = Some(capability_plan);
+        Ok(())
+    }
+
+    pub(crate) fn skyrim_runtime_component_disposition(
+        &self,
+        form_key: FormKey,
+    ) -> Option<&crate::skyrimse_fo4_runtime::planner::SkyrimComponentDisposition> {
+        self.skyrim_runtime_capability_plan
+            .as_ref()
+            .and_then(|plan| plan.by_record.get(&form_key))
+    }
+
+    pub(crate) fn is_skyrim_minimal_quest_owned(&self, form_key: FormKey) -> bool {
+        self.skyrim_runtime_capability_plan
+            .as_ref()
+            .is_some_and(|plan| plan.minimal_quests.contains_key(&form_key))
+    }
+
+    pub(crate) fn is_skyrim_component_projection_owned(&self, form_key: FormKey) -> bool {
+        self.skyrim_runtime_capability_plan
+            .as_ref()
+            .and_then(|plan| {
+                let disposition = plan.by_record.get(&form_key)?;
+                let signature = plan.record_signatures.get(&form_key)?;
+                Some(
+                    disposition.supported
+                        && matches!(
+                            signature.as_str(),
+                            "QUST"
+                                | "PACK"
+                                | "DLVW"
+                                | "DLBR"
+                                | "DIAL"
+                                | "INFO"
+                                | "SCEN"
+                                | "SMEN"
+                                | "SMBN"
+                                | "SMQN"
+                        ),
+                )
+            })
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn is_skyrim_creature_batch_owned(&self, form_key: FormKey) -> bool {
+        self.skyrim_creature_batch_owned_sources.contains(&form_key)
+    }
+
+    fn freeze_skyrim_localized_receipt(
+        &mut self,
+        component_id: &str,
+        form_key: FormKey,
+        signature: SigCode,
+    ) -> Result<(), RunError> {
+        let rows = crate::target_write::existing_localized_string_occurrences_native(
+            self.target_handle_id,
+            form_key,
+            signature.as_str(),
+            &self.interner,
+        )
+        .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+        let owner = crate::quest_runtime::QuestRecordKey::new(
+            signature.as_str(),
+            form_key.format(&self.interner),
+        );
+        let admission = self
+            .skyrim_runtime_capability_plan
+            .as_mut()
+            .and_then(|capability| {
+                capability
+                    .minimal_quests
+                    .values_mut()
+                    .find(|admission| admission.plan.component_id == component_id)
+            })
+            .ok_or_else(|| {
+                RunError::InvalidConfig(format!(
+                    "{component_id} has no admitted localized-string receipt owner"
+                ))
+            })?;
+        admission
+            .plan
+            .expected_receipt
+            .localized_strings
+            .retain(|localized| localized.owner != owner);
+        for (field, table, string_id) in rows {
+            admission.plan.expected_receipt.localized_strings.insert(
+                crate::quest_runtime::LocalizedStringReceipt {
+                    owner: owner.clone(),
+                    field,
+                    table,
+                    string_id,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn emit_skyrim_minimal_quest_projections(
+        &mut self,
+    ) -> Result<TranslateStats, RunError> {
+        let mut stats = TranslateStats::default();
+        if self.source != Game::SkyrimSe || self.target != Game::Fo4 {
+            return Ok(stats);
+        }
+        for projection in self.skyrim_pack_projections.clone() {
+            crate::skyrimse_fo4_runtime::package::verify_skyrim_pack_record_receipt(
+                &projection.lowering,
+                &projection.materialization.record,
+                projection.source_form_key,
+                projection.target_form_key,
+                projection.target_template,
+                &projection.reference_mappings,
+                &projection.template_evidence,
+                &projection.materialization.receipt,
+                &self.interner,
+            )
+            .map_err(|reason| {
+                RunError::InvalidConfig(format!(
+                    "emit admitted Skyrim PACK {} receipt rejected: {reason:?}",
+                    projection.source_form_key.format(&self.interner)
+                ))
+            })?;
+            crate::target_write::add_record_native(
+                self.target_handle_id,
+                projection.materialization.record,
+                &self.schema_target,
+                &self.interner,
+            )
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "emit admitted Skyrim PACK {}: {error}",
+                    projection.source_form_key.format(&self.interner)
+                ))
+            })?;
+            stats.records_translated += 1;
+            stats.signature_entry(SigCode(*b"PACK")).translated += 1;
+        }
+        for projection in self.skyrim_minimal_quest_projections.clone() {
+            let component_id = projection.component_id.clone();
+            let form_key = projection.record.form_key;
+            let signature = projection.record.sig;
+            crate::target_write::add_record_native(
+                self.target_handle_id,
+                projection.record,
+                &self.schema_target,
+                &self.interner,
+            )
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "emit admitted Skyrim quest {}: {error}",
+                    projection.component_id
+                ))
+            })?;
+            self.freeze_skyrim_localized_receipt(&component_id, form_key, signature)?;
+            stats.records_translated += 1;
+            stats.signature_entry(SigCode(*b"QUST")).translated += 1;
+        }
+        for live in self.skyrim_dialogue_projections.clone() {
+            let records = live
+                .projection
+                .top_level
+                .iter()
+                .chain(&live.projection.quest_children)
+                .chain(
+                    live.projection
+                        .topic_children
+                        .iter()
+                        .map(|info| &info.record),
+                )
+                .cloned()
+                .collect::<Vec<_>>();
+            let topic_parent_by_info = live
+                .projection
+                .topic_children
+                .iter()
+                .map(|info| (info.record.form_key, info.parent_topic))
+                .collect::<HashMap<_, _>>();
+            live.projection
+                .receipt
+                .validate_materialized(&records, &topic_parent_by_info)
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "{} dialogue receipt rejected before emission: {error}",
+                        live.component_id
+                    ))
+                })?;
+            for record in live.projection.top_level {
+                let signature = record.sig;
+                let form_key = record.form_key;
+                crate::target_write::add_record_native(
+                    self.target_handle_id,
+                    record,
+                    &self.schema_target,
+                    &self.interner,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "{} emit top-level dialogue record: {error}",
+                        live.component_id
+                    ))
+                })?;
+                self.freeze_skyrim_localized_receipt(&live.component_id, form_key, signature)?;
+                stats.records_translated += 1;
+                stats.signature_entry(signature).translated += 1;
+            }
+            for record in live.projection.quest_children {
+                let signature = record.sig;
+                let form_key = record.form_key;
+                let inserted = crate::target_write::add_quest_child_record_native(
+                    self.target_handle_id,
+                    record,
+                    &self.schema_target,
+                    &self.interner,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "{} emit QUST-child dialogue record: {error}",
+                        live.component_id
+                    ))
+                })?;
+                if !inserted {
+                    return Err(RunError::InvalidConfig(format!(
+                        "{} dialogue QUST parent is missing",
+                        live.component_id
+                    )));
+                }
+                self.freeze_skyrim_localized_receipt(&live.component_id, form_key, signature)?;
+                stats.records_translated += 1;
+                stats.signature_entry(signature).translated += 1;
+            }
+            for info in live.projection.topic_children {
+                let form_key = info.record.form_key;
+                let parent_form_id = encode_form_key_for_handle(
+                    self.target_handle_id,
+                    info.parent_topic,
+                    &self.interner,
+                )
+                .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                let inserted = crate::target_write::add_topic_child_record_native(
+                    self.target_handle_id,
+                    info.record,
+                    parent_form_id,
+                    &self.schema_target,
+                    &self.interner,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "{} emit DIAL-child INFO: {error}",
+                        live.component_id
+                    ))
+                })?;
+                if !inserted {
+                    return Err(RunError::InvalidConfig(format!(
+                        "{} dialogue DIAL parent is missing",
+                        live.component_id
+                    )));
+                }
+                self.freeze_skyrim_localized_receipt(
+                    &live.component_id,
+                    form_key,
+                    SigCode(*b"INFO"),
+                )?;
+                stats.records_translated += 1;
+                stats.signature_entry(SigCode(*b"INFO")).translated += 1;
+            }
+        }
+        for projection in self.skyrim_scene_projections.clone() {
+            projection
+                .receipt
+                .validate_materialized(
+                    &projection.record,
+                    &projection.parent_quest,
+                    projection.group_type,
+                    &projection.pending_vmad,
+                )
+                .map_err(RunError::InvalidConfig)?;
+            let inserted = crate::target_write::add_quest_child_record_native(
+                self.target_handle_id,
+                projection.record,
+                &self.schema_target,
+                &self.interner,
+            )
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "emit admitted Skyrim SCEN {}: {error}",
+                    projection.receipt.target_scene.form_key
+                ))
+            })?;
+            if !inserted {
+                return Err(RunError::InvalidConfig(format!(
+                    "emit admitted Skyrim SCEN {}: target QUST parent is missing",
+                    projection.receipt.target_scene.form_key
+                )));
+            }
+            stats.records_translated += 1;
+            stats.signature_entry(SigCode(*b"SCEN")).translated += 1;
+        }
+        Ok(stats)
+    }
+
+    pub(crate) fn emit_skyrim_minimal_quest_psc_manifest_json(
+        &mut self,
+        mod_path: &Path,
+    ) -> Result<String, RunError> {
+        let artifacts = self
+            .skyrim_minimal_quest_projections
+            .iter()
+            .map(|projection| projection.psc_artifact.clone())
+            .collect::<Vec<_>>();
+        let manifest =
+            crate::skyrimse_fo4_runtime::papyrus::emit_script_sources(mod_path, &artifacts)
+                .map_err(RunError::InvalidConfig)?;
+        serde_json::to_string(&manifest).map_err(|error| {
+            RunError::InvalidConfig(format!("serialize Skyrim PSC manifest: {error}"))
+        })
+    }
+
+    pub(crate) fn reconcile_skyrim_minimal_quest_compiler_evidence(
+        &mut self,
+        evidence: Vec<crate::skyrimse_fo4_runtime::papyrus::SkyrimPscCompilerEvidence>,
+    ) -> Result<u32, RunError> {
+        if self.source != Game::SkyrimSe || self.target != Game::Fo4 {
+            if evidence.is_empty() {
+                return Ok(0);
+            }
+            return Err(RunError::InvalidConfig(
+                "Skyrim quest compiler evidence requires SkyrimSE -> FO4".to_string(),
+            ));
+        }
+        let mut by_manifest = HashMap::new();
+        for row in evidence {
+            if by_manifest.insert(row.manifest_id.clone(), row).is_some() {
+                return Err(RunError::InvalidConfig(
+                    "duplicate Skyrim quest compiler evidence manifest".to_string(),
+                ));
+            }
+        }
+        let required = self
+            .skyrim_minimal_quest_projections
+            .iter()
+            .map(|projection| projection.psc_manifest.manifest_id.clone())
+            .collect::<BTreeSet<_>>();
+        let provided = by_manifest.keys().cloned().collect::<BTreeSet<_>>();
+        if required != provided {
+            return Err(RunError::InvalidConfig(format!(
+                "Skyrim quest compiler evidence set does not match the admitted manifest: required={} provided={}",
+                required.len(),
+                provided.len()
+            )));
+        }
+
+        let output_plugin = plugin_name_for_handle(self.target_handle_id)?;
+        let mut updates = Vec::with_capacity(self.skyrim_minimal_quest_projections.len());
+        let mut validated_evidence =
+            Vec::with_capacity(self.skyrim_minimal_quest_projections.len());
+        for projection in &self.skyrim_minimal_quest_projections {
+            let evidence = by_manifest
+                .get(&projection.psc_manifest.manifest_id)
+                .expect("compiler evidence set equality checked");
+            let attachment = crate::skyrimse_fo4_runtime::quest::build_vmad_attachment_intent(
+                projection,
+                Some(evidence),
+            )
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "{} compiler evidence rejected: {error}",
+                    projection.component_id
+                ))
+            })?;
+            let record_key = format!("{}:{:06X}", output_plugin, projection.record.form_key.local);
+            let mut record =
+                esp_authoring_core::plugin_runtime::plugin_handle_read_authoring_record_value_json(
+                    self.target_handle_id,
+                    &record_key,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "read admitted Skyrim quest {record_key} before VMAD attachment: {error}"
+                    ))
+                })?
+                .ok_or_else(|| {
+                    RunError::InvalidConfig(format!(
+                        "admitted Skyrim quest {record_key} is missing before VMAD attachment"
+                    ))
+                })?;
+            let record_object = record.as_object_mut().ok_or_else(|| {
+                RunError::InvalidConfig(format!(
+                    "admitted Skyrim quest {record_key} authoring payload is not an object"
+                ))
+            })?;
+            if let Some(signature) = record_object.get("signature") {
+                if signature.as_str() != Some("QUST") {
+                    return Err(RunError::InvalidConfig(format!(
+                        "admitted Skyrim quest {record_key} changed signature before VMAD attachment"
+                    )));
+                }
+            } else {
+                record_object.insert(
+                    "signature".to_string(),
+                    serde_json::Value::String("QUST".to_string()),
+                );
+            }
+            crate::fnv_legacy_scripting::vmad::attach_vmad_payload_to_record(
+                &mut record,
+                attachment.payload,
+            )
+            .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+            updates.push((record_key, record));
+            validated_evidence.push(evidence.clone());
+        }
+        for (record_key, record) in &updates {
+            esp_authoring_core::plugin_runtime::plugin_handle_replace_authoring_record_value(
+                self.target_handle_id,
+                record,
+            )
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "attach evidence-gated Skyrim quest VMAD to {record_key}: {error}"
+                ))
+            })?;
+        }
+        let localized_targets = self
+            .skyrim_minimal_quest_projections
+            .iter()
+            .map(|projection| {
+                (
+                    projection.component_id.clone(),
+                    projection.record.form_key,
+                    projection.record.sig,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (component_id, form_key, signature) in localized_targets {
+            self.freeze_skyrim_localized_receipt(&component_id, form_key, signature)?;
+        }
+        self.skyrim_minimal_quest_compiler_evidence = validated_evidence;
+        self.skyrim_minimal_quest_receipts_finalized = false;
+        Ok(updates.len() as u32)
+    }
+
+    fn skyrim_dialogue_voice_dependency(
+        &self,
+        requirement: &crate::skyrimse_fo4_runtime::dialogue::SkyrimDialogueVoiceRequirement,
+    ) -> Result<
+        (
+            crate::skyrimse_fo4_runtime::voice::SkyrimVoiceTypeDependency,
+            String,
+        ),
+        RunError,
+    > {
+        let source_speaker = read_record_relayout_by_form_key(
+            self.source_handle_id,
+            &requirement.source_speaker,
+            &self.schema_source,
+            &self.interner,
+            None,
+        )
+        .map_err(|error| {
+            RunError::InvalidConfig(format!(
+                "Skyrim dialogue source speaker {} is unavailable: {error}",
+                requirement.source_speaker.format(&self.interner)
+            ))
+        })?;
+        let source_voice_type =
+            exact_record_form_key(&source_speaker, b"VTCK").map_err(|reason| {
+                RunError::InvalidConfig(format!(
+                    "Skyrim dialogue source speaker {} {reason}",
+                    requirement.source_speaker.format(&self.interner)
+                ))
+            })?;
+        let source_voice = read_record_relayout_by_form_key(
+            self.source_handle_id,
+            &source_voice_type,
+            &self.schema_source,
+            &self.interner,
+            None,
+        )
+        .map_err(|error| {
+            RunError::InvalidConfig(format!(
+                "Skyrim dialogue source voice type {} is unavailable: {error}",
+                source_voice_type.format(&self.interner)
+            ))
+        })?;
+        let source_identity = source_voice
+            .eid
+            .and_then(|editor_id| self.interner.resolve(editor_id))
+            .filter(|editor_id| !editor_id.trim().is_empty())
+            .ok_or_else(|| {
+                RunError::InvalidConfig(format!(
+                    "Skyrim dialogue source voice type {} has no editor identity",
+                    source_voice_type.format(&self.interner)
+                ))
+            })?
+            .to_string();
+
+        let target_speaker = self
+            .read_target_record_if_available(requirement.target_speaker)?
+            .ok_or_else(|| {
+                RunError::InvalidConfig(format!(
+                    "Skyrim dialogue target speaker {} is not materialized",
+                    requirement.target_speaker.format(&self.interner)
+                ))
+            })?;
+        let target_voice_type =
+            exact_record_form_key(&target_speaker, b"VTCK").map_err(|reason| {
+                RunError::InvalidConfig(format!(
+                    "Skyrim dialogue target speaker {} {reason}",
+                    requirement.target_speaker.format(&self.interner)
+                ))
+            })?;
+        let target_voice = self
+            .read_target_record_if_available(target_voice_type)?
+            .ok_or_else(|| {
+                RunError::InvalidConfig(format!(
+                    "Skyrim dialogue target voice type {} is not materialized",
+                    target_voice_type.format(&self.interner)
+                ))
+            })?;
+        let target_identity = target_voice
+            .eid
+            .and_then(|editor_id| self.interner.resolve(editor_id))
+            .filter(|editor_id| !editor_id.trim().is_empty())
+            .ok_or_else(|| {
+                RunError::InvalidConfig(format!(
+                    "Skyrim dialogue target voice type {} has no editor identity",
+                    target_voice_type.format(&self.interner)
+                ))
+            })?
+            .to_string();
+        Ok((
+            crate::skyrimse_fo4_runtime::voice::SkyrimVoiceTypeDependency {
+                source_voice_type,
+                target_voice_type,
+                target_identity,
+            },
+            source_identity,
+        ))
+    }
+
+    pub(crate) fn skyrim_quest_runtime_asset_requirements_json(&self) -> Result<String, RunError> {
+        if self.source != Game::SkyrimSe || self.target != Game::Fo4 {
+            return Ok("{\"output_plugin\":\"\",\"requirements\":[]}".to_string());
+        }
+        let requirements = self
+            .skyrim_dialogue_projections
+            .iter()
+            .flat_map(|live| &live.projection.receipt.voice_intents)
+            .map(|requirement| {
+                let (voice_type, source_identity) =
+                    self.skyrim_dialogue_voice_dependency(requirement)?;
+                let preview = crate::skyrimse_fo4_runtime::voice::plan_dialogue_voice_assets(
+                    &self.config.output_plugin_name,
+                    &[crate::skyrimse_fo4_runtime::voice::SkyrimDialogueVoiceAssetInput::from_dialogue_requirement(
+                        requirement,
+                        Some(voice_type.clone()),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )],
+                )
+                .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                let target_voice_path = preview.intents[0]
+                    .target_voice_path
+                    .clone()
+                    .ok_or_else(|| RunError::InvalidConfig(
+                        "Skyrim dialogue target voice path is invalid".to_string()
+                    ))?;
+                let source_plugin = self
+                    .interner
+                    .resolve(requirement.source_info.plugin)
+                    .ok_or_else(|| RunError::InvalidConfig(
+                        "Skyrim dialogue source plugin is unresolved".to_string()
+                    ))?;
+                Ok::<_, RunError>(serde_json::json!({
+                    "source_info": requirement.source_info.format(&self.interner),
+                    "target_info": requirement.target_info.format(&self.interner),
+                    "source_speaker": requirement.source_speaker.format(&self.interner),
+                    "target_speaker": requirement.target_speaker.format(&self.interner),
+                    "response_number": requirement.response_number,
+                    "transcript": requirement.transcript,
+                    "source_voice_directory": format!(
+                        "sound/voice/{source_plugin}/{source_identity}"
+                    ),
+                    "source_stems": [
+                        format!("{:08x}_{}", requirement.source_info.local, requirement.response_number),
+                        format!("{:06x}_{:02}", requirement.source_info.local, requirement.response_number),
+                    ],
+                    "target_voice_path": target_voice_path,
+                    "voice_type": {
+                        "source_voice_type": voice_type.source_voice_type.format(&self.interner),
+                        "target_voice_type": voice_type.target_voice_type.format(&self.interner),
+                        "target_identity": voice_type.target_identity,
+                    },
+                }))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        serde_json::to_string(&serde_json::json!({
+            "output_plugin": self.config.output_plugin_name,
+            "requirements": requirements,
+        }))
+        .map_err(|error| {
+            RunError::InvalidConfig(format!("serialize Skyrim asset requirements: {error}"))
+        })
+    }
+
+    pub(crate) fn install_skyrim_quest_runtime_asset_manifest_json(
+        &mut self,
+        manifest_json: &str,
+    ) -> Result<String, RunError> {
+        use crate::skyrimse_fo4_runtime::voice::{
+            SkyrimDialogueVoiceAssetInput, SkyrimSequenceAssetInput, SkyrimSequencePlaybackKind,
+            SkyrimVoiceAdmission, SkyrimVoiceAudioFormat, SkyrimVoiceTypeDependency,
+        };
+
+        if self.skyrim_minimal_quest_compiler_evidence.len()
+            != self.skyrim_minimal_quest_projections.len()
+        {
+            return Err(RunError::InvalidConfig(
+                "Skyrim quest runtime assets require completed PSC/PEX reconciliation".to_string(),
+            ));
+        }
+        let manifest = serde_json::from_str::<SkyrimQuestRuntimeAssetManifestInput>(manifest_json)
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "parse Skyrim quest runtime asset manifest: {error}"
+                ))
+            })?;
+        if !manifest
+            .output_plugin
+            .eq_ignore_ascii_case(&self.config.output_plugin_name)
+        {
+            return Err(RunError::InvalidConfig(
+                "Skyrim quest runtime asset manifest targets another output plugin".to_string(),
+            ));
+        }
+        let requirements = self
+            .skyrim_dialogue_projections
+            .iter()
+            .flat_map(|live| live.projection.receipt.voice_intents.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        if manifest.intents.len() != requirements.len() {
+            return Err(RunError::InvalidConfig(format!(
+                "Skyrim quest runtime asset manifest inventory differs: expected {}, got {}",
+                requirements.len(),
+                manifest.intents.len()
+            )));
+        }
+        let mut inputs = Vec::with_capacity(manifest.intents.len());
+        for intent in manifest.intents {
+            let source_info = FormKey::parse(&intent.source_info, &self.interner)
+                .map_err(RunError::InvalidConfig)?;
+            let target_info = FormKey::parse(&intent.target_info, &self.interner)
+                .map_err(RunError::InvalidConfig)?;
+            let source_speaker = FormKey::parse(&intent.source_speaker, &self.interner)
+                .map_err(RunError::InvalidConfig)?;
+            let target_speaker = FormKey::parse(&intent.target_speaker, &self.interner)
+                .map_err(RunError::InvalidConfig)?;
+            let requirement = requirements
+                .iter()
+                .find(|requirement| {
+                    requirement.source_info == source_info
+                        && requirement.target_info == target_info
+                        && requirement.response_number == intent.response_number
+                })
+                .ok_or_else(|| {
+                    RunError::InvalidConfig(format!(
+                        "Skyrim quest runtime asset manifest has an unknown INFO response {}:{}",
+                        intent.target_info, intent.response_number
+                    ))
+                })?;
+            if requirement.source_speaker != source_speaker
+                || requirement.target_speaker != target_speaker
+                || requirement.transcript.trim() != intent.transcript.trim()
+            {
+                return Err(RunError::InvalidConfig(format!(
+                    "Skyrim quest runtime asset manifest changed INFO response {}:{} identity",
+                    intent.target_info, intent.response_number
+                )));
+            }
+            let (actual_voice_type, _) = self.skyrim_dialogue_voice_dependency(requirement)?;
+            let declared_voice_type = SkyrimVoiceTypeDependency {
+                source_voice_type: FormKey::parse(
+                    &intent.voice_type.source_voice_type,
+                    &self.interner,
+                )
+                .map_err(RunError::InvalidConfig)?,
+                target_voice_type: FormKey::parse(
+                    &intent.voice_type.target_voice_type,
+                    &self.interner,
+                )
+                .map_err(RunError::InvalidConfig)?,
+                target_identity: intent.voice_type.target_identity,
+            };
+            if declared_voice_type != actual_voice_type {
+                return Err(RunError::InvalidConfig(format!(
+                    "Skyrim quest runtime asset manifest voice type differs for {}:{}",
+                    intent.target_info, intent.response_number
+                )));
+            }
+            let audio_format = match intent.target_audio.format.to_ascii_lowercase().as_str() {
+                "xwm" => SkyrimVoiceAudioFormat::Xwm,
+                "wav" => SkyrimVoiceAudioFormat::Wav,
+                other => {
+                    return Err(RunError::InvalidConfig(format!(
+                        "unsupported Skyrim quest runtime target audio format {other:?}"
+                    )));
+                }
+            };
+            let sequence = intent
+                .sequence
+                .map(|sequence| {
+                    let kind = match sequence.kind.as_str() {
+                        "scene" => SkyrimSequencePlaybackKind::Scene,
+                        "start_game_enabled_quest" => {
+                            SkyrimSequencePlaybackKind::StartGameEnabledQuest
+                        }
+                        other => {
+                            return Err(RunError::InvalidConfig(format!(
+                                "unsupported Skyrim quest runtime sequence kind {other:?}"
+                            )));
+                        }
+                    };
+                    Ok(SkyrimSequenceAssetInput {
+                        kind,
+                        source_seq: Some(sequence.source_seq.into_voice_evidence()),
+                        target_seq: Some(sequence.target_seq.into_voice_evidence()),
+                    })
+                })
+                .transpose()?;
+            inputs.push(SkyrimDialogueVoiceAssetInput::from_dialogue_requirement(
+                requirement,
+                Some(actual_voice_type),
+                Some(intent.source_fuz.into_voice_evidence()),
+                Some(intent.source_lip.into_voice_evidence()),
+                Some((
+                    audio_format,
+                    intent.target_audio.evidence.into_voice_evidence(),
+                )),
+                Some(intent.target_lip.into_voice_evidence()),
+                sequence,
+            ));
+        }
+        let receipt = crate::skyrimse_fo4_runtime::voice::plan_dialogue_voice_assets(
+            &manifest.output_plugin,
+            &inputs,
+        )
+        .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+        if let Some(rejected) = receipt
+            .intents
+            .iter()
+            .find(|intent| !matches!(intent.admission, SkyrimVoiceAdmission::Ready))
+        {
+            return Err(RunError::InvalidConfig(format!(
+                "Skyrim quest runtime voice response {:06X}:{} rejected: {:?}",
+                rejected.target_info.local, rejected.response_number, rejected.admission
+            )));
+        }
+        let canonical = skyrim_voice_receipt_json(&receipt, &self.interner);
+        self.skyrim_quest_runtime_voice_receipt = Some(receipt);
+        self.skyrim_quest_runtime_asset_copy_receipt = None;
+        serde_json::to_string(&canonical).map_err(|error| {
+            RunError::InvalidConfig(format!(
+                "serialize Skyrim quest runtime asset manifest: {error}"
+            ))
+        })
+    }
+
+    pub(crate) fn reconcile_skyrim_quest_runtime_asset_copy_receipt_json(
+        &mut self,
+        receipt_json: &str,
+    ) -> Result<u32, RunError> {
+        use crate::skyrimse_fo4_runtime::voice::{
+            SkyrimSequencePlaybackKind, SkyrimVoiceAdmission, SkyrimVoiceAssetProvenance,
+        };
+
+        let receipt = serde_json::from_str::<SkyrimQuestRuntimeAssetCopyReceipt>(receipt_json)
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "parse Skyrim quest runtime asset receipt: {error}"
+                ))
+            })?;
+        let voice_receipt = self
+            .skyrim_quest_runtime_voice_receipt
+            .as_ref()
+            .ok_or_else(|| {
+                RunError::InvalidConfig(
+                    "Skyrim quest runtime asset receipt arrived before manifest admission"
+                        .to_string(),
+                )
+            })?;
+        let mut expected = Vec::new();
+        for intent in &voice_receipt.intents {
+            if !matches!(intent.admission, SkyrimVoiceAdmission::Ready) {
+                return Err(RunError::InvalidConfig(
+                    "Skyrim quest runtime asset receipt contains a rejected intent".to_string(),
+                ));
+            }
+            let source_fuz = intent
+                .source_fuz
+                .as_ref()
+                .expect("ready intent has source FUZ");
+            let source_lip = intent
+                .source_lip
+                .as_ref()
+                .expect("ready intent has source LIP");
+            let (_, audio) = intent
+                .target_audio
+                .as_ref()
+                .expect("ready intent has audio");
+            let lip = intent
+                .target_lip
+                .as_ref()
+                .expect("ready intent has target LIP");
+            for (semantic_role, _source, target) in [
+                ("dialogue_audio", source_fuz, audio),
+                ("dialogue_lip", source_lip, lip),
+            ] {
+                let SkyrimVoiceAssetProvenance::Converted { source_blake3, .. } =
+                    &target.provenance
+                else {
+                    unreachable!("ready intent conversion provenance validated")
+                };
+                expected.push(SkyrimQuestRuntimeAssetCopyRow {
+                    semantic_role: semantic_role.to_string(),
+                    source_path: target.relative_path.clone(),
+                    target_path: target.relative_path.clone(),
+                    source_root: String::new(),
+                    size: target.byte_len,
+                    blake3: target.blake3.clone(),
+                    source_blake3: source_blake3.clone(),
+                });
+            }
+            if let Some(sequence) = &intent.sequence {
+                let SkyrimVoiceAssetProvenance::Converted { source_blake3, .. } =
+                    &sequence.target_seq.provenance
+                else {
+                    unreachable!("ready sequence conversion provenance validated")
+                };
+                expected.push(SkyrimQuestRuntimeAssetCopyRow {
+                    semantic_role: match sequence.kind {
+                        SkyrimSequencePlaybackKind::Scene => "sequence_scene",
+                        SkyrimSequencePlaybackKind::StartGameEnabledQuest => {
+                            "sequence_start_game_enabled_quest"
+                        }
+                    }
+                    .to_string(),
+                    source_path: sequence.target_seq.relative_path.clone(),
+                    target_path: sequence.target_seq.relative_path.clone(),
+                    source_root: String::new(),
+                    size: sequence.target_seq.byte_len,
+                    blake3: sequence.target_seq.blake3.clone(),
+                    source_blake3: source_blake3.clone(),
+                });
+            }
+        }
+        let mut actual = receipt.rows.clone();
+        if actual.iter().any(|row| row.source_root.trim().is_empty()) {
+            return Err(RunError::InvalidConfig(
+                "Skyrim quest runtime asset receipt has an empty converted source root".to_string(),
+            ));
+        }
+        let mut canonical_actual = actual.clone();
+        canonical_actual.sort_by(|left, right| {
+            left.target_path
+                .to_ascii_lowercase()
+                .cmp(&right.target_path.to_ascii_lowercase())
+                .then_with(|| left.semantic_role.cmp(&right.semantic_role))
+        });
+        if actual != canonical_actual {
+            return Err(RunError::InvalidConfig(
+                "Skyrim quest runtime asset receipt is not deterministic".to_string(),
+            ));
+        }
+        for row in &mut actual {
+            row.source_root.clear();
+        }
+        expected.sort_by(|left, right| {
+            left.target_path
+                .to_ascii_lowercase()
+                .cmp(&right.target_path.to_ascii_lowercase())
+                .then_with(|| left.semantic_role.cmp(&right.semantic_role))
+        });
+        if actual != expected {
+            return Err(RunError::InvalidConfig(
+                "Skyrim quest runtime asset receipt does not close the frozen voice manifest"
+                    .to_string(),
+            ));
+        }
+        let count = receipt.rows.len() as u32;
+        self.skyrim_quest_runtime_asset_copy_receipt = Some(receipt);
+        self.skyrim_minimal_quest_receipts_finalized = false;
+        Ok(count)
+    }
+
+    pub(crate) fn validate_skyrim_actor_translation(
+        &self,
+        stats: &TranslateStats,
+    ) -> Result<(), RunError> {
+        if self.source != Game::SkyrimSe || self.target != Game::Fo4 {
+            return Ok(());
+        }
+        let plan = self
+            .skyrim_runtime_capability_plan
+            .as_ref()
+            .ok_or_else(|| {
+                RunError::InvalidConfig("Skyrim runtime component plan is missing".to_string())
+            })?;
+        validate_total_skyrim_actor_translation(
+            plan,
+            stats,
+            &self.skyrim_creature_batch_owned_sources,
+        )
+        .map_err(RunError::InvalidConfig)
+    }
+
+    pub(crate) fn finalize_skyrim_runtime_receipt(&mut self) -> Result<(), RunError> {
+        if self.source != Game::SkyrimSe || self.target != Game::Fo4 {
+            return Ok(());
+        }
+        self.reconcile_skyrim_minimal_quest_post_fixup_receipts()?;
+        let plan = self
+            .skyrim_runtime_capability_plan
+            .as_ref()
+            .ok_or_else(|| {
+                RunError::InvalidConfig("Skyrim runtime component plan is missing".to_string())
+            })?;
+        let mapper = self.mapper_state.as_ref().ok_or_else(|| {
+            RunError::InvalidConfig("Skyrim runtime mapper state is missing".to_string())
+        })?;
+        let render = |form_key: FormKey| -> Result<String, RunError> {
+            let plugin = self.interner.resolve(form_key.plugin).ok_or_else(|| {
+                RunError::InvalidConfig(format!(
+                    "Skyrim runtime FormKey {:06X} has an unresolved plugin",
+                    form_key.local
+                ))
+            })?;
+            Ok(format!("{:06X}@{plugin}", form_key.local))
+        };
+        let mut mappings = Vec::new();
+        let mut admitted = FxHashSet::default();
+        let mut dropped = FxHashSet::default();
+        for (source, disposition) in &plan.by_record {
+            if disposition.supported {
+                let target = mapper
+                    .source_to_target
+                    .get(source)
+                    .copied()
+                    .ok_or_else(|| {
+                        RunError::InvalidConfig(format!(
+                            "supported Skyrim runtime record {:06X} has no target mapping",
+                            source.local
+                        ))
+                    })?;
+                let source_signature = plan.record_signatures[source].clone();
+                let target_signature = plan.target_signatures[source].clone();
+                mappings.push(crate::skyrimse_fo4_runtime::receipt::FrozenRecordMapping {
+                    source: crate::skyrimse_fo4_runtime::receipt::RuntimeRecordIdentity {
+                        form_key: render(*source)?,
+                        signature: source_signature,
+                    },
+                    target: crate::skyrimse_fo4_runtime::receipt::RuntimeRecordIdentity {
+                        form_key: render(target)?,
+                        signature: target_signature,
+                    },
+                });
+                admitted.insert(*source);
+            } else {
+                dropped.insert(*source);
+            }
+        }
+        mappings.sort_by(|left, right| left.source.form_key.cmp(&right.source.form_key));
+        let mut topology = Vec::new();
+        for edge in &plan.source_topology {
+            let parent = FormKey::parse(&edge.parent_form_key, &self.interner)
+                .map_err(RunError::InvalidConfig)?;
+            let child = FormKey::parse(&edge.child_form_key, &self.interner)
+                .map_err(RunError::InvalidConfig)?;
+            if !admitted.contains(&child) {
+                continue;
+            }
+            let target_parent = mapper
+                .source_to_target
+                .get(&parent)
+                .copied()
+                .ok_or_else(|| {
+                    RunError::InvalidConfig(format!(
+                        "supported Skyrim topology parent {:06X} has no target mapping",
+                        parent.local
+                    ))
+                })?;
+            let target_child = mapper.source_to_target[&child];
+            topology.push(crate::skyrimse_fo4_runtime::receipt::RuntimeTopologyEdge {
+                parent_form_key: render(target_parent)?,
+                child_form_key: render(target_child)?,
+                kind: edge.kind,
+            });
+        }
+        let components_supported = plan
+            .components
+            .iter()
+            .filter(|component| {
+                matches!(
+                    component.decision,
+                    crate::skyrimse_fo4_runtime::receipt::RuntimeComponentDecision::Supported
+                )
+            })
+            .count() as u32;
+        let receipt = crate::skyrimse_fo4_runtime::SkyrimRuntimeReceipt {
+            version: crate::skyrimse_fo4_runtime::SkyrimRuntimeReceipt::VERSION,
+            source_game: "skyrimse".to_string(),
+            target_game: "fo4".to_string(),
+            source_plugin: mapper.options.source_plugin_name.clone(),
+            target_plugin: mapper.options.output_plugin_name.clone(),
+            components: plan.components.clone(),
+            mappings,
+            topology,
+            signature_adaptations: plan
+                .components
+                .iter()
+                .flat_map(|component| component.adaptations.iter().cloned())
+                .collect(),
+            script_bindings: Vec::new(),
+            assets: Vec::new(),
+            accounting: crate::skyrimse_fo4_runtime::SkyrimRuntimeAccounting {
+                components_seen: plan.components.len() as u32,
+                components_supported,
+                components_dropped: plan.components.len() as u32 - components_supported,
+                records_written: admitted.len() as u32,
+                records_dropped: dropped.len() as u32,
+                script_bindings_expected: 0,
+                script_bindings_attached: 0,
+            },
+        };
+        receipt.validate_shape().map_err(RunError::InvalidConfig)?;
+        self.skyrim_runtime_receipt = Some(receipt);
+        Ok(())
+    }
+
+    fn reconcile_skyrim_minimal_quest_post_fixup_receipts(&mut self) -> Result<(), RunError> {
+        if self.skyrim_minimal_quest_receipts_finalized {
+            return Ok(());
+        }
+        let admissions = self
+            .skyrim_runtime_capability_plan
+            .as_ref()
+            .map(|plan| plan.minimal_quests.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        if admissions.is_empty() {
+            self.skyrim_minimal_quest_receipts_finalized = true;
+            return Ok(());
+        }
+        if self.skyrim_minimal_quest_compiler_evidence.len()
+            != self.skyrim_minimal_quest_projections.len()
+        {
+            return Err(RunError::InvalidConfig(
+                "admitted Skyrim quest compiler evidence was not reconciled before fixups"
+                    .to_string(),
+            ));
+        }
+        if self.skyrim_minimal_alias_projections.len()
+            != self.skyrim_minimal_quest_projections.len()
+        {
+            return Err(RunError::InvalidConfig(
+                "admitted Skyrim quest alias projections were not frozen before fixups".to_string(),
+            ));
+        }
+        let required_voice_lines = self
+            .skyrim_dialogue_projections
+            .iter()
+            .map(|dialogue| dialogue.projection.receipt.voice_intents.len())
+            .sum::<usize>();
+        if required_voice_lines != 0
+            && (self.skyrim_quest_runtime_voice_receipt.is_none()
+                || self.skyrim_quest_runtime_asset_copy_receipt.is_none())
+        {
+            return Err(RunError::InvalidConfig(
+                "admitted Skyrim quest voice/LIP asset receipt was not reconciled before fixups"
+                    .to_string(),
+            ));
+        }
+        let projections = self.skyrim_minimal_quest_projections.clone();
+        for admission in admissions {
+            let projection = projections
+                .iter()
+                .find(|projection| projection.component_id == admission.plan.component_id)
+                .ok_or_else(|| {
+                    RunError::InvalidConfig(format!(
+                        "{} has no frozen Skyrim quest projection",
+                        admission.plan.component_id
+                    ))
+                })?;
+            let target_form_key = projection.record.form_key;
+            let topology = crate::target_write::existing_record_topology_native(
+                self.target_handle_id,
+                target_form_key,
+                "QUST",
+                &self.interner,
+            )
+            .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+            let target_form_id =
+                encode_form_key_for_handle(self.target_handle_id, target_form_key, &self.interner)
+                    .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+            let placement =
+                existing_authoring_record_placement_native(self.target_handle_id, target_form_id)
+                    .ok();
+            let mut actual = crate::quest_runtime::QuestRuntimePostFixupReceipt::default();
+            for _ in 0..topology.occurrences {
+                actual.emitted_records.push(projection.target_quest.clone());
+                if matches!(placement, Some(ExistingAuthoringRecordPlacement::TopLevel)) {
+                    actual
+                        .placements
+                        .push(crate::quest_runtime::TopologyPlacement {
+                            record: projection.target_quest.clone(),
+                            group_path: vec!["GRUP:QUST".to_string()],
+                        });
+                }
+            }
+            for (field, table, string_id) in
+                crate::target_write::existing_localized_string_occurrences_native(
+                    self.target_handle_id,
+                    target_form_key,
+                    "QUST",
+                    &self.interner,
+                )
+                .map_err(|error| RunError::InvalidConfig(error.to_string()))?
+            {
+                actual
+                    .localized_strings
+                    .push(crate::quest_runtime::LocalizedStringReceipt {
+                        owner: projection.target_quest.clone(),
+                        field,
+                        table,
+                        string_id,
+                    });
+            }
+            let evidence = self
+                .skyrim_minimal_quest_compiler_evidence
+                .iter()
+                .find(|row| row.manifest_id == projection.psc_manifest.manifest_id);
+            if crate::skyrimse_fo4_runtime::quest::build_vmad_attachment_intent(
+                projection, evidence,
+            )
+            .is_ok()
+            {
+                actual
+                    .scripts
+                    .extend(admission.plan.expected_receipt.scripts.iter().cloned());
+            }
+            let record_key = format!(
+                "{}:{:06X}",
+                plugin_name_for_handle(self.target_handle_id)?,
+                target_form_key.local
+            );
+            let authoring =
+                esp_authoring_core::plugin_runtime::plugin_handle_read_authoring_record_value_json(
+                    self.target_handle_id,
+                    &record_key,
+                )
+                .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+            let alias_projection = self
+                .skyrim_minimal_alias_projections
+                .iter()
+                .find(|alias| alias.component_id == admission.plan.component_id)
+                .ok_or_else(|| {
+                    RunError::InvalidConfig(format!(
+                        "{} has no frozen Skyrim alias projection",
+                        admission.plan.component_id
+                    ))
+                })?;
+            let target_record = read_record_relayout_by_form_key(
+                self.target_handle_id,
+                &target_form_key,
+                &self.schema_target,
+                &self.interner,
+                None,
+            )
+            .map_err(|error| {
+                RunError::InvalidConfig(format!(
+                    "{} read target QUST for alias audit: {error}",
+                    admission.plan.component_id
+                ))
+            })?;
+            let quest_vmad_count = target_record
+                .fields
+                .iter()
+                .filter(|field| field.sig.as_str() == "VMAD")
+                .count();
+            let mut alias_record = target_record.clone();
+            alias_record
+                .fields
+                .retain(|field| field.sig.as_str() != "VMAD");
+            for field in &mut alias_record.fields {
+                if field.sig.as_str() == "ALED"
+                    && matches!(&field.value, FieldValue::Bytes(bytes) if bytes.is_empty())
+                {
+                    field.value = FieldValue::None;
+                }
+            }
+            let alias_receipt =
+                crate::skyrimse_fo4_runtime::alias::verify_alias_projection_in_record(
+                    &alias_record,
+                    alias_projection,
+                    &self.interner,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "{} post-fixup alias receipt was damaged: {error}",
+                        admission.plan.component_id
+                    ))
+                })?;
+            if quest_vmad_count != 1
+                || alias_receipt.preserved_quest_vmad_count != 0
+                || alias_receipt.alias_vmad_attachment_count != 0
+            {
+                return Err(RunError::InvalidConfig(format!(
+                    "{} post-fixup alias receipt has an invalid VMAD boundary",
+                    admission.plan.component_id
+                )));
+            }
+            for package in self.skyrim_pack_projections.iter().filter(|package| {
+                package.lowering.target.component_id == admission.plan.component_id
+            }) {
+                let topology = crate::target_write::existing_record_topology_native(
+                    self.target_handle_id,
+                    package.target_form_key,
+                    "PACK",
+                    &self.interner,
+                )
+                .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                let target_form_id = encode_form_key_for_handle(
+                    self.target_handle_id,
+                    package.target_form_key,
+                    &self.interner,
+                )
+                .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                let placement = existing_authoring_record_placement_native(
+                    self.target_handle_id,
+                    target_form_id,
+                )
+                .ok();
+                let target_key = crate::quest_runtime::QuestRecordKey::new(
+                    "PACK",
+                    package.target_form_key.format(&self.interner),
+                );
+                for _ in 0..topology.occurrences {
+                    actual.emitted_records.push(target_key.clone());
+                    if matches!(placement, Some(ExistingAuthoringRecordPlacement::TopLevel)) {
+                        actual
+                            .placements
+                            .push(crate::quest_runtime::TopologyPlacement {
+                                record: target_key.clone(),
+                                group_path: vec!["GRUP:PACK".to_string()],
+                            });
+                    }
+                }
+                let record = read_record_relayout_by_form_key(
+                    self.target_handle_id,
+                    &package.target_form_key,
+                    &self.schema_target,
+                    &self.interner,
+                    None,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "{} read target PACK for receipt audit: {error}",
+                        admission.plan.component_id
+                    ))
+                })?;
+                crate::skyrimse_fo4_runtime::package::verify_skyrim_pack_record_receipt(
+                    &package.lowering,
+                    &record,
+                    package.source_form_key,
+                    package.target_form_key,
+                    package.target_template,
+                    &package.reference_mappings,
+                    &package.template_evidence,
+                    &package.materialization.receipt,
+                    &self.interner,
+                )
+                .map_err(|reason| {
+                    RunError::InvalidConfig(format!(
+                        "{} post-fixup PACK receipt was damaged: {reason:?}",
+                        admission.plan.component_id
+                    ))
+                })?;
+            }
+            for scene in self
+                .skyrim_scene_projections
+                .iter()
+                .filter(|scene| scene.receipt.component_id == admission.plan.component_id)
+            {
+                let target_form_key = scene.record.form_key;
+                let topology = crate::target_write::existing_record_topology_native(
+                    self.target_handle_id,
+                    target_form_key,
+                    "SCEN",
+                    &self.interner,
+                )
+                .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                let target_form_id = encode_form_key_for_handle(
+                    self.target_handle_id,
+                    target_form_key,
+                    &self.interner,
+                )
+                .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                let placement = existing_authoring_record_placement_native(
+                    self.target_handle_id,
+                    target_form_id,
+                )
+                .ok();
+                let expected_parent =
+                    FormKey::parse(&scene.receipt.target_parent_quest.form_key, &self.interner)
+                        .map_err(RunError::InvalidConfig)?;
+                let expected_parent_form_id = encode_form_key_for_handle(
+                    self.target_handle_id,
+                    expected_parent,
+                    &self.interner,
+                )
+                .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                for _ in 0..topology.occurrences {
+                    actual
+                        .emitted_records
+                        .push(scene.receipt.target_scene.clone());
+                    if matches!(
+                        placement,
+                        Some(ExistingAuthoringRecordPlacement::QuestChild {
+                            parent_quest_form_id
+                        }) if parent_quest_form_id == expected_parent_form_id
+                    ) {
+                        actual.placements.push(
+                            crate::skyrimse_fo4_runtime::scene::scene_placement(
+                                &scene.receipt.target_scene,
+                                &scene.receipt.target_parent_quest,
+                            ),
+                        );
+                    }
+                }
+                let record = read_record_relayout_by_form_key(
+                    self.target_handle_id,
+                    &target_form_key,
+                    &self.schema_target,
+                    &self.interner,
+                    None,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "{} read target SCEN for receipt audit: {error}",
+                        admission.plan.component_id
+                    ))
+                })?;
+                scene
+                    .receipt
+                    .validate_materialized(
+                        &record,
+                        &scene.parent_quest,
+                        scene.group_type,
+                        &scene.pending_vmad,
+                    )
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!(
+                            "{} post-fixup SCEN receipt was damaged: {error}",
+                            admission.plan.component_id
+                        ))
+                    })?;
+            }
+            for dialogue in self
+                .skyrim_dialogue_projections
+                .iter()
+                .filter(|dialogue| dialogue.component_id == admission.plan.component_id)
+            {
+                use crate::skyrimse_fo4_runtime::dialogue::SkyrimDialogueTopologyKind;
+                let expected_records = dialogue
+                    .projection
+                    .top_level
+                    .iter()
+                    .chain(&dialogue.projection.quest_children)
+                    .chain(
+                        dialogue
+                            .projection
+                            .topic_children
+                            .iter()
+                            .map(|info| &info.record),
+                    )
+                    .collect::<Vec<_>>();
+                let mut reopened = Vec::with_capacity(expected_records.len());
+                let mut topic_parent_by_info = HashMap::new();
+                for expected_record in expected_records {
+                    let edge = dialogue
+                        .projection
+                        .receipt
+                        .topology
+                        .iter()
+                        .find(|edge| edge.target_child == expected_record.form_key)
+                        .ok_or_else(|| {
+                            RunError::InvalidConfig(format!(
+                                "{} dialogue target {} has no frozen topology",
+                                admission.plan.component_id,
+                                expected_record.form_key.format(&self.interner)
+                            ))
+                        })?;
+                    let topology = crate::target_write::existing_record_topology_native(
+                        self.target_handle_id,
+                        expected_record.form_key,
+                        expected_record.sig.as_str(),
+                        &self.interner,
+                    )
+                    .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                    let target_form_id = encode_form_key_for_handle(
+                        self.target_handle_id,
+                        expected_record.form_key,
+                        &self.interner,
+                    )
+                    .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                    let placement = existing_authoring_record_placement_native(
+                        self.target_handle_id,
+                        target_form_id,
+                    )
+                    .ok();
+                    let target_key = crate::quest_runtime::QuestRecordKey::new(
+                        expected_record.sig.as_str(),
+                        expected_record.form_key.format(&self.interner),
+                    );
+                    let expected_parent_form_id = encode_form_key_for_handle(
+                        self.target_handle_id,
+                        edge.target_parent,
+                        &self.interner,
+                    )
+                    .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                    for _ in 0..topology.occurrences {
+                        actual.emitted_records.push(target_key.clone());
+                        let path = match (edge.kind, placement) {
+                            (
+                                SkyrimDialogueTopologyKind::TopLevel,
+                                Some(ExistingAuthoringRecordPlacement::TopLevel),
+                            ) => Some(vec!["GRUP:DLVW".to_string()]),
+                            (
+                                SkyrimDialogueTopologyKind::QuestChild,
+                                Some(ExistingAuthoringRecordPlacement::QuestChild {
+                                    parent_quest_form_id,
+                                }),
+                            ) if parent_quest_form_id == expected_parent_form_id => Some(vec![
+                                "QUST".to_string(),
+                                edge.target_parent.format(&self.interner),
+                                "children:10".to_string(),
+                            ]),
+                            (
+                                SkyrimDialogueTopologyKind::TopicChild,
+                                Some(ExistingAuthoringRecordPlacement::TopicChild {
+                                    parent_dialogue_form_id,
+                                }),
+                            ) if parent_dialogue_form_id == expected_parent_form_id => {
+                                topic_parent_by_info
+                                    .insert(expected_record.form_key, edge.target_parent);
+                                Some(vec![
+                                    "DIAL".to_string(),
+                                    edge.target_parent.format(&self.interner),
+                                    "children:7".to_string(),
+                                ])
+                            }
+                            _ => None,
+                        };
+                        if let Some(group_path) = path {
+                            actual
+                                .placements
+                                .push(crate::quest_runtime::TopologyPlacement {
+                                    record: target_key.clone(),
+                                    group_path,
+                                });
+                        }
+                    }
+                    for (field, table, string_id) in
+                        crate::target_write::existing_localized_string_occurrences_native(
+                            self.target_handle_id,
+                            expected_record.form_key,
+                            expected_record.sig.as_str(),
+                            &self.interner,
+                        )
+                        .map_err(|error| RunError::InvalidConfig(error.to_string()))?
+                    {
+                        actual.localized_strings.push(
+                            crate::quest_runtime::LocalizedStringReceipt {
+                                owner: target_key.clone(),
+                                field,
+                                table,
+                                string_id,
+                            },
+                        );
+                    }
+                    reopened.push(
+                        read_record_relayout_by_form_key(
+                            self.target_handle_id,
+                            &expected_record.form_key,
+                            &self.schema_target,
+                            &self.interner,
+                            None,
+                        )
+                        .map_err(|error| {
+                            RunError::InvalidConfig(format!(
+                                "{} read target dialogue record for receipt audit: {error}",
+                                admission.plan.component_id
+                            ))
+                        })?,
+                    );
+                }
+                dialogue
+                    .projection
+                    .receipt
+                    .validate_materialized(&reopened, &topic_parent_by_info)
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!(
+                            "{} post-fixup dialogue receipt was damaged: {error}",
+                            admission.plan.component_id
+                        ))
+                    })?;
+            }
+            let mut story_route_validated = false;
+            if let Some(story) = self
+                .skyrim_story_manager_projections
+                .iter()
+                .find(|story| story.component_id == admission.plan.component_id)
+            {
+                let story_projection = story.projection.as_ref().ok_or_else(|| {
+                    RunError::InvalidConfig(format!(
+                        "{} Story Manager route was not committed before fixups",
+                        admission.plan.component_id
+                    ))
+                })?;
+                for expected_record in &story_projection.records {
+                    let target_key = crate::quest_runtime::QuestRecordKey::new(
+                        expected_record.sig.as_str(),
+                        expected_record.form_key.format(&self.interner),
+                    );
+                    let topology = crate::target_write::existing_record_topology_native(
+                        self.target_handle_id,
+                        expected_record.form_key,
+                        expected_record.sig.as_str(),
+                        &self.interner,
+                    )
+                    .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                    let target_form_id = encode_form_key_for_handle(
+                        self.target_handle_id,
+                        expected_record.form_key,
+                        &self.interner,
+                    )
+                    .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                    let placement = existing_authoring_record_placement_native(
+                        self.target_handle_id,
+                        target_form_id,
+                    )
+                    .ok();
+                    for _ in 0..topology.occurrences {
+                        actual.emitted_records.push(target_key.clone());
+                        if matches!(placement, Some(ExistingAuthoringRecordPlacement::TopLevel)) {
+                            actual
+                                .placements
+                                .push(crate::quest_runtime::TopologyPlacement {
+                                    record: target_key.clone(),
+                                    group_path: vec![format!(
+                                        "GRUP:{}",
+                                        expected_record.sig.as_str()
+                                    )],
+                                });
+                        }
+                    }
+                    let reopened = read_record_relayout_by_form_key(
+                        self.target_handle_id,
+                        &expected_record.form_key,
+                        &self.schema_target,
+                        &self.interner,
+                        None,
+                    )
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!(
+                            "{} read projected Story Manager {}: {error}",
+                            admission.plan.component_id,
+                            expected_record.sig.as_str()
+                        ))
+                    })?;
+                    if reopened.sig != expected_record.sig
+                        || reopened.form_key != expected_record.form_key
+                        || reopened.eid != expected_record.eid
+                        || reopened.flags != expected_record.flags
+                        || reopened.fields != expected_record.fields
+                        || reopened.warnings != expected_record.warnings
+                    {
+                        return Err(RunError::InvalidConfig(format!(
+                            "{} post-fixup Story Manager {} receipt was damaged",
+                            admission.plan.component_id,
+                            expected_record.sig.as_str()
+                        )));
+                    }
+                }
+                let expected_route = &story_projection.route_receipt.route;
+                if admission
+                    .plan
+                    .expected_receipt
+                    .routes
+                    .contains(expected_route)
+                    && authoring
+                        .as_ref()
+                        .is_some_and(|record| !authoring_quest_starts_enabled(record))
+                {
+                    actual.routes.push(expected_route.clone());
+                    story_route_validated = true;
+                }
+            }
+            if let Some(authoring) = authoring.as_ref() {
+                for (script_class, property_names) in
+                    authoring_top_level_vmad_script_attachments(authoring)
+                        .map_err(RunError::InvalidConfig)?
+                {
+                    let matching = admission
+                        .plan
+                        .expected_receipt
+                        .vmad_attachments
+                        .iter()
+                        .filter(|attachment| {
+                            attachment.owner == projection.target_quest
+                                && attachment.script_class.eq_ignore_ascii_case(&script_class)
+                                && attachment.property_names == property_names
+                        })
+                        .collect::<Vec<_>>();
+                    if let [attachment] = matching.as_slice() {
+                        actual.vmad_attachments.push((*attachment).clone());
+                    } else {
+                        actual
+                            .vmad_attachments
+                            .push(crate::quest_runtime::VmadAttachmentReceipt {
+                                owner: projection.target_quest.clone(),
+                                script_class,
+                                property_names,
+                                compiler_evidence_id: String::new(),
+                            });
+                    }
+                }
+            }
+            if !story_route_validated
+                && authoring
+                    .as_ref()
+                    .is_some_and(authoring_quest_starts_enabled)
+            {
+                actual
+                    .routes
+                    .extend(admission.plan.expected_receipt.routes.iter().cloned());
+            }
+            let comparison = crate::quest_runtime::compare_post_fixup_receipt(
+                &admission.plan.expected_receipt,
+                &actual,
+            );
+            if !comparison.intact {
+                return Err(RunError::InvalidConfig(format!(
+                    "{} post-fixup quest runtime receipt was damaged: {}",
+                    admission.plan.component_id,
+                    serde_json::to_string(&comparison.required_damage).unwrap_or_default()
+                )));
+            }
+        }
+        self.skyrim_minimal_quest_receipts_finalized = true;
+        Ok(())
+    }
+
+    fn reconcile_fnv_quest_runtime_post_fixup_receipts(&mut self) -> Result<(), RunError> {
+        if self.fnv_quest_runtime_receipts_finalized {
+            return Ok(());
+        }
+        if self.fnv_quest_runtime_component_plans.is_empty() {
+            self.fnv_quest_runtime_receipts_finalized = true;
+            return Ok(());
+        }
+        if self.fnv_quest_runtime_component_plans.len()
+            != self.fnv_quest_runtime_expected_receipts.len()
+        {
+            return Err(RunError::InvalidConfig(
+                "FNV quest runtime retained plan/receipt counts differ".to_string(),
+            ));
+        }
+        validate_fnv_synthetic_target_set(
+            &self.fnv_quest_runtime_expected_receipts,
+            &self.fnv_quest_runtime_synthetic_targets,
+        )
+        .map_err(RunError::InvalidConfig)?;
+
+        let plans = self.fnv_quest_runtime_component_plans.clone();
+        for (plan, frozen) in plans.iter().zip(&self.fnv_quest_runtime_expected_receipts) {
+            if &plan.expected_receipt != frozen {
+                return Err(RunError::InvalidConfig(format!(
+                    "{} frozen FNV quest runtime receipt changed after admission",
+                    plan.component_id
+                )));
+            }
+            let expected =
+                resolve_fnv_expected_receipt(frozen, &self.fnv_quest_runtime_synthetic_targets)
+                    .map_err(RunError::InvalidConfig)?;
+            let mut actual = crate::quest_runtime::QuestRuntimePostFixupReceipt::default();
+            let mut authoring_records = BTreeMap::new();
+            let target_is_localized = plugin_header_flags_native(self.target_handle_id)
+                .map_err(|error| RunError::InvalidConfig(error.to_string()))?
+                & 0x0000_0080
+                != 0;
+
+            for record in &expected.emitted_records {
+                let target = parse_legacy_or_native_form_key(&record.form_key, &self.interner)
+                    .map_err(RunError::InvalidConfig)?;
+                let topology = crate::target_write::existing_record_topology_native(
+                    self.target_handle_id,
+                    target,
+                    &record.signature,
+                    &self.interner,
+                )
+                .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                actual
+                    .emitted_records
+                    .extend(std::iter::repeat_n(record.clone(), topology.occurrences));
+
+                let target_form_id =
+                    encode_form_key_for_handle(self.target_handle_id, target, &self.interner)
+                        .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                if let Ok(placement) = existing_authoring_record_placement_native(
+                    self.target_handle_id,
+                    target_form_id,
+                ) {
+                    for expected_placement in expected
+                        .placements
+                        .iter()
+                        .filter(|candidate| candidate.record == *record)
+                    {
+                        if expected_placement_matches(
+                            expected_placement,
+                            placement,
+                            self.target_handle_id,
+                            &self.interner,
+                        )
+                        .map_err(RunError::InvalidConfig)?
+                        {
+                            actual.placements.extend(std::iter::repeat_n(
+                                expected_placement.clone(),
+                                topology.occurrences,
+                            ));
+                        }
+                    }
+                }
+
+                if target_is_localized {
+                    for (field, table, string_id) in
+                        crate::target_write::existing_localized_string_occurrences_native(
+                            self.target_handle_id,
+                            target,
+                            &record.signature,
+                            &self.interner,
+                        )
+                        .map_err(|error| RunError::InvalidConfig(error.to_string()))?
+                    {
+                        actual.localized_strings.push(
+                            crate::quest_runtime::LocalizedStringReceipt {
+                                owner: record.clone(),
+                                field,
+                                table,
+                                string_id,
+                            },
+                        );
+                    }
+                }
+
+                let plugin = self.interner.resolve(target.plugin).ok_or_else(|| {
+                    RunError::InvalidConfig(format!(
+                        "{} target plugin is unresolved",
+                        record.form_key
+                    ))
+                })?;
+                let authoring_key = format!("{plugin}:{:06X}", target.local);
+                let authoring = esp_authoring_core::plugin_runtime::plugin_handle_read_authoring_record_value_json(
+                    self.target_handle_id,
+                    &authoring_key,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "read FNV quest runtime record {authoring_key}: {error}"
+                    ))
+                })?;
+                authoring_records.insert(record.clone(), authoring);
+            }
+
+            for owner in expected
+                .vmad_attachments
+                .iter()
+                .map(|attachment| &attachment.owner)
+                .chain(expected.routes.iter().map(|route| &route.quest))
+            {
+                if authoring_records.contains_key(owner) {
+                    continue;
+                }
+                let target = parse_legacy_or_native_form_key(&owner.form_key, &self.interner)
+                    .map_err(RunError::InvalidConfig)?;
+                let plugin = self.interner.resolve(target.plugin).ok_or_else(|| {
+                    RunError::InvalidConfig(format!(
+                        "{} target plugin is unresolved",
+                        owner.form_key
+                    ))
+                })?;
+                let authoring_key = format!("{plugin}:{:06X}", target.local);
+                let authoring = esp_authoring_core::plugin_runtime::plugin_handle_read_authoring_record_value_json(
+                    self.target_handle_id,
+                    &authoring_key,
+                )
+                .map_err(|error| {
+                    RunError::InvalidConfig(format!(
+                        "read FNV quest runtime external owner {authoring_key}: {error}"
+                    ))
+                })?;
+                authoring_records.insert(owner.clone(), authoring);
+            }
+
+            for expected_script in &expected.scripts {
+                let occurrences = self
+                    .fnv_quest_runtime_compiler_evidence
+                    .iter()
+                    .filter(|evidence| {
+                        evidence.compiled_success
+                            && !evidence.relative_pex_path.trim().is_empty()
+                            && evidence
+                                .class_name
+                                .eq_ignore_ascii_case(&expected_script.class_name)
+                    })
+                    .count();
+                actual
+                    .scripts
+                    .extend(std::iter::repeat_n(expected_script.clone(), occurrences));
+            }
+
+            for (owner, authoring) in &authoring_records {
+                let Some(authoring) = authoring else {
+                    continue;
+                };
+                for (script_class, property_names) in authoring_script_attachments(authoring) {
+                    let matching = expected
+                        .vmad_attachments
+                        .iter()
+                        .filter(|attachment| {
+                            attachment.owner == *owner
+                                && attachment.script_class.eq_ignore_ascii_case(&script_class)
+                                && attachment.property_names == property_names
+                        })
+                        .collect::<Vec<_>>();
+                    if let [attachment] = matching.as_slice() {
+                        actual.vmad_attachments.push((*attachment).clone());
+                    } else {
+                        actual
+                            .vmad_attachments
+                            .push(crate::quest_runtime::VmadAttachmentReceipt {
+                                owner: owner.clone(),
+                                script_class,
+                                property_names,
+                                compiler_evidence_id: String::new(),
+                            });
+                    }
+                }
+            }
+
+            for route in &expected.routes {
+                if authoring_records
+                    .get(&route.quest)
+                    .and_then(Option::as_ref)
+                    .is_some_and(authoring_quest_starts_enabled)
+                {
+                    actual.routes.push(route.clone());
+                }
+            }
+
+            let comparison = crate::quest_runtime::compare_post_fixup_receipt(&expected, &actual);
+            if !comparison.intact {
+                return Err(RunError::InvalidConfig(format!(
+                    "{} post-fixup FNV quest runtime receipt was damaged: {}",
+                    plan.component_id,
+                    serde_json::to_string(&comparison.required_damage).unwrap_or_default()
+                )));
+            }
+        }
+        self.fnv_quest_runtime_receipts_finalized = true;
+        Ok(())
+    }
+
     pub fn translate_all(&mut self) -> Result<TranslateStats, RunError> {
         self.require_source_handle()?;
         let translate_all_started = std::time::Instant::now();
         self.preflight_legacy_packs_from_handle()?;
         self.emit_status("translate_all: building mapper state…");
-        self.init_mapper_state()?;
+        self.prepare_mapper_state_for_translation()?;
+        self.index_fo76_condition_forms();
+        self.index_fo76_inherited_object_templates();
         self.emit_status(&format!(
             "translate_all: mapper state ready in {:.1}s; enumerating source records…",
             translate_all_started.elapsed().as_secs_f64()
@@ -2317,6 +8078,7 @@ impl ConversionRun {
 
         if self.config.records_limit == Some(0) {
             let stats = self.translate_fks(&[])?;
+            self.validate_creature_dependency_accounting()?;
             self.finalize_legacy_creature_race_coverage()?;
             return Ok(stats);
         }
@@ -2332,6 +8094,7 @@ impl ConversionRun {
         let emit_structured_dialogue = self.should_emit_fo76_quest_dialogue();
         let emit_structured_scenes = self.should_emit_fo76_quest_scenes();
         let mut all_fks: Vec<FormKey> = Vec::new();
+        let mut skyrim_runtime_fks = Vec::new();
         for sig in sigs {
             if (emit_structured_dialogue
                 && (sig == structured_dialogue_sig || sig == structured_info_sig))
@@ -2345,28 +8108,40 @@ impl ConversionRun {
                 }
             }
             let fks = iter_form_keys_of_sig(self.source_handle_id, sig, &mut self.interner)?;
-            if let Some(limit) = self.config.records_limit {
+            let selected = if let Some(limit) = self.config.records_limit {
                 let remaining = limit.saturating_sub(all_fks.len());
-                all_fks.extend(fks.into_iter().take(remaining));
+                fks.into_iter().take(remaining).collect::<Vec<_>>()
             } else {
-                all_fks.extend(fks);
+                fks
+            };
+            if self.source == Game::SkyrimSe && self.target == Game::Fo4 {
+                skyrim_runtime_fks.extend(
+                    selected
+                        .iter()
+                        .copied()
+                        .filter(|form_key| self.is_skyrim_runtime_planned_record(*form_key, sig)),
+                );
             }
+            all_fks.extend(selected);
         }
         self.emit_status(&format!(
             "translate_all: {} records to translate (enumerated in {:.1}s); starting per-record translation…",
             all_fks.len(),
             enumerate_started.elapsed().as_secs_f64()
         ));
+        self.plan_skyrim_runtime_components(&skyrim_runtime_fks)?;
         self.preallocate_legacy_translate_all_records(&all_fks)?;
         let mut stats = self.translate_fks(&all_fks)?;
+        self.validate_creature_dependency_accounting()?;
         self.finalize_legacy_creature_race_coverage()?;
-        if emit_structured_scenes {
-            stats.absorb(self.emit_quest_child_scenes()?);
-        }
         if emit_structured_dialogue {
             stats.absorb(self.emit_quest_child_dialogue()?);
             stats.absorb(self.emit_topic_child_infos()?);
         }
+        if emit_structured_scenes {
+            stats.absorb(self.emit_quest_child_scenes()?);
+        }
+        stats.absorb(self.emit_skyrim_minimal_quest_projections()?);
         if matches!(self.source, Game::Fnv | Game::Fo3) && self.target == Game::Fo4 {
             self.rebuild_full_plugin_worldspace_groups()?;
             stats.absorb(self.emit_projected_navmeshes()?);
@@ -2377,6 +8152,7 @@ impl ConversionRun {
             stats.absorb(self.rebuild_projected_navi()?);
         }
         self.rebuild_full_plugin_worldspace_groups()?;
+        self.validate_skyrim_actor_translation(&stats)?;
         Ok(stats)
     }
 
@@ -2394,6 +8170,130 @@ impl ConversionRun {
         &mut self,
     ) -> Result<crate::phase::story_manager::StoryManagerEmitStats, RunError> {
         let mut emit_stats = crate::phase::story_manager::StoryManagerEmitStats::default();
+        if self.source == Game::SkyrimSe && self.target == Game::Fo4 {
+            if self.skyrim_story_manager_projections.is_empty() {
+                return Ok(emit_stats);
+            }
+            if self.skyrim_minimal_quest_compiler_evidence.len()
+                != self.skyrim_minimal_quest_projections.len()
+            {
+                return Err(RunError::InvalidConfig(
+                    "Skyrim Story Manager commitment requires completed PSC/PEX evidence"
+                        .to_string(),
+                ));
+            }
+            let required_voice_lines = self
+                .skyrim_dialogue_projections
+                .iter()
+                .map(|dialogue| dialogue.projection.receipt.voice_intents.len())
+                .sum::<usize>();
+            if required_voice_lines != 0
+                && (self.skyrim_quest_runtime_voice_receipt.is_none()
+                    || self.skyrim_quest_runtime_asset_copy_receipt.is_none())
+            {
+                return Err(RunError::InvalidConfig(
+                    "Skyrim Story Manager commitment requires reconciled voice/LIP assets"
+                        .to_string(),
+                ));
+            }
+            for index in 0..self.skyrim_story_manager_projections.len() {
+                if self.skyrim_story_manager_projections[index]
+                    .projection
+                    .is_some()
+                {
+                    continue;
+                }
+                let live = self.skyrim_story_manager_projections[index].clone();
+                let plan = self
+                    .skyrim_runtime_capability_plan
+                    .as_ref()
+                    .and_then(|capability| {
+                        capability
+                            .minimal_quests
+                            .values()
+                            .find(|admission| admission.plan.component_id == live.component_id)
+                    })
+                    .map(|admission| admission.plan.clone())
+                    .ok_or_else(|| {
+                        RunError::InvalidConfig(format!(
+                            "{} has no admitted Story Manager component plan",
+                            live.component_id
+                        ))
+                    })?;
+                let mut projection =
+                    crate::skyrimse_fo4_runtime::story_manager::project_story_manager_chain(
+                        &live.source_records,
+                        &plan,
+                        &live.event_mapping,
+                        &self.interner,
+                    )
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!(
+                            "{} Story Manager projection rejected: {error}",
+                            live.component_id
+                        ))
+                    })?;
+                for record in &projection.records {
+                    add_record_native(
+                        self.target_handle_id,
+                        record.clone(),
+                        &self.schema_target,
+                        &self.interner,
+                    )
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!(
+                            "{} emit projected {}: {error}",
+                            live.component_id,
+                            record.sig.as_str()
+                        ))
+                    })?;
+                    emit_stats.translate.records_translated += 1;
+                    emit_stats.translate.signature_entry(record.sig).translated += 1;
+                }
+                projection.records = projection
+                    .records
+                    .iter()
+                    .map(|record| {
+                        read_record_relayout_by_form_key(
+                            self.target_handle_id,
+                            &record.form_key,
+                            &self.schema_target,
+                            &self.interner,
+                            None,
+                        )
+                        .map_err(|error| {
+                            RunError::InvalidConfig(format!(
+                                "{} freeze emitted Story Manager {} receipt: {error}",
+                                live.component_id,
+                                record.sig.as_str()
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let admission = self
+                    .skyrim_runtime_capability_plan
+                    .as_mut()
+                    .and_then(|capability| {
+                        capability
+                            .minimal_quests
+                            .values_mut()
+                            .find(|admission| admission.plan.component_id == live.component_id)
+                    })
+                    .expect("Story Manager admission exists after projection");
+                admission
+                    .plan
+                    .expected_receipt
+                    .routes
+                    .insert(projection.route_receipt.route.clone());
+                self.skyrim_story_manager_projections[index].projection = Some(projection);
+                emit_stats.selected_nodes += live
+                    .source_records
+                    .iter()
+                    .filter(|record| matches!(record.sig.as_str(), "SMEN" | "SMBN" | "SMQN"))
+                    .count() as u32;
+            }
+            return Ok(emit_stats);
+        }
         if self.source != Game::Fo76 || self.target != Game::Fo4 {
             return Ok(emit_stats);
         }
@@ -2429,9 +8329,24 @@ impl ConversionRun {
             .count() as u32;
         self.record_story_manager_diagnostics(&selection.diagnostics);
 
-        emit_stats.quests_changed = self.restore_passive_dialogue_controllers()?;
-        emit_stats.quests_changed +=
-            self.force_story_manager_dialogue_quests(&selection.fallback_dialogue_quests)?;
+        let unproven_roots = crate::phase::story_manager::unproven_story_manager_event_roots(
+            &selection.selected_nodes,
+            &graph,
+        );
+        if !unproven_roots.is_empty() {
+            let roots = unproven_roots
+                .iter()
+                .map(|(form_key, event_type)| {
+                    let event = String::from_utf8_lossy(&event_type.to_le_bytes()).into_owned();
+                    format!("{:06X}:{event}", form_key.local)
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            return Err(RunError::InvalidConfig(format!(
+                "story_manager_event_unsupported_no_fo4_root:{roots}"
+            )));
+        }
+
         let event_bridges = self.prepare_story_manager_event_bridges(&selection, &graph)?;
         self.map_story_manager_event_roots(&selection.selected_nodes, &graph);
         self.preallocate_story_manager_nodes(&selection.ordered_nodes, &graph);
@@ -2444,11 +8359,27 @@ impl ConversionRun {
             &graph,
             &mut emitted_nodes,
         )?;
+        let story_manager_owned_quests =
+            crate::phase::story_manager::emitted_story_manager_quests_requiring_autostart_clear(
+                &selection,
+                &emitted_nodes,
+                &graph,
+            );
+        emit_stats.quests_changed +=
+            self.clear_emitted_story_manager_quest_autostart(&story_manager_owned_quests)?;
+        let story_manager_owned_quests = story_manager_owned_quests
+            .into_iter()
+            .collect::<FxHashSet<_>>();
+        emit_stats.quests_changed +=
+            self.restore_passive_dialogue_controllers(&story_manager_owned_quests)?;
+        emit_stats.quests_changed +=
+            self.force_story_manager_dialogue_quests(&selection.fallback_dialogue_quests)?;
         let quest_event_plan = crate::phase::story_manager::plan_story_manager_quest_events(
             &selection,
             &graph,
             &event_bridges,
             &emitted_nodes,
+            &self.interner,
         );
         for (quest, final_events) in &quest_event_plan.unresolved {
             let event_names = final_events
@@ -2464,8 +8395,69 @@ impl ConversionRun {
         }
         emit_stats.quests_changed +=
             self.rewrite_story_manager_quest_events(&quest_event_plan.rewrites)?;
+        self.capture_story_manager_route_seed(&graph, &selection, &emitted_nodes, &event_bridges);
         emit_stats.translate.records_translated += event_bridges.len() as u32;
         Ok(emit_stats)
+    }
+
+    fn capture_story_manager_route_seed(
+        &mut self,
+        graph: &crate::phase::story_manager::StoryManagerSourceGraph,
+        selection: &crate::phase::story_manager::StoryManagerSelection,
+        emitted_nodes: &FxHashSet<FormKey>,
+        event_bridges: &FxHashMap<FormKey, u32>,
+    ) {
+        let Some(state) = self.mapper_state.as_ref() else {
+            return;
+        };
+        let source_to_target = state.source_to_target.clone();
+        let mut target_records = FxHashMap::default();
+        for source_form_key in
+            crate::phase::story_manager::story_manager_route_source_form_keys(graph)
+        {
+            let Some(target_form_key) = source_to_target.get(&source_form_key).copied() else {
+                continue;
+            };
+            let Some(target_plugin) = self.interner.resolve(target_form_key.plugin) else {
+                continue;
+            };
+            let target_handle_id =
+                if target_plugin.eq_ignore_ascii_case(&self.config.output_plugin_name) {
+                    Some(self.target_handle_id)
+                } else {
+                    self.target_master_record_contexts
+                        .iter()
+                        .find(|context| context.plugin_name.eq_ignore_ascii_case(target_plugin))
+                        .map(|context| context.handle_id)
+                };
+            let Some(target_handle_id) = target_handle_id else {
+                continue;
+            };
+            if let Ok(record) = read_record_relayout_by_form_key(
+                target_handle_id,
+                &target_form_key,
+                &self.schema_target,
+                &self.interner,
+                None,
+            ) {
+                target_records.insert(target_form_key, record);
+            }
+        }
+        let bridge_roots = event_bridges.keys().copied().collect::<FxHashSet<_>>();
+        let output_plugin = self.interner.intern(&self.config.output_plugin_name);
+        self.story_manager_route_seed =
+            crate::phase::story_manager::build_story_manager_route_seed_for_pair(
+                self.source,
+                self.target,
+                graph,
+                selection,
+                &source_to_target,
+                &target_records,
+                emitted_nodes,
+                &bridge_roots,
+                output_plugin,
+                &self.interner,
+            );
     }
 
     fn prepare_story_manager_event_bridges(
@@ -2643,6 +8635,83 @@ impl ConversionRun {
         Ok(changed)
     }
 
+    fn clear_emitted_story_manager_quest_autostart(
+        &mut self,
+        quests: &[FormKey],
+    ) -> Result<u32, RunError> {
+        let mut changed = 0u32;
+        for source_fk in quests {
+            if self.clear_target_quest_autostart(*source_fk)? {
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
+
+    fn clear_target_quest_autostart(&mut self, source_fk: FormKey) -> Result<bool, RunError> {
+        let Some(target_fk) = self
+            .mapper_state
+            .as_ref()
+            .and_then(|state| state.source_to_target.get(&source_fk))
+            .copied()
+        else {
+            let kind = self
+                .interner
+                .intern("story_manager_quest_start_disabled_skipped");
+            self.decisions.push(Decision {
+                kind,
+                message: format!("{:06X}:quest_not_translated", source_fk.local),
+            });
+            return Ok(false);
+        };
+        let mut record = match read_record_relayout_by_form_key(
+            self.target_handle_id,
+            &target_fk,
+            &self.schema_target,
+            &self.interner,
+            None,
+        ) {
+            Ok(record) => record,
+            Err(e) => {
+                let warning = self.interner.intern(&format!(
+                    "story_manager_target_quest_start_disable_read:{:06X}:{e}",
+                    target_fk.local
+                ));
+                self.warnings.push(warning);
+                return Ok(false);
+            }
+        };
+        if !crate::phase::story_manager::clear_qust_autostart_for_pair(
+            self.source,
+            self.target,
+            &mut record,
+            &self.interner,
+        ) {
+            return Ok(false);
+        }
+        let replaced = replace_record_contents_native(
+            self.target_handle_id,
+            record,
+            &self.schema_target,
+            &self.interner,
+        )
+        .map_err(|e| {
+            RunError::InvalidConfig(format!("story_manager_quest_start_disable_replace:{e}"))
+        })?;
+        if !replaced {
+            return Err(RunError::InvalidConfig(format!(
+                "story_manager_quest_start_disable_replace_missing:{:06X}",
+                target_fk.local
+            )));
+        }
+        let kind = self.interner.intern("story_manager_quest_start_disabled");
+        self.decisions.push(Decision {
+            kind,
+            message: format!("{:06X}->{:06X}", source_fk.local, target_fk.local),
+        });
+        Ok(true)
+    }
+
     fn rewrite_story_manager_quest_events(
         &mut self,
         rewrites: &FxHashMap<FormKey, u32>,
@@ -2715,7 +8784,10 @@ impl ConversionRun {
         Ok(changed)
     }
 
-    fn restore_passive_dialogue_controllers(&mut self) -> Result<u32, RunError> {
+    fn restore_passive_dialogue_controllers(
+        &mut self,
+        story_manager_owned_quests: &FxHashSet<FormKey>,
+    ) -> Result<u32, RunError> {
         let npc_quests =
             crate::phase::story_manager::npc_referenced_quest_local_ids(self.source_handle_id)?;
         if npc_quests.is_empty() {
@@ -2753,6 +8825,19 @@ impl ConversionRun {
             ) {
                 continue;
             }
+            if !crate::phase::story_manager::allows_passive_dialogue_autostart_restore(
+                source_fk,
+                story_manager_owned_quests,
+            ) {
+                let kind = self
+                    .interner
+                    .intern("passive_dialogue_controller_story_manager_owned");
+                self.decisions.push(Decision {
+                    kind,
+                    message: format!("{:06X}:autostart_not_restored", source_fk.local),
+                });
+                continue;
+            }
             if self.force_target_quest_autostart(source_fk, "quest_startup_passive_controller")? {
                 changed += 1;
             }
@@ -2764,6 +8849,17 @@ impl ConversionRun {
         &mut self,
         source_fk: FormKey,
         decision_kind: &str,
+    ) -> Result<bool, RunError> {
+        self.rewrite_target_quest(source_fk, decision_kind, |record, interner| {
+            crate::phase::story_manager::force_qust_autostart(record, interner)
+        })
+    }
+
+    fn rewrite_target_quest(
+        &mut self,
+        source_fk: FormKey,
+        decision_kind: &str,
+        edit: impl FnOnce(&mut Record, &crate::sym::StringInterner) -> bool,
     ) -> Result<bool, RunError> {
         let target_fk = self
             .mapper_state
@@ -2795,7 +8891,7 @@ impl ConversionRun {
                 return Ok(false);
             }
         };
-        if !crate::phase::story_manager::force_qust_autostart(&mut record, &self.interner) {
+        if !edit(&mut record, &self.interner) {
             return Ok(false);
         }
         let replaced = replace_record_contents_native(
@@ -2899,9 +8995,7 @@ impl ConversionRun {
             }
 
             {
-                let mut ctx = PairCtx {
-                    interner: &self.interner,
-                };
+                let mut ctx = PairCtx::new(&self.interner);
                 if let Err(e) = self.translator.pre_translate(&mut ctx, &mut src_record) {
                     let w = self
                         .interner
@@ -2974,9 +9068,7 @@ impl ConversionRun {
             }
 
             {
-                let mut ctx = PairCtx {
-                    interner: &self.interner,
-                };
+                let mut ctx = PairCtx::new(&self.interner);
                 if let Err(e) = self.translator.post_translate(&mut ctx, &mut translated) {
                     let w = self
                         .interner
@@ -3074,10 +9166,25 @@ impl ConversionRun {
     /// in the source plugin are recorded as `records_failed` and skipped.
     pub fn translate_records(&mut self, fks: &[FormKey]) -> Result<TranslateStats, RunError> {
         self.require_source_handle()?;
-        self.init_mapper_state()?;
+        self.prepare_mapper_state_for_translation()?;
         let stats = self.translate_fks(fks)?;
         self.finalize_legacy_creature_race_coverage()?;
         Ok(stats)
+    }
+
+    pub(crate) fn translate_records_preserving_mapper(
+        &mut self,
+        fks: &[FormKey],
+    ) -> Result<TranslateStats, RunError> {
+        self.require_source_handle()?;
+        if self.mapper_state.is_none() {
+            return Err(RunError::InvalidConfig(
+                "bounded legacy translation requires the existing translate_v2 mapper state"
+                    .to_string(),
+            ));
+        }
+        self.preallocate_legacy_translate_all_records(fks)?;
+        self.translate_fks(fks)
     }
 
     /// Convert FO76 interior cells (CELL fields + Persistent/Temporary placed
@@ -3091,6 +9198,8 @@ impl ConversionRun {
         if self.source != Game::Fo76 || self.target != Game::Fo4 {
             return Ok(stats);
         }
+        self.interior_placed_ref_candidates.clear();
+        self.interior_recentre.clear();
         if self.mapper_state.is_none() {
             self.init_mapper_state()?;
         }
@@ -3169,7 +9278,7 @@ impl ConversionRun {
             if !carry_previs {
                 strip_interior_previs_fields(&mut translated_cell);
             }
-            crate::fixups::mark_public_wastelanders_hubs::mark_wastelanders_public_hub(
+            crate::fixups::mark_public_wastelanders_hubs::mark_public_social_hub(
                 cell_obj,
                 &mut translated_cell,
                 &self.interner,
@@ -3247,6 +9356,13 @@ impl ConversionRun {
                         set_nvnm_parent_interior(&mut translated_child, cell_file_form_id);
                     }
                 }
+                if matches!(
+                    child_sig.as_str(),
+                    "REFR" | "ACHR" | "PHZD" | "PGRE" | "PGRD"
+                ) {
+                    self.interior_placed_ref_candidates
+                        .push(translated_child.form_key);
+                }
                 let sig_code =
                     SigCode::from_str(&child_sig).unwrap_or(SigCode([b'?', b'?', b'?', b'?']));
                 let entry = children_by_cell.entry(cell_obj).or_default();
@@ -3257,6 +9373,48 @@ impl ConversionRun {
                     entry.2.push(translated_child);
                     entry.3.push(sig_code);
                 }
+            }
+        }
+
+        // ── Pass 2b: move interiors that extend past FO4's coordinate limit back
+        // inside it. Needs each cell's full child set, so it runs before insert. ──
+        use crate::fixups::recentre_far_interiors::RecentrePlan;
+        for (cell_obj, translated_cell) in &translated_cells {
+            let Some((persistent_records, _, temporary_records, _)) =
+                children_by_cell.get_mut(cell_obj)
+            else {
+                continue;
+            };
+            let cell_label = translated_cell
+                .eid
+                .and_then(|eid| self.interner.resolve(eid))
+                .map_or_else(|| format!("{cell_obj:06X}"), str::to_owned);
+            let warning = match crate::fixups::recentre_far_interiors::recentre_cell_children(
+                persistent_records,
+                temporary_records,
+                translated_cell.form_key.plugin,
+                !carry_previs,
+                &self.interner,
+                &mut self.interior_recentre,
+            ) {
+                Ok(RecentrePlan::Unchanged) => None,
+                Ok(RecentrePlan::Shift([dx, dy, _])) => {
+                    eprintln!("[interior_recentre] cell={cell_label} offset=({dx:.0},{dy:.0})");
+                    None
+                }
+                Ok(RecentrePlan::TooWide {
+                    span: [width, height],
+                }) => Some(format!(
+                    "interior_recentre_too_wide:{cell_label} span=({width:.0},{height:.0})"
+                )),
+                Ok(RecentrePlan::PrevisCarried([dx, dy, _])) => Some(format!(
+                    "interior_recentre_skipped_for_carried_previs:{cell_label} offset=({dx:.0},{dy:.0})"
+                )),
+                Err(e) => Some(format!("interior_recentre:{cell_label}:{e}")),
+            };
+            if let Some(warning) = warning {
+                let w = self.interner.intern(&warning);
+                self.warnings.push(w);
             }
         }
 
@@ -3303,16 +9461,6 @@ impl ConversionRun {
             }
         }
 
-        // Normalize copied placed records once (XEZN→LCTN strip, flag/enum clamp).
-        let placed_sigs: Vec<String> = ["REFR", "ACHR", "PGRE", "PHZD"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        crate::fixups::normalize_placed_records::normalize_copied_placed_records(
-            self.target_handle_id,
-            &placed_sigs,
-        )
-        .map_err(|e| RunError::InvalidConfig(format!("interior_normalize_placed:{e}")))?;
         crate::fixups::clear_interior_hand_changed::clear_interior_hand_changed_flags(
             self.target_handle_id,
         )
@@ -3381,9 +9529,7 @@ impl ConversionRun {
         let source_sig = src_record.sig;
 
         {
-            let mut ctx = PairCtx {
-                interner: &self.interner,
-            };
+            let mut ctx = PairCtx::new(&self.interner);
             if let Err(e) = self.translator.pre_translate(&mut ctx, &mut src_record) {
                 let w = self.interner.intern(&format!("interior_pre_translate:{e}"));
                 self.warnings.push(w);
@@ -3430,6 +9576,7 @@ impl ConversionRun {
             rename_fo76_target_editor_id_collision(
                 &mut translated,
                 &state.target_eid_index,
+                &state.options.vanilla_remap_blocked_source_form_keys,
                 &self.interner,
                 is_editor_id_collision_rename_forced(self.source, self.target, translated_sig),
             )
@@ -3471,9 +9618,7 @@ impl ConversionRun {
         }
 
         {
-            let mut ctx = PairCtx {
-                interner: &self.interner,
-            };
+            let mut ctx = PairCtx::new(&self.interner);
             if let Err(e) = self.translator.post_translate(&mut ctx, &mut translated) {
                 let w = self
                     .interner
@@ -3883,6 +10028,14 @@ impl ConversionRun {
                 result.stats.signature_entry(source_sig).failed += 1;
                 return result;
             }
+            result.warnings.extend(
+                legacy_navmeshes
+                    .diagnostics
+                    .get(&raw_form_id)
+                    .into_iter()
+                    .flatten()
+                    .cloned(),
+            );
             let Some(nvnm) = legacy_navmeshes.converted.get(&raw_form_id) else {
                 result.warnings.push(format!(
                     "legacy_fallout_navmesh:{raw_form_id:08X}:missing converted payload"
@@ -3904,7 +10057,7 @@ impl ConversionRun {
         }
 
         {
-            let mut ctx = PairCtx { interner };
+            let mut ctx = PairCtx::new(interner);
             if let Err(e) = translator.pre_translate(&mut ctx, &mut src_record) {
                 result.warnings.push(format!("pre_translate:{e}"));
             }
@@ -3941,6 +10094,7 @@ impl ConversionRun {
         if let Some((old, new)) = rename_fo76_target_editor_id_collision(
             &mut translated,
             &mapper_base.target_eid_index,
+            &mapper_base.options.vanilla_remap_blocked_source_form_keys,
             interner,
             false,
         ) {
@@ -3960,12 +10114,22 @@ impl ConversionRun {
                 .iter()
                 .any(|field| field.sig.0 == *b"NVNM" || field.sig.0 == *b"MNAM")
             {
-                if let Err(e) = crate::fo76_navmesh::rewrite_record_nvnm_with_context(
-                    &mut translated,
-                    &mut mapper,
-                    source_formid_context,
-                    target_formid_context,
-                ) {
+                let rewrite_result = if legacy_navmeshes.is_some() {
+                    crate::fo76_navmesh::rewrite_legacy_record_nvnm_with_context(
+                        &mut translated,
+                        &mut mapper,
+                        source_formid_context,
+                        target_formid_context,
+                    )
+                } else {
+                    crate::fo76_navmesh::rewrite_record_nvnm_with_context(
+                        &mut translated,
+                        &mut mapper,
+                        source_formid_context,
+                        target_formid_context,
+                    )
+                };
+                if let Err(e) = rewrite_result {
                     result.warnings.push(format!("fo76_navm:{e}"));
                     if legacy_navmeshes.is_some() {
                         result.stats.records_failed += 1;
@@ -3987,7 +10151,7 @@ impl ConversionRun {
         }
 
         {
-            let mut ctx = PairCtx { interner };
+            let mut ctx = PairCtx::new(interner);
             if let Err(e) = translator.post_translate(&mut ctx, &mut translated) {
                 result.warnings.push(format!("post_translate:{e}"));
             }
@@ -4195,6 +10359,8 @@ impl ConversionRun {
             return Ok(Default::default());
         };
         let mut prompt_info_ids = std::collections::HashSet::new();
+        let mut prompt_fallbacks: HashMap<u32, crate::record::FieldValue> = HashMap::new();
+        let mut dial_prompts: HashMap<u32, Option<crate::record::FieldValue>> = HashMap::new();
         for local in candidate_info_ids {
             let info_fk = FormKey {
                 local,
@@ -4213,16 +10379,56 @@ impl ConversionRun {
                     form_key_to_read_str(&info_fk, &self.interner)
                 ))
             })?;
-            if info.fields.iter().any(|field| field.sig.0 == *b"RNAM") {
+            // FO76 puts the choice prompt either on the INFO (RNAM) or on the
+            // parent DIAL (FULL). Without the DIAL fallback the split is skipped
+            // and FO4's NPC-response topic is left with no INFO to speak.
+            let has_rnam = info.fields.iter().any(|field| field.sig.0 == *b"RNAM");
+            let dial_prompt = match info_parent_index.get(&local) {
+                Some(&parent) if !has_rnam => {
+                    if !dial_prompts.contains_key(&parent) {
+                        let dial_fk = FormKey {
+                            local: parent,
+                            plugin: source_plugin,
+                        };
+                        let prompt = read_record_relayout_by_form_key(
+                            self.source_handle_id,
+                            &dial_fk,
+                            &*self.schema_source,
+                            &self.interner,
+                            None,
+                        )
+                        .ok()
+                        .and_then(|dial| {
+                            dial.fields
+                                .iter()
+                                .find(|field| field.sig.0 == *b"FULL")
+                                .map(|field| field.value.clone())
+                        });
+                        dial_prompts.insert(parent, prompt);
+                    }
+                    dial_prompts.get(&parent).cloned().flatten()
+                }
+                _ => None,
+            };
+            if crate::translator::pair_hooks::fo76_fo4::is_combined_player_dialogue_root(
+                &info,
+                dial_prompt.is_some(),
+            ) {
                 prompt_info_ids.insert(local);
+                if let Some(prompt) = dial_prompt {
+                    prompt_fallbacks.insert(local, prompt);
+                }
             }
         }
-        crate::translator::pair_hooks::fo76_fo4::build_xdi_dialogue_plan(
+        let mut plan = crate::translator::pair_hooks::fo76_fo4::build_xdi_dialogue_plan(
             &scenes,
             info_parent_index,
             &prompt_info_ids,
         )
-        .map_err(|error| RunError::InvalidConfig(format!("fo76_xdi_dialogue:{error}")))
+        .map_err(|error| RunError::InvalidConfig(format!("fo76_xdi_dialogue:{error}")))?;
+        prompt_fallbacks.retain(|local, _| plan.combined_info_splits.contains_key(local));
+        plan.combined_info_prompt_fallbacks = prompt_fallbacks;
+        Ok(plan)
     }
 
     /// Rebuild the single top-level FO4 NAVI record from the finalized target
@@ -4288,6 +10494,22 @@ impl ConversionRun {
             _ => unreachable!("source gate above admits only NAVI rebuild sources"),
         }
         .map_err(|e| RunError::InvalidConfig(format!("rebuild_projected_navi:{e}")))?;
+        // The FO76 source rebuild copies each NVMI's location and island
+        // geometry from the source, so recentred interiors need them moved.
+        if self.source == Game::Fo76
+            && !raw_formid_mappings.is_empty()
+            && !self.interior_recentre.navmesh_offsets.is_empty()
+        {
+            let mut session = crate::session::open_session(self.target_handle_id, None)
+                .map_err(|e| RunError::InvalidConfig(format!("rebuild_projected_navi:{e}")))?;
+            let shifted = crate::fixups::recentre_far_interiors::shift_navi_navmesh_infos(
+                &mut session,
+                &self.interner,
+                &self.interior_recentre.navmesh_offsets,
+            )
+            .map_err(|e| RunError::InvalidConfig(format!("rebuild_projected_navi:recentre:{e}")))?;
+            eprintln!("[interior_recentre] navi_entries_shifted={shifted}");
+        }
         let mut stats = TranslateStats::default();
         stats.records_translated = navi_stats.records_added + navi_stats.records_replaced;
         stats.records_dropped = navi_stats
@@ -4324,12 +10546,9 @@ impl ConversionRun {
         Ok(stats)
     }
 
-    /// Release the FK remap state to free its memory.
-    ///
-    /// Safe to call any time after fixups complete — the mapper is no
-    /// longer needed by asset phases or ESP serialisation.  A subsequent call
-    /// to `translate_all` / `apply_fixups_v2` would rebuild it, so this is purely
-    /// an RSS-reduction lever for the late pipeline window.
+    /// Drop the FK remap state to free its memory in the late pipeline. Call
+    /// only after fixups; asset phases and ESP serialization don't use it, and
+    /// `translate_all` / `apply_fixups_v2` rebuild it.
     pub fn release_remap_state(&mut self) {
         self.mapper_state = None;
     }
@@ -4360,10 +10579,34 @@ impl ConversionRun {
         self.navi_warnings.len()
     }
 
+    pub(crate) fn prepare_mapper_state_for_creature_dependency_plan(
+        &mut self,
+    ) -> Result<(), RunError> {
+        if self.creature_dependency_plan_installed {
+            return Err(RunError::InvalidConfig(
+                "creature dependency plan is already installed".to_string(),
+            ));
+        }
+        self.init_mapper_state()
+    }
+
+    pub(crate) fn prepare_mapper_state_for_translation(&mut self) -> Result<(), RunError> {
+        if !self.creature_dependency_plan_installed {
+            return self.init_mapper_state();
+        }
+        if self.mapper_state.is_none() {
+            return Err(RunError::InvalidConfig(
+                "mapper state was released after creature dependency reservations were installed"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// (Re)build `mapper_state` seeded with EIDs from every master handle.
     ///
-    /// Called by `translate_all` and `translate_records` at the start of each
-    /// translate pass. Persists into fixups via `self.mapper_state`.
+    /// Called before creature dependency reservations or at the start of an
+    /// unplanned translate pass. Persists into fixups via `self.mapper_state`.
     pub(crate) fn init_mapper_state(&mut self) -> Result<(), RunError> {
         self.legacy_serial_normalization.clear();
         self.legacy_creature_race_coverage = Default::default();
@@ -4398,6 +10641,12 @@ impl ConversionRun {
                 self.source,
                 self.target,
             ),
+            vanilla_remap_blocked_source_form_keys:
+                editor_id_vanilla_remap_blocked_source_form_keys(
+                    self.source,
+                    self.target,
+                    &self.interner,
+                ),
             preserve_source_ids: self.config.preserve_source_ids,
             generated_object_id_floor: self.config.generated_object_id_floor,
             resolution_mode: if self.config.strict_mapper {
@@ -4529,6 +10778,19 @@ impl ConversionRun {
                                 .or_insert(target_form_key);
                         }
                     }
+                    if needs_legacy_fo4_substitutions {
+                        for (source_form_key, target_form_key) in
+                            crate::translator::pair_hooks::fnv_fo4::legacy_sound_descriptor_substitution_mappings(
+                                &source_entries,
+                                &mapper_state.target_eid_index,
+                                &self.interner,
+                            )
+                        {
+                            mapper_state
+                                .source_to_target
+                                .insert(source_form_key, target_form_key);
+                        }
+                    }
                     if needs_fo76_fo4_weather_substitutions {
                         for (source_form_key, target_form_key) in
                             crate::translator::pair_hooks::fo76_fo4::fo76_fo4_voli_gdry_substitution_mappings(
@@ -4555,6 +10817,18 @@ impl ConversionRun {
                     }
                     for (source_form_key, target_form_key) in
                         fnv_fo3_fo4_humanoid_race_substitution_mappings(
+                            &source_entries,
+                            &self.interner,
+                            self.source,
+                            self.target,
+                        )
+                    {
+                        mapper_state
+                            .source_to_target
+                            .insert(source_form_key, target_form_key);
+                    }
+                    for (source_form_key, target_form_key) in
+                        skyrimse_fo4_humanoid_race_substitution_mappings(
                             &source_entries,
                             &self.interner,
                             self.source,
@@ -4675,7 +10949,7 @@ impl ConversionRun {
                 state
                     .options
                     .source_plugin_name
-                    .eq_ignore_ascii_case("FNV_FO3_Merged.esm")
+                    .eq_ignore_ascii_case("FalloutNV.esm")
             });
         if full_merged_audit {
             crate::translator::pair_hooks::fnv_creature_race::EXPECTED_FULL_MERGED_CREA_CANDIDATES
@@ -4722,6 +10996,63 @@ impl ConversionRun {
     ///
     /// Caller must have already called `init_mapper_state`. Yields to Python
     /// every 1000 records to honour Ctrl-C and the optional progress callback.
+    fn supported_legacy_actor_bases(
+        &mut self,
+        fks: &[FormKey],
+    ) -> Result<Option<FxHashSet<FormKey>>, RunError> {
+        if !matches!(self.source, Game::Fnv | Game::Fo3) || self.target != Game::Fo4 {
+            return Ok(None);
+        }
+        let achr_sig = SigCode::from_str("ACHR")
+            .map_err(|e| RunError::InvalidConfig(format!("ACHR signature: {e}")))?;
+        let achr_fks = iter_form_keys_of_sig(self.source_handle_id, achr_sig, &mut self.interner)?;
+        let achr_set: FxHashSet<FormKey> = achr_fks.into_iter().collect();
+        if !fks.iter().any(|fk| achr_set.contains(fk)) {
+            return Ok(None);
+        }
+
+        let npc_sig = SigCode::from_str("NPC_")
+            .map_err(|e| RunError::InvalidConfig(format!("NPC_ signature: {e}")))?;
+        let npc_fks = iter_form_keys_of_sig(self.source_handle_id, npc_sig, &mut self.interner)?;
+        let snapshot =
+            snapshot_records_by_form_keys(self.source_handle_id, &npc_fks, &self.interner)?;
+        let mut supported = FxHashSet::default();
+        let mapper_state = self
+            .mapper_state
+            .as_ref()
+            .expect("mapper_state initialized before record translation");
+        for (index, npc_fk) in npc_fks.iter().enumerate() {
+            let decoded = decode_record_from_parsed_relayout(
+                &snapshot.records[index].raw_record,
+                npc_fk,
+                &self.schema_source,
+                &snapshot.masters,
+                &snapshot.plugin_name,
+                snapshot.strings.as_ref(),
+                snapshot.plugin_is_localized,
+                &self.interner,
+                None,
+            );
+            let Ok(npc) = decoded else {
+                continue;
+            };
+            let Some(source_race) = record_race_formkey(&npc, &self.interner) else {
+                continue;
+            };
+            let Some(target_race) = mapper_state.source_to_target.get(&source_race).copied() else {
+                continue;
+            };
+            if is_supported_fo4_humanoid_race(target_race, &self.interner) {
+                supported.insert(*npc_fk);
+            }
+        }
+        self.emit_phase_status(format!(
+            "translate: legacy ACHR eligibility resolved {} supported NPC bases",
+            supported.len()
+        ));
+        Ok(Some(supported))
+    }
+
     fn translate_fks(&mut self, fks: &[FormKey]) -> Result<TranslateStats, RunError> {
         self.translate_fks_with_mode(fks, RecordWriteMode::TopLevel)
     }
@@ -4743,6 +11074,12 @@ impl ConversionRun {
         info_parent_index: &HashMap<u32, u32>,
         xdi_plan: Option<&crate::translator::pair_hooks::fo76_fo4::XdiDialoguePlan>,
     ) -> Result<TranslateStats, RunError> {
+        if self.source == Game::SkyrimSe
+            && self.target == Game::Fo4
+            && self.skyrim_runtime_capability_plan.is_none()
+        {
+            self.plan_skyrim_runtime_components(fks)?;
+        }
         let log_progress = !matches!(write_mode, RecordWriteMode::TopLevel);
         if log_progress {
             self.emit_phase_status(format!(
@@ -4750,6 +11087,12 @@ impl ConversionRun {
                 fks.len()
             ));
         }
+        let mut quest_child_insert_session = matches!(write_mode, RecordWriteMode::QuestChild)
+            .then(|| begin_quest_child_insert_session_native(self.target_handle_id).ok())
+            .flatten();
+        let mut topic_child_insert_session = matches!(write_mode, RecordWriteMode::TopicChildInfo)
+            .then(|| begin_topic_child_insert_session_native(self.target_handle_id).ok())
+            .flatten();
         let mut stats = TranslateStats::default();
         let mut record_count: u64 = 0;
         let whole_plugin_names =
@@ -4764,6 +11107,7 @@ impl ConversionRun {
         let first_target_master_sym = target_master_names
             .first()
             .map(|name| self.interner.intern(name));
+        let supported_legacy_actor_bases = self.supported_legacy_actor_bases(fks)?;
 
         // Source→FO4 struct relayout context. Legacy Fallout is deliberately
         // restricted to BPTD.BPND; FO76 retains the generic divergent-struct path.
@@ -4782,6 +11126,19 @@ impl ConversionRun {
                 legacy_bptd_only,
             }
         });
+        let mut generated_player_info_fks = HashMap::new();
+        if matches!(write_mode, RecordWriteMode::TopicChildInfo)
+            && let Some(plan) = xdi_plan
+        {
+            let state = self.mapper_state.as_mut().unwrap();
+            let mut mapper = FormKeyMapper::from_state(state, &self.interner);
+            mapper.reserve_generated_object_ids(fks.iter().map(|form_key| form_key.local));
+            for &form_key in fks {
+                if plan.combined_info_splits.contains_key(&form_key.local) {
+                    generated_player_info_fks.insert(form_key, mapper.allocate_generated());
+                }
+            }
+        }
 
         for &fk in fks {
             record_count += 1;
@@ -4798,6 +11155,13 @@ impl ConversionRun {
                 ) {
                     Ok(r) => r,
                     Err(e) => {
+                        if let Some(admission) = self.creature_dependency_admissions.get(&fk) {
+                            return Err(self.creature_dependency_failure(
+                                fk,
+                                admission.source_signature,
+                                "read_failed",
+                            ));
+                        }
                         let w = self.interner.intern(&format!("read_error:{e}"));
                         self.warnings.push(w);
                         stats.records_failed += 1;
@@ -4806,12 +11170,94 @@ impl ConversionRun {
                 };
                 let source_sig = src_record.sig;
                 stats.signature_entry(source_sig).seen += 1;
+                let admitted_mvp_weapon_record = self.is_admitted_mvp_weapon_record(&src_record);
+                let admitted_creature_dependency =
+                    self.is_admitted_creature_dependency(fk, source_sig);
+                if self.is_skyrim_creature_batch_owned(fk) {
+                    self.deferred.push((fk, DeferredKind::V2Pipeline));
+                    stats.records_deferred += 1;
+                    stats.signature_entry(source_sig).deferred += 1;
+                    break 'record;
+                }
+                if self.is_skyrim_runtime_planned_record(fk, source_sig) {
+                    let disposition = self
+                        .skyrim_runtime_capability_plan
+                        .as_ref()
+                        .and_then(|plan| plan.by_record.get(&fk))
+                        .cloned()
+                        .ok_or_else(|| {
+                            RunError::InvalidConfig(format!(
+                                "managed Skyrim runtime record {} {:06X} has no component decision",
+                                source_sig.as_str(),
+                                fk.local
+                            ))
+                        })?;
+                    if !disposition.supported {
+                        let kind = self.interner.intern("skyrim_runtime_component_unsupported");
+                        self.decisions.push(Decision {
+                            kind,
+                            message: format!(
+                                "{} {:06X}: components=[{}]: {}",
+                                source_sig.as_str(),
+                                fk.local,
+                                disposition.component_ids.join(","),
+                                disposition.reason.as_deref().unwrap_or("unsupported")
+                            ),
+                        });
+                        stats.records_dropped += 1;
+                        stats.signature_entry(source_sig).dropped += 1;
+                        break 'record;
+                    }
+                }
+                if self.is_skyrim_minimal_quest_owned(fk) {
+                    self.deferred.push((fk, DeferredKind::V2Pipeline));
+                    stats.records_deferred += 1;
+                    stats.signature_entry(source_sig).deferred += 1;
+                    break 'record;
+                }
+                if source_sig.as_str() == "ACHR"
+                    && supported_legacy_actor_bases.as_ref().is_some_and(|bases| {
+                        record_base_formkey(&src_record, &self.interner)
+                            .is_none_or(|base| !bases.contains(&base))
+                    })
+                {
+                    let kind = self.interner.intern("unsupported_legacy_actor_placement");
+                    self.decisions.push(Decision {
+                        kind,
+                        message: format!(
+                            "{:06X}:base is not a converted human, ghoul, or child NPC",
+                            fk.local
+                        ),
+                    });
+                    stats.records_dropped += 1;
+                    stats.signature_entry(source_sig).dropped += 1;
+                    break 'record;
+                }
                 let fnv_scri_target = if self.source == Game::Fnv && self.target == Game::Fo4 {
-                    crate::translator::pair_hooks::fnv_fo4::FnvFo4Hook::capture_scri_target(
+                    let raw_form_id_resolver = |raw| {
+                        self.mapper_state.as_ref().and_then(|state| {
+                            state
+                                .options
+                                .source_form_key_for_raw_formid(raw, &self.interner)
+                        })
+                    };
+                    match capture_fnv_scri_target_text(
                         &src_record,
                         &self.interner,
-                    )
-                    .map(str::to_string)
+                        &raw_form_id_resolver,
+                    ) {
+                        Ok(target) => target,
+                        Err(error) if self.config.fnv_quest_slice => {
+                            return Err(RunError::InvalidConfig(format!(
+                                "strict FNV quest slice SCRI capture failed: {error}"
+                            )));
+                        }
+                        Err(error) => {
+                            let warning = self.interner.intern(&format!("fnv_scri:{error}"));
+                            self.warnings.push(warning);
+                            None
+                        }
+                    }
                 } else {
                     None
                 };
@@ -4838,13 +11284,25 @@ impl ConversionRun {
                 };
                 // ── PairHook::pre_translate ────────────────────────────
                 {
-                    let mut ctx = PairCtx {
-                        interner: &mut self.interner,
-                    };
+                    let mut ctx = PairCtx::new(&mut self.interner);
                     if let Err(e) = self.translator.pre_translate(&mut ctx, &mut src_record) {
                         let w = self.interner.intern(&format!("pre_translate:{e}"));
                         self.warnings.push(w);
                     }
+                }
+                if self.source == Game::Fo76
+                    && self.target == Game::Fo4
+                    && let Some(variant) =
+                        crate::translator::pair_hooks::fo76_fo4::fo76_misc_static_model_variant(
+                            &src_record,
+                            &self.interner,
+                        )
+                {
+                    let kind = self.interner.intern("fo76_misc_static_model_variant");
+                    self.decisions.push(Decision {
+                        kind,
+                        message: variant.decision_message(),
+                    });
                 }
                 if source_sig.as_str() == "DIAL"
                     && let Some(count) =
@@ -4858,16 +11316,29 @@ impl ConversionRun {
                         RunError::InvalidConfig(format!("fo76_xdi_dialogue:{error}"))
                     })?;
                 }
+                if self.source == Game::Fo76
+                    && self.target == Game::Fo4
+                    && source_sig.as_str() == "INFO"
+                    && let Some(plan) = xdi_plan
+                {
+                    crate::translator::pair_hooks::fo76_fo4::scope_start_scene_info_to_actor_alias(
+                        &mut src_record,
+                        plan,
+                    );
+                }
 
                 // ── Translate ──────────────────────────────────────────
-                if source_sig.as_str() == "SCEN"
-                    && let Some(filler) =
-                        xdi_plan.and_then(|plan| plan.scene_player_topic_fillers.get(&fk.local))
-                {
-                    crate::translator::pair_hooks::fo76_fo4::apply_xdi_scene_player_padding(
-                        &mut src_record,
-                        *filler,
-                    );
+                let lowered_acre = matches!(self.source, Game::Fnv | Game::Fo3)
+                    && self.target == Game::Fo4
+                    && source_sig.as_str() == "ACRE"
+                    && !self
+                        .translator
+                        .maps
+                        .skip_records
+                        .contains(source_sig.as_str());
+                if lowered_acre {
+                    crate::translator::pair_hooks::fnv_fo4::lower_acre_signature(&mut src_record)
+                        .map_err(|error| RunError::InvalidConfig(format!("legacy_acre:{error}")))?;
                 }
 
                 let translated = {
@@ -4885,7 +11356,19 @@ impl ConversionRun {
                     } else {
                         false
                     };
-                    let result = self.translator.translate(&src_record, &mut self.interner);
+                    let result = if admitted_mvp_weapon_record
+                        || admitted_creature_dependency
+                        || is_mandatory_skyrim_actor_record(self.source, self.target, source_sig)
+                        || self.is_skyrim_runtime_planned_record(fk, source_sig)
+                    {
+                        self.translator.translate_ignoring_skip(
+                            &src_record,
+                            &mut self.interner,
+                            source_sig.as_str(),
+                        )
+                    } else {
+                        self.translator.translate(&src_record, &mut self.interner)
+                    };
                     if removed_forced_skip {
                         if let Some(signature) = forced_skip_signature {
                             self.translator
@@ -4897,12 +11380,57 @@ impl ConversionRun {
                     match result {
                         TranslateResult::Translated(r) => r,
                         TranslateResult::Dropped { decision, .. } => {
+                            if admitted_creature_dependency {
+                                return Err(
+                                    self.creature_dependency_failure(fk, source_sig, "dropped")
+                                );
+                            }
                             self.decisions.push(decision);
                             stats.records_dropped += 1;
                             stats.signature_entry(source_sig).dropped += 1;
                             break 'record;
                         }
                         TranslateResult::Deferred(kind) => {
+                            if admitted_creature_dependency {
+                                return Err(
+                                    self.creature_dependency_failure(fk, source_sig, "deferred")
+                                );
+                            }
+                            if let Some(source_scpt_form_key) = fnv_scri_target.as_deref() {
+                                let target_form_key = self
+                                    .mapper_state
+                                    .as_ref()
+                                    .and_then(|state| state.source_to_target.get(&fk))
+                                    .copied();
+                                match target_form_key {
+                                    Some(target_form_key) => append_fnv_scri_link(
+                                        &mut self.fnv_scri_links,
+                                        target_form_key,
+                                        source_scpt_form_key,
+                                        &self.interner,
+                                    )
+                                    .map_err(|error| {
+                                        RunError::InvalidConfig(format!(
+                                            "deferred FNV SCRI attachment: {error}"
+                                        ))
+                                    })?,
+                                    None if self.config.fnv_quest_slice => {
+                                        return Err(RunError::InvalidConfig(format!(
+                                            "strict FNV quest slice deferred {} {:06X} SCRI target has no preallocated identity",
+                                            source_sig.as_str(),
+                                            fk.local
+                                        )));
+                                    }
+                                    None => {
+                                        let warning = self.interner.intern(&format!(
+                                            "fnv_scri:deferred {} {:06X} target has no mapping",
+                                            source_sig.as_str(),
+                                            fk.local
+                                        ));
+                                        self.warnings.push(warning);
+                                    }
+                                }
+                            }
                             self.deferred.push((fk, kind));
                             stats.records_deferred += 1;
                             stats.signature_entry(source_sig).deferred += 1;
@@ -4913,11 +11441,20 @@ impl ConversionRun {
 
                 // ── Allocate target FormKey + rewrite cross-plugin refs ─
                 let mut translated = translated;
+                let source_info_tree_links =
+                    crate::translator::pair_hooks::fo76_fo4::info_tree_links(&translated);
                 if self
                     .schema_target
                     .record_def(translated.sig.as_str())
                     .is_none()
                 {
+                    if admitted_creature_dependency {
+                        return Err(self.creature_dependency_failure(
+                            fk,
+                            source_sig,
+                            "unsupported_target_signature",
+                        ));
+                    }
                     let warning = format!(
                         "unsupported_target_record:{} not in {} generated schema",
                         translated.sig.as_str(),
@@ -4935,6 +11472,7 @@ impl ConversionRun {
                         rename_fo76_target_editor_id_collision(
                             &mut translated,
                             &state.target_eid_index,
+                            &state.options.vanilla_remap_blocked_source_form_keys,
                             &self.interner,
                             is_editor_id_collision_rename_forced(
                                 self.source,
@@ -4967,12 +11505,56 @@ impl ConversionRun {
                 let planned_info_split = xdi_plan
                     .and_then(|plan| plan.combined_info_splits.get(&fk.local))
                     .copied();
-                let (target_fk, generated_player_info_fk) = {
+                let generated_player_info_fk = planned_info_split
+                    .map(|_| {
+                        generated_player_info_fks.get(&fk).copied().ok_or_else(|| {
+                            RunError::InvalidConfig(format!(
+                                "fo76_xdi_dialogue:INFO {:06X} has no generated player FormKey",
+                                fk.local
+                            ))
+                        })
+                    })
+                    .transpose()?;
+                let target_info_parent = if matches!(write_mode, RecordWriteMode::TopicChildInfo) {
+                    let source_parent = planned_info_split
+                        .map(|split| split.npc_parent)
+                        .or_else(|| info_parent_index.get(&fk.local).copied())
+                        .map(|local| FormKey {
+                            local,
+                            plugin: fk.plugin,
+                        });
+                    source_parent.and_then(|parent| {
+                        self.mapper_state
+                            .as_ref()
+                            .and_then(|state| state.source_to_target.get(&parent))
+                            .copied()
+                    })
+                } else {
+                    None
+                };
+                let target_fk = {
                     let state = self.mapper_state.as_mut().unwrap();
                     let mut mapper = FormKeyMapper::from_state(state, &self.interner);
                     let normalized_eid = normalized_eid_opt(translated.eid, mapper.interner);
+                    let normalized_eid = allocation_editor_id_for_parent(
+                        normalized_eid,
+                        write_mode,
+                        target_info_parent,
+                        mapper.output_plugin_sym(),
+                    );
                     let target_fk = mapper.allocate_or_resolve(fk, normalized_eid, translated.sig);
                     translated.form_key = target_fk;
+                    if lowered_acre {
+                        crate::translator::pair_hooks::fnv_fo4::finalize_lowered_acre(
+                            &mut translated,
+                            fk,
+                            target_fk,
+                            &mut mapper,
+                            &mut self.legacy_placed_actor_aliases,
+                            &self.interner,
+                        )
+                        .map_err(|error| RunError::InvalidConfig(format!("legacy_acre:{error}")))?;
+                    }
                     if let Some(race) = creature_race_event
                         .as_ref()
                         .and_then(|event| event.decision.audited_race().ok().flatten())
@@ -5019,9 +11601,7 @@ impl ConversionRun {
                             self.warnings.push(w);
                         }
                     }
-                    let generated_player_info_fk =
-                        planned_info_split.map(|_| mapper.allocate_generated());
-                    (target_fk, generated_player_info_fk)
+                    target_fk
                 };
                 for diagnostic in legacy_serial_diagnostics {
                     let level = if diagnostic.warning {
@@ -5045,6 +11625,9 @@ impl ConversionRun {
                     break 'record;
                 }
                 if is_target_master_remap(target_fk, &target_master_syms) {
+                    if admitted_creature_dependency {
+                        self.record_creature_dependency_terminal(fk);
+                    }
                     stats.records_vanilla_remapped += 1;
                     stats.signature_entry(source_sig).vanilla_remapped += 1;
                     break 'record;
@@ -5060,20 +11643,20 @@ impl ConversionRun {
                     }
                 }
                 if let Some(source_scpt_form_key) = fnv_scri_target {
-                    if let Some(target_form_key) = form_key_to_legacy_str(target_fk, &self.interner)
-                    {
-                        self.fnv_scri_links.push(FnvScriLink {
-                            target_form_key,
-                            source_scpt_form_key,
-                        });
-                    }
+                    append_fnv_scri_link(
+                        &mut self.fnv_scri_links,
+                        target_fk,
+                        &source_scpt_form_key,
+                        &self.interner,
+                    )
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!("translated FNV SCRI attachment: {error}"))
+                    })?;
                 }
 
                 // ── PairHook::post_translate ───────────────────────────
                 {
-                    let mut ctx = PairCtx {
-                        interner: &mut self.interner,
-                    };
+                    let mut ctx = PairCtx::new(&mut self.interner);
                     if let Err(e) = self.translator.post_translate(&mut ctx, &mut translated) {
                         let w = self.interner.intern(&format!("post_translate:{e}"));
                         self.warnings.push(w);
@@ -5123,12 +11706,15 @@ impl ConversionRun {
                 }
 
                 // ── Write to target ────────────────────────────────────
-                let synthetic_player_info = if let Some(player_form_key) = generated_player_info_fk
+                let mut synthetic_player_info = if let Some(player_form_key) =
+                    generated_player_info_fk
                 {
                     Some(
                         crate::translator::pair_hooks::fo76_fo4::split_fo76_combined_player_dialogue_info(
                             &mut translated,
                             player_form_key,
+                            xdi_plan
+                                .and_then(|plan| plan.combined_info_prompt_fallbacks.get(&fk.local)),
                             &self.interner,
                         )
                         .map_err(|error| {
@@ -5138,6 +11724,27 @@ impl ConversionRun {
                 } else {
                     None
                 };
+                if matches!(write_mode, RecordWriteMode::TopicChildInfo)
+                    && let Some(plan) = xdi_plan
+                {
+                    let player_parent = planned_info_split
+                        .map(|split| split.player_parent)
+                        .or_else(|| info_parent_index.get(&fk.local).copied());
+                    if let Some(player_parent) = player_parent {
+                        let player_record =
+                            synthetic_player_info.as_mut().unwrap_or(&mut translated);
+                        crate::translator::pair_hooks::fo76_fo4::retarget_player_info_tree_links(
+                            player_record,
+                            &source_info_tree_links,
+                            player_parent,
+                            plan,
+                            &generated_player_info_fks,
+                        )
+                        .map_err(|error| {
+                            RunError::InvalidConfig(format!("fo76_xdi_dialogue:{error}"))
+                        })?;
+                    }
+                }
                 let normalizer = TargetRecordNormalizer {
                     target_schema: &self.schema_target,
                     source_record_def: self.schema_source.record_def(source_sig.as_str()),
@@ -5178,6 +11785,12 @@ impl ConversionRun {
                     base_asset_namespace(&self.config, self.source, self.target).unwrap_or(""),
                     &self.interner,
                 );
+                namespace_base_asset_decal_material_path(
+                    &mut translated,
+                    &self.relocation_members,
+                    base_asset_namespace(&self.config, self.source, self.target).unwrap_or(""),
+                    &self.interner,
+                );
                 if let Some(player_info) = synthetic_player_info.as_mut() {
                     namespace_base_asset_model_paths(
                         player_info,
@@ -5209,6 +11822,13 @@ impl ConversionRun {
                             &*self.schema_target,
                             &self.interner,
                         ) {
+                            if admitted_creature_dependency {
+                                return Err(self.creature_dependency_failure(
+                                    fk,
+                                    source_sig,
+                                    "target_write_failed",
+                                ));
+                            }
                             let w = self.interner.intern(&format!("write_error:{e}"));
                             self.warnings.push(w);
                             stats.records_failed += 1;
@@ -5217,12 +11837,24 @@ impl ConversionRun {
                         }
                     }
                     RecordWriteMode::QuestChild => {
-                        match add_quest_child_record_native(
-                            self.target_handle_id,
-                            translated,
-                            &*self.schema_target,
-                            &self.interner,
-                        ) {
+                        let write_result =
+                            if let Some(session) = quest_child_insert_session.as_mut() {
+                                add_quest_child_record_indexed_native(
+                                    self.target_handle_id,
+                                    translated,
+                                    &*self.schema_target,
+                                    &self.interner,
+                                    session,
+                                )
+                            } else {
+                                add_quest_child_record_native(
+                                    self.target_handle_id,
+                                    translated,
+                                    &*self.schema_target,
+                                    &self.interner,
+                                )
+                            };
+                        match write_result {
                             Ok(true) => {}
                             Ok(false) => {
                                 let w = self.interner.intern(&format!(
@@ -5279,38 +11911,62 @@ impl ConversionRun {
                                     fk.local
                                 ))
                             })?;
-                            let player_inserted = add_topic_child_record_native(
-                                self.target_handle_id,
-                                player_info,
-                                player_parent,
-                                &*self.schema_target,
-                                &self.interner,
-                            )
-                            .map_err(|error| {
-                                RunError::InvalidConfig(format!(
-                                    "fo76_xdi_dialogue:player INFO {:06X} write: {error}",
-                                    fk.local
-                                ))
-                            })?;
+                            let player_inserted =
+                                if let Some(session) = topic_child_insert_session.as_mut() {
+                                    add_topic_child_record_indexed_native(
+                                        self.target_handle_id,
+                                        player_info,
+                                        player_parent,
+                                        &*self.schema_target,
+                                        &self.interner,
+                                        session,
+                                    )
+                                } else {
+                                    add_topic_child_record_native(
+                                        self.target_handle_id,
+                                        player_info,
+                                        player_parent,
+                                        &*self.schema_target,
+                                        &self.interner,
+                                    )
+                                }
+                                .map_err(|error| {
+                                    RunError::InvalidConfig(format!(
+                                        "fo76_xdi_dialogue:player INFO {:06X} write: {error}",
+                                        fk.local
+                                    ))
+                                })?;
                             if !player_inserted {
                                 return Err(RunError::InvalidConfig(format!(
                                     "fo76_xdi_dialogue:player INFO {:06X} was skipped",
                                     fk.local
                                 )));
                             }
-                            let npc_inserted = add_topic_child_record_native(
-                                self.target_handle_id,
-                                translated,
-                                npc_parent,
-                                &*self.schema_target,
-                                &self.interner,
-                            )
-                            .map_err(|error| {
-                                RunError::InvalidConfig(format!(
-                                    "fo76_xdi_dialogue:NPC INFO {:06X} write: {error}",
-                                    fk.local
-                                ))
-                            })?;
+                            let npc_inserted =
+                                if let Some(session) = topic_child_insert_session.as_mut() {
+                                    add_topic_child_record_indexed_native(
+                                        self.target_handle_id,
+                                        translated,
+                                        npc_parent,
+                                        &*self.schema_target,
+                                        &self.interner,
+                                        session,
+                                    )
+                                } else {
+                                    add_topic_child_record_native(
+                                        self.target_handle_id,
+                                        translated,
+                                        npc_parent,
+                                        &*self.schema_target,
+                                        &self.interner,
+                                    )
+                                }
+                                .map_err(|error| {
+                                    RunError::InvalidConfig(format!(
+                                        "fo76_xdi_dialogue:NPC INFO {:06X} write: {error}",
+                                        fk.local
+                                    ))
+                                })?;
                             if !npc_inserted {
                                 return Err(RunError::InvalidConfig(format!(
                                     "fo76_xdi_dialogue:NPC INFO {:06X} was skipped",
@@ -5335,13 +11991,26 @@ impl ConversionRun {
                                 stats.signature_entry(source_sig).dropped += 1;
                                 break 'record;
                             };
-                            match add_topic_child_record_native(
-                                self.target_handle_id,
-                                translated,
-                                target_parent_dialogue_form_id,
-                                &*self.schema_target,
-                                &self.interner,
-                            ) {
+                            let write_result =
+                                if let Some(session) = topic_child_insert_session.as_mut() {
+                                    add_topic_child_record_indexed_native(
+                                        self.target_handle_id,
+                                        translated,
+                                        target_parent_dialogue_form_id,
+                                        &*self.schema_target,
+                                        &self.interner,
+                                        session,
+                                    )
+                                } else {
+                                    add_topic_child_record_native(
+                                        self.target_handle_id,
+                                        translated,
+                                        target_parent_dialogue_form_id,
+                                        &*self.schema_target,
+                                        &self.interner,
+                                    )
+                                };
+                            match write_result {
                                 Ok(true) => {}
                                 Ok(false) => {
                                     let w = self.interner.intern(&format!(
@@ -5385,6 +12054,9 @@ impl ConversionRun {
                     );
                 }
 
+                if admitted_creature_dependency {
+                    self.record_creature_dependency_terminal(fk);
+                }
                 stats.records_translated += 1;
                 stats.signature_entry(source_sig).translated += 1;
             } // end 'record
@@ -5428,6 +12100,28 @@ impl ConversionRun {
         }
 
         if log_progress {
+            let child_insert_timing = quest_child_insert_session
+                .as_ref()
+                .map(|session| session.timing())
+                .or_else(|| {
+                    topic_child_insert_session
+                        .as_ref()
+                        .map(|session| session.timing())
+                });
+            if let Some(timing) = child_insert_timing {
+                self.emit_phase_status(format!(
+                    "translate_v2: child_write_timing mode={write_mode:?} records={} index_build_ms={:.3} lock_wait_ms={:.3} encode_ms={:.3} topology_insert_ms={:.3} write_effect_ms={:.3} wrong_handle_fallback_ms={:.3} fast_inserts={} serial_fallbacks={}",
+                    timing.records,
+                    timing.index_build.as_secs_f64() * 1000.0,
+                    timing.lock_wait.as_secs_f64() * 1000.0,
+                    timing.encode.as_secs_f64() * 1000.0,
+                    timing.topology_insert.as_secs_f64() * 1000.0,
+                    timing.write_effect.as_secs_f64() * 1000.0,
+                    timing.wrong_handle_fallback.as_secs_f64() * 1000.0,
+                    timing.fast_inserts,
+                    timing.serial_fallbacks,
+                ));
+            }
             self.emit_phase_status(format!(
                 "translate_v2: translate_fks mode={write_mode:?} done translated={} dropped={} failed={}",
                 stats.records_translated, stats.records_dropped, stats.records_failed
@@ -5437,6 +12131,12 @@ impl ConversionRun {
     }
 
     pub(crate) fn rebuild_full_plugin_worldspace_groups(&mut self) -> Result<(), RunError> {
+        // Starfield's 100 m exterior cell has no integer relationship to FO4's
+        // 4096 units, so source topology cannot be mirrored — it must be
+        // re-latticed from the (already scaled) placed positions.
+        if self.source == Game::Starfield && self.target == Game::Fo4 {
+            return crate::starfield_worldspace::relattice_worldspaces(self);
+        }
         if !self.config.is_whole_plugin {
             return Ok(());
         }
@@ -5526,14 +12226,21 @@ impl ConversionRun {
 
     /// Execute the canonical fixup segment plan.
     ///
-    /// Fused sweeps handle audit-cleared record visitors; fixup segments use
-    /// the single-fixup registry mechanics for scope skips, convergence, and
-    /// full-plugin state.
+    /// Fused sweeps run the record visitors cleared for fusion; other fixups run
+    /// as single-fixup segments with the registry's scope skips, convergence,
+    /// and full-plugin state.
     ///
-    /// Phase-contract safe: per-segment visibility goes to stderr and the
-    /// caller's event channel. Harvests `addon_index_remap` into the
-    /// decision channel so the NIF phase keeps working.
+    /// Phase-contract safe: per-segment progress goes to stderr and the
+    /// caller's event channel. Harvests `addon_index_remap` into the decision
+    /// channel for the NIF phase.
     pub fn apply_fixups_v2(&mut self) -> Result<Vec<(String, FixupReport)>, FixupError> {
+        self.apply_fixups_v2_with_deferred_havok(false)
+    }
+
+    pub fn apply_fixups_v2_with_deferred_havok(
+        &mut self,
+        defer_havok_postprocess: bool,
+    ) -> Result<Vec<(String, FixupReport)>, FixupError> {
         let mapper_opts = MapperOptions {
             output_plugin_name: self.config.output_plugin_name.clone(),
             source_plugin_name: String::new(),
@@ -5544,6 +12251,7 @@ impl ConversionRun {
                 self.source,
                 self.target,
             ),
+            vanilla_remap_blocked_source_form_keys: FxHashSet::default(),
             preserve_source_ids: self.config.preserve_source_ids,
             generated_object_id_floor: self.config.generated_object_id_floor,
             resolution_mode: if self.config.strict_mapper {
@@ -5565,7 +12273,10 @@ impl ConversionRun {
             skip_record_sigs: self.translator.maps.skip_records.clone(),
             mod_path: self.config.mod_path.clone(),
             source_extracted_dir: self.config.source_extracted_dir.clone(),
+            additional_source_asset_roots: self.config.additional_source_asset_roots.clone(),
+            legacy_music_tracks: self.config.legacy_music_tracks.clone(),
             target_extracted_dir: self.config.target_extracted_dir.clone(),
+            target_membership_root: self.config.target_membership_root.clone(),
             target_master_handle_ids: self.master_handle_ids.clone(),
             target_schema: Some(Arc::clone(&self.schema_target)),
             source_schema: Some(Arc::clone(&self.schema_source)),
@@ -5668,6 +12379,14 @@ impl ConversionRun {
                     crate::store2::fixups_v2::Segment::Fixup(make) => {
                         let fixup = make();
                         let fixup_name = fixup.name();
+                        if defer_havok_postprocess
+                            && crate::phase::havok_postprocess::owns_record_fixup(fixup_name)
+                        {
+                            log_fixups_v2(format!(
+                                "[fixups_v2] skipped {fixup_name} reason=deferred_to_havok_postprocess"
+                            ));
+                            continue;
+                        }
                         log_fixups_v2(format!("[fixups_v2] queued {fixup_name}"));
                         let mut registry = FixupRegistry::new();
                         registry.register(fixup);
@@ -5773,18 +12492,39 @@ impl ConversionRun {
             }
         }
 
+        if self.source == Game::Fnv
+            && self.target == Game::Fo4
+            && !self.fnv_quest_runtime_component_plans.is_empty()
+        {
+            self.reconcile_fnv_quest_runtime_post_fixup_receipts()
+                .map_err(|error| FixupError::HandleError(error.to_string()))?;
+        }
+
+        if self.source == Game::SkyrimSe
+            && self.target == Game::Fo4
+            && self.skyrim_runtime_capability_plan.is_some()
+        {
+            self.finalize_skyrim_runtime_receipt()
+                .map_err(|error| FixupError::HandleError(error.to_string()))?;
+        }
+
         Ok(all_reports)
     }
 
     /// Authoritatively resolve deferred LCTN placed-ref-target classes against
     /// the now-COMPLETE output plugin.
     ///
-    /// Runs AFTER the FO76→FO4 phase-6 cell-slice copy + cell-location sync
-    /// re-insert the exterior placed children. The pre-copy
+    /// Runs AFTER the FO76/Starfield→FO4 cell copy paths re-insert the exterior
+    /// placed children. The pre-copy
     /// `null_dangling_own_plugin_refs` and raw-LCTN passes deferred these classes
     /// because their targets were absent then; this pass keeps every ref whose
     /// target is now present and nulls/prunes any that are still absent.
     pub fn repair_placed_child_refs(&mut self) -> Result<FixupReport, FixupError> {
+        let interior_placed_ref_candidates =
+            std::mem::take(&mut self.interior_placed_ref_candidates);
+        // Taken so a repeated repair cannot move XTEL destinations twice.
+        let recentred_interior_refs =
+            std::mem::take(&mut self.interior_recentre.placed_ref_offsets);
         let mapper_opts = MapperOptions {
             output_plugin_name: self.config.output_plugin_name.clone(),
             source_plugin_name: String::new(),
@@ -5795,6 +12535,7 @@ impl ConversionRun {
                 self.source,
                 self.target,
             ),
+            vanilla_remap_blocked_source_form_keys: FxHashSet::default(),
             preserve_source_ids: self.config.preserve_source_ids,
             generated_object_id_floor: self.config.generated_object_id_floor,
             resolution_mode: if self.config.strict_mapper {
@@ -5816,7 +12557,10 @@ impl ConversionRun {
             skip_record_sigs: self.translator.maps.skip_records.clone(),
             mod_path: self.config.mod_path.clone(),
             source_extracted_dir: self.config.source_extracted_dir.clone(),
+            additional_source_asset_roots: self.config.additional_source_asset_roots.clone(),
+            legacy_music_tracks: self.config.legacy_music_tracks.clone(),
             target_extracted_dir: self.config.target_extracted_dir.clone(),
+            target_membership_root: self.config.target_membership_root.clone(),
             target_master_handle_ids: self.master_handle_ids.clone(),
             target_schema: Some(Arc::clone(&self.schema_target)),
             source_schema: Some(Arc::clone(&self.schema_source)),
@@ -5833,9 +12577,6 @@ impl ConversionRun {
             interner,
         );
 
-        let mut session =
-            crate::session::open_session(self.target_handle_id, Some(self.source_handle_id))
-                .map_err(|e| FixupError::HandleError(e.to_string()))?;
         let repair_error = |name: &str, err: FixupError| {
             FixupError::HandleError(format!("repair_placed_child_refs:{name}: {err}"))
         };
@@ -5845,6 +12586,27 @@ impl ConversionRun {
                 started.elapsed().as_millis()
             );
         };
+        let repair_fo4_placed_ref_targets =
+            needs_fo4_placed_ref_target_repair(self.source, self.target);
+        let mut session =
+            crate::session::open_session(self.target_handle_id, Some(self.source_handle_id))
+                .map_err(|e| FixupError::HandleError(e.to_string()))?;
+        let started = std::time::Instant::now();
+        let placed_normalize = if self.source == Game::Fo76 && self.target == Game::Fo4 {
+            let placed_sigs = ["REFR", "ACHR", "PGRE", "PHZD"]
+                .map(str::to_string)
+                .to_vec();
+            crate::fixups::normalize_placed_records::normalize_copied_placed_records_in_session(
+                &mut session,
+                interner,
+                &placed_sigs,
+            )
+            .map_err(|err| repair_error("normalize_copied_placed_records", err))?
+        } else {
+            Default::default()
+        };
+        log_timing("normalize_copied_placed_records", started);
+        session.flush_pending_effects();
         let started = std::time::Instant::now();
         let mut report = crate::fixups::rewrite_raw_lctn_formids::repair_lctn_raw_formids(
             &mut session,
@@ -5852,6 +12614,9 @@ impl ConversionRun {
             &config,
         )
         .map_err(|err| repair_error("rewrite_raw_lctn_formids", err))?;
+        report.records_changed = report
+            .records_changed
+            .saturating_add(placed_normalize.records_changed);
         log_timing("rewrite_raw_lctn_formids", started);
         if self.source == Game::Fo76 && self.target == Game::Fo4 {
             let started = std::time::Instant::now();
@@ -5896,6 +12661,35 @@ impl ConversionRun {
             .saturating_add(placed_child.records_dropped);
         report.warnings.extend(placed_child.warnings);
         log_timing("null_dangling_own_plugin_refs", started);
+        let started = std::time::Instant::now();
+        let placed_record_vmad =
+            crate::fixups::placed_record_vmad::apply_fo76_fo4_placed_record_vmad_catalog(
+                &mut session,
+                &mut mapper,
+                self.source,
+                self.target,
+            )
+            .map_err(|err| repair_error("placed_record_vmad", err))?;
+        report.records_changed = report
+            .records_changed
+            .saturating_add(placed_record_vmad.records_changed);
+        report.warnings.extend(placed_record_vmad.warnings);
+        report.diagnostics.extend(placed_record_vmad.diagnostics);
+        log_timing("placed_record_vmad", started);
+        let started = std::time::Instant::now();
+        let holotape_listener = crate::fixups::attach_fo76_holotape_stage_listener::apply(
+            &mut session,
+            &mut mapper,
+            self.source,
+            self.target,
+        )
+        .map_err(|err| repair_error("attach_fo76_holotape_stage_listener", err))?;
+        report.records_changed = report
+            .records_changed
+            .saturating_add(holotape_listener.records_changed);
+        report.warnings.extend(holotape_listener.warnings);
+        report.diagnostics.extend(holotape_listener.diagnostics);
+        log_timing("attach_fo76_holotape_stage_listener", started);
         // Authoritative post-copy resolve of VMAD Object script-property refs.
         // Run unconditionally: placed children can be introduced by interior and
         // projected copy paths even when the pre-copy deferral flag was not set.
@@ -5942,19 +12736,17 @@ impl ConversionRun {
                 .saturating_add(material_swaps.records_changed);
             log_timing("promote_placed_custom_material_swaps", started);
         }
-        // Resolve placed refs whose base object is a leveled list (LVLI). FO76
-        // allows an LVLI as a placed-ref base; FO4 reports "Missing/Invalid base
-        // object". The cell-slice copy path resolves this for exterior/projected
-        // children during copy, but the interior-cell emit path does not — so
-        // interior placed-LVLI refs only get resolved here, post-copy, where every
-        // placed child (interior + exterior) is present. Idempotent for the
-        // already-resolved exterior refs (their base is no longer an LVLI).
+        // Exterior/projected children are resolved by the parallel cell-slice
+        // copier. Only the exact interior children carried from emit need this
+        // serial mutation pass; rediscovering them by scanning the complete
+        // output dominated whole-plugin regen time.
         let started = std::time::Instant::now();
         let lvli_resolve =
-            crate::fixups::resolve_placed_leveled_bases::resolve_placed_leveled_bases(
+            crate::fixups::resolve_placed_leveled_bases::resolve_placed_leveled_bases_for_refs(
                 &mut session,
                 &mut mapper,
                 &config,
+                &interior_placed_ref_candidates,
             )
             .map_err(|err| repair_error("resolve_placed_leveled_bases", err))?;
         report.records_changed = report
@@ -5964,7 +12756,7 @@ impl ConversionRun {
             .records_dropped
             .saturating_add(lvli_resolve.records_dropped);
         log_timing("resolve_placed_leveled_bases", started);
-        if self.source == Game::Fo76 && self.target == Game::Fo4 {
+        if repair_fo4_placed_ref_targets {
             // Normalize raw placed-link slots before later passes consume XLKR/XAPR.
             let started = std::time::Instant::now();
             let linked_ref_repair =
@@ -5980,6 +12772,21 @@ impl ConversionRun {
             log_timing("repair_placed_linked_refs", started);
         }
         if self.source == Game::Fo76 && self.target == Game::Fo4 {
+            let started = std::time::Instant::now();
+            let vault79_reactor =
+                crate::fixups::repair_vault79_reactor_door_topology::repair_vault79_reactor_door_topology(
+                    &mut session,
+                    &mut mapper,
+                    &config,
+                )
+                .map_err(|err| repair_error("repair_vault79_reactor_door_topology", err))?;
+            report.records_changed = report
+                .records_changed
+                .saturating_add(vault79_reactor.records_changed);
+            report.warnings.extend(vault79_reactor.warnings);
+            report.diagnostics.extend(vault79_reactor.diagnostics);
+            log_timing("repair_vault79_reactor_door_topology", started);
+
             let started = std::time::Instant::now();
             let workshop_boundaries =
                 crate::fixups::synthesize_workshop_boundaries::synthesize_workshop_boundaries(
@@ -6016,40 +12823,82 @@ impl ConversionRun {
                 .saturating_add(xlrt_backfill.records_changed);
             log_timing("backfill_placed_loc_ref_types", started);
         }
-        // Repair interior teleport-door XTEL targets. The cell-slice copy path
-        // remaps XTEL's own master byte 0x00→07 for exterior/worldspace children;
-        // the interior-cell emit path keeps XTEL raw, so its door/transition
-        // FormIDs reach the output naming Fallout4.esm (byte 0x00) instead of the
-        // own partner. FO76→FO4 only (the byte-0 own-ref ambiguity is specific to
-        // the master-less FO76 source).
-        if self.source == Game::Fo76 && self.target == Game::Fo4 {
+        // Repair source-local raw XTEL/XOWN targets after the FO4 masters shift
+        // the output's own records away from load index zero.
+        let placed_refr_discovery = if repair_fo4_placed_ref_targets {
             let started = std::time::Instant::now();
+            let discovery =
+                crate::fixups::repair_placed_teleport_doors::discover_placed_refr_candidates(
+                    &mut session,
+                    mapper.interner,
+                )
+                .map_err(|err| repair_error("repair_placed_teleport_doors", err))?;
+            eprintln!(
+                "[repair_discovery] generation=post_workshop shared={} records_seen={} records_inspected={} teleport={} light_radius={} xezn={}",
+                discovery.shared_candidates_available,
+                discovery.records_seen,
+                discovery.records_inspected,
+                discovery.teleport_candidates.len(),
+                discovery.light_radius_candidates.len(),
+                discovery.xezn_candidates.len()
+            );
             let door_repair =
-                crate::fixups::repair_placed_teleport_doors::repair_placed_references(
+                crate::fixups::repair_placed_teleport_doors::repair_placed_references_with_candidates(
                     &mut session,
                     &mut mapper,
                     &config,
+                    &discovery,
                 )
                 .map_err(|err| repair_error("repair_placed_teleport_doors", err))?;
             report.records_changed = report
                 .records_changed
                 .saturating_add(door_repair.records_changed);
             log_timing("repair_placed_teleport_doors", started);
-            // Convert FO76 additive placed-light XRDS deltas (commonly negative) to
-            // FO4 absolute radius overrides. A negative absolute radius corrupts the
+            Some(discovery)
+        } else {
+            None
+        };
+        // Door FormIDs in XTEL name the output plugin only after the teleport repair.
+        let started = std::time::Instant::now();
+        let door_shift = crate::fixups::recentre_far_interiors::shift_teleport_destinations(
+            &mut session,
+            mapper.interner,
+            &recentred_interior_refs,
+        )
+        .map_err(|err| repair_error("recentre_far_interiors", err))?;
+        report.records_changed = report
+            .records_changed
+            .saturating_add(door_shift.records_changed);
+        log_timing("recentre_far_interiors", started);
+        if self.source == Game::Fo76 && self.target == Game::Fo4 {
+            // Rederive FO4 light radii from FO76's lumens (FO76 is physically based:
+            // radius is only a cull distance, brightness is intensity; FO4 has no
+            // intensity field, so radius *is* the falloff scale) and rescale placed
+            // XRDS overrides in lockstep. Also converts the FO76 additive XRDS delta
+            // to an FO4 absolute radius — a negative absolute radius corrupts the
             // cell's spatial partition, killing physics + sound for the whole cell.
             let started = std::time::Instant::now();
-            let light_radius =
-                crate::fixups::normalize_placed_light_radius::normalize_placed_light_radius(
+            let light_radius = if let Some(discovery) = placed_refr_discovery
+                .as_ref()
+                .filter(|discovery| discovery.shared_candidates_available)
+            {
+                crate::fixups::normalize_light_radii::normalize_light_radii_for_refr_candidates(
+                    &mut session,
+                    &mut mapper,
+                    &discovery.light_radius_candidates,
+                )
+            } else {
+                crate::fixups::normalize_light_radii::normalize_light_radii(
                     &mut session,
                     &mut mapper,
                     &config,
                 )
-                .map_err(|err| repair_error("normalize_placed_light_radius", err))?;
+            }
+            .map_err(|err| repair_error("normalize_light_radii", err))?;
             report.records_changed = report
                 .records_changed
                 .saturating_add(light_radius.records_changed);
-            log_timing("normalize_placed_light_radius", started);
+            log_timing("normalize_light_radii", started);
         }
         // WRLD.RNAM is the large-reference table for worldspace refs. FO76->FO4
         // strips source WRLD runtime tables now, but keep this repair late for
@@ -6068,11 +12917,23 @@ impl ConversionRun {
         log_timing("rewrite_raw_wrld_large_refs", started);
         if self.source == Game::Fo76 && self.target == Game::Fo4 {
             let started = std::time::Instant::now();
-            let xezn_finalize = crate::fixups::encounter_zones::finalize_placed_xezn_targets(
-                &mut session,
-                &config,
-                mapper.interner,
-            )
+            let xezn_finalize = if let Some(discovery) = placed_refr_discovery
+                .as_ref()
+                .filter(|discovery| discovery.shared_candidates_available)
+            {
+                crate::fixups::encounter_zones::finalize_placed_xezn_targets_for_refr_candidates(
+                    &mut session,
+                    &config,
+                    mapper.interner,
+                    &discovery.xezn_candidates,
+                )
+            } else {
+                crate::fixups::encounter_zones::finalize_placed_xezn_targets(
+                    &mut session,
+                    &config,
+                    mapper.interner,
+                )
+            }
             .map_err(|err| repair_error("finalize_placed_xezn_targets", err))?;
             emit_fixup_report_log(
                 &event_tx,
@@ -6090,6 +12951,7 @@ impl ConversionRun {
             report.warnings.extend(xezn_finalize.warnings);
             log_timing("finalize_placed_xezn_targets", started);
         }
+        drop(placed_refr_discovery);
         if self.source == Game::Fo76 && self.target == Game::Fo4 {
             let started = std::time::Instant::now();
             let ess_spawn =
@@ -6161,6 +13023,7 @@ impl ConversionRun {
                 self.source,
                 self.target,
             ),
+            vanilla_remap_blocked_source_form_keys: FxHashSet::default(),
             preserve_source_ids: self.config.preserve_source_ids,
             generated_object_id_floor: self.config.generated_object_id_floor,
             resolution_mode: if self.config.strict_mapper {
@@ -6182,7 +13045,10 @@ impl ConversionRun {
             skip_record_sigs: self.translator.maps.skip_records.clone(),
             mod_path: self.config.mod_path.clone(),
             source_extracted_dir: self.config.source_extracted_dir.clone(),
+            additional_source_asset_roots: self.config.additional_source_asset_roots.clone(),
+            legacy_music_tracks: self.config.legacy_music_tracks.clone(),
             target_extracted_dir: self.config.target_extracted_dir.clone(),
+            target_membership_root: self.config.target_membership_root.clone(),
             target_master_handle_ids: self.master_handle_ids.clone(),
             target_schema: Some(Arc::clone(&self.schema_target)),
             source_schema: Some(Arc::clone(&self.schema_source)),
@@ -6250,6 +13116,7 @@ impl ConversionRun {
                 self.source,
                 self.target,
             ),
+            vanilla_remap_blocked_source_form_keys: FxHashSet::default(),
             preserve_source_ids: self.config.preserve_source_ids,
             generated_object_id_floor: self.config.generated_object_id_floor,
             resolution_mode: if self.config.strict_mapper {
@@ -6271,7 +13138,10 @@ impl ConversionRun {
             skip_record_sigs: self.translator.maps.skip_records.clone(),
             mod_path: self.config.mod_path.clone(),
             source_extracted_dir: self.config.source_extracted_dir.clone(),
+            additional_source_asset_roots: self.config.additional_source_asset_roots.clone(),
+            legacy_music_tracks: self.config.legacy_music_tracks.clone(),
             target_extracted_dir: self.config.target_extracted_dir.clone(),
+            target_membership_root: self.config.target_membership_root.clone(),
             target_master_handle_ids: self.master_handle_ids.clone(),
             target_schema: Some(Arc::clone(&self.schema_target)),
             source_schema: Some(Arc::clone(&self.schema_source)),
@@ -6317,6 +13187,7 @@ impl ConversionRun {
                 self.source,
                 self.target,
             ),
+            vanilla_remap_blocked_source_form_keys: FxHashSet::default(),
             preserve_source_ids: self.config.preserve_source_ids,
             generated_object_id_floor: self.config.generated_object_id_floor,
             resolution_mode: if self.config.strict_mapper {
@@ -6338,7 +13209,10 @@ impl ConversionRun {
             skip_record_sigs: self.translator.maps.skip_records.clone(),
             mod_path: self.config.mod_path.clone(),
             source_extracted_dir: self.config.source_extracted_dir.clone(),
+            additional_source_asset_roots: self.config.additional_source_asset_roots.clone(),
+            legacy_music_tracks: self.config.legacy_music_tracks.clone(),
             target_extracted_dir: self.config.target_extracted_dir.clone(),
+            target_membership_root: self.config.target_membership_root.clone(),
             target_master_handle_ids: self.master_handle_ids.clone(),
             target_schema: Some(Arc::clone(&self.schema_target)),
             source_schema: Some(Arc::clone(&self.schema_source)),
@@ -6367,21 +13241,1002 @@ impl ConversionRun {
         Ok(report)
     }
 
-    /// Run the FNV legacy-scripting translation pass for deferred records.
-    ///
-    /// Processes QUST, SCEN, and INFO records that were deferred during
-    /// `translate_all` (Phase D records). Translated authoring-record payloads
-    /// are written directly to the target plugin handle via
-    /// `insert_authoring_record_value`; the returned
+    fn lower_fnv_quest_slice_quests(
+        &mut self,
+        ctx: &mut FnvLegacyScriptingContext,
+        quest_records: &[(serde_json::Value, String)],
+        typed_quest_records: &[(Record, String)],
+        record_identities: &[LegacyRecordIdentity],
+    ) -> Result<HashMap<FormKey, i32>, FnvScriptingError> {
+        ctx.translated_record_payloads
+            .retain(|payload| payload.signature != "QUST");
+        self.fnv_pending_quest_fragments.clear();
+        self.fnv_pending_helper_scripts.clear();
+        self.fnv_pending_scpt_properties.clear();
+        let package_adaptation =
+            crate::fnv_legacy_scripting::from_run::reconcile_fnv_quest_slice_dynamic_package_bases(
+                self,
+                &ctx.translated_scripts,
+            )?;
+        if !package_adaptation.is_empty() {
+            ctx.warnings.push(package_adaptation);
+        }
+        let mut alias_by_speaker = HashMap::new();
+        for (_typed_record, source_form_key) in typed_quest_records {
+            let source_payload = quest_records
+                .iter()
+                .find(|(_, key)| key.eq_ignore_ascii_case(source_form_key))
+                .map(|(payload, _)| payload)
+                .ok_or_else(|| {
+                    FnvScriptingError::Setup(format!(
+                        "typed QUST {source_form_key} has no compatibility payload"
+                    ))
+                })?;
+            let identity = record_identities
+                .iter()
+                .find(|identity| {
+                    identity.signature == "QUST"
+                        && identity
+                            .source_form_key_text
+                            .eq_ignore_ascii_case(source_form_key)
+                })
+                .ok_or_else(|| {
+                    FnvScriptingError::Setup(format!(
+                        "typed QUST {source_form_key} has no stable target identity"
+                    ))
+                })?;
+            let source_editor_id = source_payload
+                .get("eid")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    FnvScriptingError::Setup(format!(
+                        "typed QUST {source_form_key} has no EditorID"
+                    ))
+                })?;
+            let record_dependency_warnings = register_fnv_quest_record_dependency_mappings(
+                source_payload,
+                source_form_key,
+                source_editor_id,
+                self.mapper_state.as_mut().ok_or_else(|| {
+                    FnvScriptingError::Setup(
+                        "typed QUST dependency mapping requires mapper state".to_string(),
+                    )
+                })?,
+                &self.interner,
+            )?;
+            let mapper_options = self
+                .mapper_state
+                .as_ref()
+                .ok_or_else(|| {
+                    FnvScriptingError::Setup("typed QUST requires mapper state".to_string())
+                })?
+                .options
+                .clone();
+            let raw_resolver =
+                |raw| mapper_options.source_form_key_for_raw_formid(raw, &self.interner);
+            let mut translated = {
+                let mapper_state = self.mapper_state.as_mut().expect("checked above");
+                let mut mapper = FormKeyMapper::from_state(mapper_state, &self.interner);
+                crate::fnv_legacy_scripting::quest::lower_qust_record(
+                    source_payload,
+                    &ctx.mod_prefix,
+                    source_form_key,
+                    &identity.target_form_key_text,
+                    crate::translator::pair_hooks::fnv_conditions::LegacyConditionFamily::Fnv,
+                    &mut mapper,
+                    &raw_resolver,
+                    &self.legacy_placed_actor_aliases,
+                )
+                .map_err(|error| {
+                    FnvScriptingError::Translate(format!("typed QUST {source_form_key}: {error}"))
+                })?
+            };
+            if translated.losses.terminal_count() != 0 {
+                return Err(FnvScriptingError::Translate(format!(
+                    "typed QUST {source_form_key} has {} terminal semantic losses",
+                    translated.losses.terminal_count()
+                )));
+            }
+            let compatibility = ctx
+                .translated_quests
+                .iter_mut()
+                .find(|quest| quest.source_form_key.eq_ignore_ascii_case(source_form_key))
+                .ok_or_else(|| {
+                    FnvScriptingError::Translate(format!(
+                        "typed QUST {source_form_key} has no Papyrus fragment output"
+                    ))
+                })?;
+            let adaptation_warnings = account_fnv_quest_fragment_adaptations(
+                &compatibility.source_form_key,
+                &compatibility.source_editor_id,
+                &compatibility.fragment_adaptations,
+                &compatibility.stage_fragments,
+            )?;
+            let source_local = source_form_key_local(source_form_key).ok_or_else(|| {
+                FnvScriptingError::Setup(format!(
+                    "typed QUST has invalid source FormKey {source_form_key}"
+                ))
+            })?;
+            let fragment_properties = map_quest_fragment_properties(
+                &compatibility.fragment_properties,
+                self.mapper_state.as_ref().ok_or_else(|| {
+                    FnvScriptingError::Setup(
+                        "typed QUST fragment property mapping requires mapper state".to_string(),
+                    )
+                })?,
+                &self.interner,
+                source_form_key,
+            )?;
+            if self.config.fnv_quest_slice {
+                validate_fnv_quest_slice_compat_fragment_property(
+                    source_local,
+                    &identity.target_form_key_text,
+                    &ctx.mod_prefix,
+                    &fragment_properties,
+                )?;
+            }
+            self.fnv_pending_scpt_properties
+                .extend(materialize_fnv_package_data_alias_contracts(
+                    &mut translated,
+                    source_form_key,
+                    &identity.target_form_key_text,
+                    &ctx.translated_scripts,
+                )?);
+            if matches!(source_local, 0x06136D | 0x11F935) {
+                self.fnv_pending_helper_scripts.push(
+                    crate::fnv_legacy_scripting::vmad::PendingObjectScriptBinding {
+                        target_form_key: identity.target_form_key_text.clone(),
+                        script_class_name: format!("{}_FnvSliceCompat", ctx.mod_prefix),
+                        properties: vec![
+                            crate::fnv_legacy_scripting::vmad::ScriptProperty {
+                                name: "RepNVNCRFame".to_string(),
+                                prop_type: "Int".to_string(),
+                                value: Some(serde_json::json!(0)),
+                            },
+                            crate::fnv_legacy_scripting::vmad::ScriptProperty {
+                                name: "RepNVNCRInfamy".to_string(),
+                                prop_type: "Int".to_string(),
+                                value: Some(serde_json::json!(0)),
+                            },
+                            crate::fnv_legacy_scripting::vmad::ScriptProperty {
+                                name: "PCCanUsePowerArmor".to_string(),
+                                prop_type: "Bool".to_string(),
+                                value: Some(serde_json::json!(false)),
+                            },
+                        ],
+                    },
+                );
+            }
+            let mut fragments = Vec::new();
+            for metadata in &translated.fragment_metadata {
+                if let Some(stage_fragment) =
+                    compatibility.stage_fragments.iter_mut().find(|fragment| {
+                        fragment.stage_index == i32::from(metadata.stage_index)
+                            && fragment.stage_item_index == metadata.stage_item_index
+                    })
+                {
+                    compatibility.fragment_psc_text = compatibility
+                        .fragment_psc_text
+                        .replace(&stage_fragment.psc_function_name, &metadata.function_name);
+                    stage_fragment.psc_function_name = metadata.function_name.clone();
+                }
+                fragments.push(crate::fnv_legacy_scripting::vmad::QuestStageFragment {
+                    stage_index: i32::from(metadata.stage_index),
+                    stage_item_index: metadata.stage_item_index,
+                    psc_function_name: metadata.function_name.clone(),
+                });
+            }
+            let aliases = translated
+                .aliases
+                .iter()
+                .map(|alias| {
+                    alias_by_speaker.insert(alias.target_base, alias.alias_id);
+                    crate::fnv_legacy_scripting::vmad::QuestAliasBinding {
+                        alias_id: alias.alias_id,
+                        target_quest_form_key: identity.target_form_key_text.clone(),
+                        target_form_key: alias.target_placed_text.clone(),
+                        scripts: Vec::new(),
+                    }
+                })
+                .collect();
+            self.fnv_pending_quest_fragments.push(
+                crate::fnv_legacy_scripting::vmad::PendingQuestFragmentBinding {
+                    target_form_key: identity.target_form_key_text.clone(),
+                    script_class_name: translated.fragment_class_name.clone(),
+                    fragments,
+                    fragment_properties,
+                    aliases,
+                },
+            );
+            ctx.warnings.extend(record_dependency_warnings);
+            ctx.warnings.extend(adaptation_warnings);
+            ctx.translated_record_payloads.push(
+                crate::fnv_legacy_scripting::TranslatedRecordPayload {
+                    source_form_key: source_form_key.clone(),
+                    signature: "QUST".to_string(),
+                    translated_record: translated.authoring_record_payload,
+                    warnings: translated
+                        .losses
+                        .entries
+                        .iter()
+                        .map(|loss| {
+                            format!(
+                                "typed_qust_externalized:{}:{}:{}",
+                                loss.scope, loss.signature, loss.reason
+                            )
+                        })
+                        .collect(),
+                },
+            );
+        }
+        if self.config.fnv_quest_slice && self.fnv_pending_scpt_properties.len() != 2 {
+            return Err(FnvScriptingError::Translate(format!(
+                "strict FNV quest slice expected 2 dynamic package data aliases, observed {}",
+                self.fnv_pending_scpt_properties.len()
+            )));
+        }
+        Ok(alias_by_speaker)
+    }
+
+    fn plan_fnv_quest_slice_dialogue(
+        &mut self,
+        ctx: &mut FnvLegacyScriptingContext,
+        typed_info_records: &[(Record, String)],
+        typed_dial_records: &[(Record, String)],
+        record_identities: &[LegacyRecordIdentity],
+        source_plugin: &str,
+        alias_by_speaker: &HashMap<FormKey, i32>,
+    ) -> Result<TypedFnvDialoguePlan, FnvScriptingError> {
+        let mut plan = TypedFnvDialoguePlan::default();
+        let source_to_target = self
+            .mapper_state
+            .as_ref()
+            .ok_or_else(|| FnvScriptingError::Setup("typed dialogue requires mapper state".into()))?
+            .source_to_target
+            .clone();
+        let dedicated_topics = ctx
+            .translated_scripts
+            .iter()
+            .flat_map(|script| {
+                script.dedicated_topics.iter().map(move |contract| {
+                    (
+                        script.source_form_key.clone(),
+                        script.script_class_name.clone(),
+                        contract.clone(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let [(dedicated_source_script, dedicated_script_class, dedicated_contract)] =
+            dedicated_topics.as_slice()
+        else {
+            return Err(FnvScriptingError::Translate(format!(
+                "strict FNV quest slice expected one dedicated greeting contract, observed {}",
+                dedicated_topics.len()
+            )));
+        };
+        let dedicated_source_infos = dedicated_contract
+            .responses
+            .iter()
+            .map(|response| {
+                parse_legacy_form_key_text(&response.source_info_form_key, &self.interner).map_err(
+                    |error| {
+                        FnvScriptingError::Setup(format!(
+                            "dedicated greeting INFO {} is invalid: {error}",
+                            response.source_info_form_key
+                        ))
+                    },
+                )
+            })
+            .collect::<Result<FxHashSet<_>, _>>()?;
+        let mut target_topics_by_source =
+            HashMap::<FormKey, Vec<(FormKey, FormKey, FormKey)>>::new();
+        for (source, source_text) in typed_dial_records {
+            let identity = record_identities
+                .iter()
+                .find(|identity| {
+                    identity.signature == "DIAL"
+                        && identity
+                            .source_form_key_text
+                            .eq_ignore_ascii_case(source_text)
+                })
+                .ok_or_else(|| {
+                    FnvScriptingError::Setup(format!("typed DIAL {source_text} has no identity"))
+                })?;
+            let owner_count = source
+                .fields
+                .iter()
+                .filter(|field| field.sig.as_str() == "QSTI")
+                .filter_map(|field| first_record_form_key(&field.value))
+                .collect::<FxHashSet<_>>()
+                .len();
+            let clones = {
+                let state = self.mapper_state.as_mut().expect("checked above");
+                let mut mapper = FormKeyMapper::from_state(state, &self.interner);
+                (1..owner_count)
+                    .map(|_| mapper.allocate_generated())
+                    .collect::<Vec<_>>()
+            };
+            let info_count = record_identities
+                .iter()
+                .filter(|candidate| {
+                    matches!(
+                        candidate.topology,
+                        LegacyRecordTopology::TopicChild { source_parent, .. }
+                            if source_parent == source.form_key
+                    )
+                })
+                .count() as u32;
+            let lowered = crate::fnv_legacy_scripting::dialogue::lower_dial_topic(
+                source,
+                identity.target_form_key,
+                &source_to_target.iter().map(|(a, b)| (*a, *b)).collect(),
+                &clones,
+                info_count,
+                &self.interner,
+            )
+            .map_err(|error| {
+                FnvScriptingError::Translate(format!("typed DIAL {source_text}: {error}"))
+            })?;
+            for topic in lowered {
+                target_topics_by_source
+                    .entry(topic.source_topic)
+                    .or_default()
+                    .push((
+                        topic.source_owner,
+                        topic.target_owner,
+                        topic.record.form_key,
+                    ));
+                plan.topics.push(topic.record);
+            }
+            plan.direct_sources.insert(source_text.to_ascii_uppercase());
+        }
+
+        self.fnv_pending_info_fragments.clear();
+        for (source, source_text) in typed_info_records {
+            if dedicated_source_infos.contains(&source.form_key) {
+                continue;
+            }
+            let identity = record_identities
+                .iter()
+                .find(|identity| {
+                    identity.signature == "INFO"
+                        && identity
+                            .source_form_key_text
+                            .eq_ignore_ascii_case(source_text)
+                })
+                .ok_or_else(|| {
+                    FnvScriptingError::Setup(format!("typed INFO {source_text} has no identity"))
+                })?;
+            let source_parent = match identity.topology {
+                LegacyRecordTopology::TopicChild { source_parent, .. } => source_parent,
+                _ => {
+                    return Err(FnvScriptingError::Setup(format!(
+                        "typed INFO {source_text} has no topic topology"
+                    )));
+                }
+            };
+            let target_parents = target_topics_by_source
+                .get(&source_parent)
+                .cloned()
+                .ok_or_else(|| {
+                    FnvScriptingError::Setup(format!(
+                        "typed INFO {source_text} parent {:06X} was not lowered",
+                        source_parent.local
+                    ))
+                })?;
+            let speaker = source
+                .fields
+                .iter()
+                .rev()
+                .find(|field| matches!(field.sig.as_str(), "PNAM" | "ANAM"))
+                .and_then(|field| first_record_form_key(&field.value))
+                .ok_or_else(|| {
+                    FnvScriptingError::Translate(format!("typed INFO {source_text} has no speaker"))
+                })?;
+            let speaker_record = read_record_relayout_by_form_key(
+                self.source_handle_id,
+                &speaker,
+                &self.schema_source,
+                &self.interner,
+                None,
+            )
+            .map_err(|error| {
+                FnvScriptingError::Setup(format!(
+                    "read INFO speaker {:06X}: {error}",
+                    speaker.local
+                ))
+            })?;
+            let source_voice_type = speaker_record
+                .fields
+                .iter()
+                .find(|field| field.sig.as_str() == "VTCK")
+                .and_then(|field| first_record_form_key(&field.value))
+                .ok_or_else(|| {
+                    FnvScriptingError::Translate(format!(
+                        "INFO {source_text} speaker {:06X} has no VTYP",
+                        speaker.local
+                    ))
+                })?;
+            let target_voice_type = source_to_target
+                .get(&source_voice_type)
+                .copied()
+                .ok_or_else(|| {
+                    FnvScriptingError::Translate(format!(
+                        "INFO {source_text} VTYP {:06X} has no target mapping",
+                        source_voice_type.local
+                    ))
+                })?;
+            if !source_to_target.contains_key(&speaker) {
+                return Err(FnvScriptingError::Translate(format!(
+                    "INFO {source_text} speaker {:06X} has no target mapping",
+                    speaker.local
+                )));
+            }
+            let voice_record = read_record_relayout_by_form_key(
+                self.source_handle_id,
+                &source_voice_type,
+                &self.schema_source,
+                &self.interner,
+                None,
+            )
+            .map_err(|error| {
+                FnvScriptingError::Setup(format!(
+                    "read source VTYP {:06X}: {error}",
+                    source_voice_type.local
+                ))
+            })?;
+            let voice_edid = voice_record
+                .eid
+                .and_then(|eid| self.interner.resolve(eid))
+                .ok_or_else(|| FnvScriptingError::Translate("mapped VTYP has no EditorID".into()))?
+                .to_string();
+            plan.direct_sources.insert(source_text.to_ascii_uppercase());
+            let compatibility_fragment = ctx
+                .translated_infos
+                .iter()
+                .find(|translated| translated.source_form_key.eq_ignore_ascii_case(source_text));
+            let fragment_class_name = compatibility_fragment
+                .and_then(|translated| translated.fragment_class_name.clone());
+            let fragment_properties = compatibility_fragment
+                .map(|translated| {
+                    map_info_fragment_properties(
+                        &translated.fragment_properties,
+                        self.mapper_state.as_ref().expect("checked above"),
+                        &self.interner,
+                        source_text,
+                    )
+                })
+                .transpose()?
+                .unwrap_or_default();
+            for (parent_index, (_, _, target_parent)) in target_parents.into_iter().enumerate() {
+                let target_info = if parent_index == 0 {
+                    identity.target_form_key
+                } else {
+                    let state = self.mapper_state.as_mut().expect("checked above");
+                    FormKeyMapper::from_state(state, &self.interner).allocate_generated()
+                };
+                let lowered = {
+                    let state = self.mapper_state.as_mut().expect("checked above");
+                    let mut mapper = FormKeyMapper::from_state(state, &self.interner);
+                    crate::fnv_legacy_scripting::dialogue::lower_info_record(
+                        source,
+                        target_info,
+                        crate::fnv_legacy_scripting::dialogue::VoiceResolution {
+                            source_speaker: speaker,
+                            target_voice_type,
+                            source_plugin: source_plugin.to_string(),
+                            source_voice_type: voice_edid.clone(),
+                            target_plugin: self.config.output_plugin_name.clone(),
+                            target_voice_type_edid: voice_edid.clone(),
+                        },
+                        &mut mapper,
+                        &self.interner,
+                    )
+                    .map_err(|error| {
+                        FnvScriptingError::Translate(format!(
+                            "typed INFO {source_text} clone {parent_index}: {error}"
+                        ))
+                    })?
+                };
+                let fragment_phases = lowered.fragment_phases.clone();
+                plan.voice_manifest
+                    .entries
+                    .extend(lowered.voice_requests.into_iter().map(|request| {
+                    crate::fnv_legacy_scripting::voice::FnvVoiceManifestEntry::new_with_provenance(
+                        "FalloutNV.esm",
+                        "fnv-base",
+                        request.source_voice_type,
+                        request.target_plugin,
+                        request.target_voice_type_edid,
+                        request.info_form_id,
+                        request.response_index,
+                        request.transcript,
+                    )
+                }));
+                plan.infos.push((lowered.record, target_parent));
+                if let Some(script_class_name) = fragment_class_name.clone() {
+                    let target_form_key = form_key_to_legacy_str(target_info, &self.interner)
+                        .ok_or_else(|| {
+                            FnvScriptingError::Setup(format!(
+                                "typed INFO {source_text} clone target cannot be rendered"
+                            ))
+                        })?;
+                    self.fnv_pending_info_fragments.push(
+                        crate::fnv_legacy_scripting::vmad::PendingInfoFragmentBinding {
+                            target_form_key,
+                            script_class_name,
+                            phases: fragment_phases,
+                            fragment_properties: fragment_properties.clone(),
+                        },
+                    );
+                }
+            }
+        }
+
+        if !typed_dial_records.is_empty() {
+            let output_is_master = plugin_header_flags_native(self.target_handle_id)
+                .map_err(|error| FnvScriptingError::Setup(error.to_string()))?
+                & 1
+                != 0;
+            let mut owners = target_topics_by_source
+                .values()
+                .flatten()
+                .map(|(source_owner, target_owner, _)| (*source_owner, *target_owner))
+                .collect::<Vec<_>>();
+            owners.sort_by_key(|(source_owner, _)| source_owner.local);
+            owners.dedup();
+            let partition_count = owners.len();
+            let original_topics = plan.topics.clone();
+            let mut emitted_records = Vec::new();
+            for (source_owner, target_owner) in owners {
+                let source_topics = typed_dial_records
+                    .iter()
+                    .filter(|(record, _)| {
+                        record.fields.iter().any(|field| {
+                            field.sig.as_str() == "QSTI"
+                                && first_record_form_key(&field.value) == Some(source_owner)
+                        })
+                    })
+                    .map(|(record, _)| record.clone())
+                    .collect::<Vec<_>>();
+                let source_topic_keys = source_topics
+                    .iter()
+                    .map(|record| record.form_key)
+                    .collect::<FxHashSet<_>>();
+                let source_infos = typed_info_records
+                    .iter()
+                    .filter_map(|(record, source_text)| {
+                        record_identities
+                            .iter()
+                            .find(|identity| {
+                                identity
+                                    .source_form_key_text
+                                    .eq_ignore_ascii_case(source_text)
+                            })
+                            .and_then(|identity| match identity.topology {
+                                LegacyRecordTopology::TopicChild { source_parent, .. }
+                                    if source_topic_keys.contains(&source_parent) =>
+                                {
+                                    Some((source_parent, record.clone()))
+                                }
+                                _ => None,
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                let graph = crate::fnv_legacy_scripting::scene::build_legacy_dialogue_graph(
+                    &source_topics,
+                    &source_infos,
+                    &self.interner,
+                );
+                let target_topic_by_source = target_topics_by_source
+                    .iter()
+                    .filter_map(|(source_topic, targets)| {
+                        targets
+                            .iter()
+                            .find(|(owner, _, _)| *owner == source_owner)
+                            .map(|(_, _, target_topic)| (*source_topic, *target_topic))
+                    })
+                    .collect::<HashMap<_, _>>();
+                let (scene, branch) = {
+                    let state = self.mapper_state.as_mut().expect("checked above");
+                    let mut mapper = FormKeyMapper::from_state(state, &self.interner);
+                    (mapper.allocate_generated(), mapper.allocate_generated())
+                };
+                for (intent, target) in [
+                    (
+                        crate::fnv_legacy_scripting::component::FnvQuestSyntheticIntent::Scene,
+                        scene,
+                    ),
+                    (
+                        crate::fnv_legacy_scripting::component::FnvQuestSyntheticIntent::DialogueBranch,
+                        branch,
+                    ),
+                ] {
+                    let rendered = form_key_to_legacy_str(target, &self.interner).ok_or_else(|| {
+                        FnvScriptingError::Setup(
+                            "generated FNV dialogue runtime target cannot be rendered".to_string(),
+                        )
+                    })?;
+                    plan.synthetic_targets
+                        .insert(intent.record_key(), intent.target_key(rendered));
+                }
+                let scene_plan =
+                    crate::fnv_legacy_scripting::scene::bounded_scene_branch_from_graph(
+                        target_owner,
+                        scene,
+                        branch,
+                        &graph,
+                        32,
+                        16,
+                    )
+                    .map_err(|error| {
+                        FnvScriptingError::Translate(format!(
+                            "bounded dialogue plan for QUST {:06X}: {error}",
+                            source_owner.local
+                        ))
+                    })?;
+                let scene_plan =
+                    crate::fnv_legacy_scripting::scene::remap_scene_branch_plan_topics(
+                        &scene_plan,
+                        &target_topic_by_source,
+                    )
+                    .map_err(|error| {
+                        FnvScriptingError::Translate(format!(
+                            "remap dialogue plan for QUST {:06X}: {error}",
+                            source_owner.local
+                        ))
+                    })?;
+                let target_topic_keys = target_topic_by_source
+                    .values()
+                    .copied()
+                    .collect::<FxHashSet<_>>();
+                let target_topics = original_topics
+                    .iter()
+                    .filter(|record| target_topic_keys.contains(&record.form_key))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let target_infos = plan
+                    .infos
+                    .iter()
+                    .filter(|(_, parent)| target_topic_keys.contains(parent))
+                    .map(|(record, parent)| (*parent, record.clone()))
+                    .collect::<Vec<_>>();
+                let suffix = if partition_count == 1 {
+                    String::new()
+                } else {
+                    format!("_Q{:06X}", source_owner.local)
+                };
+                let manifest = crate::fnv_legacy_scripting::scene::emit_fo4_scene_runtime(
+                    &scene_plan,
+                    target_topics,
+                    &target_infos,
+                    alias_by_speaker,
+                    &crate::fnv_legacy_scripting::scene::SceneRuntimeOptions {
+                        scene_editor_id: format!(
+                            "{}_VTechatticupDialogueScene{suffix}",
+                            ctx.mod_prefix
+                        ),
+                        branch_editor_id: format!(
+                            "{}_VTechatticupDialogueBranch{suffix}",
+                            ctx.mod_prefix
+                        ),
+                        quest_start_game_enabled: true,
+                        output_is_master,
+                    },
+                    &self.interner,
+                )
+                .map_err(|error| {
+                    FnvScriptingError::Translate(format!(
+                        "emit FO4 dialogue runtime for QUST {:06X}: {error}",
+                        source_owner.local
+                    ))
+                })?;
+                if manifest.action_topics.is_empty()
+                    || manifest.topic_runtime.len() != scene_plan.ordered_topics.len()
+                {
+                    return Err(FnvScriptingError::Translate(format!(
+                        "scene runtime manifest did not account for QUST {:06X}",
+                        source_owner.local
+                    )));
+                }
+                ctx.warnings.push(format!(
+                    "fnv_dialogue_scene_runtime:quest={:06X}:topics={}:edges={}:requires_seq={}",
+                    source_owner.local,
+                    scene_plan.ordered_topics.len(),
+                    scene_plan.edges.len(),
+                    manifest.requires_seq,
+                ));
+                plan.scene_manifest_records += manifest.topics.len() + 2;
+                emitted_records.extend(manifest.into_quest_child_write_order());
+            }
+            plan.topics = emitted_records;
+        }
+
+        if dedicated_contract.route_to_scene {
+            return Err(FnvScriptingError::Translate(
+                "dedicated hostage greeting must not be routed through SCEN/DLBR".to_string(),
+            ));
+        }
+        if dedicated_contract.target_info_count as usize != dedicated_contract.responses.len()
+            || dedicated_contract.responses.len() != 3
+        {
+            return Err(FnvScriptingError::Translate(format!(
+                "dedicated hostage greeting expected three INFO responses, observed metadata {}/{}",
+                dedicated_contract.target_info_count,
+                dedicated_contract.responses.len()
+            )));
+        }
+        let source_topic_form_key = parse_legacy_form_key_text(
+            &dedicated_contract.source_dialogue_form_key,
+            &self.interner,
+        )
+        .map_err(|error| {
+            FnvScriptingError::Setup(format!(
+                "dedicated greeting source DIAL {} is invalid: {error}",
+                dedicated_contract.source_dialogue_form_key
+            ))
+        })?;
+        let source_topic = read_record_relayout_by_form_key(
+            self.source_handle_id,
+            &source_topic_form_key,
+            &self.schema_source,
+            &self.interner,
+            None,
+        )
+        .map_err(|error| {
+            FnvScriptingError::Setup(format!(
+                "read dedicated greeting DIAL {}: {error}",
+                dedicated_contract.source_dialogue_form_key
+            ))
+        })?;
+        let source_owner =
+            parse_legacy_form_key_text(&dedicated_contract.owner_quest_form_key, &self.interner)
+                .map_err(|error| {
+                    FnvScriptingError::Setup(format!(
+                        "dedicated greeting owner {} is invalid: {error}",
+                        dedicated_contract.owner_quest_form_key
+                    ))
+                })?;
+        let target_owner = source_to_target
+            .get(&source_owner)
+            .copied()
+            .ok_or_else(|| {
+                FnvScriptingError::Translate(format!(
+                    "dedicated greeting owner {} has no target mapping",
+                    dedicated_contract.owner_quest_form_key
+                ))
+            })?;
+        let source_speaker = parse_legacy_form_key_text(
+            &dedicated_contract.condition_actor_form_key,
+            &self.interner,
+        )
+        .map_err(|error| {
+            FnvScriptingError::Setup(format!(
+                "dedicated greeting speaker {} is invalid: {error}",
+                dedicated_contract.condition_actor_form_key
+            ))
+        })?;
+        if !source_to_target.contains_key(&source_speaker) {
+            return Err(FnvScriptingError::Translate(format!(
+                "dedicated greeting speaker {} has no target mapping",
+                dedicated_contract.condition_actor_form_key
+            )));
+        }
+        let source_voice_type = parse_legacy_form_key_text(
+            &dedicated_contract.source_voice_type_form_key,
+            &self.interner,
+        )
+        .map_err(|error| {
+            FnvScriptingError::Setup(format!(
+                "dedicated greeting VTYP {} is invalid: {error}",
+                dedicated_contract.source_voice_type_form_key
+            ))
+        })?;
+        let target_voice_type = source_to_target
+            .get(&source_voice_type)
+            .copied()
+            .ok_or_else(|| {
+                FnvScriptingError::Translate(format!(
+                    "dedicated greeting VTYP {} has no target mapping",
+                    dedicated_contract.source_voice_type_form_key
+                ))
+            })?;
+        let source_voice_record = read_record_relayout_by_form_key(
+            self.source_handle_id,
+            &source_voice_type,
+            &self.schema_source,
+            &self.interner,
+            None,
+        )
+        .map_err(|error| {
+            FnvScriptingError::Setup(format!(
+                "read dedicated greeting VTYP {}: {error}",
+                dedicated_contract.source_voice_type_form_key
+            ))
+        })?;
+        let source_voice_editor_id = source_voice_record
+            .eid
+            .and_then(|eid| self.interner.resolve(eid))
+            .ok_or_else(|| {
+                FnvScriptingError::Translate(
+                    "dedicated greeting source VTYP has no EditorID".to_string(),
+                )
+            })?
+            .to_string();
+        let dedicated_targets = self.fnv_dedicated_topic_targets.ok_or_else(|| {
+            FnvScriptingError::Setup(
+                "dedicated greeting target identities were not allocated".to_string(),
+            )
+        })?;
+        let mut source_infos = Vec::with_capacity(3);
+        let mut target_infos = Vec::with_capacity(3);
+        for response in &dedicated_contract.responses {
+            let source_info =
+                parse_legacy_form_key_text(&response.source_info_form_key, &self.interner)
+                    .map_err(|error| {
+                        FnvScriptingError::Setup(format!(
+                            "dedicated greeting INFO {} is invalid: {error}",
+                            response.source_info_form_key
+                        ))
+                    })?;
+            let (record, source_text) = typed_info_records
+                .iter()
+                .find(|(record, _)| record.form_key == source_info)
+                .ok_or_else(|| {
+                    FnvScriptingError::Setup(format!(
+                        "dedicated greeting INFO {} was not loaded from the exact closure",
+                        response.source_info_form_key
+                    ))
+                })?;
+            let target_info = record_identities
+                .iter()
+                .find(|identity| {
+                    identity.signature == "INFO"
+                        && identity
+                            .source_form_key_text
+                            .eq_ignore_ascii_case(source_text)
+                })
+                .map(|identity| identity.target_form_key)
+                .ok_or_else(|| {
+                    FnvScriptingError::Setup(format!(
+                        "dedicated greeting INFO {} has no target identity",
+                        response.source_info_form_key
+                    ))
+                })?;
+            source_infos.push(record.clone());
+            target_infos.push(target_info);
+            plan.direct_sources.insert(source_text.to_ascii_uppercase());
+        }
+        let voices = (0..3)
+            .map(|_| crate::fnv_legacy_scripting::dialogue::VoiceResolution {
+                source_speaker,
+                target_voice_type,
+                source_plugin: source_plugin.to_string(),
+                source_voice_type: source_voice_editor_id.clone(),
+                target_plugin: self.config.output_plugin_name.clone(),
+                target_voice_type_edid: source_voice_editor_id.clone(),
+            })
+            .collect::<Vec<_>>();
+        let projection = {
+            let state = self.mapper_state.as_mut().expect("checked above");
+            let mut mapper = FormKeyMapper::from_state(state, &self.interner);
+            crate::fnv_legacy_scripting::dialogue::lower_hostage_greeting_projection(
+                &source_topic,
+                &source_infos,
+                dedicated_targets.keyword,
+                dedicated_targets.topic,
+                target_owner,
+                &target_infos,
+                source_voice_type,
+                &voices,
+                &mut mapper,
+                &self.interner,
+            )
+            .map_err(|error| {
+                FnvScriptingError::Translate(format!(
+                    "dedicated hostage greeting projection: {error}"
+                ))
+            })?
+        };
+        if projection.topic_children != target_infos {
+            return Err(FnvScriptingError::Translate(
+                "dedicated hostage greeting INFO topology changed during projection".to_string(),
+            ));
+        }
+        let keyword_form_key = projection.keyword.form_key;
+        let topic_form_key = projection.topic.record.form_key;
+        for (intent, target) in [
+            (
+                crate::fnv_legacy_scripting::component::FnvQuestSyntheticIntent::DedicatedGreetingKeyword,
+                keyword_form_key,
+            ),
+            (
+                crate::fnv_legacy_scripting::component::FnvQuestSyntheticIntent::DedicatedGreetingTopic,
+                topic_form_key,
+            ),
+        ] {
+            let rendered = form_key_to_legacy_str(target, &self.interner).ok_or_else(|| {
+                FnvScriptingError::Setup(
+                    "generated FNV dedicated greeting target cannot be rendered".to_string(),
+                )
+            })?;
+            plan.synthetic_targets
+                .insert(intent.record_key(), intent.target_key(rendered));
+        }
+        plan.dedicated_runtime_records.insert(keyword_form_key);
+        plan.dedicated_runtime_records.insert(topic_form_key);
+        plan.top_level_records.push(projection.keyword);
+        plan.topics.push(projection.topic.record);
+        for lowered in projection.infos {
+            plan.dedicated_runtime_records
+                .insert(lowered.record.form_key);
+            plan.voice_manifest
+                .entries
+                .extend(lowered.voice_requests.into_iter().map(|request| {
+                    crate::fnv_legacy_scripting::voice::FnvVoiceManifestEntry::new_with_provenance(
+                        "FalloutNV.esm",
+                        "fnv-base",
+                        request.source_voice_type,
+                        request.target_plugin,
+                        request.target_voice_type_edid,
+                        request.info_form_id,
+                        request.response_index,
+                        request.transcript,
+                    )
+                }));
+            plan.infos.push((lowered.record, topic_form_key));
+        }
+        let keyword_target =
+            form_key_to_legacy_str(keyword_form_key, &self.interner).ok_or_else(|| {
+                FnvScriptingError::Setup(
+                    "dedicated greeting Keyword target cannot be rendered".to_string(),
+                )
+            })?;
+        bind_generated_scpt_property_target(
+            &mut ctx.translated_scripts,
+            dedicated_source_script,
+            dedicated_script_class,
+            &dedicated_contract.keyword_property_name,
+            "Keyword",
+            &keyword_target,
+        )?;
+        let pending_property_names = self
+            .fnv_pending_scpt_properties
+            .iter()
+            .map(|pending| pending.property.name.as_str())
+            .collect::<FxHashSet<_>>();
+        let required_property_names = [
+            "TecMineHostageEscapeData",
+            "TechaticupNCRRenoldsDialoguePackageData",
+        ]
+        .into_iter()
+        .collect::<FxHashSet<_>>();
+        if self.fnv_pending_scpt_properties.len() != 2
+            || pending_property_names != required_property_names
+        {
+            return Err(FnvScriptingError::Translate(format!(
+                "strict FNV quest slice expected exact dynamic actor property bindings, observed {:?}",
+                pending_property_names
+            )));
+        }
+        if plan.dedicated_runtime_records.len() != 5 {
+            return Err(FnvScriptingError::Translate(format!(
+                "dedicated hostage greeting expected five generated records, observed {}",
+                plan.dedicated_runtime_records.len()
+            )));
+        }
+        Ok(plan)
+    }
+
+    /// Run the FNV legacy-scripting translation pass for records deferred by
+    /// `translate_all`. Translated payloads are written straight to the target
+    /// plugin via `insert_authoring_record_value`; the returned
     /// `FnvLegacyScriptingResult` carries only counts, PSC texts, voice paths,
     /// and warnings.
     ///
-    /// `mod_prefix` — the mod author prefix (e.g. `"B21"`).
-    /// `source_plugin` — source plugin filename (e.g. `"FNV.esm"`).
-    /// `quest_records`, `scene_records`, `info_records` — slices of
-    ///   `(record_dict, source_form_key)` pairs, typically produced by reading
-    ///   the deferred FormKeys from the source handle.
-    ///
+    /// Each `*_records` slice holds `(record_dict, source_form_key)` pairs,
+    /// usually read from the deferred FormKeys on the source handle.
     pub fn run_fnv_legacy_scripting(
         &mut self,
         mod_prefix: &str,
@@ -6392,20 +14247,117 @@ impl ConversionRun {
         scene_records: &[(serde_json::Value, String)],
         info_records: &[(serde_json::Value, String)],
         dial_records: &[(serde_json::Value, String)],
+        record_identities: &[LegacyRecordIdentity],
         // Pairs of (target_form_key, source_scpt_form_key) mapping non-scripting
         // records (WEAP, NPC_, etc.) to their SCRI targets. Built by the Python
         // caller from source records' SCRI subrecords + FormKey mapper.
         scri_links: &[(String, String)],
+        typed_quest_records: &[(Record, String)],
+        typed_scene_records: &[(Record, String)],
+        typed_info_records: &[(Record, String)],
+        typed_dial_records: &[(Record, String)],
     ) -> Result<FnvLegacyScriptingResult, FnvScriptingError> {
+        let _ = (typed_scene_records, typed_info_records, typed_dial_records);
         let mut ctx =
             FnvLegacyScriptingContext::new(mod_prefix, source_plugin, self.config.strict_mapper);
-
-        crate::fnv_legacy_scripting::translate_all_scpt(&mut ctx, script_records);
+        let source_plugin_sym = self.interner.intern(source_plugin);
+        let mapper_state = self.mapper_state.as_ref().ok_or_else(|| {
+            FnvScriptingError::Setup("SCPT attachment inference requires mapper state".to_string())
+        })?;
+        let mut attachment_evidence = HashMap::<
+            String,
+            Vec<crate::fnv_legacy_scripting::script_synthesizer::ScptAttachmentEvidence>,
+        >::new();
+        for (target_text, source_scpt_text) in scri_links {
+            let target =
+                parse_legacy_form_key_text(target_text, &self.interner).map_err(|error| {
+                    FnvScriptingError::Setup(format!(
+                        "SCPT attachment target {target_text} is invalid: {error}"
+                    ))
+                })?;
+            let source_targets = mapper_state
+                .source_to_target
+                .iter()
+                .filter_map(|(source, mapped)| {
+                    (*mapped == target && source.plugin == source_plugin_sym).then_some(*source)
+                })
+                .collect::<Vec<_>>();
+            let [source_target] = source_targets.as_slice() else {
+                return Err(FnvScriptingError::Setup(format!(
+                    "SCPT attachment target {target_text} has {} exact source identities",
+                    source_targets.len()
+                )));
+            };
+            let source_target_text = form_key_to_legacy_str(*source_target, &self.interner)
+                .ok_or_else(|| {
+                    FnvScriptingError::Setup(format!(
+                        "SCPT attachment source {:06X} cannot be rendered",
+                        source_target.local
+                    ))
+                })?;
+            let source_target_record = crate::source_read::read_record_relayout_by_form_key(
+                self.source_handle_id,
+                source_target,
+                &self.schema_source,
+                &self.interner,
+                None,
+            )
+            .map_err(|error| {
+                FnvScriptingError::Setup(format!(
+                    "read SCPT attachment source {source_target_text}: {error}"
+                ))
+            })?;
+            attachment_evidence
+                .entry(source_scpt_text.to_ascii_uppercase())
+                .or_default()
+                .push(
+                    crate::fnv_legacy_scripting::script_synthesizer::ScptAttachmentEvidence {
+                        source_target_form_key: source_target_text,
+                        target_signature: source_target_record.sig.as_str().to_string(),
+                    },
+                );
+        }
+        for (record, form_key) in script_records {
+            let attachments = attachment_evidence
+                .get(&form_key.to_ascii_uppercase())
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            match crate::fnv_legacy_scripting::script_synthesizer::translate_scpt_record_with_attachments(
+                record,
+                &ctx.mod_prefix,
+                form_key,
+                attachments,
+            ) {
+                Ok(translated) => ctx.translated_scripts.push(translated),
+                Err(error) => ctx.skipped_records.push((
+                    "SCPT".to_string(),
+                    record
+                        .get("eid")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("<unknown>")
+                        .to_string(),
+                    error.to_string(),
+                )),
+            }
+        }
+        if self.config.fnv_quest_slice {
+            ensure_no_deferred_translation_failures(&ctx.skipped_records)?;
+        }
         translate_all_qust(&mut ctx, quest_records);
         translate_all_scen(&mut ctx, scene_records);
         translate_all_dial(&mut ctx, info_records);
+        let alias_by_speaker = if self.config.fnv_quest_slice {
+            self.lower_fnv_quest_slice_quests(
+                &mut ctx,
+                quest_records,
+                typed_quest_records,
+                record_identities,
+            )?
+        } else {
+            HashMap::new()
+        };
 
-        // ── DIAL: group by speaker + emit stripped payloads ───────────────────
+        // ── DIAL: group by quest owner + emit stripped payloads ───────────────
         // Mirrors Python `phases.py:149–162`: group_dial_records once for the
         // result side-channel, then re-emit each DIAL record as a payload with
         // legacy-scripting subrecords stripped (SCTX/VTCK/VMAD/...).
@@ -6413,15 +14365,60 @@ impl ConversionRun {
             dial_records.iter().map(|(v, _)| v.clone()).collect();
         let dialogue_groups = crate::fnv_legacy_scripting::dialogue::group_dial_records(&dial_only);
         crate::fnv_legacy_scripting::dialogue::accumulate_dial_records(&mut ctx, dial_records);
+        let typed_dialogue_plan = if self.config.fnv_quest_slice {
+            ctx.translated_record_payloads
+                .retain(|payload| !matches!(payload.signature.as_str(), "DIAL" | "INFO"));
+            self.plan_fnv_quest_slice_dialogue(
+                &mut ctx,
+                typed_info_records,
+                typed_dial_records,
+                record_identities,
+                source_plugin,
+                &alias_by_speaker,
+            )?
+        } else {
+            TypedFnvDialoguePlan::default()
+        };
+
+        ensure_no_deferred_translation_failures(&ctx.skipped_records)?;
 
         // ── Pre-mutate payload FormKeys via the mapper ─────────────────────
-        // Mirrors Python `_rewrite_payload_formkeys`: cross-plugin refs that
-        // point at records translated during this run (which live in the
-        // output plugin with freshly-allocated local IDs not on any master
-        // table) need to be remapped before the encoder runs. The mapper
-        // state may be absent for runs that never invoked translate_all;
-        // in that case the rewrite is a no-op.
-        let mut payloads = std::mem::take(&mut ctx.translated_record_payloads);
+        // Refs to records translated in this run (fresh local ids in the
+        // output plugin, on no master table) must be remapped before encoding.
+        // Without mapper state (translate_all never ran) this is a no-op.
+        let mut identities = record_identities
+            .iter()
+            .map(|identity| (identity.source_form_key_text.clone(), identity.clone()))
+            .collect::<HashMap<_, _>>();
+        let mut payloads = std::mem::take(&mut ctx.translated_record_payloads)
+            .into_iter()
+            .map(|payload| {
+                let identity = identities.remove(&payload.source_form_key).ok_or_else(|| {
+                    FnvScriptingError::Setup(format!(
+                        "translated {} {} has no deferred identity",
+                        payload.signature, payload.source_form_key
+                    ))
+                })?;
+                PreparedLegacyRecordPayload::from_translated(payload, identity)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let missing_record_identities = identities
+            .values()
+            .filter(|identity| {
+                identity.signature != "SCPT"
+                    && !typed_dialogue_plan
+                        .direct_sources
+                        .contains(&identity.source_form_key_text.to_ascii_uppercase())
+            })
+            .map(|identity| format!("{} {}", identity.signature, identity.source_form_key_text))
+            .collect::<Vec<_>>();
+        if !missing_record_identities.is_empty() {
+            return Err(FnvScriptingError::Setup(format!(
+                "deferred identities produced no translated payload: {}",
+                missing_record_identities.join(", ")
+            )));
+        }
+        payloads.sort_by_key(PreparedLegacyRecordPayload::write_rank);
         let mut formkeys_rewritten: u32 = 0;
         let mut scene_pnam_dropped: u32 = 0;
         if let Some(state) = self.mapper_state.as_mut() {
@@ -6432,7 +14429,7 @@ impl ConversionRun {
                         &mut payload.translated_record,
                         &mapper,
                     );
-                if payload.signature == "SCEN" {
+                if payload.identity.signature == "SCEN" {
                     scene_pnam_dropped +=
                         crate::fnv_legacy_scripting::fk_rewrite::drop_unmapped_scene_parent(
                             &mut payload.translated_record,
@@ -6441,10 +14438,15 @@ impl ConversionRun {
                 }
             }
         }
-        if formkeys_rewritten > 0 || scene_pnam_dropped > 0 {
+        if scene_pnam_dropped > 0 {
+            return Err(FnvScriptingError::Setup(format!(
+                "{scene_pnam_dropped} translated SCEN parent reference(s) were unmapped"
+            )));
+        }
+        if formkeys_rewritten > 0 {
             let warning = format!(
-                "fnv_legacy_scripting:fk_rewrite: rewrote {} ref(s), dropped {} SCEN PNAM",
-                formkeys_rewritten, scene_pnam_dropped,
+                "fnv_legacy_scripting:fk_rewrite: rewrote {} ref(s)",
+                formkeys_rewritten,
             );
             let sym = self.interner.intern(&warning);
             self.warnings.push(sym);
@@ -6458,40 +14460,170 @@ impl ConversionRun {
         // become correctly encoded master references when the source plugin
         // is on the target's master list.
         let mut records_written: u32 = 0;
-        let mut records_failed: u32 = 0;
+        let records_failed: u32 = 0;
         for payload in payloads {
-            match esp_authoring_core::plugin_runtime::insert_authoring_record_value(
+            esp_authoring_core::plugin_runtime::insert_authoring_record_value(
                 self.target_handle_id,
                 &payload.translated_record,
-            ) {
-                Ok(_form_key) => {
-                    records_written += 1;
-                    for w in &payload.warnings {
-                        let sym = self.interner.intern(w.as_str());
-                        self.warnings.push(sym);
+            )
+            .map_err(|err| {
+                let message = Python::attach(|py| err.value(py).to_string());
+                FnvScriptingError::Setup(format!(
+                    "insert {} {} as {}: {message}",
+                    payload.identity.signature,
+                    payload.identity.source_form_key_text,
+                    payload.identity.target_form_key_text
+                ))
+            })?;
+            let target_form_id = encode_form_key_for_handle(
+                self.target_handle_id,
+                payload.identity.target_form_key,
+                &self.interner,
+            )
+            .map_err(|error| FnvScriptingError::Setup(error.to_string()))?;
+            let placement = match payload.identity.topology {
+                LegacyRecordTopology::TopLevel => ExistingAuthoringRecordPlacement::TopLevel,
+                LegacyRecordTopology::QuestChild { target_parent, .. } => {
+                    ExistingAuthoringRecordPlacement::QuestChild {
+                        parent_quest_form_id: encode_form_key_for_handle(
+                            self.target_handle_id,
+                            target_parent,
+                            &self.interner,
+                        )
+                        .map_err(|error| FnvScriptingError::Setup(error.to_string()))?,
                     }
                 }
-                Err(err) => {
-                    records_failed += 1;
-                    // PyErr -> string requires the GIL; fall back to the type
-                    // name when we can't attach.
-                    let msg = Python::attach(|py| err.value(py).to_string());
-                    let warning = format!(
-                        "fnv_legacy_scripting:insert_authoring_record_value({} {}): {msg}",
-                        payload.signature, payload.source_form_key,
-                    );
-                    let sym = self.interner.intern(&warning);
-                    self.warnings.push(sym);
+                LegacyRecordTopology::TopicChild { target_parent, .. } => {
+                    ExistingAuthoringRecordPlacement::TopicChild {
+                        parent_dialogue_form_id: encode_form_key_for_handle(
+                            self.target_handle_id,
+                            target_parent,
+                            &self.interner,
+                        )
+                        .map_err(|error| FnvScriptingError::Setup(error.to_string()))?,
+                    }
                 }
+            };
+            let placed =
+                relocate_authoring_record_native(self.target_handle_id, target_form_id, placement)
+                    .map_err(|error| {
+                        FnvScriptingError::Setup(format!(
+                            "place {} {}: {error}",
+                            payload.identity.signature, payload.identity.target_form_key_text
+                        ))
+                    })?;
+            if !placed {
+                return Err(FnvScriptingError::Setup(format!(
+                    "place {} {} failed: target parent is absent",
+                    payload.identity.signature, payload.identity.target_form_key_text
+                )));
             }
+            records_written += 1;
+            for warning in &payload.warnings {
+                let symbol = self.interner.intern(warning);
+                self.warnings.push(symbol);
+            }
+        }
+        let dedicated_runtime_records = typed_dialogue_plan.dedicated_runtime_records.clone();
+        let expected_dedicated_records = dedicated_runtime_records.len();
+        let mut dedicated_records_written = 0usize;
+        for record in typed_dialogue_plan.top_level_records {
+            let target = form_key_to_legacy_str(record.form_key, &self.interner)
+                .unwrap_or_else(|| format!("{:06X}", record.form_key.local));
+            if !dedicated_runtime_records.contains(&record.form_key) {
+                return Err(FnvScriptingError::Setup(format!(
+                    "write dedicated top-level record {target}: identity was not manifested"
+                )));
+            }
+            add_record_native(
+                self.target_handle_id,
+                record,
+                &self.schema_target,
+                &self.interner,
+            )
+            .map_err(|error| {
+                FnvScriptingError::Setup(format!(
+                    "write dedicated top-level record {target}: {error}"
+                ))
+            })?;
+            records_written += 1;
+            dedicated_records_written += 1;
+        }
+        let expected_scene_records = typed_dialogue_plan.scene_manifest_records;
+        let mut scene_records_written = 0usize;
+        for topic in typed_dialogue_plan.topics {
+            let is_dedicated = dedicated_runtime_records.contains(&topic.form_key);
+            let target = form_key_to_legacy_str(topic.form_key, &self.interner)
+                .unwrap_or_else(|| format!("{:06X}", topic.form_key.local));
+            let inserted = add_quest_child_record_native(
+                self.target_handle_id,
+                topic,
+                &self.schema_target,
+                &self.interner,
+            )
+            .map_err(|error| {
+                FnvScriptingError::Setup(format!("write typed DIAL {target}: {error}"))
+            })?;
+            if !inserted {
+                return Err(FnvScriptingError::Setup(format!(
+                    "write typed DIAL {target}: target quest parent is absent"
+                )));
+            }
+            records_written += 1;
+            if is_dedicated {
+                dedicated_records_written += 1;
+            } else {
+                scene_records_written += 1;
+            }
+        }
+        if scene_records_written != expected_scene_records {
+            return Err(FnvScriptingError::Setup(format!(
+                "scene runtime manifest expected {expected_scene_records} quest children but wrote {scene_records_written}"
+            )));
+        }
+        for (info, target_parent) in typed_dialogue_plan.infos {
+            let is_dedicated = dedicated_runtime_records.contains(&info.form_key);
+            let target = form_key_to_legacy_str(info.form_key, &self.interner)
+                .unwrap_or_else(|| format!("{:06X}", info.form_key.local));
+            let parent_form_id =
+                encode_form_key_for_handle(self.target_handle_id, target_parent, &self.interner)
+                    .map_err(|error| FnvScriptingError::Setup(error.to_string()))?;
+            let inserted = add_topic_child_record_native(
+                self.target_handle_id,
+                info,
+                parent_form_id,
+                &self.schema_target,
+                &self.interner,
+            )
+            .map_err(|error| {
+                FnvScriptingError::Setup(format!("write typed INFO {target}: {error}"))
+            })?;
+            if !inserted {
+                return Err(FnvScriptingError::Setup(format!(
+                    "write typed INFO {target}: target topic parent is absent"
+                )));
+            }
+            records_written += 1;
+            if is_dedicated {
+                dedicated_records_written += 1;
+            }
+        }
+        if expected_dedicated_records != 5
+            || dedicated_records_written != expected_dedicated_records
+        {
+            return Err(FnvScriptingError::Setup(format!(
+                "dedicated hostage greeting expected {expected_dedicated_records} manifested records and wrote {dedicated_records_written}; exact contract requires 5"
+            )));
         }
 
         // ── Emit .psc files for every translated script/fragment ──────────
         // Mirrors Python's inline file writes in script_translator.py /
         // quest.py / scene.py / dialogue.py. When `mod_path` is empty (e.g.
-        // handle-only tests) emission is a no-op and every record is counted
-        // as skipped. Errors are accumulated into ctx.warnings rather than
-        // failing the run.
+        // handle-only tests) emission is a no-op and every PSC candidate is
+        // counted as skipped. Emission errors terminate the legacy scripting phase.
+        if self.config.fnv_quest_slice {
+            validate_fnv_quest_slice_info_fragment_contract(&ctx.translated_infos)?;
+        }
         let psc_report = crate::fnv_legacy_scripting::psc_emission::emit_psc_files(
             std::path::Path::new(mod_path),
             &ctx.translated_scripts,
@@ -6499,9 +14631,11 @@ impl ConversionRun {
             &ctx.translated_infos,
             &ctx.translated_scenes,
         );
-        for err in &psc_report.errors {
-            let sym = self.interner.intern(err.as_str());
-            self.warnings.push(sym);
+        if !psc_report.errors.is_empty() {
+            return Err(FnvScriptingError::Setup(format!(
+                "PSC emission failed: {}",
+                psc_report.errors.join("; ")
+            )));
         }
 
         // Forward accumulated synthesizer warnings into the run's warning buffer.
@@ -6511,22 +14645,12 @@ impl ConversionRun {
         }
 
         // ── VMAD intent computation ─────────────────────────────────────────
-        // Pair SCRI links with translated SCPT records, then attach VMAD
-        // directly to the target handle.
-        let vmad_targets: Vec<crate::fnv_legacy_scripting::vmad::VmadTarget> = scri_links
-            .iter()
-            .map(
-                |(target_fk, source_scpt_fk)| crate::fnv_legacy_scripting::vmad::VmadTarget {
-                    target_form_key: target_fk.clone(),
-                    source_scpt_form_key: source_scpt_fk.clone(),
-                },
-            )
-            .collect();
-        let vmad_intents = crate::fnv_legacy_scripting::vmad::build_scpt_vmad_intents(
-            &vmad_targets,
-            &ctx.translated_scripts,
-        );
-        let vmad_attached_in_rust = self.attach_vmad_intents_to_target_handle(&vmad_intents)?;
+        // Retain SCRI links and translated SCPT records until the compile phase
+        // supplies positive PEX evidence through reconciliation.
+        self.fnv_pending_vmad_targets = scri_links.to_vec();
+        self.fnv_pending_vmad_scripts = ctx.translated_scripts.clone();
+        let vmad_intents = Vec::new();
+        let vmad_attached_in_rust = false;
 
         Ok(FnvLegacyScriptingResult {
             translated_scripts: ctx.translated_scripts,
@@ -6538,11 +14662,16 @@ impl ConversionRun {
             records_failed,
             psc_files_written: psc_report.files_written,
             psc_files_skipped: psc_report.files_skipped,
+            generated_psc_classes: psc_report.generated_psc_classes,
+            voice_manifest: typed_dialogue_plan.voice_manifest,
             skipped_records: ctx.skipped_records,
             lip_regeneration_needed: ctx.lip_regeneration_needed,
             warnings: ctx.warnings,
             vmad_intents,
             vmad_attached_in_rust,
+            quest_runtime_component_plans: Vec::new(),
+            quest_runtime_expected_receipts: Vec::new(),
+            quest_runtime_synthetic_targets: typed_dialogue_plan.synthetic_targets,
         })
     }
 
@@ -6552,62 +14681,340 @@ impl ConversionRun {
         source_plugin: &str,
         mod_path: &str,
     ) -> Result<FnvLegacyScriptingResult, FnvScriptingError> {
-        crate::fnv_legacy_scripting::from_run::run_from_deferred(
+        let result = crate::fnv_legacy_scripting::from_run::run_from_deferred(
             self,
             mod_prefix,
             source_plugin,
             mod_path,
-        )
+        )?;
+        self.fnv_quest_runtime_component_plans = result.quest_runtime_component_plans.clone();
+        self.fnv_quest_runtime_expected_receipts = result.quest_runtime_expected_receipts.clone();
+        self.fnv_quest_runtime_synthetic_targets = result.quest_runtime_synthetic_targets.clone();
+        self.fnv_quest_runtime_compiler_evidence.clear();
+        self.fnv_quest_runtime_receipts_finalized = false;
+        Ok(result)
     }
 
-    fn attach_vmad_intents_to_target_handle(
+    pub fn reconcile_fnv_compiled_scripts(
         &mut self,
-        intents: &[crate::fnv_legacy_scripting::vmad::ScriptBindingIntent],
-    ) -> Result<bool, FnvScriptingError> {
-        if intents.is_empty() {
-            return Ok(false);
+        evidence: &[crate::fnv_legacy_scripting::vmad::CompiledScriptEvidence],
+    ) -> Result<
+        (
+            Vec<crate::fnv_legacy_scripting::vmad::ScriptBindingIntent>,
+            bool,
+            u32,
+            u32,
+        ),
+        FnvScriptingError,
+    > {
+        let targets = self
+            .fnv_pending_vmad_targets
+            .iter()
+            .map(|(target_form_key, source_scpt_form_key)| {
+                crate::fnv_legacy_scripting::vmad::VmadTarget {
+                    target_form_key: target_form_key.clone(),
+                    source_scpt_form_key: source_scpt_form_key.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut intents =
+            crate::fnv_legacy_scripting::vmad::build_scpt_vmad_intents_with_compiled_evidence(
+                &targets,
+                &self.fnv_pending_vmad_scripts,
+                evidence,
+            )
+            .map_err(|error| FnvScriptingError::Setup(error.to_string()))?;
+        for pending in &self.fnv_pending_scpt_properties {
+            let matching = intents
+                .iter()
+                .enumerate()
+                .filter_map(|(index, intent)| {
+                    intent
+                        .script_class_name
+                        .eq_ignore_ascii_case(&pending.script_class_name)
+                        .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            let [intent_index] = matching.as_slice() else {
+                return Err(FnvScriptingError::Setup(format!(
+                    "SCPT {} dynamic package alias property {} expected one VMAD target, observed {}",
+                    pending.source_scpt_form_key,
+                    pending.property.name,
+                    matching.len()
+                )));
+            };
+            intents[*intent_index]
+                .properties
+                .push(pending.property.clone());
         }
-        let mut attached = 0u32;
-        for intent in intents {
-            let mut record =
-                match esp_authoring_core::plugin_runtime::plugin_handle_read_authoring_record_value_json(
-                    self.target_handle_id,
-                    &intent.target_form_key,
-                ) {
-                    Ok(Some(record)) => record,
-                    Ok(None) => {
-                        let warning = format!(
-                            "fnv_legacy_scripting:vmad_target_missing:{}",
-                            intent.target_form_key
+        let successful = evidence
+            .iter()
+            .filter(|item| item.compiled_success && !item.relative_pex_path.trim().is_empty())
+            .map(|item| (item.class_name.to_ascii_lowercase(), item))
+            .collect::<HashMap<_, _>>();
+        for binding in self.fnv_pending_helper_scripts.clone() {
+            let compiled = successful
+                .get(&binding.script_class_name.to_ascii_lowercase())
+                .ok_or_else(|| {
+                    FnvScriptingError::Setup(format!(
+                        "required FNV slice helper {} has no successful compiler evidence",
+                        binding.script_class_name
+                    ))
+                })?;
+            intents.push(crate::fnv_legacy_scripting::vmad::ScriptBindingIntent {
+                target_form_key: binding.target_form_key,
+                script_class_name: binding.script_class_name,
+                properties: binding.properties,
+                fragment_kind: crate::fnv_legacy_scripting::vmad::FragmentKind::Object,
+                compiled_evidence: (*compiled).clone(),
+            });
+        }
+        let mut fragment_payloads = Vec::new();
+        for binding in self.fnv_pending_quest_fragments.clone() {
+            let compiled = match successful.get(&binding.script_class_name.to_ascii_lowercase()) {
+                Some(compiled) => *compiled,
+                None if self.config.fnv_quest_slice => {
+                    return Err(FnvScriptingError::Setup(format!(
+                        "required quest fragment {} has no successful compiler evidence",
+                        binding.script_class_name
+                    )));
+                }
+                None => continue,
+            };
+            for alias_script in binding.aliases.iter().flat_map(|alias| &alias.scripts) {
+                if !successful.contains_key(&alias_script.script_class_name.to_ascii_lowercase()) {
+                    return Err(FnvScriptingError::Setup(format!(
+                        "required quest alias helper {} has no successful compiler evidence",
+                        alias_script.script_class_name
+                    )));
+                }
+            }
+            let payload = crate::fnv_legacy_scripting::vmad::synthesize_quest_vmad_with_properties(
+                &binding.script_class_name,
+                &binding.fragments,
+                &binding.fragment_properties,
+                &binding.aliases,
+                compiled,
+            )
+            .map_err(|error| FnvScriptingError::Setup(error.to_string()))?;
+            fragment_payloads.push((binding.target_form_key, payload));
+        }
+        for binding in self.fnv_pending_info_fragments.clone() {
+            let compiled = match successful.get(&binding.script_class_name.to_ascii_lowercase()) {
+                Some(compiled) => *compiled,
+                None if self.config.fnv_quest_slice => {
+                    return Err(FnvScriptingError::Setup(format!(
+                        "required INFO fragment {} has no successful compiler evidence",
+                        binding.script_class_name
+                    )));
+                }
+                None => continue,
+            };
+            let payload =
+                crate::fnv_legacy_scripting::vmad::synthesize_topic_info_vmad_with_properties(
+                    &binding.script_class_name,
+                    &binding.phases,
+                    &binding.fragment_properties,
+                    compiled,
+                )
+                .map_err(|error| FnvScriptingError::Setup(error.to_string()))?;
+            fragment_payloads.push((binding.target_form_key, payload));
+        }
+        for binding in self.fnv_pending_scene_fragments.clone() {
+            let compiled = match successful.get(&binding.script_class_name.to_ascii_lowercase()) {
+                Some(compiled) => *compiled,
+                None if self.config.fnv_quest_slice => {
+                    return Err(FnvScriptingError::Setup(format!(
+                        "required SCEN fragment {} has no successful compiler evidence",
+                        binding.script_class_name
+                    )));
+                }
+                None => continue,
+            };
+            let payload = crate::fnv_legacy_scripting::vmad::synthesize_scene_vmad(
+                &binding.script_class_name,
+                binding.action_count,
+                compiled,
+            )
+            .map_err(|error| FnvScriptingError::Setup(error.to_string()))?;
+            fragment_payloads.push((binding.target_form_key, payload));
+        }
+        let output_plugin_name = crate::source_read::plugin_name_for_handle(self.target_handle_id)
+            .map_err(|error| {
+                FnvScriptingError::Setup(format!(
+                    "inspect output plugin identity before VMAD reconciliation: {error}"
+                ))
+            })?;
+        for intent in &mut intents {
+            let (_, canonical) = canonicalize_fnv_vmad_target(
+                &intent.target_form_key,
+                &output_plugin_name,
+                &self.interner,
+            )?;
+            intent.target_form_key = canonical;
+        }
+        for (target_form_key, _) in &mut fragment_payloads {
+            let (_, canonical) =
+                canonicalize_fnv_vmad_target(target_form_key, &output_plugin_name, &self.interner)?;
+            *target_form_key = canonical;
+        }
+        let mut existing_records = Vec::new();
+        let mut existing_legacy_placements = HashMap::new();
+        let mut seen_targets = FxHashSet::default();
+        for target_form_key in intents
+            .iter()
+            .map(|intent| intent.target_form_key.as_str())
+            .chain(fragment_payloads.iter().map(|(target, _)| target.as_str()))
+        {
+            if !seen_targets.insert(target_form_key.to_ascii_lowercase()) {
+                continue;
+            }
+            let (typed_target, canonical_target) =
+                canonicalize_fnv_vmad_target(target_form_key, &output_plugin_name, &self.interner)?;
+            match esp_authoring_core::plugin_runtime::plugin_handle_read_authoring_record_value_json(
+                self.target_handle_id,
+                &canonical_target,
+            ) {
+                Ok(Some(mut record)) => {
+                    let signature = crate::source_read::read_record_relayout_by_form_key(
+                        self.target_handle_id,
+                        &typed_target,
+                        &self.schema_target,
+                        &self.interner,
+                        None,
+                    )
+                    .map_err(|error| {
+                        FnvScriptingError::Setup(format!(
+                            "inspect VMAD target {canonical_target} signature: {error}"
+                        ))
+                    })?
+                    .sig
+                    .as_str()
+                    .to_string();
+                    let record_object = record.as_object_mut().ok_or_else(|| {
+                        FnvScriptingError::Setup(format!(
+                            "VMAD target {canonical_target} authoring payload is not an object"
+                        ))
+                    })?;
+                    if let Some(existing) = record_object.get("signature") {
+                        if existing.as_str() != Some(signature.as_str()) {
+                            return Err(FnvScriptingError::Setup(format!(
+                                "VMAD target {canonical_target} signature changed from {signature} to {existing}"
+                            )));
+                        }
+                    } else {
+                        record_object.insert(
+                            "signature".to_string(),
+                            serde_json::Value::String(signature.clone()),
                         );
-                        let sym = self.interner.intern(&warning);
-                        self.warnings.push(sym);
-                        continue;
                     }
-                    Err(err) => {
-                        return Err(FnvScriptingError::Setup(format!(
-                            "vmad read {}: {err}",
-                            intent.target_form_key
-                        )));
+                    if matches!(
+                        signature.as_str(),
+                        "QUST" | "DIAL" | "INFO" | "SCEN" | "DLBR"
+                    ) {
+                        let target_form_id = encode_form_key_for_handle(
+                            self.target_handle_id,
+                            typed_target,
+                            &self.interner,
+                        )
+                        .map_err(|error| FnvScriptingError::Setup(error.to_string()))?;
+                        let placement = existing_authoring_record_placement_native(
+                            self.target_handle_id,
+                            target_form_id,
+                        )
+                        .map_err(|error| {
+                            FnvScriptingError::Setup(format!(
+                                "inspect VMAD target {canonical_target} topology: {error}"
+                            ))
+                        })?;
+                        existing_legacy_placements
+                            .insert(canonical_target.to_ascii_lowercase(), placement);
                     }
-                };
-            crate::fnv_legacy_scripting::vmad::attach_vmad_to_record(&mut record, intent)
-                .map_err(|err| FnvScriptingError::Setup(err.to_string()))?;
+                    existing_records.push((canonical_target, record));
+                }
+                Ok(None) => {
+                    return Err(FnvScriptingError::Setup(format!(
+                        "required VMAD target missing before reconciliation: {canonical_target}"
+                    )));
+                }
+                Err(error) => {
+                    return Err(FnvScriptingError::Setup(format!(
+                        "prevalidate VMAD target {canonical_target}: {error}"
+                    )));
+                }
+            }
+        }
+        let record_updates =
+            prebuild_fnv_vmad_record_updates(existing_records, &intents, &fragment_payloads)?;
+        for (target_form_key, record) in record_updates {
             esp_authoring_core::plugin_runtime::plugin_handle_replace_authoring_record_value(
                 self.target_handle_id,
                 &record,
             )
-            .map_err(|err| {
-                FnvScriptingError::Setup(format!("vmad replace {}: {err}", intent.target_form_key))
+            .map_err(|error| {
+                FnvScriptingError::Setup(format!("vmad replace {target_form_key}: {error}"))
             })?;
-            attached += 1;
+            if let Some(placement) = existing_legacy_placements
+                .get(&target_form_key.to_ascii_lowercase())
+                .copied()
+            {
+                let (typed_target, _) = canonicalize_fnv_vmad_target(
+                    &target_form_key,
+                    &output_plugin_name,
+                    &self.interner,
+                )?;
+                let target_form_id =
+                    encode_form_key_for_handle(self.target_handle_id, typed_target, &self.interner)
+                        .map_err(|error| FnvScriptingError::Setup(error.to_string()))?;
+                let placed = relocate_authoring_record_native(
+                    self.target_handle_id,
+                    target_form_id,
+                    placement,
+                )
+                .map_err(|error| {
+                    FnvScriptingError::Setup(format!(
+                        "restore VMAD target {target_form_key} topology: {error}"
+                    ))
+                })?;
+                if !placed {
+                    return Err(FnvScriptingError::Setup(format!(
+                        "restore VMAD target {target_form_key} topology: target parent is absent"
+                    )));
+                }
+            }
         }
-        if attached > 0 {
-            let warning = format!("fnv_legacy_scripting:vmad_attached:{attached}");
+        let standalone_attached = !intents.is_empty();
+        if standalone_attached {
+            let warning = format!("fnv_legacy_scripting:vmad_attached:{}", intents.len());
             let sym = self.interner.intern(&warning);
             self.warnings.push(sym);
         }
-        Ok(attached > 0)
+        let fragment_bindings_attached = fragment_payloads.len() as u32;
+        let fragment_bindings_expected = (self.fnv_pending_quest_fragments.len()
+            + self.fnv_pending_info_fragments.len()
+            + self.fnv_pending_scene_fragments.len())
+            as u32;
+        let mut routed_plans = self.fnv_quest_runtime_component_plans.clone();
+        crate::fnv_legacy_scripting::component::apply_fnv_start_routes(&mut routed_plans)
+            .map_err(FnvScriptingError::Setup)?;
+        let routed_receipts = routed_plans
+            .iter()
+            .map(|plan| plan.expected_receipt.clone())
+            .collect::<Vec<_>>();
+        if routed_receipts != self.fnv_quest_runtime_expected_receipts {
+            return Err(FnvScriptingError::Setup(
+                "FNV quest start-route receipt changed after compiler/VMAD evidence".to_string(),
+            ));
+        }
+        self.fnv_quest_runtime_component_plans = routed_plans;
+        self.fnv_quest_runtime_compiler_evidence = evidence.to_vec();
+        self.fnv_quest_runtime_receipts_finalized = false;
+        Ok((
+            intents,
+            standalone_attached || fragment_bindings_attached > 0,
+            fragment_bindings_attached,
+            fragment_bindings_expected,
+        ))
     }
 
     /// Rewrite form-key references in the target handle using `mappings`.
@@ -6628,6 +15035,797 @@ impl ConversionRun {
     }
 }
 
+fn allocate_creature_primary_npc_reservations(
+    state: &mut MapperState,
+    interner: &StringInterner,
+    primary_creature_sources: &[FormKey],
+    expected_candidates: usize,
+) -> Result<Vec<CreaturePrimaryNpcReservation>, String> {
+    let mut sources = primary_creature_sources.to_vec();
+    sources.sort_by_key(|source| {
+        (
+            interner
+                .resolve(source.plugin)
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            source.local,
+        )
+    });
+    sources.dedup();
+    if sources.len() != expected_candidates {
+        return Err(format!(
+            "legacy creature primary reservation accounting mismatch: expected={expected_candidates} candidate_crea={}",
+            sources.len()
+        ));
+    }
+    if let Some(source) = sources
+        .iter()
+        .find(|source| state.source_to_target.contains_key(source))
+    {
+        return Err(format!(
+            "legacy creature source already has a mapping before NPC reservation: {:06X}",
+            source.local
+        ));
+    }
+    let mut mapper = FormKeyMapper::from_state(state, interner);
+    let mut reservations = Vec::with_capacity(sources.len());
+    for source in sources {
+        let target = mapper.allocate_generated();
+        mapper.add_mapping(source, target);
+        reservations.push(CreaturePrimaryNpcReservation { source, target });
+    }
+    drop(mapper);
+    lease_generated_creature_record_ids(
+        state,
+        interner,
+        reservations.iter().map(|reservation| reservation.target),
+    )?;
+    Ok(reservations)
+}
+
+fn allocate_creature_ancillary_npc_reservations(
+    state: &mut MapperState,
+    interner: &StringInterner,
+    ancillary_npc_sources: &[FormKey],
+) -> Result<Vec<CreatureAncillaryNpcReservation>, String> {
+    let mut sources = ancillary_npc_sources.to_vec();
+    sources.sort_by_key(|source| {
+        (
+            interner
+                .resolve(source.plugin)
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            source.local,
+        )
+    });
+    sources.dedup();
+    if let Some(source) = sources
+        .iter()
+        .find(|source| state.source_to_target.contains_key(source))
+    {
+        return Err(format!(
+            "legacy ancillary NPC source already has a mapping before reservation: {:06X}",
+            source.local
+        ));
+    }
+
+    let mut staged_state = state.clone();
+    let mut mapper = FormKeyMapper::from_state(&mut staged_state, interner);
+    let mut reservations = Vec::with_capacity(sources.len());
+    for source in sources {
+        let target = mapper.allocate_generated();
+        mapper.add_mapping(source, target);
+        reservations.push(CreatureAncillaryNpcReservation { source, target });
+    }
+    drop(mapper);
+    lease_generated_creature_record_ids(
+        &mut staged_state,
+        interner,
+        reservations.iter().map(|reservation| reservation.target),
+    )?;
+    *state = staged_state;
+    Ok(reservations)
+}
+
+fn allocate_skyrim_creature_record_reservations(
+    state: &mut MapperState,
+    interner: &StringInterner,
+    mut sources: Vec<SkyrimCreatureReservationSource>,
+    expected_candidates: usize,
+) -> Result<Vec<SkyrimCreatureRecordReservation>, String> {
+    let sort_key = |source: FormKey| {
+        (
+            interner
+                .resolve(source.plugin)
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            source.local,
+        )
+    };
+    sources.sort_by(|left, right| {
+        sort_key(left.source)
+            .cmp(&sort_key(right.source))
+            .then_with(|| left.kind.cmp(&right.kind))
+    });
+
+    let mut merged = Vec::<SkyrimCreatureReservationSource>::new();
+    for mut source in sources {
+        source.owners.sort_by(|left, right| {
+            sort_key(left.source_race)
+                .cmp(&sort_key(right.source_race))
+                .then_with(|| {
+                    left.motion_family_id
+                        .to_ascii_lowercase()
+                        .cmp(&right.motion_family_id.to_ascii_lowercase())
+                })
+                .then_with(|| {
+                    left.normalized_project_path
+                        .cmp(&right.normalized_project_path)
+                })
+        });
+        source.owners.dedup();
+        if source.owners.is_empty() {
+            return Err(format!(
+                "Skyrim creature reservation source {:06X} has no owning RACE candidate",
+                source.source.local
+            ));
+        }
+        for owner in &source.owners {
+            if owner.motion_family_id.trim().is_empty()
+                || owner.normalized_project_path.trim().is_empty()
+            {
+                return Err(format!(
+                    "Skyrim creature reservation owner {:06X} has an empty motion family key",
+                    owner.source_race.local
+                ));
+            }
+            if owner.normalized_project_path.contains('\\')
+                || owner.normalized_project_path.starts_with('/')
+                || owner
+                    .normalized_project_path
+                    .get(..7)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("actors/"))
+                || owner.normalized_project_path
+                    != owner.normalized_project_path.to_ascii_lowercase()
+            {
+                return Err(format!(
+                    "Skyrim creature reservation owner {:06X} has a non-canonical project path {}",
+                    owner.source_race.local, owner.normalized_project_path
+                ));
+            }
+        }
+
+        if let Some(existing) = merged
+            .last_mut()
+            .filter(|item| item.source == source.source)
+        {
+            if existing.kind != source.kind {
+                return Err(format!(
+                    "Skyrim creature reservation source {:06X} has conflicting record kinds",
+                    source.source.local
+                ));
+            }
+            existing.owners.extend(source.owners);
+            existing.owners.sort_by(|left, right| {
+                sort_key(left.source_race)
+                    .cmp(&sort_key(right.source_race))
+                    .then_with(|| {
+                        left.motion_family_id
+                            .to_ascii_lowercase()
+                            .cmp(&right.motion_family_id.to_ascii_lowercase())
+                    })
+                    .then_with(|| {
+                        left.normalized_project_path
+                            .cmp(&right.normalized_project_path)
+                    })
+            });
+            existing.owners.dedup();
+        } else {
+            merged.push(source);
+        }
+    }
+
+    let race_sources = merged
+        .iter()
+        .filter(|source| source.kind == SkyrimCreatureReservedRecordKind::Race)
+        .map(|source| source.source)
+        .collect::<FxHashSet<_>>();
+    if race_sources.len() != expected_candidates {
+        return Err(format!(
+            "Skyrim creature reservation accounting mismatch: expected={expected_candidates} candidate_race={}",
+            race_sources.len()
+        ));
+    }
+    for source in &merged {
+        for owner in &source.owners {
+            if !race_sources.contains(&owner.source_race) {
+                return Err(format!(
+                    "Skyrim creature reservation source {:06X} names unknown owning RACE {:06X}",
+                    source.source.local, owner.source_race.local
+                ));
+            }
+            if source.kind == SkyrimCreatureReservedRecordKind::Race
+                && (source.source != owner.source_race || source.owners.len() != 1)
+            {
+                return Err(format!(
+                    "Skyrim RACE reservation {:06X} must be owned only by itself",
+                    source.source.local
+                ));
+            }
+        }
+    }
+    let output_plugin_name = state.options.output_plugin_name.as_str();
+    if let Some((source, target)) = merged.iter().find_map(|source| {
+        state
+            .source_to_target
+            .get(&source.source)
+            .copied()
+            .filter(|target| {
+                interner
+                    .resolve(target.plugin)
+                    .is_some_and(|plugin| plugin.eq_ignore_ascii_case(output_plugin_name))
+            })
+            .map(|target| (source, target))
+    }) {
+        return Err(format!(
+            "Skyrim creature source already has an output mapping before reservation: {:06X}->{:06X}",
+            source.source.local, target.local
+        ));
+    }
+
+    let mut staged_state = state.clone();
+    for source in &merged {
+        staged_state.source_to_target.remove(&source.source);
+    }
+    let mut mapper = FormKeyMapper::from_state(&mut staged_state, interner);
+    let mut reservations = Vec::with_capacity(merged.len());
+    for source in merged {
+        let target = mapper.allocate_generated();
+        mapper.add_mapping(source.source, target);
+        reservations.push(SkyrimCreatureRecordReservation {
+            source: source.source,
+            target,
+            kind: source.kind,
+            owners: source.owners,
+        });
+    }
+    drop(mapper);
+    lease_generated_creature_record_ids(
+        &mut staged_state,
+        interner,
+        reservations.iter().map(|reservation| reservation.target),
+    )?;
+    *state = staged_state;
+    Ok(reservations)
+}
+
+fn allocate_skyrim_creature_ancillary_reservations(
+    state: &mut MapperState,
+    interner: &StringInterner,
+    record_reservations: &[SkyrimCreatureRecordReservation],
+    mut requests: Vec<SkyrimCreatureAncillaryReservationRequest>,
+) -> Result<Vec<SkyrimCreatureAncillaryReservationReceipt>, String> {
+    let source_sort_key = |source: FormKey| {
+        (
+            interner
+                .resolve(source.plugin)
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            source.local,
+        )
+    };
+    let candidate_races = record_reservations
+        .iter()
+        .filter(|reservation| reservation.kind == SkyrimCreatureReservedRecordKind::Race)
+        .map(|reservation| reservation.source)
+        .collect::<FxHashSet<_>>();
+    if candidate_races.is_empty() && !requests.is_empty() {
+        return Err(
+            "Skyrim creature ancillary requests require installed RACE reservations".to_string(),
+        );
+    }
+    requests.sort_by(|left, right| {
+        source_sort_key(left.source_race)
+            .cmp(&source_sort_key(right.source_race))
+            .then_with(|| {
+                left.event
+                    .to_ascii_lowercase()
+                    .cmp(&right.event.to_ascii_lowercase())
+            })
+            .then_with(|| left.ordinal.cmp(&right.ordinal))
+            .then_with(|| left.kind.cmp(&right.kind))
+            .then_with(|| left.event.cmp(&right.event))
+    });
+
+    let mut prior_key: Option<(FormKey, String, u32, SkyrimCreatureAncillaryRecordKind)> = None;
+    for request in &requests {
+        if !candidate_races.contains(&request.source_race) {
+            return Err(format!(
+                "Skyrim creature ancillary request names unreserved RACE {:06X}",
+                request.source_race.local
+            ));
+        }
+        if request.event.trim().is_empty() || request.event != request.event.trim() {
+            return Err(format!(
+                "Skyrim creature ancillary request for RACE {:06X} has a non-canonical event",
+                request.source_race.local
+            ));
+        }
+        let normalized_key = (
+            request.source_race,
+            request.event.to_ascii_lowercase(),
+            request.ordinal,
+            request.kind,
+        );
+        if prior_key.as_ref() == Some(&normalized_key) {
+            return Err(format!(
+                "duplicate Skyrim creature ancillary request {:06X}:{}:{}:{:?}",
+                request.source_race.local, request.event, request.ordinal, request.kind
+            ));
+        }
+        prior_key = Some(normalized_key);
+    }
+
+    let mut staged_state = state.clone();
+    let mut mapper = FormKeyMapper::from_state(&mut staged_state, interner);
+    let mut receipts = Vec::with_capacity(requests.len());
+    for request in requests {
+        let target = mapper.allocate_generated();
+        if target.local == 0 {
+            return Err("Skyrim creature ancillary allocation produced a null target".to_string());
+        }
+        receipts.push(SkyrimCreatureAncillaryReservationReceipt {
+            source_race: request.source_race,
+            event: request.event,
+            ordinal: request.ordinal,
+            kind: request.kind,
+            target,
+        });
+    }
+    drop(mapper);
+    lease_generated_creature_record_ids(
+        &mut staged_state,
+        interner,
+        receipts.iter().map(|receipt| receipt.target),
+    )?;
+    *state = staged_state;
+    Ok(receipts)
+}
+
+fn allocate_creature_actor_action_reservations(
+    state: &mut MapperState,
+    interner: &StringInterner,
+    mut requests: Vec<CreatureActorActionReservationRequest>,
+) -> Result<Vec<CreatureActorActionReservationReceipt>, String> {
+    requests.sort_by(|left, right| {
+        left.family_id
+            .to_ascii_lowercase()
+            .cmp(&right.family_id.to_ascii_lowercase())
+            .then_with(|| left.requirement.cmp(&right.requirement))
+            .then_with(|| {
+                left.editor_id
+                    .to_ascii_lowercase()
+                    .cmp(&right.editor_id.to_ascii_lowercase())
+            })
+            .then_with(|| left.family_id.cmp(&right.family_id))
+            .then_with(|| left.editor_id.cmp(&right.editor_id))
+    });
+    let mut normalized_keys = BTreeSet::new();
+    let mut editor_ids = BTreeSet::new();
+    for request in &requests {
+        if request.family_id.trim().is_empty()
+            || request.family_id != request.family_id.trim()
+            || request.requirement.behavior_path.trim().is_empty()
+            || request.requirement.animation_event.trim().is_empty()
+            || request.requirement.parent_form_id == 0
+            || request.requirement.parent_form_id > 0x00ff_ffff
+            || request.editor_id.trim().is_empty()
+            || !request
+                .editor_id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Err(format!(
+                "invalid creature Actor Action reservation request for family {:?}",
+                request.family_id
+            ));
+        }
+        let key = (
+            request.family_id.to_ascii_lowercase(),
+            request.requirement.clone(),
+        );
+        if !normalized_keys.insert(key) {
+            return Err(format!(
+                "duplicate creature Actor Action reservation for family {:?}, event {:?}",
+                request.family_id, request.requirement.animation_event
+            ));
+        }
+        if !editor_ids.insert(request.editor_id.to_ascii_lowercase()) {
+            return Err(format!(
+                "duplicate creature Actor Action EditorID {:?}",
+                request.editor_id
+            ));
+        }
+    }
+
+    let mut staged_state = state.clone();
+    let mut mapper = FormKeyMapper::from_state(&mut staged_state, interner);
+    let mut receipts = Vec::with_capacity(requests.len());
+    for request in requests {
+        let target = mapper.allocate_generated();
+        if target.local == 0 {
+            return Err("creature Actor Action allocation produced a null target".to_string());
+        }
+        receipts.push(CreatureActorActionReservationReceipt {
+            family_id: request.family_id,
+            requirement: request.requirement,
+            editor_id: request.editor_id,
+            target,
+        });
+    }
+    drop(mapper);
+    lease_generated_creature_record_ids(
+        &mut staged_state,
+        interner,
+        receipts.iter().map(|receipt| receipt.target),
+    )?;
+    *state = staged_state;
+    Ok(receipts)
+}
+
+fn lease_generated_creature_record_ids(
+    state: &mut MapperState,
+    interner: &StringInterner,
+    targets: impl IntoIterator<Item = FormKey>,
+) -> Result<(), String> {
+    FormKeyMapper::from_state(state, interner)
+        .lease_allocated_object_ids(targets.into_iter().map(|target| target.local))
+        .map_err(|local| format!("generated creature record {local:06X} was not freshly allocated"))
+}
+
+fn validate_fnv_quest_slice_info_fragment_contract(
+    infos: &[crate::fnv_legacy_scripting::dialogue::TranslatedInfo],
+) -> Result<(), FnvScriptingError> {
+    use crate::fnv_legacy_scripting::dialogue::InfoFragmentPhase;
+
+    let expected = [
+        (
+            "130161:FalloutNV.esm",
+            Some(("TIF__130161", InfoFragmentPhase::Begin)),
+        ),
+        (
+            "134B9B:FalloutNV.esm",
+            Some(("TIF__134B9B", InfoFragmentPhase::End)),
+        ),
+        ("15734B:FalloutNV.esm", None),
+        ("15734C:FalloutNV.esm", None),
+        ("15734D:FalloutNV.esm", None),
+    ];
+    if infos.len() != expected.len() {
+        return Err(FnvScriptingError::Setup(format!(
+            "strict FNV INFO fragment accounting expected {} exact INFO records, observed {}",
+            expected.len(),
+            infos.len()
+        )));
+    }
+    for (source_form_key, required_fragment) in expected {
+        let matches = infos
+            .iter()
+            .filter(|info| info.source_form_key.eq_ignore_ascii_case(source_form_key))
+            .collect::<Vec<_>>();
+        let [info] = matches.as_slice() else {
+            return Err(FnvScriptingError::Setup(format!(
+                "strict FNV INFO fragment accounting expected one {source_form_key}, observed {}",
+                matches.len()
+            )));
+        };
+        match required_fragment {
+            Some((class_name, phase)) => {
+                let valid = info.fragment_class_name.as_deref() == Some(class_name)
+                    && info
+                        .fragment_psc_text
+                        .as_deref()
+                        .is_some_and(|text| !text.trim().is_empty())
+                    && info.fragment_phases == [phase];
+                if !valid {
+                    return Err(FnvScriptingError::Setup(format!(
+                        "strict FNV INFO {source_form_key} requires exact fragment {class_name} phase {phase:?}"
+                    )));
+                }
+            }
+            None => {
+                if info.fragment_class_name.is_some()
+                    || info.fragment_psc_text.is_some()
+                    || !info.fragment_phases.is_empty()
+                {
+                    return Err(FnvScriptingError::Setup(format!(
+                        "strict FNV greeting INFO {source_form_key} unexpectedly carries a Papyrus fragment"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_fnv_quest_slice_compat_fragment_property(
+    source_local: u32,
+    target_quest_form_key: &str,
+    mod_prefix: &str,
+    properties: &[crate::fnv_legacy_scripting::vmad::ScriptProperty],
+) -> Result<(), FnvScriptingError> {
+    if !matches!(source_local, 0x06136D | 0x11F935) {
+        return Ok(());
+    }
+    let matches = properties
+        .iter()
+        .filter(|property| property.name.eq_ignore_ascii_case("FNVSliceCompat"))
+        .collect::<Vec<_>>();
+    let [property] = matches.as_slice() else {
+        return Err(FnvScriptingError::Translate(format!(
+            "strict FNV QUST {source_local:06X} expected one FNVSliceCompat fragment property, observed {}",
+            matches.len()
+        )));
+    };
+    let expected_type = format!("{mod_prefix}_FnvSliceCompat");
+    if !property.prop_type.eq_ignore_ascii_case(&expected_type)
+        || property.value.as_ref().and_then(serde_json::Value::as_str)
+            != Some(target_quest_form_key)
+    {
+        return Err(FnvScriptingError::Translate(format!(
+            "strict FNV QUST {source_local:06X} FNVSliceCompat must have type {expected_type} and target its mapped owning QUST {target_quest_form_key}"
+        )));
+    }
+    Ok(())
+}
+
+fn materialize_fnv_package_data_alias_contracts(
+    translated: &mut crate::fnv_legacy_scripting::quest::QuestTranslation,
+    source_quest_form_key: &str,
+    target_quest_form_key: &str,
+    translated_scripts: &[crate::fnv_legacy_scripting::script_synthesizer::TranslatedScript],
+) -> Result<Vec<PendingScptProperty>, FnvScriptingError> {
+    let package_alias_contracts = translated_scripts
+        .iter()
+        .flat_map(|script| {
+            script
+                .package_data_aliases
+                .iter()
+                .map(move |contract| (script, contract))
+        })
+        .filter(|(_, contract)| {
+            contract
+                .target_quest_form_key
+                .eq_ignore_ascii_case(target_quest_form_key)
+        });
+    let mut pending = Vec::new();
+    for (script, contract) in package_alias_contracts {
+        if !contract
+            .source_quest_form_key
+            .eq_ignore_ascii_case(source_quest_form_key)
+            || contract.alias_package_subrecord != "ALPC"
+        {
+            return Err(FnvScriptingError::Translate(format!(
+                "SCPT {} package data alias contract does not match QUST {} or FO4 ALPC package schema (got {})",
+                contract.source_script_form_key,
+                source_quest_form_key,
+                contract.alias_package_subrecord
+            )));
+        }
+        let alias_id = crate::fnv_legacy_scripting::quest::append_unfilled_package_data_alias(
+            translated,
+            &contract.property_name,
+            &contract.target_package_form_key,
+        )
+        .map_err(|error| {
+            FnvScriptingError::Translate(format!(
+                "QUST {source_quest_form_key} package data alias {}: {error}",
+                contract.property_name
+            ))
+        })?;
+        let property = crate::fnv_legacy_scripting::vmad::reference_alias_script_property(
+            &contract.property_name,
+            target_quest_form_key,
+            alias_id,
+        )
+        .map_err(|error| FnvScriptingError::Translate(error.to_string()))?;
+        pending.push(PendingScptProperty {
+            source_scpt_form_key: script.source_form_key.clone(),
+            script_class_name: script.script_class_name.clone(),
+            property,
+        });
+    }
+    Ok(pending)
+}
+
+fn bind_generated_scpt_property_target(
+    translated_scripts: &mut [crate::fnv_legacy_scripting::script_synthesizer::TranslatedScript],
+    source_scpt_form_key: &str,
+    script_class_name: &str,
+    property_name: &str,
+    property_type: &str,
+    target_form_key: &str,
+) -> Result<(), FnvScriptingError> {
+    let matching_scripts = translated_scripts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, script)| {
+            (script
+                .source_form_key
+                .eq_ignore_ascii_case(source_scpt_form_key)
+                && script
+                    .script_class_name
+                    .eq_ignore_ascii_case(script_class_name))
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let [script_index] = matching_scripts.as_slice() else {
+        return Err(FnvScriptingError::Translate(format!(
+            "generated property {property_name} expected one translated SCPT {source_scpt_form_key}/{script_class_name}, observed {}",
+            matching_scripts.len()
+        )));
+    };
+    let matching_properties = translated_scripts[*script_index]
+        .properties
+        .iter()
+        .enumerate()
+        .filter_map(|(index, property)| {
+            property
+                .papyrus_name
+                .eq_ignore_ascii_case(property_name)
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let [property_index] = matching_properties.as_slice() else {
+        return Err(FnvScriptingError::Translate(format!(
+            "generated property {property_name} expected one declaration on SCPT {source_scpt_form_key}, observed {}",
+            matching_properties.len()
+        )));
+    };
+    let property = &mut translated_scripts[*script_index].properties[*property_index];
+    if !property.papyrus_type.eq_ignore_ascii_case(property_type) {
+        return Err(FnvScriptingError::Translate(format!(
+            "generated property {property_name} on SCPT {source_scpt_form_key} has type {}, expected {property_type}",
+            property.papyrus_type
+        )));
+    }
+    match property.target_form_key.as_deref() {
+        None => property.target_form_key = Some(target_form_key.to_string()),
+        Some(existing) if existing.eq_ignore_ascii_case(target_form_key) => {}
+        Some(existing) => {
+            return Err(FnvScriptingError::Translate(format!(
+                "generated property {property_name} on SCPT {source_scpt_form_key} already targets {existing}, cannot bind {target_form_key}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_no_deferred_translation_failures(
+    skipped_records: &[(String, String, String)],
+) -> Result<(), FnvScriptingError> {
+    if skipped_records.is_empty() {
+        return Ok(());
+    }
+    let failures = skipped_records
+        .iter()
+        .map(|(signature, editor_id, reason)| format!("{signature} {editor_id}: {reason}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(FnvScriptingError::Translate(format!(
+        "{} deferred record translation(s) failed: {failures}",
+        skipped_records.len()
+    )))
+}
+
+fn canonicalize_fnv_vmad_target(
+    target_form_key: &str,
+    output_plugin_name: &str,
+    interner: &StringInterner,
+) -> Result<(FormKey, String), FnvScriptingError> {
+    let parse_local = |value: &str| {
+        u32::from_str_radix(
+            value
+                .trim()
+                .trim_start_matches("0x")
+                .trim_start_matches("0X"),
+            16,
+        )
+    };
+    let (plugin_name, object_id) = if let Some((local, plugin)) = target_form_key.split_once('@') {
+        let object_id = parse_local(local).map_err(|error| {
+            FnvScriptingError::Setup(format!(
+                "VMAD target FormKey has invalid object identity {target_form_key:?}: {error}"
+            ))
+        })?;
+        (plugin.trim(), object_id)
+    } else {
+        let (left, right) = target_form_key.split_once(':').ok_or_else(|| {
+            FnvScriptingError::Setup(format!(
+                "VMAD target FormKey is missing ':' or '@': {target_form_key:?}"
+            ))
+        })?;
+        match (parse_local(left), parse_local(right)) {
+            (Ok(object_id), Err(_)) => (right.trim(), object_id),
+            (Err(_), Ok(object_id)) => (left.trim(), object_id),
+            _ => {
+                return Err(FnvScriptingError::Setup(format!(
+                    "VMAD target FormKey has ambiguous plugin/object identity: {target_form_key}"
+                )));
+            }
+        }
+    };
+    if plugin_name.is_empty() || !plugin_name.eq_ignore_ascii_case(output_plugin_name) {
+        return Err(FnvScriptingError::Setup(format!(
+            "VMAD target {target_form_key} is not owned by output plugin {output_plugin_name}"
+        )));
+    }
+    if object_id > 0x00FF_FFFF {
+        return Err(FnvScriptingError::Setup(format!(
+            "VMAD target FormKey is outside 24-bit output bounds: {target_form_key}"
+        )));
+    }
+    let target = FormKey {
+        local: object_id,
+        plugin: interner.intern(output_plugin_name),
+    };
+    Ok((target, format!("{output_plugin_name}:{object_id:06X}")))
+}
+
+fn prebuild_fnv_vmad_record_updates(
+    records: Vec<(String, serde_json::Value)>,
+    intents: &[crate::fnv_legacy_scripting::vmad::ScriptBindingIntent],
+    fragment_payloads: &[(String, serde_json::Value)],
+) -> Result<Vec<(String, serde_json::Value)>, FnvScriptingError> {
+    let mut order = Vec::with_capacity(records.len());
+    let mut updates = HashMap::with_capacity(records.len());
+    for (target_form_key, record) in records {
+        let key = target_form_key.to_ascii_lowercase();
+        if updates.insert(key.clone(), record).is_some() {
+            return Err(FnvScriptingError::Setup(format!(
+                "duplicate VMAD target during reconciliation: {target_form_key}"
+            )));
+        }
+        order.push((key, target_form_key));
+    }
+
+    for intent in intents {
+        let record = updates
+            .get_mut(&intent.target_form_key.to_ascii_lowercase())
+            .ok_or_else(|| {
+                FnvScriptingError::Setup(format!(
+                    "prevalidated VMAD target is absent: {}",
+                    intent.target_form_key
+                ))
+            })?;
+        crate::fnv_legacy_scripting::vmad::attach_vmad_to_record(record, intent)
+            .map_err(|error| FnvScriptingError::Setup(error.to_string()))?;
+    }
+    for (target_form_key, payload) in fragment_payloads {
+        let record = updates
+            .get_mut(&target_form_key.to_ascii_lowercase())
+            .ok_or_else(|| {
+                FnvScriptingError::Setup(format!(
+                    "prevalidated fragment VMAD target is absent: {target_form_key}"
+                ))
+            })?;
+        crate::fnv_legacy_scripting::vmad::attach_vmad_payload_to_record(record, payload.clone())
+            .map_err(|error| FnvScriptingError::Setup(error.to_string()))?;
+    }
+
+    Ok(order
+        .into_iter()
+        .map(|(key, target_form_key)| {
+            (
+                target_form_key,
+                updates
+                    .remove(&key)
+                    .expect("VMAD update order and payload map stay aligned"),
+            )
+        })
+        .collect())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -6635,6 +15833,3010 @@ impl ConversionRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smallvec::SmallVec;
+
+    fn skyrim_runtime_test_field(signature: &str, value: FieldValue) -> FieldEntry {
+        FieldEntry {
+            sig: SubrecordSig::from_str(signature).unwrap(),
+            value,
+        }
+    }
+
+    fn skyrim_runtime_test_vmad() -> SmallVec<[u8; 32]> {
+        fn push_string(bytes: &mut Vec<u8>, value: &str) {
+            bytes.extend_from_slice(&(value.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(value.as_bytes());
+        }
+
+        let class_name = "QF_SourceQuest_070224";
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&5_u16.to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.push(1);
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        push_string(&mut bytes, class_name);
+        bytes.push(0);
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&10_u16.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&0_i32.to_le_bytes());
+        bytes.push(0);
+        push_string(&mut bytes, class_name);
+        push_string(&mut bytes, "Fragment_0");
+        SmallVec::from_vec(bytes)
+    }
+
+    fn skyrim_runtime_test_record(
+        signature: &str,
+        form_key: FormKey,
+        editor_id: &str,
+        interner: &StringInterner,
+    ) -> Record {
+        let mut record = Record::new(SigCode::from_str(signature).unwrap(), form_key);
+        record.eid = Some(interner.intern(editor_id));
+        record.fields.push(skyrim_runtime_test_field(
+            "EDID",
+            FieldValue::String(interner.intern(editor_id)),
+        ));
+        record
+    }
+
+    #[test]
+    fn skyrim_live_kill_story_manager_fails_closed_after_save_reopen() {
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_add_master_native, plugin_handle_close_native, plugin_handle_load_no_py,
+            plugin_handle_new_native, plugin_handle_save_no_py, plugin_handle_store_ref,
+        };
+
+        pyo3::Python::initialize();
+        let source = plugin_handle_new_native("SkyrimStorySource.esm", Some("skyrimse")).unwrap();
+        let target = plugin_handle_new_native("SkyrimStoryPort.esp", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target, "Fallout4.esm", None).unwrap();
+        plugin_handle_store_ref()
+            .lock()
+            .unwrap()
+            .get_mut(&target)
+            .unwrap()
+            .parsed
+            .header
+            .flags |= crate::source_read::TES4_FLAG_LOCALIZED;
+        let run_id = create_run(RunParams {
+            source: Game::SkyrimSe,
+            target: Game::Fo4,
+            source_handle_id: source,
+            target_handle_id: target,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "SkyrimStoryPort.esp".to_string(),
+                target_master_names: vec!["Fallout4.esm".to_string()],
+                preserve_source_ids: true,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let output = tempfile::tempdir().unwrap();
+
+        with_run(run_id, |run| {
+            let plugin = run.interner.intern("SkyrimStorySource.esm");
+            let source_root = FormKey {
+                local: 0x070221,
+                plugin,
+            };
+            let source_branch = FormKey {
+                local: 0x070222,
+                plugin,
+            };
+            let source_node = FormKey {
+                local: 0x070223,
+                plugin,
+            };
+            let source_quest = FormKey {
+                local: 0x070224,
+                plugin,
+            };
+            let source_reference = FormKey {
+                local: 0x070225,
+                plugin,
+            };
+
+            let reference = skyrim_runtime_test_record(
+                "REFR",
+                source_reference,
+                "StoryAliasReference",
+                &run.interner,
+            );
+            add_record_native(
+                run.source_handle_id,
+                reference,
+                &run.schema_source,
+                &run.interner,
+            )
+            .unwrap();
+
+            let mut quest = skyrim_runtime_test_record(
+                "QUST",
+                source_quest,
+                "StoryRuntimeQuest",
+                &run.interner,
+            );
+            quest.fields.extend([
+                skyrim_runtime_test_field(
+                    "FULL",
+                    FieldValue::String(run.interner.intern("A Story Runtime Quest")),
+                ),
+                skyrim_runtime_test_field(
+                    "DNAM",
+                    FieldValue::Struct(vec![
+                        (run.interner.intern("flags"), FieldValue::Uint(5)),
+                        (run.interner.intern("priority"), FieldValue::Uint(50)),
+                    ]),
+                ),
+                skyrim_runtime_test_field(
+                    "VMAD",
+                    FieldValue::Bytes(skyrim_runtime_test_vmad()),
+                ),
+                skyrim_runtime_test_field("INDX", FieldValue::Uint(10)),
+                skyrim_runtime_test_field(
+                    "CNAM",
+                    FieldValue::String(run.interner.intern("The story has begun.")),
+                ),
+                skyrim_runtime_test_field("QOBJ", FieldValue::Uint(10)),
+                skyrim_runtime_test_field(
+                    "NNAM",
+                    FieldValue::String(run.interner.intern("Complete the story objective.")),
+                ),
+                skyrim_runtime_test_field("QSTA", FieldValue::Uint(0)),
+                skyrim_runtime_test_field("ANAM", FieldValue::Uint(1)),
+                skyrim_runtime_test_field("ALST", FieldValue::Uint(0)),
+                skyrim_runtime_test_field(
+                    "ALID",
+                    FieldValue::String(run.interner.intern("StoryReference")),
+                ),
+                skyrim_runtime_test_field("FNAM", FieldValue::Uint(0)),
+                skyrim_runtime_test_field("ALFR", FieldValue::FormKey(source_reference)),
+                skyrim_runtime_test_field("ALED", FieldValue::Bool(true)),
+            ]);
+
+            let mut root = skyrim_runtime_test_record(
+                "SMEN",
+                source_root,
+                "StoryRuntimeKillRoot",
+                &run.interner,
+            );
+            root.fields.push(skyrim_runtime_test_field(
+                "ENAM",
+                FieldValue::Uint(u32::from_le_bytes(*b"KILL") as u64),
+            ));
+            let mut branch = skyrim_runtime_test_record(
+                "SMBN",
+                source_branch,
+                "StoryRuntimeBranch",
+                &run.interner,
+            );
+            branch.fields.push(skyrim_runtime_test_field(
+                "PNAM",
+                FieldValue::FormKey(source_root),
+            ));
+            let mut node = skyrim_runtime_test_record(
+                "SMQN",
+                source_node,
+                "StoryRuntimeQuestNode",
+                &run.interner,
+            );
+            node.fields.extend([
+                skyrim_runtime_test_field("PNAM", FieldValue::FormKey(source_branch)),
+                skyrim_runtime_test_field("QNAM", FieldValue::Uint(1)),
+                skyrim_runtime_test_field("NNAM", FieldValue::FormKey(source_quest)),
+            ]);
+
+            run.mapper_state = Some(MapperState::new(
+                [],
+                MapperOptions {
+                    source_plugin_name: "SkyrimStorySource.esm".to_string(),
+                    output_plugin_name: "SkyrimStoryPort.esp".to_string(),
+                    preserve_source_ids: true,
+                    ..Default::default()
+                },
+            ));
+            let manifest =
+                crate::skyrimse_fo4_runtime::planner::minimal_quest_candidate_manifest(
+                    &quest,
+                    &run.interner,
+                )
+                .unwrap();
+            run.install_skyrim_minimal_quest_actions(
+                "B21",
+                vec![
+                    crate::skyrimse_fo4_runtime::planner::SkyrimMinimalQuestActionRequest {
+                        component_id: manifest.component_id,
+                        actions: vec![
+                            crate::skyrimse_fo4_runtime::planner::SkyrimMinimalQuestActionSpec::SetObjectiveDisplayed {
+                                index: 10,
+                                displayed: true,
+                            },
+                        ],
+                    },
+                ],
+            )?;
+            let error = run
+                .plan_skyrim_runtime_records(vec![quest, root, branch, node])
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(
+                    "unsupported Skyrim Story Manager event KILL: Fallout 4 has no canonical SMEN root"
+                ),
+                "{error}"
+            );
+            assert!(run.skyrim_minimal_quest_projections.is_empty());
+            assert!(run.skyrim_story_manager_projections.is_empty());
+            Ok::<_, RunError>(())
+        })
+        .unwrap();
+
+        let plugin_path = output.path().join("SkyrimStoryPort.esp");
+        plugin_handle_save_no_py(target, plugin_path.to_str().unwrap()).unwrap();
+        drop_run(run_id).unwrap();
+        plugin_handle_close_native(source);
+        plugin_handle_close_native(target);
+
+        let reopened =
+            plugin_handle_load_no_py(plugin_path.to_str().unwrap(), Some("fo4"), None, None, true)
+                .unwrap();
+        let mut interner = StringInterner::new();
+        for signature in ["SMEN", "SMBN", "SMQN"] {
+            let sig = SigCode::from_str(signature).unwrap();
+            let records = iter_form_keys_of_sig(reopened, sig, &mut interner).unwrap();
+            assert!(records.is_empty(), "{signature}");
+        }
+        plugin_handle_close_native(reopened);
+    }
+
+    #[test]
+    fn skyrim_live_hack_story_manager_survives_save_reopen() {
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_add_master_native, plugin_handle_close_native, plugin_handle_load_no_py,
+            plugin_handle_new_native, plugin_handle_save_no_py, plugin_handle_store_ref,
+        };
+
+        pyo3::Python::initialize();
+        let source = plugin_handle_new_native("Dawnguard.esm", Some("skyrimse")).unwrap();
+        let target = plugin_handle_new_native("SkyrimStoryPort.esp", Some("fo4")).unwrap();
+        let fallout4 = plugin_handle_new_native("Fallout4.esm", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(source, "Skyrim.esm", None).unwrap();
+        plugin_handle_add_master_native(target, "Fallout4.esm", None).unwrap();
+        plugin_handle_store_ref()
+            .lock()
+            .unwrap()
+            .get_mut(&target)
+            .unwrap()
+            .parsed
+            .header
+            .flags |= crate::source_read::TES4_FLAG_LOCALIZED;
+        let run_id = create_run(RunParams {
+            source: Game::SkyrimSe,
+            target: Game::Fo4,
+            source_handle_id: source,
+            target_handle_id: target,
+            master_handle_ids: vec![fallout4],
+            config: RunConfig {
+                output_plugin_name: "SkyrimStoryPort.esp".to_string(),
+                target_master_names: vec!["Fallout4.esm".to_string()],
+                preserve_source_ids: true,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let compiler_output = tempfile::tempdir().unwrap();
+
+        with_run(run_id, |run| {
+            let plugin = run.interner.intern("Dawnguard.esm");
+            let source_root = FormKey {
+                local: 0x070221,
+                plugin,
+            };
+            let source_branch = FormKey {
+                local: 0x070222,
+                plugin,
+            };
+            let source_node = FormKey {
+                local: 0x070223,
+                plugin,
+            };
+            let source_quest = FormKey {
+                local: 0x070224,
+                plugin,
+            };
+            let source_reference = FormKey {
+                local: 0x070225,
+                plugin: run.interner.intern("Skyrim.esm"),
+            };
+            let target_root = FormKey {
+                local: 0x1244D0,
+                plugin: run.interner.intern("Fallout4.esm"),
+            };
+            let target_reference = FormKey {
+                local: 0x070225,
+                plugin: run.interner.intern("Fallout4.esm"),
+            };
+
+            let mut canonical_root =
+                skyrim_runtime_test_record("SMEN", target_root, "HackComputer", &run.interner);
+            canonical_root.fields.push(skyrim_runtime_test_field(
+                "ENAM",
+                FieldValue::Uint(u32::from_le_bytes(*b"HACK") as u64),
+            ));
+            add_record_native(
+                fallout4,
+                canonical_root,
+                &run.schema_target,
+                &run.interner,
+            )
+            .unwrap();
+            add_record_native(
+                fallout4,
+                skyrim_runtime_test_record(
+                    "REFR",
+                    target_reference,
+                    "PortedStoryAliasReference",
+                    &run.interner,
+                ),
+                &run.schema_target,
+                &run.interner,
+            )
+            .unwrap();
+
+            let reference = skyrim_runtime_test_record(
+                "REFR",
+                source_reference,
+                "StoryAliasReference",
+                &run.interner,
+            );
+            add_record_native(
+                run.source_handle_id,
+                reference,
+                &run.schema_source,
+                &run.interner,
+            )
+            .unwrap();
+
+            let mut quest = skyrim_runtime_test_record(
+                "QUST",
+                source_quest,
+                "StoryRuntimeQuest",
+                &run.interner,
+            );
+            quest.fields.extend([
+                skyrim_runtime_test_field(
+                    "FULL",
+                    FieldValue::String(run.interner.intern("A Story Runtime Quest")),
+                ),
+                skyrim_runtime_test_field(
+                    "DNAM",
+                    FieldValue::Struct(vec![
+                        (run.interner.intern("flags"), FieldValue::Uint(5)),
+                        (run.interner.intern("priority"), FieldValue::Uint(50)),
+                    ]),
+                ),
+                skyrim_runtime_test_field(
+                    "VMAD",
+                    FieldValue::Bytes(skyrim_runtime_test_vmad()),
+                ),
+                skyrim_runtime_test_field("INDX", FieldValue::Uint(10)),
+                skyrim_runtime_test_field(
+                    "CNAM",
+                    FieldValue::String(run.interner.intern("The story has begun.")),
+                ),
+                skyrim_runtime_test_field("QOBJ", FieldValue::Uint(10)),
+                skyrim_runtime_test_field(
+                    "NNAM",
+                    FieldValue::String(
+                        run.interner.intern("Complete the story objective."),
+                    ),
+                ),
+                skyrim_runtime_test_field("QSTA", FieldValue::Uint(0)),
+                skyrim_runtime_test_field("ANAM", FieldValue::Uint(1)),
+                skyrim_runtime_test_field("ALST", FieldValue::Uint(0)),
+                skyrim_runtime_test_field(
+                    "ALID",
+                    FieldValue::String(run.interner.intern("StoryReference")),
+                ),
+                skyrim_runtime_test_field("FNAM", FieldValue::Uint(0)),
+                skyrim_runtime_test_field("ALFR", FieldValue::FormKey(source_reference)),
+                skyrim_runtime_test_field("ALED", FieldValue::Bool(true)),
+            ]);
+
+            let mut root = skyrim_runtime_test_record(
+                "SMEN",
+                source_root,
+                "StoryRuntimeHackRoot",
+                &run.interner,
+            );
+            root.fields.push(skyrim_runtime_test_field(
+                "ENAM",
+                FieldValue::Uint(u32::from_le_bytes(*b"HACK") as u64),
+            ));
+            let mut branch = skyrim_runtime_test_record(
+                "SMBN",
+                source_branch,
+                "StoryRuntimeBranch",
+                &run.interner,
+            );
+            branch.fields.push(skyrim_runtime_test_field(
+                "PNAM",
+                FieldValue::FormKey(source_root),
+            ));
+            let mut node = skyrim_runtime_test_record(
+                "SMQN",
+                source_node,
+                "StoryRuntimeQuestNode",
+                &run.interner,
+            );
+            node.fields.extend([
+                skyrim_runtime_test_field("PNAM", FieldValue::FormKey(source_branch)),
+                skyrim_runtime_test_field("QNAM", FieldValue::Uint(1)),
+                skyrim_runtime_test_field("NNAM", FieldValue::FormKey(source_quest)),
+            ]);
+
+            run.mapper_state = Some(MapperState::new(
+                [],
+                MapperOptions {
+                    source_plugin_name: "Dawnguard.esm".to_string(),
+                    output_plugin_name: "SkyrimStoryPort.esp".to_string(),
+                    preserve_source_ids: true,
+                    ..Default::default()
+                },
+            ));
+            run.mapper_state
+                .as_mut()
+                .unwrap()
+                .source_to_target
+                .insert(source_reference, target_reference);
+            let manifest =
+                crate::skyrimse_fo4_runtime::planner::minimal_quest_candidate_manifest(
+                    &quest,
+                    &run.interner,
+                )
+                .unwrap();
+            run.install_skyrim_minimal_quest_actions(
+                "B21",
+                vec![
+                    crate::skyrimse_fo4_runtime::planner::SkyrimMinimalQuestActionRequest {
+                        component_id: manifest.component_id,
+                        actions: vec![
+                            crate::skyrimse_fo4_runtime::planner::SkyrimMinimalQuestActionSpec::SetObjectiveDisplayed {
+                                index: 10,
+                                displayed: true,
+                            },
+                        ],
+                    },
+                ],
+            )?;
+            run.plan_skyrim_runtime_records(vec![quest, root, branch, node])?;
+            let component = run
+                .skyrim_runtime_capability_plan
+                .as_ref()
+                .unwrap()
+                .minimal_quests
+                .values()
+                .next()
+                .unwrap();
+            assert_eq!(component.plan.provenance.source_plugin, "Dawnguard.esm");
+            assert!(
+                component
+                    .plan
+                    .shared_records
+                    .iter()
+                    .any(|record| record.form_key.ends_with("@Skyrim.esm"))
+            );
+            assert!(component.plan.mappings.iter().any(|mapping| {
+                mapping.source.form_key.ends_with("@Skyrim.esm")
+                    && mapping.target.form_key == "070225@Fallout4.esm"
+            }));
+            let projected_quest = run.skyrim_minimal_quest_projections[0].clone();
+            let compiled = papyrus_core::compiler::compile_source(
+                &projected_quest.psc_artifact.source,
+                &[],
+                papyrus_core::profile::Game::Fo4,
+                None,
+            );
+            assert!(compiled.ok, "compiler diagnostics: {:?}", compiled.diagnostics);
+            let pex_bytes = compiled.pex_bytes.unwrap();
+            let pex_artifact_path = compiler_output
+                .path()
+                .join("data")
+                .join("Scripts")
+                .join(format!("{}.pex", projected_quest.psc_manifest.class_name));
+            std::fs::create_dir_all(pex_artifact_path.parent().unwrap()).unwrap();
+            std::fs::write(&pex_artifact_path, &pex_bytes).unwrap();
+            let compiler_evidence =
+                crate::skyrimse_fo4_runtime::papyrus::SkyrimPscCompilerEvidence {
+                    manifest_id: projected_quest.psc_manifest.manifest_id.clone(),
+                    class_name: projected_quest.psc_manifest.class_name.clone(),
+                    relative_source_path: projected_quest
+                        .psc_manifest
+                        .relative_source_path
+                        .clone(),
+                    source_blake3: projected_quest.psc_manifest.source_blake3.clone(),
+                    relative_pex_path: format!(
+                        "data/Scripts/{}.pex",
+                        projected_quest.psc_manifest.class_name
+                    ),
+                    pex_artifact_path,
+                    pex_blake3: blake3::hash(&pex_bytes).to_hex().to_string(),
+                    target_game: "fo4".to_string(),
+                    compile_run_id: "run-level-hack-fixture".to_string(),
+                    compiled_success: true,
+                };
+
+            let mut quest_stats = run.emit_skyrim_minimal_quest_projections()?;
+            assert_eq!(quest_stats.signature_entry(SigCode(*b"QUST")).translated, 1);
+            assert_eq!(
+                run.reconcile_skyrim_minimal_quest_compiler_evidence(vec![compiler_evidence])?,
+                1
+            );
+            let story_stats = run.emit_story_manager_subset()?;
+            assert_eq!(story_stats.selected_nodes, 3);
+            assert_eq!(story_stats.translate.records_translated, 2);
+            run.reconcile_skyrim_minimal_quest_post_fixup_receipts()?;
+
+            let projection = run.skyrim_story_manager_projections[0]
+                .projection
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                projection.route_receipt.route.producer_evidence_id,
+                "fo4-native-event:HACK"
+            );
+            assert_eq!(
+                projection.route_receipt.route.node_chain[0].form_key,
+                "1244D0@Fallout4.esm"
+            );
+            assert_eq!(projection.records.len(), 2);
+            assert!(projection.records.iter().all(|record| record.sig.0 != *b"SMEN"));
+            Ok::<_, RunError>(())
+        })
+        .unwrap();
+
+        let plugin_path = output.path().join("SkyrimStoryPort.esp");
+        plugin_handle_save_no_py(target, plugin_path.to_str().unwrap()).unwrap();
+        drop_run(run_id).unwrap();
+        plugin_handle_close_native(source);
+        plugin_handle_close_native(target);
+        plugin_handle_close_native(fallout4);
+
+        let reopened =
+            plugin_handle_load_no_py(plugin_path.to_str().unwrap(), Some("fo4"), None, None, true)
+                .unwrap();
+        let mut interner = StringInterner::new();
+        let smen =
+            iter_form_keys_of_sig(reopened, SigCode::from_str("SMEN").unwrap(), &mut interner)
+                .unwrap();
+        assert!(smen.is_empty());
+        let branches =
+            iter_form_keys_of_sig(reopened, SigCode::from_str("SMBN").unwrap(), &mut interner)
+                .unwrap();
+        let nodes =
+            iter_form_keys_of_sig(reopened, SigCode::from_str("SMQN").unwrap(), &mut interner)
+                .unwrap();
+        let quests =
+            iter_form_keys_of_sig(reopened, SigCode::from_str("QUST").unwrap(), &mut interner)
+                .unwrap();
+        assert_eq!(branches.len(), 1);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(quests.len(), 1);
+        let schema = crate::schema::AuthoringSchema::for_game("fo4").unwrap();
+        let mut session = crate::session::open_session(reopened, None).unwrap();
+        let branch = session
+            .record_decoded(&branches[0], &schema, &interner)
+            .unwrap();
+        assert!(branch.fields.iter().any(|field| {
+            field.sig.0 == *b"PNAM"
+                && matches!(
+                    &field.value,
+                    FieldValue::FormKey(parent)
+                        if parent.local == 0x1244D0
+                            && interner.resolve(parent.plugin) == Some("Fallout4.esm")
+                )
+        }));
+        let quest = session
+            .record_decoded(&quests[0], &schema, &interner)
+            .unwrap();
+        assert!(quest.fields.iter().any(|field| {
+            field.sig.0 == *b"ALFR"
+                && matches!(
+                    &field.value,
+                    FieldValue::FormKey(reference)
+                        if reference.local == 0x070225
+                            && interner.resolve(reference.plugin) == Some("Fallout4.esm")
+                )
+        }));
+        let starts_enabled = quest
+            .fields
+            .iter()
+            .find(|field| field.sig.0 == *b"DNAM")
+            .map(|field| match &field.value {
+                FieldValue::Struct(fields) => fields
+                    .iter()
+                    .find_map(|(name, value)| {
+                        (interner.resolve(*name) == Some("flags")).then_some(value)
+                    })
+                    .is_some_and(
+                        |value| matches!(value, FieldValue::Uint(flags) if flags & 1 != 0),
+                    ),
+                FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
+                    u16::from_le_bytes([bytes[0], bytes[1]]) & 1 != 0
+                }
+                _ => true,
+            })
+            .unwrap();
+        assert!(!starts_enabled);
+        drop(session);
+        plugin_handle_close_native(reopened);
+    }
+
+    #[test]
+    fn skyrim_story_manager_target_root_requires_loaded_matching_smen() {
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_add_master_native, plugin_handle_close_native, plugin_handle_new_native,
+        };
+
+        let source = plugin_handle_new_native("SkyrimStorySource.esm", Some("skyrimse")).unwrap();
+        let target = plugin_handle_new_native("SkyrimStoryPort.esp", Some("fo4")).unwrap();
+        let fallout4 = plugin_handle_new_native("Fallout4.esm", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target, "Fallout4.esm", None).unwrap();
+        let run_id = create_run(RunParams {
+            source: Game::SkyrimSe,
+            target: Game::Fo4,
+            source_handle_id: source,
+            target_handle_id: target,
+            master_handle_ids: vec![fallout4],
+            config: RunConfig {
+                output_plugin_name: "SkyrimStoryPort.esp".to_string(),
+                target_master_names: vec!["Fallout4.esm".to_string()],
+                ..Default::default()
+            },
+        })
+        .unwrap();
+
+        with_run(run_id, |run| {
+            let event =
+                crate::skyrimse_fo4_runtime::story_manager::SkyrimFo4StoryEvent::HackComputer;
+            let target_root = FormKey {
+                local: 0x1244D0,
+                plugin: run.interner.intern("Fallout4.esm"),
+            };
+            let missing = run
+                .validate_skyrim_story_manager_target_event_root(event, target_root)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                missing.contains("absent from the loaded target master"),
+                "{missing}"
+            );
+
+            let mut wrong =
+                skyrim_runtime_test_record("SMEN", target_root, "NotHackComputer", &run.interner);
+            wrong.fields.push(skyrim_runtime_test_field(
+                "ENAM",
+                FieldValue::Uint(event.code() as u64),
+            ));
+            add_record_native(fallout4, wrong, &run.schema_target, &run.interner).unwrap();
+            let mismatch = run
+                .validate_skyrim_story_manager_target_event_root(event, target_root)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                mismatch.contains("does not match SMEN/HACK/HackComputer"),
+                "{mismatch}"
+            );
+            Ok::<_, RunError>(())
+        })
+        .unwrap();
+
+        drop_run(run_id).unwrap();
+        plugin_handle_close_native(source);
+        plugin_handle_close_native(target);
+        plugin_handle_close_native(fallout4);
+    }
+
+    #[test]
+    fn optional_installed_fallout4_hack_root_matches_runtime_contract() {
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_add_master_native, plugin_handle_close_native, plugin_handle_load_no_py,
+            plugin_handle_new_native,
+        };
+
+        let Some(data_dir) = std::env::var_os("FO4_QUEST_CORPUS_DATA_DIR").map(PathBuf::from)
+        else {
+            return;
+        };
+        let fallout4_path = data_dir.join("Fallout4.esm");
+        if !fallout4_path.is_file() {
+            return;
+        }
+        let source = plugin_handle_new_native("Dawnguard.esm", Some("skyrimse")).unwrap();
+        let target = plugin_handle_new_native("SkyrimStoryPort.esp", Some("fo4")).unwrap();
+        let fallout4 = plugin_handle_load_no_py(
+            fallout4_path.to_str().unwrap(),
+            Some("fo4"),
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+        plugin_handle_add_master_native(target, "Fallout4.esm", None).unwrap();
+        let run_id = create_run(RunParams {
+            source: Game::SkyrimSe,
+            target: Game::Fo4,
+            source_handle_id: source,
+            target_handle_id: target,
+            master_handle_ids: vec![fallout4],
+            config: RunConfig {
+                output_plugin_name: "SkyrimStoryPort.esp".to_string(),
+                target_master_names: vec!["Fallout4.esm".to_string()],
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        with_run(run_id, |run| {
+            let event =
+                crate::skyrimse_fo4_runtime::story_manager::SkyrimFo4StoryEvent::HackComputer;
+            let target_root = FormKey {
+                local: 0x1244D0,
+                plugin: run.interner.intern("Fallout4.esm"),
+            };
+            run.validate_skyrim_story_manager_target_event_root(event, target_root)
+        })
+        .unwrap();
+        drop_run(run_id).unwrap();
+        plugin_handle_close_native(source);
+        plugin_handle_close_native(target);
+        plugin_handle_close_native(fallout4);
+    }
+
+    #[test]
+    fn fo76_kill_story_manager_fails_before_allocation_and_reopens_without_sm_records() {
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_add_master_native, plugin_handle_close_native, plugin_handle_load_no_py,
+            plugin_handle_new_native, plugin_handle_save_no_py,
+        };
+
+        let source = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
+        let target = plugin_handle_new_native("SeventySixPort.esp", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target, "Fallout4.esm", None).unwrap();
+        let run_id = create_run(RunParams {
+            source: Game::Fo76,
+            target: Game::Fo4,
+            source_handle_id: source,
+            target_handle_id: target,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "SeventySixPort.esp".to_string(),
+                target_master_names: vec!["Fallout4.esm".to_string()],
+                preserve_source_ids: true,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let output = tempfile::tempdir().unwrap();
+
+        with_run(run_id, |run| {
+            let source_plugin = run.interner.intern("SeventySix.esm");
+            let output_plugin = run.interner.intern("SeventySixPort.esp");
+            let root = FormKey {
+                local: 0x4100,
+                plugin: source_plugin,
+            };
+            let branch = FormKey {
+                local: 0x4101,
+                plugin: source_plugin,
+            };
+            let node = FormKey {
+                local: 0x4102,
+                plugin: source_plugin,
+            };
+            let quest = FormKey {
+                local: 0x4103,
+                plugin: source_plugin,
+            };
+
+            let mut root_record =
+                skyrim_runtime_test_record("SMEN", root, "UnsupportedKillEvent", &run.interner);
+            root_record.fields.push(skyrim_runtime_test_field(
+                "ENAM",
+                FieldValue::Uint(u32::from_le_bytes(*b"KILL") as u64),
+            ));
+            let mut branch_record =
+                skyrim_runtime_test_record("SMBN", branch, "UnsupportedKillBranch", &run.interner);
+            branch_record
+                .fields
+                .push(skyrim_runtime_test_field("PNAM", FieldValue::FormKey(root)));
+            let mut node_record =
+                skyrim_runtime_test_record("SMQN", node, "UnsupportedKillQuestNode", &run.interner);
+            node_record.fields.extend([
+                skyrim_runtime_test_field("PNAM", FieldValue::FormKey(branch)),
+                skyrim_runtime_test_field("NNAM", FieldValue::FormKey(quest)),
+            ]);
+            let quest_record =
+                skyrim_runtime_test_record("QUST", quest, "UnsupportedKillQuest", &run.interner);
+            for record in [root_record, branch_record, node_record, quest_record] {
+                add_record_native(
+                    run.source_handle_id,
+                    record,
+                    &run.schema_source,
+                    &run.interner,
+                )
+                .unwrap();
+            }
+
+            let mut mapper = MapperState::new(
+                [],
+                MapperOptions {
+                    source_plugin_name: "SeventySix.esm".to_string(),
+                    output_plugin_name: "SeventySixPort.esp".to_string(),
+                    preserve_source_ids: true,
+                    ..Default::default()
+                },
+            );
+            mapper.source_to_target.insert(
+                quest,
+                FormKey {
+                    local: 0x5103,
+                    plugin: output_plugin,
+                },
+            );
+            run.mapper_state = Some(mapper);
+
+            let error = run.emit_story_manager_subset().unwrap_err().to_string();
+            assert!(
+                error.contains("story_manager_event_unsupported_no_fo4_root:004100:KILL"),
+                "{error}"
+            );
+            let state = run.mapper_state.as_ref().unwrap();
+            assert_eq!(state.source_to_target.len(), 1);
+            assert!(!state.source_to_target.contains_key(&root));
+            Ok::<_, RunError>(())
+        })
+        .unwrap();
+
+        let plugin_path = output.path().join("SeventySixPort.esp");
+        plugin_handle_save_no_py(target, plugin_path.to_str().unwrap()).unwrap();
+        drop_run(run_id).unwrap();
+        plugin_handle_close_native(source);
+        plugin_handle_close_native(target);
+
+        let reopened =
+            plugin_handle_load_no_py(plugin_path.to_str().unwrap(), Some("fo4"), None, None, true)
+                .unwrap();
+        let mut interner = StringInterner::new();
+        for signature in ["SMEN", "SMBN", "SMQN"] {
+            let sig = SigCode::from_str(signature).unwrap();
+            assert!(
+                iter_form_keys_of_sig(reopened, sig, &mut interner)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        plugin_handle_close_native(reopened);
+    }
+
+    #[test]
+    fn creature_dependency_plan_preserves_reserved_mapper_for_translation() {
+        let id = create_run(RunParams {
+            source: Game::Fnv,
+            target: Game::Fo4,
+            source_handle_id: 9999,
+            target_handle_id: 9998,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "Output.esm".into(),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+
+        with_run(id, |run| {
+            run.prepare_mapper_state_for_creature_dependency_plan()?;
+            let source = FormKey {
+                local: 0x100,
+                plugin: run.interner.intern("FalloutNV.esm"),
+            };
+            run.install_legacy_creature_dependency_plan(Vec::new(), &[source], &[], 1)?;
+            let reserved_target = run
+                .mapper_state
+                .as_ref()
+                .and_then(|state| state.source_to_target.get(&source))
+                .copied()
+                .expect("creature reservation mapping");
+
+            run.prepare_mapper_state_for_translation()?;
+            assert_eq!(
+                run.mapper_state
+                    .as_ref()
+                    .and_then(|state| state.source_to_target.get(&source))
+                    .copied(),
+                Some(reserved_target)
+            );
+
+            run.release_remap_state();
+            let error = run.prepare_mapper_state_for_translation().unwrap_err();
+            assert!(error.to_string().contains(
+                "mapper state was released after creature dependency reservations were installed"
+            ));
+            Ok::<_, RunError>(())
+        })
+        .unwrap();
+
+        drop_run(id).unwrap();
+    }
+
+    #[test]
+    fn skyrim_creature_dependency_plan_marks_source_rig_records_as_batch_owned() {
+        let id = create_run(RunParams {
+            source: Game::SkyrimSe,
+            target: Game::Fo4,
+            source_handle_id: 9999,
+            target_handle_id: 9998,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "Output.esm".into(),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+
+        with_run(id, |run| {
+            run.prepare_mapper_state_for_creature_dependency_plan()?;
+            let source_plugin = run.interner.intern("Skyrim.esm");
+            let race = FormKey {
+                local: 0x100,
+                plugin: source_plugin,
+            };
+            let npc = FormKey {
+                local: 0x101,
+                plugin: source_plugin,
+            };
+            let armor = FormKey {
+                local: 0x102,
+                plugin: source_plugin,
+            };
+            let owner = SkyrimCreatureReservationOwner {
+                source_race: race,
+                motion_family_id: "wolf".to_string(),
+                normalized_project_path: "wolf/wolfbehavior.hkx".to_string(),
+            };
+            run.install_skyrim_creature_dependency_plan(
+                Vec::new(),
+                vec![
+                    SkyrimCreatureReservationSource {
+                        source: race,
+                        kind: SkyrimCreatureReservedRecordKind::Race,
+                        owners: vec![owner.clone()],
+                    },
+                    SkyrimCreatureReservationSource {
+                        source: npc,
+                        kind: SkyrimCreatureReservedRecordKind::Npc,
+                        owners: vec![owner.clone()],
+                    },
+                    SkyrimCreatureReservationSource {
+                        source: armor,
+                        kind: SkyrimCreatureReservedRecordKind::Armor,
+                        owners: vec![owner],
+                    },
+                ],
+                1,
+            )?;
+
+            assert!(run.is_skyrim_creature_batch_owned(race));
+            assert!(run.is_skyrim_creature_batch_owned(npc));
+            assert!(!run.is_skyrim_creature_batch_owned(armor));
+            Ok::<_, RunError>(())
+        })
+        .unwrap();
+
+        drop_run(id).unwrap();
+    }
+
+    #[test]
+    fn creature_primary_npc_reservations_are_sorted_exact_and_atomic() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("FalloutNV.esm");
+        let primary_creature_sources = [0x101u32, 0x100]
+            .into_iter()
+            .map(|local| FormKey {
+                local,
+                plugin: source_plugin,
+            })
+            .collect::<Vec<_>>();
+        let mut state = MapperState::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "Output.esm".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let reservations = allocate_creature_primary_npc_reservations(
+            &mut state,
+            &interner,
+            &primary_creature_sources,
+            2,
+        )
+        .expect("reservations");
+
+        assert_eq!(
+            reservations
+                .iter()
+                .map(|reservation| reservation.source.local)
+                .collect::<Vec<_>>(),
+            vec![0x100, 0x101]
+        );
+        assert!(reservations.iter().all(|reservation| {
+            interner.resolve(reservation.target.plugin) == Some("Output.esm")
+                && state.source_to_target[&reservation.source] == reservation.target
+                && state.leased_object_ids.contains(&reservation.target.local)
+                && !state.used_object_ids.contains(&reservation.target.local)
+        }));
+
+        let leased_local = reservations[0].target.local;
+        let unrelated_source = FormKey {
+            local: leased_local,
+            plugin: interner.intern("Other.esm"),
+        };
+        let unrelated_target = FormKeyMapper::from_state(&mut state, &interner)
+            .allocate_or_resolve(unrelated_source, None, SigCode::from_str("CELL").unwrap());
+        assert_ne!(unrelated_target.local, leased_local);
+
+        let before = state.source_to_target.clone();
+        assert!(
+            allocate_creature_primary_npc_reservations(
+                &mut state,
+                &interner,
+                &primary_creature_sources,
+                2,
+            )
+            .is_err()
+        );
+        assert_eq!(state.source_to_target, before);
+    }
+
+    #[test]
+    fn legacy_ancillary_npc_reservations_are_canonical_mapped_and_atomic() {
+        let interner = StringInterner::new();
+        let fnv = interner.intern("FalloutNV.esm");
+        let fo3 = interner.intern("Fallout3.esm");
+        let source = |plugin, local| FormKey { plugin, local };
+        let mut state = MapperState::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "Output.esm".to_string(),
+                ..Default::default()
+            },
+        );
+        let sources = vec![
+            source(fnv, 0x300),
+            source(fo3, 0x200),
+            source(fnv, 0x100),
+            source(fnv, 0x300),
+        ];
+
+        let reservations =
+            allocate_creature_ancillary_npc_reservations(&mut state, &interner, &sources)
+                .expect("ancillary NPC reservations");
+
+        assert_eq!(reservations.len(), 3);
+        assert_eq!(
+            reservations
+                .iter()
+                .map(|reservation| {
+                    (
+                        interner.resolve(reservation.source.plugin).unwrap(),
+                        reservation.source.local,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ("Fallout3.esm", 0x200),
+                ("FalloutNV.esm", 0x100),
+                ("FalloutNV.esm", 0x300),
+            ]
+        );
+        assert!(reservations.iter().all(|reservation| {
+            reservation.target.local != 0
+                && state.source_to_target[&reservation.source] == reservation.target
+        }));
+
+        let before = state.clone();
+        let error = allocate_creature_ancillary_npc_reservations(
+            &mut state,
+            &interner,
+            &[source(fnv, 0x400), source(fo3, 0x200)],
+        )
+        .expect_err("pre-mapped ancillary NPC must roll back");
+        assert!(error.contains("already has a mapping"));
+        assert_eq!(state.source_to_target, before.source_to_target);
+        assert_eq!(state.next_object_id, before.next_object_id);
+        assert_eq!(state.used_object_ids, before.used_object_ids);
+    }
+
+    #[test]
+    fn skyrim_creature_reservations_keep_records_distinct_and_are_atomic() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("Skyrim.esm");
+        let output_plugin = interner.intern("Output.esm");
+        let target_master_plugin = interner.intern("Fallout4.esm");
+        let form_key = |local| FormKey {
+            local,
+            plugin: source_plugin,
+        };
+        let owner = |source_race| SkyrimCreatureReservationOwner {
+            source_race,
+            motion_family_id: "wolf".to_string(),
+            normalized_project_path: "wolf/wolfbehavior.hkx".to_string(),
+        };
+        let race_a = form_key(0x100);
+        let race_b = form_key(0x101);
+        let skin = form_key(0x200);
+        let body_part_data = form_key(0x202);
+        let sources = vec![
+            SkyrimCreatureReservationSource {
+                source: form_key(0x301),
+                kind: SkyrimCreatureReservedRecordKind::Npc,
+                owners: vec![owner(race_b)],
+            },
+            SkyrimCreatureReservationSource {
+                source: race_b,
+                kind: SkyrimCreatureReservedRecordKind::Race,
+                owners: vec![owner(race_b)],
+            },
+            SkyrimCreatureReservationSource {
+                source: skin,
+                kind: SkyrimCreatureReservedRecordKind::Armor,
+                owners: vec![owner(race_b), owner(race_a)],
+            },
+            SkyrimCreatureReservationSource {
+                source: form_key(0x300),
+                kind: SkyrimCreatureReservedRecordKind::Npc,
+                owners: vec![owner(race_a)],
+            },
+            SkyrimCreatureReservationSource {
+                source: race_a,
+                kind: SkyrimCreatureReservedRecordKind::Race,
+                owners: vec![owner(race_a)],
+            },
+            SkyrimCreatureReservationSource {
+                source: form_key(0x201),
+                kind: SkyrimCreatureReservedRecordKind::ArmorAddon,
+                owners: vec![owner(race_a), owner(race_b)],
+            },
+            SkyrimCreatureReservationSource {
+                source: body_part_data,
+                kind: SkyrimCreatureReservedRecordKind::BodyPartData,
+                owners: vec![owner(race_a), owner(race_b)],
+            },
+        ];
+        let mut state = MapperState::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "Output.esm".to_string(),
+                ..Default::default()
+            },
+        );
+        state.source_to_target.insert(
+            body_part_data,
+            FormKey {
+                local: 0x1D,
+                plugin: target_master_plugin,
+            },
+        );
+
+        let reservations =
+            allocate_skyrim_creature_record_reservations(&mut state, &interner, sources.clone(), 2)
+                .expect("reservations");
+
+        assert_eq!(reservations.len(), 7);
+        assert!(
+            reservations
+                .windows(2)
+                .all(|pair| pair[0].source.local < pair[1].source.local)
+        );
+        assert_ne!(
+            state.source_to_target[&race_a],
+            state.source_to_target[&race_b]
+        );
+        assert_ne!(
+            state.source_to_target[&form_key(0x300)],
+            state.source_to_target[&form_key(0x301)]
+        );
+        assert_eq!(
+            state.source_to_target[&body_part_data].plugin,
+            output_plugin
+        );
+        assert_eq!(
+            reservations
+                .iter()
+                .find(|reservation| reservation.source == skin)
+                .expect("skin reservation")
+                .owners
+                .len(),
+            2
+        );
+
+        let before = state.clone();
+        assert!(
+            allocate_skyrim_creature_record_reservations(&mut state, &interner, sources, 2,)
+                .is_err()
+        );
+        assert_eq!(state.source_to_target, before.source_to_target);
+        assert_eq!(state.next_object_id, before.next_object_id);
+        assert_eq!(state.used_object_ids, before.used_object_ids);
+    }
+
+    #[test]
+    fn skyrim_creature_ancillary_reservations_are_canonical_distinct_and_collision_safe() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("Skyrim.esm");
+        let output_plugin = interner.intern("Output.esm");
+        let source_race = |local| FormKey {
+            local,
+            plugin: source_plugin,
+        };
+        let race_a = source_race(0x100);
+        let race_b = source_race(0x101);
+        let record_reservations = [race_a, race_b]
+            .into_iter()
+            .map(|source| SkyrimCreatureRecordReservation {
+                source,
+                target: FormKey {
+                    local: source.local + 0x1000,
+                    plugin: output_plugin,
+                },
+                kind: SkyrimCreatureReservedRecordKind::Race,
+                owners: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        let requests = vec![
+            SkyrimCreatureAncillaryReservationRequest {
+                source_race: race_b,
+                event: "attackStartB".to_string(),
+                ordinal: 2,
+                kind: SkyrimCreatureAncillaryRecordKind::Projectile,
+            },
+            SkyrimCreatureAncillaryReservationRequest {
+                source_race: race_a,
+                event: "attackStartA".to_string(),
+                ordinal: 1,
+                kind: SkyrimCreatureAncillaryRecordKind::Weapon,
+            },
+            SkyrimCreatureAncillaryReservationRequest {
+                source_race: race_a,
+                event: "attackStartA".to_string(),
+                ordinal: 1,
+                kind: SkyrimCreatureAncillaryRecordKind::Projectile,
+            },
+        ];
+        let mut state = MapperState::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "Output.esm".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let receipts = allocate_skyrim_creature_ancillary_reservations(
+            &mut state,
+            &interner,
+            &record_reservations,
+            requests,
+        )
+        .expect("ancillary reservations");
+
+        assert_eq!(
+            receipts
+                .iter()
+                .map(|receipt| (receipt.source_race.local, receipt.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (0x100, SkyrimCreatureAncillaryRecordKind::Weapon),
+                (0x100, SkyrimCreatureAncillaryRecordKind::Projectile),
+                (0x101, SkyrimCreatureAncillaryRecordKind::Projectile),
+            ]
+        );
+        assert!(receipts.iter().all(|receipt| {
+            receipt.target.local != 0 && receipt.target.plugin == output_plugin
+        }));
+        let targets = receipts
+            .iter()
+            .map(|receipt| receipt.target)
+            .collect::<FxHashSet<_>>();
+        assert_eq!(targets.len(), receipts.len());
+        assert!(
+            receipts
+                .iter()
+                .all(|receipt| !state.source_to_target.contains_key(&receipt.source_race))
+        );
+
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let next_target = mapper.allocate_generated();
+        assert_ne!(next_target.local, 0);
+        assert!(!targets.contains(&next_target));
+    }
+
+    #[test]
+    fn skyrim_creature_ancillary_duplicate_rolls_back_allocator_state() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("Skyrim.esm");
+        let output_plugin = interner.intern("Output.esm");
+        let source_race = FormKey {
+            local: 0x100,
+            plugin: source_plugin,
+        };
+        let record_reservations = vec![SkyrimCreatureRecordReservation {
+            source: source_race,
+            target: FormKey {
+                local: 0x1000,
+                plugin: output_plugin,
+            },
+            kind: SkyrimCreatureReservedRecordKind::Race,
+            owners: Vec::new(),
+        }];
+        let mut state = MapperState::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "Output.esm".to_string(),
+                ..Default::default()
+            },
+        );
+        let before = state.clone();
+
+        let error = allocate_skyrim_creature_ancillary_reservations(
+            &mut state,
+            &interner,
+            &record_reservations,
+            vec![
+                SkyrimCreatureAncillaryReservationRequest {
+                    source_race,
+                    event: "attackStart".to_string(),
+                    ordinal: 1,
+                    kind: SkyrimCreatureAncillaryRecordKind::Weapon,
+                },
+                SkyrimCreatureAncillaryReservationRequest {
+                    source_race,
+                    event: "ATTACKSTART".to_string(),
+                    ordinal: 1,
+                    kind: SkyrimCreatureAncillaryRecordKind::Weapon,
+                },
+            ],
+        )
+        .expect_err("case-insensitive duplicate must block");
+
+        assert!(error.contains("duplicate Skyrim creature ancillary request"));
+        assert_eq!(state.source_to_target, before.source_to_target);
+        assert_eq!(state.next_object_id, before.next_object_id);
+        assert_eq!(state.used_object_ids, before.used_object_ids);
+    }
+
+    #[test]
+    fn skyrim_creature_ancillary_unreserved_race_rolls_back_allocator_state() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("Skyrim.esm");
+        let mut state = MapperState::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "Output.esm".to_string(),
+                ..Default::default()
+            },
+        );
+        let before = state.clone();
+
+        let error = allocate_skyrim_creature_ancillary_reservations(
+            &mut state,
+            &interner,
+            &[],
+            vec![SkyrimCreatureAncillaryReservationRequest {
+                source_race: FormKey {
+                    local: 0x100,
+                    plugin: source_plugin,
+                },
+                event: "attackStart".to_string(),
+                ordinal: 1,
+                kind: SkyrimCreatureAncillaryRecordKind::Weapon,
+            }],
+        )
+        .expect_err("unreserved source RACE must block");
+
+        assert!(error.contains("require installed RACE reservations"));
+        assert_eq!(state.source_to_target, before.source_to_target);
+        assert_eq!(state.next_object_id, before.next_object_id);
+        assert_eq!(state.used_object_ids, before.used_object_ids);
+    }
+
+    #[test]
+    fn creature_actor_action_reservations_are_family_canonical_and_leased() {
+        let interner = StringInterner::new();
+        let mut state = MapperState::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "Output.esm".to_string(),
+                ..Default::default()
+            },
+        );
+        let requirement = |kind, parent_editor_id: &str, parent_form_id, event: &str| {
+            crate::source_rig::ActorActionRequirement {
+                kind,
+                parent_editor_id: parent_editor_id.to_string(),
+                parent_form_id,
+                behavior_path: "Actors\\Fixture\\Behaviors\\FixtureRootBehavior.hkx".to_string(),
+                animation_event: event.to_string(),
+            }
+        };
+        let requests = vec![
+            CreatureActorActionReservationRequest {
+                family_id: "wolf".to_string(),
+                requirement: requirement(
+                    crate::source_rig::ActorActionKind::Melee,
+                    "ActionMelee",
+                    0x004A59,
+                    "meleeWolf",
+                ),
+                editor_id: "B21_WolfActionMelee".to_string(),
+            },
+            CreatureActorActionReservationRequest {
+                family_id: "wolf".to_string(),
+                requirement: requirement(
+                    crate::source_rig::ActorActionKind::Idle,
+                    "ActionIdle",
+                    0x013002,
+                    "Idle",
+                ),
+                editor_id: "B21_WolfActionIdle".to_string(),
+            },
+        ];
+
+        let receipts =
+            allocate_creature_actor_action_reservations(&mut state, &interner, requests.clone())
+                .expect("Actor Action reservations");
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(
+            receipts
+                .iter()
+                .map(|receipt| receipt.requirement.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                crate::source_rig::ActorActionKind::Idle,
+                crate::source_rig::ActorActionKind::Melee,
+            ]
+        );
+        assert!(receipts.iter().all(|receipt| {
+            state
+                .reserved_generated_object_ids
+                .contains(&receipt.target.local)
+                && !state.used_object_ids.contains(&receipt.target.local)
+                && receipt.record_plan(&interner).is_ok()
+        }));
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let next = mapper.allocate_generated();
+        assert!(
+            receipts
+                .iter()
+                .all(|receipt| receipt.target.local != next.local)
+        );
+
+        let before = state.clone();
+        let duplicate = vec![
+            requests[0].clone(),
+            CreatureActorActionReservationRequest {
+                editor_id: "B21_WolfActionMeleeOther".to_string(),
+                ..requests[0].clone()
+            },
+        ];
+        assert!(
+            allocate_creature_actor_action_reservations(&mut state, &interner, duplicate,).is_err()
+        );
+        assert_eq!(state.next_object_id, before.next_object_id);
+        assert_eq!(state.used_object_ids, before.used_object_ids);
+        assert_eq!(
+            state.reserved_generated_object_ids,
+            before.reserved_generated_object_ids
+        );
+    }
+
+    fn slice_info(
+        source_form_key: &str,
+        fragment_class_name: Option<&str>,
+        phase: Option<crate::fnv_legacy_scripting::dialogue::InfoFragmentPhase>,
+    ) -> crate::fnv_legacy_scripting::dialogue::TranslatedInfo {
+        crate::fnv_legacy_scripting::dialogue::TranslatedInfo {
+            source_form_key: source_form_key.to_string(),
+            fragment_class_name: fragment_class_name.map(str::to_string),
+            fragment_psc_text: fragment_class_name
+                .map(|class_name| format!("ScriptName {class_name} extends TopicInfo\n")),
+            fragment_phases: phase.into_iter().collect(),
+            fragment_properties: Vec::new(),
+            voice_target_path: String::new(),
+            voice_source_path: String::new(),
+            lip_dropped: false,
+            lip_regeneration_target: None,
+            authoring_record_payload: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn vertical_slice_script_source(local: u32) -> String {
+        let fixture =
+            include_str!("../../../python/bacup_lib/tests/test_fnv_quest_vertical_slice.py");
+        let marker = format!("    0x{local:06X}: \"\"\"");
+        let start = fixture.find(&marker).unwrap() + marker.len();
+        let end = fixture[start..].find("\"\"\",").unwrap() + start;
+        fixture[start..end]
+            .replace("\r\n", "\n")
+            .replace("\\t", "\t")
+    }
+
+    #[test]
+    fn strict_slice_surfaces_scpt_failure_before_dynamic_alias_cardinality() {
+        let error = ensure_no_deferred_translation_failures(&[(
+            "SCPT".to_string(),
+            "TecMineHostage".to_string(),
+            "parse failed at else(condition)".to_string(),
+        )])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("SCPT TecMineHostage: parse failed at else(condition)"));
+        assert!(!error.contains("dynamic package data aliases"));
+    }
+
+    #[test]
+    fn strict_slice_requires_two_exact_tifs_among_five_info_records() {
+        use crate::fnv_legacy_scripting::dialogue::InfoFragmentPhase;
+
+        let infos = vec![
+            slice_info(
+                "130161:FalloutNV.esm",
+                Some("TIF__130161"),
+                Some(InfoFragmentPhase::Begin),
+            ),
+            slice_info(
+                "134B9B:FalloutNV.esm",
+                Some("TIF__134B9B"),
+                Some(InfoFragmentPhase::End),
+            ),
+            slice_info("15734B:FalloutNV.esm", None, None),
+            slice_info("15734C:FalloutNV.esm", None, None),
+            slice_info("15734D:FalloutNV.esm", None, None),
+        ];
+        validate_fnv_quest_slice_info_fragment_contract(&infos).unwrap();
+
+        let mut missing_required_tif = infos.clone();
+        missing_required_tif[0] = slice_info("130161:FalloutNV.esm", None, None);
+        assert!(
+            validate_fnv_quest_slice_info_fragment_contract(&missing_required_tif)
+                .unwrap_err()
+                .to_string()
+                .contains("requires exact fragment TIF__130161")
+        );
+
+        let mut scripted_greeting = infos;
+        scripted_greeting[2] = slice_info(
+            "15734B:FalloutNV.esm",
+            Some("TIF__15734B"),
+            Some(InfoFragmentPhase::Begin),
+        );
+        assert!(
+            validate_fnv_quest_slice_info_fragment_contract(&scripted_greeting)
+                .unwrap_err()
+                .to_string()
+                .contains("unexpectedly carries a Papyrus fragment")
+        );
+    }
+
+    #[test]
+    fn production_relayout_scri_formkeys_capture_npc_and_deferred_quest_attachments() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("FalloutNV.esm");
+        let target_plugin = interner.intern("Output.esm");
+        let scri_sig = SubrecordSig::from_str("SCRI").unwrap();
+        let cases = [
+            ("NPC_", 0x1300F0, 0x166305, 0x2300F0),
+            ("QUST", 0x11F935, 0x11FC64, 0x21F935),
+        ];
+        let mut links = Vec::new();
+        for (signature, source_owner, source_script, target_owner) in cases {
+            let mut record = Record::new(
+                SigCode::from_str(signature).unwrap(),
+                FormKey {
+                    local: source_owner,
+                    plugin: source_plugin,
+                },
+            );
+            record.fields.push(FieldEntry {
+                sig: scri_sig,
+                value: FieldValue::FormKey(FormKey {
+                    local: source_script,
+                    plugin: source_plugin,
+                }),
+            });
+            let raw_form_id_resolver = |raw: u32| {
+                Some(FormKey {
+                    local: raw & 0x00FF_FFFF,
+                    plugin: source_plugin,
+                })
+            };
+            let source_scpt =
+                capture_fnv_scri_target_text(&record, &interner, &raw_form_id_resolver)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(source_scpt, format!("{source_script:06X}:FalloutNV.esm"));
+            append_fnv_scri_link(
+                &mut links,
+                FormKey {
+                    local: target_owner,
+                    plugin: target_plugin,
+                },
+                &source_scpt,
+                &interner,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            links,
+            [
+                FnvScriLink {
+                    target_form_key: "2300F0:Output.esm".into(),
+                    source_scpt_form_key: "166305:FalloutNV.esm".into(),
+                },
+                FnvScriLink {
+                    target_form_key: "21F935:Output.esm".into(),
+                    source_scpt_form_key: "11FC64:FalloutNV.esm".into(),
+                },
+            ]
+        );
+
+        let mut invalid = Record::new(
+            SigCode::from_str("NPC_").unwrap(),
+            FormKey {
+                local: 0x1300F0,
+                plugin: source_plugin,
+            },
+        );
+        invalid.fields.push(FieldEntry {
+            sig: scri_sig,
+            value: FieldValue::Int(0x166305),
+        });
+        assert!(
+            capture_fnv_scri_target_text(&invalid, &interner, &|_| None)
+                .unwrap_err()
+                .contains("unsupported decoded value")
+        );
+
+        invalid.fields[0].value = FieldValue::Bytes(smallvec::smallvec![0x05, 0x63, 0x16]);
+        assert!(
+            capture_fnv_scri_target_text(&invalid, &interner, &|_| None)
+                .unwrap_err()
+                .contains("has 3 bytes, expected 4")
+        );
+
+        invalid.fields[0].value = FieldValue::Bytes(smallvec::smallvec![0x05, 0x63, 0x16, 0x00]);
+        assert_eq!(
+            capture_fnv_scri_target_text(&invalid, &interner, &|raw| {
+                (raw == 0x0016_6305).then_some(FormKey {
+                    local: raw & 0x00FF_FFFF,
+                    plugin: source_plugin,
+                })
+            })
+            .unwrap(),
+            Some("166305:FalloutNV.esm".into())
+        );
+
+        let compatibility = interner.intern("166305:FalloutNV.esm");
+        invalid.fields[0].value = FieldValue::String(compatibility);
+        assert_eq!(
+            capture_fnv_scri_target_text(&invalid, &interner, &|_| None).unwrap(),
+            Some("166305:FalloutNV.esm".into())
+        );
+    }
+
+    #[test]
+    fn vertical_fixture_scpt_scripts_emit_two_dynamic_package_contracts() {
+        let mapped = serde_json::json!({
+            "1231B8:FalloutNV.esm": "2231B8:Output.esm",
+            "097183:FalloutNV.esm": "197183:Output.esm",
+            "11F935:FalloutNV.esm": "21F935:Output.esm",
+            "0A46E7:FalloutNV.esm": "1A46E7:Output.esm",
+            "1231B6:FalloutNV.esm": "2231B6:Output.esm",
+            "1400F9:FalloutNV.esm": "2400F9:Output.esm",
+            "134B9C:FalloutNV.esm": "234B9C:Output.esm",
+            "13289E:FalloutNV.esm": "23289E:Output.esm"
+        });
+        let cases = [
+            (
+                0x123191,
+                "TecMineHostage",
+                vec![
+                    "000014:FalloutNV.esm",
+                    "1231B8:FalloutNV.esm",
+                    "097183:FalloutNV.esm",
+                    "11F935:FalloutNV.esm",
+                    "0F43DE:FalloutNV.esm",
+                    "0000C8:FalloutNV.esm",
+                    "0A46E7:FalloutNV.esm",
+                    "1231B6:FalloutNV.esm",
+                    "1400F9:FalloutNV.esm",
+                ],
+            ),
+            (
+                0x134491,
+                "NVTechatticupRenoldsDialogueScript",
+                vec![
+                    "134B9C:FalloutNV.esm",
+                    "000014:FalloutNV.esm",
+                    "11F935:FalloutNV.esm",
+                    "13289E:FalloutNV.esm",
+                ],
+            ),
+        ];
+        let mut translated_scripts = Vec::new();
+        for (local, editor_id, references) in cases {
+            let script_source = vertical_slice_script_source(local);
+            let mut fields = vec![serde_json::json!({
+                "SCTX": script_source
+            })];
+            fields.extend(
+                references
+                    .into_iter()
+                    .map(|reference| serde_json::json!({ "SCRO": reference })),
+            );
+            let record = serde_json::json!({
+                "eid": editor_id,
+                "fields": fields,
+                "__mapped_form_keys": mapped
+            });
+            let translated = crate::fnv_legacy_scripting::script_synthesizer::translate_scpt_record_with_attachments(
+                &record,
+                "FNV_FO3",
+                &format!("{local:06X}:FalloutNV.esm"),
+                &[],
+            )
+            .unwrap_or_else(|error| panic!("{editor_id}: {error}"));
+            translated_scripts.push(translated);
+        }
+        assert_eq!(
+            translated_scripts
+                .iter()
+                .map(|script| script.package_data_aliases.len())
+                .sum::<usize>(),
+            2
+        );
+        let mut quest = crate::fnv_legacy_scripting::quest::QuestTranslation {
+            source_editor_id: "VTechatticup".into(),
+            source_form_key: "11F935:FalloutNV.esm".into(),
+            target_form_key: "21F935:Output.esm".into(),
+            fragment_class_name: "FNV_FO3_QF_VTechatticup_0011F935".into(),
+            authoring_record_payload: serde_json::json!({
+                "signature": "QUST",
+                "fields": [{ "ANAM": 0 }]
+            }),
+            aliases: Vec::new(),
+            fragment_metadata: Vec::new(),
+            losses: Default::default(),
+        };
+        let pending = materialize_fnv_package_data_alias_contracts(
+            &mut quest,
+            "11F935:FalloutNV.esm",
+            "21F935:Output.esm",
+            &translated_scripts,
+        )
+        .unwrap();
+        let fields = quest.authoring_record_payload["fields"].as_array().unwrap();
+        assert_eq!(
+            fields
+                .iter()
+                .filter_map(|field| {
+                    let reference = field.get("ALPC")?.get("reference")?;
+                    Some((
+                        reference.get("plugin")?.as_str()?,
+                        reference.get("object_id")?.as_str()?,
+                    ))
+                })
+                .collect::<Vec<_>>(),
+            [("Output.esm", "2231B6"), ("Output.esm", "23289E")]
+        );
+        assert_eq!(pending.len(), 2);
+        assert_eq!(
+            pending
+                .iter()
+                .map(|binding| (
+                    binding.property.name.as_str(),
+                    binding.property.prop_type.as_str(),
+                    binding.property.value.as_ref().unwrap()["alias_id"]
+                        .as_i64()
+                        .unwrap(),
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("TecMineHostageEscapeData", "ReferenceAlias", 0),
+                (
+                    "TechaticupNCRRenoldsDialoguePackageData",
+                    "ReferenceAlias",
+                    1,
+                ),
+            ]
+        );
+        assert!(pending.iter().all(|binding| {
+            binding.property.value.as_ref().unwrap()["target_quest_form_key"] == "21F935:Output.esm"
+        }));
+    }
+
+    #[test]
+    fn generated_hostage_greeting_keyword_reconciles_once_after_compile() {
+        use crate::fnv_legacy_scripting::vmad::CompiledScriptEvidence;
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_close_native, plugin_handle_new_native,
+            plugin_handle_read_authoring_record_value_json,
+            plugin_handle_replace_authoring_record_value,
+        };
+
+        let mapped = serde_json::json!({
+            "1231B8:FalloutNV.esm": "2231B8:Output.esm",
+            "097183:FalloutNV.esm": "197183:Output.esm",
+            "11F935:FalloutNV.esm": "21F935:Output.esm",
+            "0A46E7:FalloutNV.esm": "1A46E7:Output.esm",
+            "1231B6:FalloutNV.esm": "2231B6:Output.esm",
+            "1400F9:FalloutNV.esm": "2400F9:Output.esm"
+        });
+        let references = [
+            "000014:FalloutNV.esm",
+            "1231B8:FalloutNV.esm",
+            "097183:FalloutNV.esm",
+            "11F935:FalloutNV.esm",
+            "0F43DE:FalloutNV.esm",
+            "0000C8:FalloutNV.esm",
+            "0A46E7:FalloutNV.esm",
+            "1231B6:FalloutNV.esm",
+            "1400F9:FalloutNV.esm",
+        ];
+        let mut fields = vec![serde_json::json!({
+            "SCTX": vertical_slice_script_source(0x123191)
+        })];
+        fields.extend(
+            references
+                .into_iter()
+                .map(|reference| serde_json::json!({ "SCRO": reference })),
+        );
+        let record = serde_json::json!({
+            "eid": "TecMineHostage",
+            "fields": fields,
+            "__mapped_form_keys": mapped
+        });
+        let mut translated = crate::fnv_legacy_scripting::script_synthesizer::translate_scpt_record_with_attachments(
+            &record,
+            "FNV_FO3",
+            "123191:FalloutNV.esm",
+            &[],
+        )
+        .unwrap();
+        let property_name = "TecMineHostageFreedGreeting";
+        assert_eq!(
+            translated
+                .psc_text
+                .matches("Keyword Property TecMineHostageFreedGreeting Auto Const")
+                .count(),
+            1
+        );
+        assert_eq!(
+            translated
+                .properties
+                .iter()
+                .filter(|property| property.papyrus_name == property_name)
+                .count(),
+            1
+        );
+        assert!(
+            translated
+                .properties
+                .iter()
+                .find(|property| property.papyrus_name == property_name)
+                .unwrap()
+                .target_form_key
+                .is_none()
+        );
+
+        let generated_keyword_target = "00F100:Output.esm";
+        let script_class_name = translated.script_class_name.clone();
+        bind_generated_scpt_property_target(
+            std::slice::from_mut(&mut translated),
+            "123191:FalloutNV.esm",
+            &script_class_name,
+            property_name,
+            "Keyword",
+            generated_keyword_target,
+        )
+        .unwrap();
+
+        let source_handle = plugin_handle_new_native("FalloutNV.esm", Some("fnv")).unwrap();
+        let target_handle = plugin_handle_new_native("Output.esm", Some("fo4")).unwrap();
+        let actor_target = plugin_handle_replace_authoring_record_value(
+            target_handle,
+            &serde_json::json!({
+                "signature": "NPC_",
+                "form_id": "2300F0:Output.esm",
+                "eid": "TecMineHostageActor",
+                "fields": [{ "EDID": "TecMineHostageActor" }]
+            }),
+        )
+        .unwrap();
+        let run_id = create_run(RunParams {
+            source: Game::Fnv,
+            target: Game::Fo4,
+            source_handle_id: source_handle,
+            target_handle_id: target_handle,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "Output.esm".into(),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let evidence = CompiledScriptEvidence {
+            class_name: script_class_name.clone(),
+            relative_pex_path: format!("data/Scripts/{script_class_name}.pex"),
+            compiled_success: true,
+        };
+        let (intents, attached, _, _) = with_run(run_id, |run| {
+            run.fnv_pending_vmad_targets =
+                vec![(actor_target.clone(), "123191:FalloutNV.esm".into())];
+            run.fnv_pending_vmad_scripts = vec![translated];
+            run.reconcile_fnv_compiled_scripts(std::slice::from_ref(&evidence))
+        })
+        .unwrap();
+        assert!(attached);
+        assert_eq!(intents.len(), 1);
+        let greeting_properties = intents[0]
+            .properties
+            .iter()
+            .filter(|property| property.name == property_name)
+            .collect::<Vec<_>>();
+        assert_eq!(greeting_properties.len(), 1);
+        assert_eq!(greeting_properties[0].prop_type, "Keyword");
+        assert_eq!(
+            greeting_properties[0].value,
+            Some(serde_json::json!(generated_keyword_target))
+        );
+
+        let target = plugin_handle_read_authoring_record_value_json(target_handle, &actor_target)
+            .unwrap()
+            .unwrap();
+        let vmad = target["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|field| field.get("VirtualMachineAdapter"))
+            .unwrap();
+        let vmad_greeting_properties = vmad["Scripts"][0]["Properties"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|property| property["propertyName"] == property_name)
+            .collect::<Vec<_>>();
+        assert_eq!(vmad_greeting_properties.len(), 1);
+        assert_eq!(
+            vmad_greeting_properties[0]["Value"]["FormID"]["reference"],
+            serde_json::json!({
+                "plugin": "Output.esm",
+                "object_id": "00F100"
+            })
+        );
+
+        drop_run(run_id).unwrap();
+        plugin_handle_close_native(source_handle);
+        plugin_handle_close_native(target_handle);
+    }
+
+    #[test]
+    fn compact_slice_classes_reconcile_to_exact_vmad_cross_references() {
+        use crate::fnv_legacy_scripting::dialogue::InfoFragmentPhase;
+        use crate::fnv_legacy_scripting::naming::{
+            quest_fragment_name, standalone_script_name, topic_info_fragment_name,
+        };
+        use crate::fnv_legacy_scripting::script_synthesizer::{
+            PapyrusType, ScriptCompileStatus, ScriptTerminalStatus, TranslatedScript,
+        };
+        use crate::fnv_legacy_scripting::vmad::{
+            CompiledScriptEvidence, PendingInfoFragmentBinding, PendingObjectScriptBinding,
+            PendingQuestFragmentBinding, QuestStageFragment,
+        };
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_close_native, plugin_handle_load_no_py, plugin_handle_new_native,
+            plugin_handle_read_authoring_record_value_json,
+            plugin_handle_replace_authoring_record_value,
+            plugin_handle_save_preserving_identity_no_py,
+        };
+
+        fn collect_script_names(value: &serde_json::Value, names: &mut FxHashSet<String>) {
+            match value {
+                serde_json::Value::Object(object) => {
+                    for (key, value) in object {
+                        if key.ends_with("ScriptName") {
+                            if let Some(name) = value.as_str() {
+                                names.insert(name.to_string());
+                            }
+                        }
+                        collect_script_names(value, names);
+                    }
+                }
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        collect_script_names(value, names);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let prefix = "FNV_FO3";
+        let scpt_locals = [0x11FC64, 0x123191, 0x134491, 0x166305];
+        let scpt_classes = scpt_locals.map(|local| standalone_script_name(prefix, local));
+        let quest_classes = [
+            quest_fragment_name(prefix, 0x06136D),
+            quest_fragment_name(prefix, 0x11F935),
+        ];
+        let info_classes = [
+            topic_info_fragment_name("130161"),
+            topic_info_fragment_name("134B9B"),
+        ];
+        let helper_class = format!("{prefix}_FnvSliceCompat");
+        let expected_classes = scpt_classes
+            .iter()
+            .chain(quest_classes.iter())
+            .chain(info_classes.iter())
+            .chain(std::iter::once(&helper_class))
+            .cloned()
+            .collect::<FxHashSet<_>>();
+        assert_eq!(expected_classes.len(), 9);
+        assert!(expected_classes.iter().all(|name| name.len() <= 38));
+
+        let source_handle = plugin_handle_new_native("FalloutNV.esm", Some("fnv")).unwrap();
+        let target_handle = plugin_handle_new_native("FalloutNV.esm", Some("fo4")).unwrap();
+        let mut target_keys = Vec::new();
+        for (index, (signature, target_local)) in [
+            ("QUST", 0x100),
+            ("NPC_", 0x101),
+            ("ACTI", 0x133F41),
+            ("NPC_", 0x103),
+            ("QUST", 0x104),
+            ("QUST", 0x105),
+            ("INFO", 0x106),
+            ("INFO", 0x107),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let fields = if index == 5 {
+                serde_json::json!([
+                    { "EDID": format!("CompactTarget{index}") },
+                    { "NextAliasID": 5 },
+                    { "ALST": 0 },
+                    { "ALID": "LegacyRef_FNV_FO3_12319B" },
+                    { "FNAM": [] },
+                    { "Reference": { "reference": { "plugin": "FalloutNV.esm", "object_id": "12319B" } } },
+                    { "ALED": true },
+                    { "ALST": 1 },
+                    { "ALID": "LegacyRef_FNV_FO3_12319C" },
+                    { "FNAM": [] },
+                    { "Reference": { "reference": { "plugin": "FalloutNV.esm", "object_id": "12319C" } } },
+                    { "ALED": true },
+                    { "ALST": 2 },
+                    { "ALID": "LegacyRef_FNV_FO3_134B9C" },
+                    { "FNAM": [] },
+                    { "Reference": { "reference": { "plugin": "FalloutNV.esm", "object_id": "134B9C" } } },
+                    { "ALED": true },
+                    { "ALST": 3 },
+                    { "ALID": "TechaticupNCRRenoldsDialoguePackageData" },
+                    { "FNAM": [] },
+                    { "Package": { "reference": { "plugin": "FalloutNV.esm", "object_id": "13289E" } } },
+                    { "ALED": true },
+                    { "ALST": 4 },
+                    { "ALID": "TecMineHostageEscapeData" },
+                    { "FNAM": [] },
+                    { "Package": { "reference": { "plugin": "FalloutNV.esm", "object_id": "1231B6" } } },
+                    { "ALED": true }
+                ])
+            } else {
+                serde_json::json!([{ "EDID": format!("CompactTarget{index}") }])
+            };
+            target_keys.push(
+                plugin_handle_replace_authoring_record_value(
+                    target_handle,
+                    &serde_json::json!({
+                        "signature": signature,
+                        "form_id": format!("{target_local:06X}:FalloutNV.esm"),
+                        "fields": fields
+                    }),
+                )
+                .unwrap(),
+            );
+        }
+        let legacy_target_keys = target_keys
+            .iter()
+            .map(|target| {
+                let (plugin, local) = target.split_once(':').unwrap();
+                format!("{local}:{plugin}")
+            })
+            .collect::<Vec<_>>();
+        let package_alias_ids = {
+            let quest =
+                plugin_handle_read_authoring_record_value_json(target_handle, &target_keys[5])
+                    .unwrap()
+                    .unwrap();
+            let mut current_alias = None;
+            let mut by_name = HashMap::new();
+            for field in quest["fields"].as_array().unwrap() {
+                if let Some(alias_id) = field.get("ALST").and_then(serde_json::Value::as_i64) {
+                    current_alias = Some(alias_id);
+                } else if let Some(name) = field.get("ALID").and_then(serde_json::Value::as_str) {
+                    by_name.insert(name.to_string(), current_alias.unwrap());
+                }
+            }
+            by_name
+        };
+        let renolds_package_alias = package_alias_ids["TechaticupNCRRenoldsDialoguePackageData"];
+        let hostage_package_alias = package_alias_ids["TecMineHostageEscapeData"];
+        assert_eq!(renolds_package_alias, 3);
+        assert_eq!(hostage_package_alias, 4);
+
+        let run_id = create_run(RunParams {
+            source: Game::Fnv,
+            target: Game::Fo4,
+            source_handle_id: source_handle,
+            target_handle_id: target_handle,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "FalloutNV.esm".into(),
+                fnv_quest_slice: true,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let evidence = expected_classes
+            .iter()
+            .map(|class_name| CompiledScriptEvidence {
+                class_name: class_name.clone(),
+                relative_pex_path: format!("data/Scripts/{class_name}.pex"),
+                compiled_success: true,
+            })
+            .collect::<Vec<_>>();
+        let mapper_interner = StringInterner::new();
+        let mut mapper_state = MapperState::new([], MapperOptions::default());
+        let mut mapped_fragment_properties = Vec::new();
+        for ((source_local, target_key), source_text) in [0x06136D, 0x11F935]
+            .into_iter()
+            .zip(target_keys[4..6].iter())
+            .zip(["06136D:FalloutNV.esm", "11F935:FalloutNV.esm"])
+        {
+            let source = FormKey::parse(
+                &format!("{source_local:06X}@FalloutNV.esm"),
+                &mapper_interner,
+            )
+            .unwrap();
+            let (target_plugin, target_local) = target_key.split_once(':').unwrap();
+            let target =
+                FormKey::parse(&format!("{target_local}@{target_plugin}"), &mapper_interner)
+                    .unwrap();
+            mapper_state.source_to_target.insert(source, target);
+            let mapped = map_quest_fragment_properties(
+                &[crate::fnv_legacy_scripting::quest::QuestFragmentProperty {
+                    name: "FNVSliceCompat".into(),
+                    papyrus_type: helper_class.clone(),
+                    source_form_key: source_text.into(),
+                }],
+                &mapper_state,
+                &mapper_interner,
+                source_text,
+            )
+            .unwrap();
+            let mapped_target = mapped[0].value.as_ref().unwrap().as_str().unwrap();
+            validate_fnv_quest_slice_compat_fragment_property(
+                source_local,
+                mapped_target,
+                prefix,
+                &mapped,
+            )
+            .unwrap();
+            mapped_fragment_properties.push(mapped);
+        }
+
+        let (intents, attached, fragment_count, fragment_expected) = with_run(run_id, |run| {
+            run.fnv_pending_vmad_targets = scpt_locals
+                .iter()
+                .zip(legacy_target_keys.iter())
+                .map(|(local, target)| (target.clone(), format!("{local:06X}:FalloutNV.esm")))
+                .collect();
+            run.fnv_pending_vmad_scripts = scpt_locals
+                .iter()
+                .zip(scpt_classes.iter())
+                .map(|(local, class_name)| TranslatedScript {
+                    source_editor_id: format!("Source{local:06X}"),
+                    source_form_key: format!("{local:06X}:FalloutNV.esm"),
+                    script_class_name: class_name.clone(),
+                    papyrus_type: PapyrusType::ObjectReference,
+                    psc_text: format!("ScriptName {class_name} extends ObjectReference\n"),
+                    properties: Vec::new(),
+                    package_data_aliases: Vec::new(),
+                    dedicated_topics: Vec::new(),
+                    compile_status: ScriptCompileStatus::SourceGeneratedPendingCompile,
+                    terminal_status: ScriptTerminalStatus::SourceGeneratedPendingCompile,
+                })
+                .collect();
+            run.fnv_pending_scpt_properties = vec![
+                PendingScptProperty {
+                    source_scpt_form_key: "123191:FalloutNV.esm".into(),
+                    script_class_name: scpt_classes[1].clone(),
+                    property: crate::fnv_legacy_scripting::vmad::reference_alias_script_property(
+                        "TecMineHostageEscapeData",
+                        &target_keys[5],
+                        hostage_package_alias as i32,
+                    )
+                    .unwrap(),
+                },
+                PendingScptProperty {
+                    source_scpt_form_key: "134491:FalloutNV.esm".into(),
+                    script_class_name: scpt_classes[2].clone(),
+                    property: crate::fnv_legacy_scripting::vmad::reference_alias_script_property(
+                        "TechaticupNCRRenoldsDialoguePackageData",
+                        &target_keys[5],
+                        renolds_package_alias as i32,
+                    )
+                    .unwrap(),
+                },
+            ];
+            run.fnv_pending_helper_scripts = legacy_target_keys[4..6]
+                .iter()
+                .map(|target| PendingObjectScriptBinding {
+                    target_form_key: target.clone(),
+                    script_class_name: helper_class.clone(),
+                    properties: Vec::new(),
+                })
+                .collect();
+            run.fnv_pending_quest_fragments = quest_classes
+                .iter()
+                .zip(legacy_target_keys[4..6].iter())
+                .zip(mapped_fragment_properties.iter())
+                .map(
+                    |((class_name, target), fragment_properties)| PendingQuestFragmentBinding {
+                        target_form_key: target.clone(),
+                        script_class_name: class_name.clone(),
+                        fragments: vec![QuestStageFragment {
+                            stage_index: 100,
+                            stage_item_index: 0,
+                            psc_function_name: "Fragment_Stage_0100_Item_00".into(),
+                        }],
+                        fragment_properties: fragment_properties.clone(),
+                        aliases: Vec::new(),
+                    },
+                )
+                .collect();
+            run.fnv_pending_info_fragments = info_classes
+                .iter()
+                .zip(legacy_target_keys[6..8].iter())
+                .enumerate()
+                .map(|(index, (class_name, target))| PendingInfoFragmentBinding {
+                    target_form_key: target.clone(),
+                    script_class_name: class_name.clone(),
+                    phases: vec![if index == 0 {
+                        InfoFragmentPhase::Begin
+                    } else {
+                        InfoFragmentPhase::End
+                    }],
+                    fragment_properties: Vec::new(),
+                })
+                .collect();
+            run.reconcile_fnv_compiled_scripts(&evidence)
+        })
+        .unwrap();
+        assert!(attached);
+        assert_eq!(intents.len(), 6);
+        assert_eq!(fragment_count, 4);
+        assert_eq!(fragment_expected, 4);
+        assert!(
+            intents
+                .iter()
+                .all(|intent| intent.target_form_key.starts_with("FalloutNV.esm:"))
+        );
+
+        for (target_index, property_name, alias_id) in [
+            (1, "TecMineHostageEscapeData", hostage_package_alias),
+            (
+                2,
+                "TechaticupNCRRenoldsDialoguePackageData",
+                renolds_package_alias,
+            ),
+        ] {
+            let record = plugin_handle_read_authoring_record_value_json(
+                target_handle,
+                &target_keys[target_index],
+            )
+            .unwrap()
+            .unwrap();
+            let vmad = record["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|field| field.get("VirtualMachineAdapter"))
+                .unwrap();
+            let properties = vmad["Scripts"][0]["Properties"].as_array().unwrap();
+            let property = properties
+                .iter()
+                .find(|property| property["propertyName"] == property_name)
+                .unwrap();
+            assert_eq!(property["Value"]["Alias"], alias_id);
+            assert_eq!(
+                property["Value"]["FormID"]["reference"],
+                serde_json::json!({
+                    "plugin": "FalloutNV.esm",
+                    "object_id": "000105"
+                })
+            );
+        }
+
+        let mut vmad_classes = FxHashSet::default();
+        for target_key in &target_keys {
+            let record = plugin_handle_read_authoring_record_value_json(target_handle, target_key)
+                .unwrap()
+                .unwrap();
+            collect_script_names(&record, &mut vmad_classes);
+        }
+        assert_eq!(vmad_classes, expected_classes);
+        for target_key in &target_keys[4..6] {
+            let record = plugin_handle_read_authoring_record_value_json(target_handle, target_key)
+                .unwrap()
+                .unwrap();
+            let vmad = record["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|field| field.get("VirtualMachineAdapter"))
+                .unwrap();
+            assert_eq!(vmad["Scripts"].as_array().unwrap().len(), 1);
+            assert_eq!(vmad["Scripts"][0]["ScriptName"], helper_class);
+            let properties = vmad["Script Fragments"]["Script"]["Properties"]
+                .as_array()
+                .unwrap();
+            assert_eq!(properties.len(), 1);
+            assert_eq!(properties[0]["propertyName"], "FNVSliceCompat");
+            assert_eq!(properties[0]["Type"], "Object");
+            let (target_plugin, target_local) = target_key.split_once(':').unwrap();
+            let expected_target =
+                FormKey::parse(&format!("{target_local}@{target_plugin}"), &mapper_interner)
+                    .unwrap();
+            assert_eq!(
+                properties[0]["Value"]["FormID"]["reference"]["object_id"],
+                format!("{:06X}", expected_target.local)
+            );
+        }
+
+        with_run(run_id, |run| run.apply_fixups_v2().map_err(RunError::from)).unwrap();
+
+        let temp = tempfile::tempdir().unwrap();
+        let saved_path = temp.path().join("FalloutNV.esm");
+        plugin_handle_save_preserving_identity_no_py(target_handle, saved_path.to_str().unwrap())
+            .unwrap();
+        let reopened =
+            plugin_handle_load_no_py(saved_path.to_str().unwrap(), Some("fo4"), None, None, true)
+                .unwrap();
+        let acti = plugin_handle_read_authoring_record_value_json(reopened, &target_keys[2])
+            .unwrap()
+            .expect("saved ACTI 133F41");
+        let acti_vmad = acti["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|field| field.get("VirtualMachineAdapter"))
+            .expect("saved ACTI VMAD");
+        assert_eq!(acti_vmad["Scripts"][0]["ScriptName"], scpt_classes[2]);
+        for (target_key, property_name, alias_id) in [
+            (
+                &target_keys[1],
+                "TecMineHostageEscapeData",
+                hostage_package_alias,
+            ),
+            (
+                &target_keys[2],
+                "TechaticupNCRRenoldsDialoguePackageData",
+                renolds_package_alias,
+            ),
+        ] {
+            let record = plugin_handle_read_authoring_record_value_json(reopened, target_key)
+                .unwrap()
+                .unwrap();
+            let vmad = record["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|field| field.get("VirtualMachineAdapter"))
+                .unwrap();
+            let property = vmad["Scripts"][0]["Properties"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|property| property["propertyName"] == property_name)
+                .unwrap();
+            assert_eq!(property["Value"]["Alias"], alias_id);
+            assert_eq!(
+                property["Value"]["FormID"]["reference"],
+                serde_json::json!({
+                    "plugin": "FalloutNV.esm",
+                    "object_id": "000105"
+                })
+            );
+        }
+        plugin_handle_close_native(reopened);
+
+        drop_run(run_id).unwrap();
+        plugin_handle_close_native(source_handle);
+        plugin_handle_close_native(target_handle);
+    }
+
+    #[test]
+    fn info_fragment_reconciliation_preserves_all_slice_topic_children_after_reopen() {
+        use crate::fnv_legacy_scripting::dialogue::InfoFragmentPhase;
+        use crate::fnv_legacy_scripting::vmad::{
+            CompiledScriptEvidence, PendingInfoFragmentBinding,
+        };
+        use crate::target_write::{
+            ExistingAuthoringRecordPlacement, add_quest_child_record_native, add_record_native,
+            add_topic_child_record_native, encode_form_key_for_handle,
+            existing_authoring_record_placement_native,
+        };
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_add_master_no_py, plugin_handle_close_native, plugin_handle_load_no_py,
+            plugin_handle_new_native, plugin_handle_save_preserving_identity_no_py,
+        };
+
+        let output_plugin = "FalloutNV.esm";
+        let interner = StringInterner::new();
+        let output_plugin_sym = interner.intern(output_plugin);
+        let target_form_key = |local| FormKey {
+            local,
+            plugin: output_plugin_sym,
+        };
+        let schema = AuthoringSchema::for_game("fo4").unwrap();
+        let source_handle = plugin_handle_new_native(output_plugin, Some("fnv")).unwrap();
+        let target_handle = plugin_handle_new_native(output_plugin, Some("fo4")).unwrap();
+        plugin_handle_add_master_no_py(target_handle, "Fallout4.esm", None).unwrap();
+
+        let quest = target_form_key(0x11F935);
+        add_record_native(
+            target_handle,
+            Record::new(SigCode(*b"QUST"), quest),
+            &schema,
+            &interner,
+        )
+        .unwrap();
+        let topic_ids = [0x13015B, 0x134B9A, 0x51B6F7];
+        for topic_id in topic_ids {
+            let mut topic = Record::new(SigCode(*b"DIAL"), target_form_key(topic_id));
+            topic.fields.push(FieldEntry {
+                sig: SubrecordSig(*b"QNAM"),
+                value: FieldValue::FormKey(quest),
+            });
+            assert!(
+                add_quest_child_record_native(target_handle, topic, &schema, &interner).unwrap()
+            );
+        }
+        let info_parents = [
+            (0x130161, 0x13015B),
+            (0x134B9B, 0x134B9A),
+            (0x15734B, 0x51B6F7),
+            (0x15734C, 0x51B6F7),
+            (0x15734D, 0x51B6F7),
+        ];
+        for (info_id, parent_id) in info_parents {
+            let parent_form_id =
+                encode_form_key_for_handle(target_handle, target_form_key(parent_id), &interner)
+                    .unwrap();
+            assert!(
+                add_topic_child_record_native(
+                    target_handle,
+                    Record::new(SigCode(*b"INFO"), target_form_key(info_id)),
+                    parent_form_id,
+                    &schema,
+                    &interner,
+                )
+                .unwrap()
+            );
+        }
+
+        let run_id = create_run(RunParams {
+            source: Game::Fnv,
+            target: Game::Fo4,
+            source_handle_id: source_handle,
+            target_handle_id: target_handle,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: output_plugin.into(),
+                fnv_quest_slice: true,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let fragment_bindings = [
+            (0x130161, "TIF__130161", InfoFragmentPhase::Begin),
+            (0x134B9B, "TIF__134B9B", InfoFragmentPhase::End),
+        ];
+        let evidence = fragment_bindings
+            .iter()
+            .map(|(_, class_name, _)| CompiledScriptEvidence {
+                class_name: (*class_name).into(),
+                relative_pex_path: format!("data/Scripts/{class_name}.pex"),
+                compiled_success: true,
+            })
+            .collect::<Vec<_>>();
+        let (_, attached, fragment_count, fragment_expected) = with_run(run_id, |run| {
+            run.fnv_pending_info_fragments = fragment_bindings
+                .iter()
+                .map(|(local, class_name, phase)| PendingInfoFragmentBinding {
+                    target_form_key: format!("{local:06X}:{output_plugin}"),
+                    script_class_name: (*class_name).into(),
+                    phases: vec![*phase],
+                    fragment_properties: Vec::new(),
+                })
+                .collect();
+            run.reconcile_fnv_compiled_scripts(&evidence)
+        })
+        .unwrap();
+        assert!(attached);
+        assert_eq!(fragment_count, 2);
+        assert_eq!(fragment_expected, 2);
+
+        let temp = tempfile::tempdir().unwrap();
+        let saved_path = temp.path().join(output_plugin);
+        plugin_handle_save_preserving_identity_no_py(target_handle, saved_path.to_str().unwrap())
+            .unwrap();
+        let reopened =
+            plugin_handle_load_no_py(saved_path.to_str().unwrap(), Some("fo4"), None, None, true)
+                .unwrap();
+        for (info_id, parent_id) in info_parents {
+            let info_form_id =
+                encode_form_key_for_handle(reopened, target_form_key(info_id), &interner).unwrap();
+            let parent_form_id =
+                encode_form_key_for_handle(reopened, target_form_key(parent_id), &interner)
+                    .unwrap();
+            assert_eq!(
+                existing_authoring_record_placement_native(reopened, info_form_id).unwrap(),
+                ExistingAuthoringRecordPlacement::TopicChild {
+                    parent_dialogue_form_id: parent_form_id,
+                },
+                "INFO {info_id:06X} must reopen under DIAL {parent_id:06X}"
+            );
+        }
+
+        plugin_handle_close_native(reopened);
+        drop_run(run_id).unwrap();
+        plugin_handle_close_native(source_handle);
+        plugin_handle_close_native(target_handle);
+    }
+
+    #[test]
+    fn strict_freeform_player_condition_extends_mapper_and_rewrites_raw_run_on() {
+        let interner = StringInterner::new();
+        let source_player = FormKey::parse("000014@FalloutNV.esm", &interner).unwrap();
+        let target_player = FormKey::parse("000014@Fallout4.esm", &interner).unwrap();
+        let source_perk = FormKey::parse("058FDF@FalloutNV.esm", &interner).unwrap();
+        let target_perk = FormKey::parse("158FDF@Output.esm", &interner).unwrap();
+        let mut state = MapperState::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "Output.esm".to_string(),
+                source_plugin_name: "FalloutNV.esm".to_string(),
+                source_master_names: Vec::new(),
+                target_master_names: vec!["Fallout4.esm".to_string()],
+                resolution_mode: ResolutionMode::Strict,
+                ..Default::default()
+            },
+        );
+        state.source_to_target.insert(source_perk, target_perk);
+        let record = serde_json::json!({
+            "eid": "FreeformPowerArmor",
+            "fields": [
+                { "EDID": "FreeformPowerArmor" },
+                { "DATA": {
+                    "encoding": "raw-bytes-hex",
+                    "hex": "1D3B000000000000"
+                } },
+                { "CTDA": {
+                    "encoding": "raw-bytes-hex",
+                    "hex": "0000000000000000C1010000DF8F0500000000000200000014000000"
+                } }
+            ]
+        });
+
+        let accounting = register_fnv_quest_record_dependency_mappings(
+            &record,
+            "06136D:FalloutNV.esm",
+            "FreeformPowerArmor",
+            &mut state,
+            &interner,
+        )
+        .unwrap();
+        assert_eq!(accounting.len(), 1);
+        assert_eq!(
+            state.source_to_target.get(&source_player),
+            Some(&target_player)
+        );
+        assert_eq!(state.source_to_target.get(&source_perk), Some(&target_perk));
+
+        let resolver_options = state.options.clone();
+        let raw_formids = |raw| resolver_options.source_form_key_for_raw_formid(raw, &interner);
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let translated = crate::fnv_legacy_scripting::quest::lower_qust_record(
+            &record,
+            "FNV_FO3",
+            "06136D:FalloutNV.esm",
+            "16136D:Output.esm",
+            crate::translator::pair_hooks::fnv_conditions::LegacyConditionFamily::Fnv,
+            &mut mapper,
+            &raw_formids,
+            &crate::translator::pair_hooks::fnv_fo4::PlacedActorAliasResolver::default(),
+        )
+        .unwrap();
+        let ctda = translated.authoring_record_payload["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|field| field.get("CTDA"))
+            .unwrap();
+        let bytes = hex::decode(ctda["raw_hex"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+            0x01158FDF
+        );
+        assert_eq!(
+            u32::from_le_bytes(bytes[24..28].try_into().unwrap()),
+            0x000014
+        );
+
+        let mut conflicting = MapperState::new(
+            [],
+            MapperOptions {
+                source_plugin_name: "FalloutNV.esm".to_string(),
+                target_master_names: vec!["Fallout4.esm".to_string()],
+                ..Default::default()
+            },
+        );
+        conflicting
+            .source_to_target
+            .insert(source_player, target_perk);
+        assert!(
+            register_fnv_quest_record_dependency_mappings(
+                &record,
+                "06136D:FalloutNV.esm",
+                "FreeformPowerArmor",
+                &mut conflicting,
+                &interner,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            conflicting.source_to_target.get(&source_player),
+            Some(&target_perk)
+        );
+    }
+
+    #[test]
+    fn strict_vtech_vms20_adaptation_requires_exact_receipt_and_return_fragment() {
+        use crate::fnv_legacy_scripting::quest::{
+            QuestFragmentAdaptation, QuestFragmentAdaptationKind, StageFragment,
+        };
+
+        let receipt = QuestFragmentAdaptation {
+            stage_index: 110,
+            stage_item_index: 0,
+            source_command: "StopQuest VMS20".to_string(),
+            source_dependency_form_key: "10E908:FalloutNV.esm".to_string(),
+            kind: QuestFragmentAdaptationKind::TargetNativeNoOp,
+            reason: "VMS20 is outside the selected slice; the selected quest's FailQuest stage remains authoritative in FO4".to_string(),
+        };
+        let fragment = StageFragment {
+            stage_index: 110,
+            stage_item_index: 0,
+            psc_function_name: "Fragment_Stage_0110_Item_00".to_string(),
+            body: "Return".to_string(),
+        };
+
+        let accounting = account_fnv_quest_fragment_adaptations(
+            "11F935:FalloutNV.esm",
+            "VTechatticup",
+            std::slice::from_ref(&receipt),
+            std::slice::from_ref(&fragment),
+        )
+        .unwrap();
+        assert_eq!(accounting.len(), 1);
+        assert!(accounting[0].contains("dependency=10E908:FalloutNV.esm"));
+
+        assert!(
+            account_fnv_quest_fragment_adaptations(
+                "11F935:FalloutNV.esm",
+                "VTechatticup",
+                &[],
+                std::slice::from_ref(&fragment),
+            )
+            .is_err()
+        );
+        let mut wrong_dependency = receipt.clone();
+        wrong_dependency.source_dependency_form_key = "10E908:FalloutNV.esm".to_string();
+        assert!(
+            account_fnv_quest_fragment_adaptations(
+                "11F935:FalloutNV.esm",
+                "VTechatticup",
+                &[wrong_dependency],
+                std::slice::from_ref(&fragment),
+            )
+            .is_err()
+        );
+        let mut wrong_reason = receipt.clone();
+        wrong_reason.reason = "silent drop".to_string();
+        assert!(
+            account_fnv_quest_fragment_adaptations(
+                "11F935:FalloutNV.esm",
+                "VTechatticup",
+                &[wrong_reason],
+                std::slice::from_ref(&fragment),
+            )
+            .is_err()
+        );
+        let mut non_noop_fragment = fragment;
+        non_noop_fragment.body = "VMS20.Stop()".to_string();
+        assert!(
+            account_fnv_quest_fragment_adaptations(
+                "11F935:FalloutNV.esm",
+                "VTechatticup",
+                std::slice::from_ref(&receipt),
+                &[non_noop_fragment],
+            )
+            .is_err()
+        );
+        assert!(
+            account_fnv_quest_fragment_adaptations(
+                "06136D:FalloutNV.esm",
+                "FreeformPowerArmor",
+                &[receipt],
+                &[],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn malformed_later_vmad_prevents_every_reconciliation_update() {
+        use crate::fnv_legacy_scripting::vmad::{
+            CompiledScriptEvidence, FragmentKind, ScriptBindingIntent,
+        };
+
+        let original = vec![
+            (
+                "000001:Output.esm".to_string(),
+                serde_json::json!({ "fields": [{ "EDID": "First" }] }),
+            ),
+            (
+                "000002:Output.esm".to_string(),
+                serde_json::json!({
+                    "fields": [{ "VirtualMachineAdapter": "malformed" }]
+                }),
+            ),
+        ];
+        let intent = |target_form_key: &str, class_name: &str| ScriptBindingIntent {
+            target_form_key: target_form_key.to_string(),
+            script_class_name: class_name.to_string(),
+            properties: Vec::new(),
+            fragment_kind: FragmentKind::Object,
+            compiled_evidence: CompiledScriptEvidence {
+                class_name: class_name.to_string(),
+                relative_pex_path: format!("data/Scripts/{class_name}.pex"),
+                compiled_success: true,
+            },
+        };
+        let intents = vec![
+            intent("000001:Output.esm", "FirstScript"),
+            intent("000002:Output.esm", "SecondScript"),
+        ];
+
+        let error = prebuild_fnv_vmad_record_updates(original.clone(), &intents, &[])
+            .expect_err("later malformed VMAD must abort the full update set");
+
+        assert!(
+            error
+                .to_string()
+                .contains("existing VMAD payload is not an object")
+        );
+        assert_eq!(
+            original[0].1,
+            serde_json::json!({ "fields": [{ "EDID": "First" }] })
+        );
+    }
+
+    #[test]
+    fn info_fragment_property_uses_central_quest_mapping() {
+        let interner = StringInterner::new();
+        let source = FormKey::parse("11F935@FalloutNV.esm", &interner).unwrap();
+        let target = FormKey::parse("21F935@FalloutNV.esm", &interner).unwrap();
+        let mut state = MapperState::new([], MapperOptions::default());
+        state.source_to_target.insert(source, target);
+        let property = crate::fnv_legacy_scripting::dialogue::InfoFragmentProperty {
+            name: "VTechatticup".to_string(),
+            papyrus_type: "FNV_FO3_nv_VTechatticupQuestScript".to_string(),
+            source_form_key: "11F935:FalloutNV.esm".to_string(),
+        };
+
+        let mapped =
+            map_info_fragment_properties(&[property.clone()], &state, &interner, "130161").unwrap();
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].name, "VTechatticup");
+        assert_eq!(mapped[0].prop_type, "Quest");
+        assert_eq!(
+            mapped[0].value,
+            Some(serde_json::json!("21F935:FalloutNV.esm"))
+        );
+
+        state.source_to_target.clear();
+        let error =
+            map_info_fragment_properties(&[property], &state, &interner, "130161").unwrap_err();
+        assert!(error.to_string().contains("has no target mapping"));
+    }
+
+    #[test]
+    fn legacy_actor_placement_races_are_limited_to_human_ghoul_and_child() {
+        let interner = StringInterner::new();
+        let fallout4 = interner.intern("Fallout4.esm");
+        let converted = interner.intern("FalloutNV.esm");
+
+        for local in [
+            FO4_HUMAN_RACE_LOCAL,
+            FO4_GHOUL_RACE_LOCAL,
+            FO4_HUMAN_CHILD_RACE_LOCAL,
+        ] {
+            assert!(is_supported_fo4_humanoid_race(
+                FormKey {
+                    local,
+                    plugin: fallout4,
+                },
+                &interner,
+            ));
+        }
+        assert!(!is_supported_fo4_humanoid_race(
+            FormKey {
+                local: 0x0001_D31E,
+                plugin: fallout4,
+            },
+            &interner,
+        ));
+        assert!(!is_supported_fo4_humanoid_race(
+            FormKey {
+                local: FO4_HUMAN_RACE_LOCAL,
+                plugin: converted,
+            },
+            &interner,
+        ));
+    }
+
+    #[test]
+    fn legacy_actor_placement_reads_achr_base_formkey() {
+        let interner = StringInterner::new();
+        let base = FormKey {
+            local: 0x0012_3456,
+            plugin: interner.intern("FalloutNV.esm"),
+        };
+        let mut actor = Record::new(
+            SigCode::from_str("ACHR").unwrap(),
+            FormKey {
+                local: 0x0065_4321,
+                plugin: base.plugin,
+            },
+        );
+        actor.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("NAME").unwrap(),
+            value: FieldValue::FormKey(base),
+        });
+
+        assert_eq!(record_base_formkey(&actor, &interner), Some(base));
+    }
+
+    #[test]
+    fn info_under_local_dial_does_not_vanilla_remap_by_editor_id() {
+        let interner = StringInterner::new();
+        let editor_id = interner.intern("InaccessibleLinesContainer");
+        let output_plugin = interner.intern("SeventySix.esm");
+        let master_plugin = interner.intern("Fallout4.esm");
+        let local_parent = FormKey {
+            local: 0x048015,
+            plugin: output_plugin,
+        };
+        let vanilla_parent = FormKey {
+            local: 0x048015,
+            plugin: master_plugin,
+        };
+
+        assert_eq!(
+            allocation_editor_id_for_parent(
+                Some(editor_id),
+                RecordWriteMode::TopicChildInfo,
+                Some(local_parent),
+                output_plugin,
+            ),
+            None
+        );
+        assert_eq!(
+            allocation_editor_id_for_parent(
+                Some(editor_id),
+                RecordWriteMode::TopicChildInfo,
+                Some(vanilla_parent),
+                output_plugin,
+            ),
+            Some(editor_id)
+        );
+
+        let info_sig = SigCode::from_str("INFO").unwrap();
+        let source_header = FormKey {
+            local: 0x046CFE,
+            plugin: output_plugin,
+        };
+        let vanilla_header = FormKey {
+            local: 0x046CFE,
+            plugin: master_plugin,
+        };
+        let mut state = MapperState::new(
+            [(editor_id, vanilla_header, info_sig)],
+            MapperOptions {
+                output_plugin_name: "SeventySix.esm".into(),
+                use_base_game_assets: true,
+                preserve_source_ids: true,
+                ..Default::default()
+            },
+        );
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let local_header = mapper.allocate_or_resolve(
+            source_header,
+            allocation_editor_id_for_parent(
+                Some(editor_id),
+                RecordWriteMode::TopicChildInfo,
+                Some(local_parent),
+                output_plugin,
+            ),
+            info_sig,
+        );
+        assert_eq!(local_header, source_header);
+
+        let vanilla_mapped_header = mapper.allocate_or_resolve(
+            FormKey {
+                local: 0x046CFD,
+                plugin: output_plugin,
+            },
+            allocation_editor_id_for_parent(
+                Some(editor_id),
+                RecordWriteMode::TopicChildInfo,
+                Some(vanilla_parent),
+                output_plugin,
+            ),
+            info_sig,
+        );
+        assert_eq!(vanilla_mapped_header, vanilla_header);
+
+        let mut response = Record::new(
+            info_sig,
+            FormKey {
+                local: 0x046CFF,
+                plugin: output_plugin,
+            },
+        );
+        response.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("GNAM").unwrap(),
+            value: FieldValue::FormKey(source_header),
+        });
+        mapper.rewrite_record(&mut response).unwrap();
+        assert_eq!(response.fields[0].value, FieldValue::FormKey(local_header));
+    }
 
     #[test]
     fn fixup_warning_details_are_logged_with_a_bounded_tail() {
@@ -7033,9 +19235,9 @@ mod tests {
         let mut interner = StringInterner::new();
         let coll_sig = SigCode::from_str("COLL").unwrap();
         let source_layer = FormKey::parse("5B74D0@SeventySix.esm", &mut interner).unwrap();
-        let target_layer = FormKey::parse("088787@Fallout4.esm", &mut interner).unwrap();
+        let target_layer = FormKey::parse("088768@Fallout4.esm", &mut interner).unwrap();
         let source_eid = interner.intern("L_PROJ_NO_COLLIDE_PROJ");
-        let target_eid = interner.intern("l_coneprojectile");
+        let target_eid = interner.intern("l_spell");
 
         let mappings = source_target_mappings_from_preflight(
             [(source_eid, source_layer, coll_sig)],
@@ -7086,6 +19288,244 @@ mod tests {
         );
 
         assert!(mappings.is_empty());
+    }
+
+    #[test]
+    fn fo76_fo4_combat_shotgun_animation_family_stays_source_owned() {
+        let interner = StringInterner::new();
+        let source = FormKey {
+            plugin: interner.intern("SeventySix.esm"),
+            local: 0x0B9560,
+        };
+        let target = FormKey {
+            plugin: interner.intern("Fallout4.esm"),
+            local: 0x0B9560,
+        };
+        let eid = interner.intern("AnimsCombatShotgun");
+        let sig = SigCode::from_str("KYWD").unwrap();
+        let mappings = source_target_mappings_from_preflight(
+            [(eid, source, sig)],
+            &[(eid, target, sig)],
+            &interner,
+            Game::Fo76,
+            Game::Fo4,
+        );
+        assert!(mappings.is_empty());
+        assert!(
+            editor_id_vanilla_remap_blocked_source_form_keys(Game::Fo76, Game::Fo4, &interner)
+                .contains(&source)
+        );
+        assert!(
+            !editor_id_vanilla_remap_blocked_source_form_keys(Game::SkyrimSe, Game::Fo4, &interner)
+                .contains(&source)
+        );
+    }
+
+    #[test]
+    fn fo76_fo4_robobrain_template_does_not_remap_onto_mechanist_namesake() {
+        let mut interner = StringInterner::new();
+        let sig = SigCode::from_str("NPC_").unwrap();
+        let source = FormKey::parse("353D54@SeventySix.esm", &mut interner).unwrap();
+        let target = FormKey::parse("001121@DLCRobot.esm", &mut interner).unwrap();
+        let output = FormKey::parse("353D54@B21_RoboTest.esm", &mut interner).unwrap();
+        let eid = interner.intern("DLC01EncRoboBrain01Template");
+        let target_eid = interner.intern("dlc01encrobobrain01template");
+        let targets = [(target_eid, target, sig)];
+
+        assert!(
+            source_target_mappings_from_preflight(
+                [(eid, source, sig)],
+                &targets,
+                &interner,
+                Game::Fo76,
+                Game::Fo4,
+            )
+            .is_empty()
+        );
+
+        let mut mapper = FormKeyMapper::new(
+            targets,
+            MapperOptions {
+                output_plugin_name: "B21_RoboTest.esm".into(),
+                use_base_game_assets: true,
+                preserve_source_ids: true,
+                vanilla_remap_blocked_source_form_keys:
+                    editor_id_vanilla_remap_blocked_source_form_keys(
+                        Game::Fo76,
+                        Game::Fo4,
+                        &interner,
+                    ),
+                ..Default::default()
+            },
+            &interner,
+        );
+        assert_eq!(mapper.allocate_or_resolve(source, Some(eid), sig), output);
+    }
+
+    #[test]
+    fn fo76_fo4_newspaper_collision_stays_source_owned_and_namespaced() {
+        let mut interner = StringInterner::new();
+        let misc_sig = SigCode::from_str("MISC").unwrap();
+        let source = FormKey::parse("01A4B9@SeventySix.esm", &mut interner).unwrap();
+        let target = FormKey::parse("01A4B9@Fallout4.esm", &mut interner).unwrap();
+        let source_eid = interner.intern("Newspaper01");
+        let target_eid = interner.intern("newspaper01");
+
+        let mappings = source_target_mappings_from_preflight(
+            [(source_eid, source, misc_sig)],
+            &[(target_eid, target, misc_sig)],
+            &interner,
+            Game::Fo76,
+            Game::Fo4,
+        );
+        assert!(mappings.is_empty());
+
+        let mut target_eid_index = FxHashMap::default();
+        target_eid_index.insert(target_eid, vec![(target, misc_sig)]);
+        let blocked =
+            editor_id_vanilla_remap_blocked_source_form_keys(Game::Fo76, Game::Fo4, &interner);
+        let mut record = Record::new(misc_sig, source);
+        record.eid = Some(source_eid);
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("EDID").unwrap(),
+            value: FieldValue::String(source_eid),
+        });
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("MODL").unwrap(),
+            value: FieldValue::String(interner.intern("Props\\Newspaper02.nif")),
+        });
+
+        assert_eq!(
+            rename_fo76_target_editor_id_collision(
+                &mut record,
+                &target_eid_index,
+                &blocked,
+                &interner,
+                false,
+            ),
+            Some(("Newspaper01".into(), "Newspaper01fo76".into()))
+        );
+
+        let members = [relocation_modl_key("Props\\Newspaper02.nif")]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            namespace_base_asset_model_paths(&mut record, &members, "FO76", &interner),
+            1
+        );
+        let model = record
+            .fields
+            .iter()
+            .find(|field| field.sig.as_str() == "MODL")
+            .and_then(|field| match &field.value {
+                FieldValue::String(sym) => interner.resolve(*sym),
+                _ => None,
+            });
+        assert_eq!(model, Some("FO76\\Props\\Newspaper02.nif"));
+    }
+
+    #[test]
+    fn fo76_fo4_range_offset_placeholders_keep_source_records_and_weapon_references() {
+        for (source_key, target_key, editor_id) in [
+            (
+                "0498A1@SeventySix.esm",
+                "0498A1@Fallout4.esm",
+                "mod_UniversalOffset_Range_Shotgun",
+            ),
+            (
+                "0498A2@SeventySix.esm",
+                "0498A2@Fallout4.esm",
+                "mod_UniversalOffset_Range_BoltAction",
+            ),
+            (
+                "1114F8@SeventySix.esm",
+                "04A643@DLCCoast.esm",
+                "DLC03_mod_UniversalOffset_Range_LeverGun",
+            ),
+        ] {
+            let mut interner = StringInterner::new();
+            let source = FormKey::parse(source_key, &mut interner).unwrap();
+            let target = FormKey::parse(target_key, &mut interner).unwrap();
+            let output = FormKey::parse(
+                &format!("{:06X}@B21_RangeTest.esm", source.local),
+                &mut interner,
+            )
+            .unwrap();
+            let eid = interner.intern(editor_id);
+            let target_eid = interner.intern(&editor_id.to_ascii_lowercase());
+            let sig = SigCode::from_str("OMOD").unwrap();
+            let targets = [(target_eid, target, sig)];
+            assert!(
+                source_target_mappings_from_preflight(
+                    [(eid, source, sig)],
+                    &targets,
+                    &interner,
+                    Game::Fo76,
+                    Game::Fo4,
+                )
+                .is_empty(),
+                "{editor_id} must not acquire FO4's range modifiers during preflight"
+            );
+
+            let blocked =
+                editor_id_vanilla_remap_blocked_source_form_keys(Game::Fo76, Game::Fo4, &interner);
+            let mut weapon = Record::new(
+                SigCode::from_str("WEAP").unwrap(),
+                FormKey::parse("12DBB3@SeventySix.esm", &mut interner).unwrap(),
+            );
+            weapon.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("OBTS").unwrap(),
+                value: FieldValue::Struct(vec![(
+                    interner.intern("Includes"),
+                    FieldValue::List(vec![FieldValue::Struct(vec![(
+                        interner.intern("Mod"),
+                        FieldValue::FormKey(source),
+                    )])]),
+                )]),
+            });
+            let mut mapper = FormKeyMapper::new(
+                targets,
+                MapperOptions {
+                    output_plugin_name: "B21_RangeTest.esm".into(),
+                    use_base_game_assets: true,
+                    preserve_source_ids: true,
+                    vanilla_remap_blocked_source_form_keys: blocked,
+                    ..Default::default()
+                },
+                &interner,
+            );
+            assert_eq!(mapper.allocate_or_resolve(source, Some(eid), sig), output);
+            mapper.rewrite_record(&mut weapon).unwrap();
+            let FieldValue::Struct(fields) = &weapon.fields[0].value else {
+                panic!("missing weapon template");
+            };
+            let FieldValue::List(includes) = &fields[0].1 else {
+                panic!("missing template includes");
+            };
+            let FieldValue::Struct(include) = &includes[0] else {
+                panic!("missing included mod");
+            };
+            assert_eq!(include[0].1, FieldValue::FormKey(output));
+        }
+    }
+
+    #[test]
+    fn fo76_fo4_range_offset_fix_keeps_unrelated_omod_remaps() {
+        let mut interner = StringInterner::new();
+        let source = FormKey::parse("04F21D@SeventySix.esm", &mut interner).unwrap();
+        let target = FormKey::parse("04F21D@Fallout4.esm", &mut interner).unwrap();
+        let eid = interner.intern("mod_Null_Muzzle");
+        let sig = SigCode::from_str("OMOD").unwrap();
+        assert_eq!(
+            source_target_mappings_from_preflight(
+                [(eid, source, sig)],
+                &[(interner.intern("mod_null_muzzle"), target, sig)],
+                &interner,
+                Game::Fo76,
+                Game::Fo4,
+            ),
+            vec![(source, target)]
+        );
     }
 
     #[test]
@@ -7146,6 +19586,139 @@ mod tests {
         );
 
         assert!(mappings.is_empty());
+    }
+
+    #[test]
+    fn fnv_fo3_fo4_world_object_preflight_mappings_stay_source_owned() {
+        for source_game in [Game::Fnv, Game::Fo3] {
+            let mut interner = StringInterner::new();
+            for (index, signature) in CROSS_GAME_FO4_WORLD_OBJECT_VANILLA_REMAP_BLOCKED_SIGS
+                .iter()
+                .enumerate()
+            {
+                let sig = SigCode::from_str(signature).unwrap();
+                let source = FormKey {
+                    local: 0x0010_0000 + index as u32,
+                    plugin: interner.intern(match source_game {
+                        Game::Fnv => "FalloutNV.esm",
+                        Game::Fo3 => "Fallout3.esm",
+                        _ => unreachable!(),
+                    }),
+                };
+                let target = FormKey {
+                    local: 0x0020_0000 + index as u32,
+                    plugin: interner.intern("Fallout4.esm"),
+                };
+                let editor_id = format!("Shared{signature}Object");
+                let source_editor_id = interner.intern(&editor_id);
+                let target_editor_id = interner.intern(&editor_id.to_ascii_lowercase());
+
+                let mappings = source_target_mappings_from_preflight(
+                    [(source_editor_id, source, sig)],
+                    &[(target_editor_id, target, sig)],
+                    &interner,
+                    source_game,
+                    Game::Fo4,
+                );
+
+                assert!(mappings.is_empty(), "{source_game:?} {signature}");
+            }
+        }
+    }
+
+    #[test]
+    fn fnv_fo3_fo4_consumable_preflight_mappings_still_reuse_fo4() {
+        for source_game in [Game::Fnv, Game::Fo3] {
+            let mut interner = StringInterner::new();
+            for (index, signature) in ["ALCH", "AMMO"].into_iter().enumerate() {
+                let sig = SigCode::from_str(signature).unwrap();
+                let source = FormKey {
+                    local: 0x0010_0000 + index as u32,
+                    plugin: interner.intern(match source_game {
+                        Game::Fnv => "FalloutNV.esm",
+                        Game::Fo3 => "Fallout3.esm",
+                        _ => unreachable!(),
+                    }),
+                };
+                let target = FormKey {
+                    local: 0x0020_0000 + index as u32,
+                    plugin: interner.intern("Fallout4.esm"),
+                };
+                let editor_id = format!("Shared{signature}Item");
+                let source_editor_id = interner.intern(&editor_id);
+                let target_editor_id = interner.intern(&editor_id.to_ascii_lowercase());
+
+                let mappings = source_target_mappings_from_preflight(
+                    [(source_editor_id, source, sig)],
+                    &[(target_editor_id, target, sig)],
+                    &interner,
+                    source_game,
+                    Game::Fo4,
+                );
+
+                assert_eq!(
+                    mappings,
+                    vec![(source, target)],
+                    "{source_game:?} {signature}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fnv_fo4_static_marker_reuses_fo4_record() {
+        let mut interner = StringInterner::new();
+        let stat_sig = SigCode::from_str("STAT").unwrap();
+        let source_marker = FormKey::parse("00003B@FalloutNV.esm", &mut interner).unwrap();
+        let target_marker = FormKey::parse("00003B@Fallout4.esm", &mut interner).unwrap();
+        let marker_editor_id = interner.intern("xmarker");
+        let mut mapper = FormKeyMapper::new(
+            [(marker_editor_id, target_marker, stat_sig)],
+            MapperOptions {
+                output_plugin_name: "FalloutNV.esm".into(),
+                use_base_game_assets: true,
+                preserve_source_ids: true,
+                vanilla_remap_blocked_signatures: editor_id_vanilla_remap_blocked_sigs(
+                    Game::Fnv,
+                    Game::Fo4,
+                ),
+                ..Default::default()
+            },
+            &mut interner,
+        );
+
+        let mapped = mapper.allocate_or_resolve(source_marker, Some(marker_editor_id), stat_sig);
+
+        assert_eq!(mapped, target_marker);
+    }
+
+    #[test]
+    fn fnv_fo4_visible_static_stays_source_owned() {
+        let mut interner = StringInterner::new();
+        let stat_sig = SigCode::from_str("STAT").unwrap();
+        let source_static = FormKey::parse("0C387F@Fallout3.esm", &mut interner).unwrap();
+        let target_static = FormKey::parse("0C387F@Fallout4.esm", &mut interner).unwrap();
+        let editor_id = interner.intern("JunkWall01");
+        let mut mapper = FormKeyMapper::new(
+            [(editor_id, target_static, stat_sig)],
+            MapperOptions {
+                output_plugin_name: "FalloutNV.esm".into(),
+                use_base_game_assets: true,
+                preserve_source_ids: true,
+                vanilla_remap_blocked_signatures: editor_id_vanilla_remap_blocked_sigs(
+                    Game::Fnv,
+                    Game::Fo4,
+                ),
+                ..Default::default()
+            },
+            &mut interner,
+        );
+
+        let mapped = mapper.allocate_or_resolve(source_static, Some(editor_id), stat_sig);
+
+        assert_eq!(mapped.local, source_static.local);
+        assert_eq!(interner.resolve(mapped.plugin), Some("FalloutNV.esm"));
+        assert_ne!(mapped, target_static);
     }
 
     #[test]
@@ -7275,16 +19848,36 @@ mod tests {
     }
 
     #[test]
+    fn fo76_fo4_info_preflight_mappings_defer_to_topic_parent() {
+        let mut interner = StringInterner::new();
+        let info_sig = SigCode::from_str("INFO").unwrap();
+        let source_info = FormKey::parse("046CFE@SeventySix.esm", &mut interner).unwrap();
+        let target_info = FormKey::parse("046CFE@Fallout4.esm", &mut interner).unwrap();
+        let source_eid = interner.intern("PlayerCantPickMasterContainer");
+        let target_eid = interner.intern("playercantpickmastercontainer");
+
+        let mappings = source_target_mappings_from_preflight(
+            [(source_eid, source_info, info_sig)],
+            &[(target_eid, target_info, info_sig)],
+            &interner,
+            Game::Fo76,
+            Game::Fo4,
+        );
+
+        assert!(mappings.is_empty());
+    }
+
+    #[test]
     fn fnv_fo4_wilderness_cell_stays_source_owned() {
         let mut interner = StringInterner::new();
         let cell_sig = SigCode::from_str("CELL").unwrap();
-        let source_cell = FormKey::parse("0DDCAB@FNV_FO3_Merged.esm", &mut interner).unwrap();
+        let source_cell = FormKey::parse("0DDCAB@FalloutNV.esm", &mut interner).unwrap();
         let target_cell = FormKey::parse("000D8A@DLCCoast.esm", &mut interner).unwrap();
         let wilderness = interner.intern("wilderness");
         let mut mapper = FormKeyMapper::new(
             [(wilderness, target_cell, cell_sig)],
             MapperOptions {
-                output_plugin_name: "FNV_FO3_Merged.esm".into(),
+                output_plugin_name: "FalloutNV.esm".into(),
                 use_base_game_assets: true,
                 vanilla_remap_blocked_signatures: editor_id_vanilla_remap_blocked_sigs(
                     Game::Fnv,
@@ -7299,7 +19892,7 @@ mod tests {
         let mapped = mapper.allocate_or_resolve(source_cell, Some(wilderness), cell_sig);
 
         assert_eq!(mapped.local, 0x0D_DCAB);
-        assert_eq!(interner.resolve(mapped.plugin), Some("FNV_FO3_Merged.esm"));
+        assert_eq!(interner.resolve(mapped.plugin), Some("FalloutNV.esm"));
         assert_ne!(mapped, target_cell);
         assert!(!allows_source_target_preflight_remap(
             Game::Fnv,
@@ -7331,6 +19924,7 @@ mod tests {
         let renamed = rename_fo76_target_editor_id_collision(
             &mut record,
             &target_eid_index,
+            &FxHashSet::default(),
             &interner,
             false,
         );
@@ -7377,6 +19971,7 @@ mod tests {
         let renamed = rename_fo76_target_editor_id_collision(
             &mut record,
             &target_eid_index,
+            &FxHashSet::default(),
             &interner,
             false,
         );
@@ -7414,8 +20009,13 @@ mod tests {
             value: FieldValue::String(original_eid),
         });
 
-        let renamed =
-            rename_fo76_target_editor_id_collision(&mut record, &target_eid_index, &interner, true);
+        let renamed = rename_fo76_target_editor_id_collision(
+            &mut record,
+            &target_eid_index,
+            &FxHashSet::default(),
+            &interner,
+            true,
+        );
 
         assert_eq!(
             renamed,
@@ -7444,6 +20044,7 @@ mod tests {
         let renamed = rename_fo76_target_editor_id_collision(
             &mut record,
             &target_eid_index,
+            &FxHashSet::default(),
             &interner,
             false,
         );
@@ -7453,6 +20054,117 @@ mod tests {
             record.eid.and_then(|eid| interner.resolve(eid)),
             Some("Dogmeat")
         );
+    }
+
+    #[test]
+    fn fo76_fo4_decal_txst_collision_stays_source_owned() {
+        let mut interner = StringInterner::new();
+        let txst_sig = SigCode::from_str("TXST").unwrap();
+        let source_txst = FormKey::parse("061880@SeventySix.esm", &mut interner).unwrap();
+        let target_txst = FormKey::parse("061880@Fallout4.esm", &mut interner).unwrap();
+        let original_eid = interner.intern("DecalGrossStain02");
+        let normalized_eid = interner.intern("decalgrossstain02");
+        let mut target_eid_index: FxHashMap<Sym, Vec<(FormKey, SigCode)>> = FxHashMap::default();
+        target_eid_index.insert(normalized_eid, vec![(target_txst, txst_sig)]);
+
+        let mut record = Record::new(txst_sig, source_txst);
+        record.eid = Some(original_eid);
+
+        assert!(!allows_source_target_preflight_remap(
+            Game::Fo76,
+            Game::Fo4,
+            txst_sig,
+            "DecalGrossStain02",
+        ));
+        let renamed = rename_fo76_target_editor_id_collision(
+            &mut record,
+            &target_eid_index,
+            &FxHashSet::default(),
+            &interner,
+            false,
+        );
+
+        assert_eq!(
+            renamed,
+            Some(("DecalGrossStain02".into(), "DecalGrossStain02fo76".into()))
+        );
+    }
+
+    #[test]
+    fn fo76_fo4_non_decal_txst_collision_keeps_vanilla_remap_candidate() {
+        let mut interner = StringInterner::new();
+        let txst_sig = SigCode::from_str("TXST").unwrap();
+        let source_txst = FormKey::parse("061880@SeventySix.esm", &mut interner).unwrap();
+        let target_txst = FormKey::parse("061880@Fallout4.esm", &mut interner).unwrap();
+        let original_eid = interner.intern("LandscapeDirt01");
+        let normalized_eid = interner.intern("landscapedirt01");
+        let mut target_eid_index: FxHashMap<Sym, Vec<(FormKey, SigCode)>> = FxHashMap::default();
+        target_eid_index.insert(normalized_eid, vec![(target_txst, txst_sig)]);
+
+        let mut record = Record::new(txst_sig, source_txst);
+        record.eid = Some(original_eid);
+
+        assert!(allows_source_target_preflight_remap(
+            Game::Fo76,
+            Game::Fo4,
+            txst_sig,
+            "LandscapeDirt01",
+        ));
+        let renamed = rename_fo76_target_editor_id_collision(
+            &mut record,
+            &target_eid_index,
+            &FxHashSet::default(),
+            &interner,
+            false,
+        );
+
+        assert_eq!(renamed, None);
+    }
+
+    /// Every source but FO76 shares Bethesda's naming habits with FO4 without
+    /// sharing its records: `RockCliff04` names a different rock in Skyrim,
+    /// `CloudDistant04` a different cloud in Starfield. World object signatures
+    /// must stay source-owned for all of them.
+    #[test]
+    fn every_non_fo76_source_blocks_world_object_vanilla_remap() {
+        for source in [
+            Game::Skyrim,
+            Game::SkyrimSe,
+            Game::Starfield,
+            Game::Fnv,
+            Game::Fo3,
+            Game::Oblivion,
+        ] {
+            let blocked = editor_id_vanilla_remap_blocked_sigs(source, Game::Fo4);
+            for sig in CROSS_GAME_FO4_WORLD_OBJECT_VANILLA_REMAP_BLOCKED_SIGS {
+                assert!(
+                    blocked.iter().any(|b| b == sig),
+                    "{source:?}->Fo4 must block {sig}"
+                );
+            }
+        }
+    }
+
+    /// FO76 genuinely inherits Fallout 4's record set, so its block list stays
+    /// narrow — widening it to the world object list would stop FO76 reusing
+    /// records it really does share. This is the one source the generalized
+    /// `source != Fo76` branch must not catch.
+    #[test]
+    fn fo76_fo4_keeps_narrow_vanilla_remap_block_list() {
+        let blocked = editor_id_vanilla_remap_blocked_sigs(Game::Fo76, Game::Fo4);
+        assert!(blocked.iter().any(|b| b == "STAT"));
+        for sig in ["ACTI", "MISC", "SOUN", "WEAP", "NPC_"] {
+            assert!(
+                !blocked.iter().any(|b| b == sig),
+                "FO76->Fo4 must keep reusing {sig}"
+            );
+        }
+    }
+
+    /// A same-game run is not a cross-game conversion and must stay unblocked.
+    #[test]
+    fn fo4_to_fo4_blocks_nothing() {
+        assert!(editor_id_vanilla_remap_blocked_sigs(Game::Fo4, Game::Fo4).is_empty());
     }
 
     #[test]
@@ -7474,8 +20186,13 @@ mod tests {
             value: FieldValue::String(original_eid),
         });
 
-        let renamed =
-            rename_fo76_target_editor_id_collision(&mut record, &target_eid_index, &interner, true);
+        let renamed = rename_fo76_target_editor_id_collision(
+            &mut record,
+            &target_eid_index,
+            &FxHashSet::default(),
+            &interner,
+            true,
+        );
 
         assert_eq!(renamed, None);
         assert_eq!(
@@ -7554,6 +20271,36 @@ mod tests {
         assert_eq!(
             interner.resolve(sym),
             Some("FO76\\Landscape\\DirtCliffs\\TerrainShelfRocks01.nif")
+        );
+    }
+
+    #[test]
+    fn fo76_fo4_changed_decal_material_path_is_namespaced() {
+        let mut interner = StringInterner::new();
+        let txst_sig = SigCode::from_str("TXST").unwrap();
+        let source_txst = FormKey::parse("112A13@SeventySix.esm", &mut interner).unwrap();
+        let mut record = Record::new(txst_sig, source_txst);
+        let material = interner.intern("DLC04\\DECALS\\DLC04_ParkingSpaceDecal_SWSingle03.BGSM");
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("MNAM").unwrap(),
+            value: FieldValue::String(material),
+        });
+        let members = [relocation_material_key(
+            "DLC04\\DECALS\\DLC04_ParkingSpaceDecal_SWSingle03.BGSM",
+        )]
+        .into_iter()
+        .collect();
+
+        let changed =
+            namespace_base_asset_decal_material_path(&mut record, &members, "FO76", &interner);
+
+        assert_eq!(changed, 1);
+        let FieldValue::String(sym) = record.fields[0].value else {
+            panic!("expected string MNAM");
+        };
+        assert_eq!(
+            interner.resolve(sym),
+            Some("FO76\\DLC04\\DECALS\\DLC04_ParkingSpaceDecal_SWSingle03.BGSM")
         );
     }
 
@@ -7658,7 +20405,7 @@ mod tests {
         assert!(!translator.maps.skip_records.contains("LTEX"));
         assert!(!translator.maps.skip_records.contains("GRAS"));
 
-        apply_fo76_terrain_owned_record_skips(&mut translator, Game::Fo76, Game::Fo4, &cfg);
+        apply_terrain_owned_record_skips(&mut translator, Game::Fo76, Game::Fo4, &cfg);
 
         assert!(translator.maps.skip_records.contains("LTEX"));
         assert!(translator.maps.skip_records.contains("GRAS"));
@@ -7675,7 +20422,46 @@ mod tests {
             ..Default::default()
         };
 
-        apply_fo76_terrain_owned_record_skips(&mut translator, Game::Fo76, Game::Fo4, &cfg);
+        apply_terrain_owned_record_skips(&mut translator, Game::Fo76, Game::Fo4, &cfg);
+
+        assert!(!translator.maps.skip_records.contains("LTEX"));
+        assert!(!translator.maps.skip_records.contains("GRAS"));
+    }
+
+    #[test]
+    fn starfield_fo4_terrain_phase_skips_terrain_owned_records() {
+        // Starfield routes through the same BTD terrain-texture phase as FO76,
+        // so the generic writer must not also emit LTEX/GRAS.
+        let mut translator = Translator::new(Game::Starfield, Game::Fo4).unwrap();
+        let cfg = RunConfig {
+            asset_phases: AssetPhaseFlags {
+                terrain: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(!translator.maps.skip_records.contains("LTEX"));
+        assert!(!translator.maps.skip_records.contains("GRAS"));
+
+        apply_terrain_owned_record_skips(&mut translator, Game::Starfield, Game::Fo4, &cfg);
+
+        assert!(translator.maps.skip_records.contains("LTEX"));
+        assert!(translator.maps.skip_records.contains("GRAS"));
+    }
+
+    #[test]
+    fn starfield_fo4_without_terrain_phase_keeps_ltex_and_gras_translatable() {
+        let mut translator = Translator::new(Game::Starfield, Game::Fo4).unwrap();
+        let cfg = RunConfig {
+            asset_phases: AssetPhaseFlags {
+                terrain: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        apply_terrain_owned_record_skips(&mut translator, Game::Starfield, Game::Fo4, &cfg);
 
         assert!(!translator.maps.skip_records.contains("LTEX"));
         assert!(!translator.maps.skip_records.contains("GRAS"));
@@ -7699,13 +20485,126 @@ mod tests {
         assert!(!cfg.skips_fo76_quest_dialogue());
     }
 
+    fn mvp_exception(signature: &str, local: u32, plugin: &str) -> MvpRecordExceptionRow {
+        MvpRecordExceptionRow {
+            signature: signature.to_string(),
+            local_form_id: local,
+            source_plugin: plugin.to_string(),
+        }
+    }
+
+    #[test]
+    fn mvp_weapon_closures_are_pair_scoped_and_require_all_rows() {
+        let mut config = RunConfig {
+            skip_record_signatures: vec!["weap".to_string()],
+            mvp_record_exceptions: vec![
+                mvp_exception("weap", 0x01_3984, "skyrim.esm"),
+                mvp_exception("STAT", 0x02_0E27, "SKYRIM.ESM"),
+            ],
+            ..Default::default()
+        };
+        config
+            .validate_mvp_record_exceptions(Game::SkyrimSe, Game::Fo4)
+            .unwrap();
+        assert!(config.has_complete_mvp_weapon_closure(Game::SkyrimSe, Game::Fo4));
+        assert!(!config.has_complete_mvp_weapon_closure(Game::Fnv, Game::Fo4));
+        let interner = StringInterner::new();
+        let skyrim = interner.intern("Skyrim.esm");
+        let update = interner.intern("Update.esm");
+        assert!(config.is_mvp_record_exception(
+            Game::SkyrimSe,
+            Game::Fo4,
+            FormKey {
+                local: 0x01_3984,
+                plugin: skyrim,
+            },
+            SigCode::from_str("WEAP").unwrap(),
+            &interner,
+        ));
+        for form_key in [
+            FormKey {
+                local: 0x01_3985,
+                plugin: skyrim,
+            },
+            FormKey {
+                local: 0x01_3984,
+                plugin: update,
+            },
+        ] {
+            assert!(!config.is_mvp_record_exception(
+                Game::SkyrimSe,
+                Game::Fo4,
+                form_key,
+                SigCode::from_str("WEAP").unwrap(),
+                &interner,
+            ));
+        }
+
+        config.mvp_record_exceptions.pop();
+        assert!(!config.has_complete_mvp_weapon_closure(Game::SkyrimSe, Game::Fo4));
+    }
+
+    #[test]
+    fn malformed_mvp_weapon_exception_rows_are_rejected() {
+        for rows in [
+            vec![mvp_exception("ARMO", 0x01_3984, "Skyrim.esm")],
+            vec![mvp_exception("WEAP", 0x01_3984, "Update.esm")],
+            vec![mvp_exception("WEAP", 0x0101_3984, "Skyrim.esm")],
+            vec![
+                mvp_exception("WEAP", 0x01_3984, "Skyrim.esm"),
+                mvp_exception("weap", 0x01_3984, "SKYRIM.ESM"),
+            ],
+        ] {
+            let mut config = RunConfig {
+                skip_record_signatures: vec!["WEAP".to_string()],
+                mvp_record_exceptions: rows,
+                ..Default::default()
+            };
+            assert!(
+                config
+                    .validate_mvp_record_exceptions(Game::SkyrimSe, Game::Fo4)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn melee_only_requires_supported_pair_and_weap_fence() {
+        let config = RunConfig {
+            mvp_melee_only: true,
+            skip_record_signatures: vec!["WEAP".to_string()],
+            ..Default::default()
+        };
+        config
+            .validate_mvp_melee_only(Game::SkyrimSe, Game::Fo4)
+            .unwrap();
+        config
+            .validate_mvp_melee_only(Game::Fnv, Game::Fo4)
+            .unwrap();
+        assert!(
+            config
+                .validate_mvp_melee_only(Game::Fo76, Game::Fo4)
+                .is_err()
+        );
+
+        let missing_fence = RunConfig {
+            mvp_melee_only: true,
+            ..Default::default()
+        };
+        assert!(
+            missing_fence
+                .validate_mvp_melee_only(Game::Fnv, Game::Fo4)
+                .is_err()
+        );
+    }
+
     #[test]
     fn full_merged_creature_coverage_is_zero_when_creatures_are_excluded() {
         use esp_authoring_core::plugin_runtime::{
             plugin_handle_close_native, plugin_handle_new_native,
         };
 
-        let source_handle = plugin_handle_new_native("FNV_FO3_Merged.esm", Some("fnv")).unwrap();
+        let source_handle = plugin_handle_new_native("FalloutNV.esm", Some("fnv")).unwrap();
         let target_handle = plugin_handle_new_native("Out.esm", Some("fo4")).unwrap();
         let id = create_run(RunParams {
             source: Game::Fnv,
@@ -7726,12 +20625,48 @@ mod tests {
             run.mapper_state = Some(MapperState::new(
                 [],
                 MapperOptions {
-                    source_plugin_name: "FNV_FO3_Merged.esm".to_string(),
+                    source_plugin_name: "FalloutNV.esm".to_string(),
                     ..Default::default()
                 },
             ));
             assert_eq!(run.legacy_creature_race_expected_candidates(), 0);
             run.finalize_legacy_creature_race_coverage()
+        })
+        .unwrap();
+
+        drop_run(id).unwrap();
+        plugin_handle_close_native(source_handle);
+        plugin_handle_close_native(target_handle);
+    }
+
+    #[test]
+    fn strict_quest_slice_uses_exact_pack_lowerers_not_corpus_preflight() {
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_close_native, plugin_handle_new_native,
+        };
+
+        let source_handle = plugin_handle_new_native("FalloutNV.esm", Some("fnv")).unwrap();
+        let target_handle = plugin_handle_new_native("Out.esm", Some("fo4")).unwrap();
+        let id = create_run(RunParams {
+            source: Game::Fnv,
+            target: Game::Fo4,
+            source_handle_id: source_handle,
+            target_handle_id: target_handle,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "Out.esm".into(),
+                is_whole_plugin: true,
+                fnv_quest_slice: true,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+
+        with_run(id, |run| {
+            assert!(!run.legacy_pack_gate_active());
+            run.config.fnv_quest_slice = false;
+            assert!(run.legacy_pack_gate_active());
+            Ok::<_, RunError>(())
         })
         .unwrap();
 
@@ -7844,6 +20779,75 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[test]
+    fn skyrimse_fo4_create_run_relocates_colliding_landscape_nif() {
+        let tmp = std::env::temp_dir().join("skyrim_reloc_create_run");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let skyrim = tmp.join("skyrimse");
+        let fo4 = tmp.join("fo4");
+        let mesh = "meshes/landscape/rocks/rockcliff01.nif";
+        for dir in [&skyrim, &fo4] {
+            let path = dir.join(mesh);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"x").unwrap();
+        }
+
+        let id = create_run(RunParams {
+            source: Game::SkyrimSe,
+            target: Game::Fo4,
+            source_handle_id: 9997,
+            target_handle_id: 9996,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                source_extracted_dir: Some(skyrim),
+                target_extracted_dir: Some(fo4),
+                ..Default::default()
+            },
+        })
+        .expect("create_run failed");
+
+        with_run(id, |run| {
+            assert_eq!(base_asset_namespace_for_run(run), "Skyrim");
+            assert!(run.relocation_members.contains(mesh));
+
+            let plugin = run.interner.intern("Skyrim.esm");
+            let mut record = Record::new(
+                SigCode::from_str("STAT").unwrap(),
+                FormKey {
+                    local: 0x0485E7,
+                    plugin,
+                },
+            );
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("MODL").unwrap(),
+                value: FieldValue::String(run.interner.intern("Landscape\\Rocks\\RockCliff01.nif")),
+            });
+            assert_eq!(
+                namespace_base_asset_model_paths(
+                    &mut record,
+                    &run.relocation_members,
+                    &base_asset_namespace_for_run(run),
+                    &run.interner,
+                ),
+                1
+            );
+            let model = record
+                .fields
+                .iter()
+                .find(|field| field.sig.as_str() == "MODL")
+                .and_then(|field| match &field.value {
+                    FieldValue::String(sym) => run.interner.resolve(*sym),
+                    _ => None,
+                });
+            assert_eq!(model, Some("Skyrim\\Landscape\\Rocks\\RockCliff01.nif"));
+            Ok::<_, RunError>(())
+        })
+        .unwrap();
+
+        drop_run(id).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     // -----------------------------------------------------------------------
     // mapper_state persists across records in translate_all: two allocations
     // in the same run must produce distinct object-ids.
@@ -7935,7 +20939,7 @@ mod tests {
         assert_eq!(source_races.len(), 39);
 
         let interner = StringInterner::new();
-        let source_plugin = interner.intern("FNV_FO3_Merged.esm");
+        let source_plugin = interner.intern("FalloutNV.esm");
         let race_sig = SigCode::from_str("RACE").unwrap();
         let source_entries = source_races
             .iter()
@@ -8087,6 +21091,192 @@ mod tests {
     }
 
     #[test]
+    fn skyrim_humanoid_races_use_fo4_human_donors() {
+        let interner = StringInterner::new();
+        let race_sig = SigCode::from_str("RACE").unwrap();
+        let source_plugin = interner.intern("Skyrim.esm");
+        let source_entries = SKYRIMSE_FO4_HUMANOID_RACE_SUBSTITUTIONS
+            .iter()
+            .enumerate()
+            .map(|(index, (editor_id, _))| {
+                (
+                    interner.intern(editor_id),
+                    FormKey {
+                        local: 0x800 + index as u32,
+                        plugin: source_plugin,
+                    },
+                    race_sig,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let mappings = skyrimse_fo4_humanoid_race_substitution_mappings(
+            &source_entries,
+            &interner,
+            Game::SkyrimSe,
+            Game::Fo4,
+        );
+        assert_eq!(mappings.len(), 25);
+        assert_eq!(
+            mappings
+                .iter()
+                .filter(|(_, target)| target.local == FO4_HUMAN_RACE_LOCAL)
+                .count(),
+            20
+        );
+        assert_eq!(
+            mappings
+                .iter()
+                .filter(|(_, target)| target.local == FO4_HUMAN_CHILD_RACE_LOCAL)
+                .count(),
+            5
+        );
+        assert!(
+            mappings
+                .iter()
+                .all(|(_, target)| interner.resolve(target.plugin) == Some("Fallout4.esm"))
+        );
+    }
+
+    #[test]
+    fn skyrim_beast_and_custom_humanoid_races_are_not_human_aliased() {
+        let interner = StringInterner::new();
+        let race_sig = SigCode::from_str("RACE").unwrap();
+        let entries = ["ArgonianRace", "KhajiitRace", "DremoraRace"]
+            .iter()
+            .enumerate()
+            .map(|(index, editor_id)| {
+                (
+                    interner.intern(editor_id),
+                    FormKey {
+                        local: 0x900 + index as u32,
+                        plugin: interner.intern("Skyrim.esm"),
+                    },
+                    race_sig,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            skyrimse_fo4_humanoid_race_substitution_mappings(
+                &entries,
+                &interner,
+                Game::SkyrimSe,
+                Game::Fo4,
+            )
+            .is_empty()
+        );
+        assert!(
+            skyrimse_fo4_humanoid_race_substitution_mappings(
+                &entries,
+                &interner,
+                Game::Fnv,
+                Game::Fo4,
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn skyrim_actor_accounting_requires_every_race_npc_and_placement() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("Skyrim.esm");
+        let mut plan = crate::skyrimse_fo4_runtime::planner::SkyrimCapabilityPlan::default();
+        for (local, signature) in [(1, "RACE"), (2, "NPC_"), (3, "ACHR")] {
+            plan.record_signatures
+                .insert(FormKey { local, plugin }, signature.to_string());
+        }
+        let complete = TranslateStats {
+            by_signature: [
+                (
+                    "RACE".to_string(),
+                    SignatureTranslateStats {
+                        vanilla_remapped: 1,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "NPC_".to_string(),
+                    SignatureTranslateStats {
+                        translated: 1,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "ACHR".to_string(),
+                    SignatureTranslateStats {
+                        translated: 1,
+                        ..Default::default()
+                    },
+                ),
+            ]
+            .into(),
+            ..Default::default()
+        };
+
+        assert!(
+            validate_total_skyrim_actor_translation(&plan, &complete, &FxHashSet::default())
+                .is_ok()
+        );
+
+        let mut incomplete = complete;
+        incomplete.by_signature.insert(
+            "NPC_".to_string(),
+            SignatureTranslateStats {
+                dropped: 1,
+                ..Default::default()
+            },
+        );
+        let error =
+            validate_total_skyrim_actor_translation(&plan, &incomplete, &FxHashSet::default())
+                .unwrap_err();
+        assert!(error.contains("NPC_: expected=1 completed=0"));
+
+        let creature_projection_owned =
+            FxHashSet::from_iter([FormKey { local: 1, plugin }, FormKey { local: 2, plugin }]);
+        let dedicated_projection = TranslateStats {
+            by_signature: [(
+                "ACHR".to_string(),
+                SignatureTranslateStats {
+                    translated: 1,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Default::default()
+        };
+        assert!(
+            validate_total_skyrim_actor_translation(
+                &plan,
+                &dedicated_projection,
+                &creature_projection_owned,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn only_skyrim_actor_signatures_are_mandatory_for_skyrim_to_fo4() {
+        for signature in ["RACE", "NPC_", "ACHR"] {
+            assert!(is_mandatory_skyrim_actor_record(
+                Game::SkyrimSe,
+                Game::Fo4,
+                SigCode::from_str(signature).unwrap(),
+            ));
+        }
+        assert!(!is_mandatory_skyrim_actor_record(
+            Game::SkyrimSe,
+            Game::Fo4,
+            SigCode::from_str("PACK").unwrap(),
+        ));
+        assert!(!is_mandatory_skyrim_actor_record(
+            Game::Fo76,
+            Game::Fo4,
+            SigCode::from_str("NPC_").unwrap(),
+        ));
+    }
+
+    #[test]
     fn whole_plugin_weap_ammo_substitution_wins_without_replacing_mapper_fallbacks() {
         for (source_game, source_plugin_name) in
             [(Game::Fnv, "FalloutNV.esm"), (Game::Fo3, "Fallout3.esm")]
@@ -8171,7 +21361,7 @@ mod tests {
     #[test]
     fn legacy_same_name_output_keeps_generated_targets_outside_the_source_domain() {
         let interner = StringInterner::new();
-        let plugin = interner.intern("FNV_FO3_Merged.esm");
+        let plugin = interner.intern("FalloutNV.esm");
         let low_source = FormKey {
             local: 0x100,
             plugin,
@@ -8183,8 +21373,8 @@ mod tests {
         let next = legacy_output_allocation_floor(
             Game::Fnv,
             Game::Fo4,
-            "FNV_FO3_Merged.esm",
-            "fnv_fo3_merged.ESM",
+            "FalloutNV.esm",
+            "falloutnv.ESM",
             true,
             FIRST_ALLOCATION_ID,
             [low_source.local, source_at_default_floor.local],
@@ -8224,8 +21414,8 @@ mod tests {
             legacy_output_allocation_floor(
                 Game::Fnv,
                 Game::Fo4,
-                "FNV_FO3_Merged.esm",
-                "FNV_FO3_Merged.esm",
+                "FalloutNV.esm",
+                "FalloutNV.esm",
                 true,
                 0xA000,
                 [low_source.local, source_at_default_floor.local],
@@ -8238,8 +21428,8 @@ mod tests {
             legacy_output_allocation_floor(
                 Game::Fnv,
                 Game::Fo4,
-                "FNV_FO3_Merged.esm",
-                "FNV_FO3_Merged.esm",
+                "FalloutNV.esm",
+                "FalloutNV.esm",
                 true,
                 FIRST_ALLOCATION_ID,
                 [low_source.local, 0x00FF_FFFF],
@@ -8250,8 +21440,8 @@ mod tests {
         let mut state = MapperState::new(
             [],
             MapperOptions {
-                source_plugin_name: "FNV_FO3_Merged.esm".into(),
-                output_plugin_name: "FNV_FO3_Merged.esm".into(),
+                source_plugin_name: "FalloutNV.esm".into(),
+                output_plugin_name: "FalloutNV.esm".into(),
                 preserve_source_ids: true,
                 resolution_mode: ResolutionMode::Strict,
                 ..Default::default()
@@ -8295,7 +21485,7 @@ mod tests {
         use crate::record::{FieldEntry, FieldValue, Record};
 
         let interner = StringInterner::new();
-        let source_plugin = interner.intern("FNV_FO3_Merged.esm");
+        let source_plugin = interner.intern("FalloutNV.esm");
         let race_sig = SigCode::from_str("RACE").unwrap();
         let source_entries = [
             ("Caucasian", 0x000019, FO4_HUMAN_RACE_LOCAL),
@@ -8325,7 +21515,7 @@ mod tests {
         let mut state = MapperState::new(
             [],
             MapperOptions {
-                output_plugin_name: "FNV_FO3_Merged.esm".into(),
+                output_plugin_name: "FalloutNV.esm".into(),
                 preserve_source_ids: true,
                 ..Default::default()
             },
@@ -8418,25 +21608,62 @@ mod tests {
         assert!(mappings.contains(&(src(0x001A_001E), tgt("Fallout4.esm", 0x001A_001E))));
         // DLC04_ma_HandmadeAssaultRifle -> DLC04_ma_HandmadeAssaultRifle
         assert!(mappings.contains(&(src(0x0011_3855), tgt("DLCNukaWorld.esm", 0x0003_3B61))));
+        // ma_armor_Generic_Paint -> ap_armor_Paint
+        assert!(mappings.contains(&(src(0x0045_2EF4), tgt("Fallout4.esm", 0x0024_A0FA))));
+        // ma_PowerArmorMod -> ma_PA_Material
+        assert!(mappings.contains(&(src(0x0053_03FE), tgt("Fallout4.esm", 0x0018_DFCB))));
     }
 
     #[test]
-    fn fo76_fo4_forced_race_substitution_targets_fo4_ghoul_race() {
+    fn fo76_fo4_renamed_linked_ref_keywords_resolve_to_fo4_keywords() {
+        use crate::ids::FormKey;
+        use crate::sym::StringInterner;
+
+        let interner = StringInterner::new();
+        let mappings = fo76_fo4_forced_keyword_substitution_mappings(&interner);
+        for local in [
+            0x001C_A8CF, // DMP_Sandbox -> DMP_Sandbox_Prim
+            0x0004_21F8, // DMP_Suspicious_Sandbox -> DMP_Suspicious_Sandbox_512
+            0x0004_2241, // DMP_Combat_HoldPosition -> DMP_Combat_HoldPosition_128
+            0x0006_6510, // TurfSystemLinkToSleep -> EMSystemLinkToSleep
+            0x0018_12F6, // TurfSystemLinkToTurf -> EMSystemLinkToTurf
+            0x001C_5EDD, // WorkshopStackedItemParent -> WorkshopStackedItemParentKEYWORD
+            0x000F_9E1B, // LinkTerminalRobot -> LinkTerminalProtectron
+            0x000F_9E13, // LinkCaptive -> DefaultCaptiveLink
+        ] {
+            let source = FormKey {
+                local,
+                plugin: interner.intern("SeventySix.esm"),
+            };
+            let target = FormKey {
+                local,
+                plugin: interner.intern("Fallout4.esm"),
+            };
+            assert!(
+                mappings.contains(&(source, target)),
+                "{local:06X} must resolve to the FO4 keyword"
+            );
+        }
+    }
+
+    #[test]
+    fn fo76_fo4_forced_race_substitutions_target_matching_fo4_races() {
         use crate::ids::FormKey;
         use crate::sym::StringInterner;
 
         let interner = StringInterner::new();
         let mappings = fo76_fo4_forced_race_substitution_mappings(&interner);
-        let src = FormKey {
-            local: 0x0079_CCE7,
+        let src = |local| FormKey {
+            local,
             plugin: interner.intern("SeventySix.esm"),
         };
-        let tgt = FormKey {
-            local: 0x000E_AFB6,
-            plugin: interner.intern("Fallout4.esm"),
+        let tgt = |plugin_name, local| FormKey {
+            local,
+            plugin: interner.intern(plugin_name),
         };
 
-        assert!(mappings.contains(&(src, tgt)));
+        assert!(mappings.contains(&(src(0x0079_CCE7), tgt("Fallout4.esm", 0x000E_AFB6))));
+        assert!(mappings.contains(&(src(0x0077_2F32), tgt("DLCRobot.esm", 0x0000_1129))));
     }
 
     #[test]
@@ -8518,6 +21745,40 @@ mod tests {
             "seeded substitution must win over allocate (it is consulted first)"
         );
 
+        let source_power_armor = FormKey {
+            local: 0x0053_03FE,
+            plugin: interner.intern("SeventySix.esm"),
+        };
+        let resolved_power_armor = {
+            let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+            mapper.allocate_or_resolve(source_power_armor, None, kywd)
+        };
+        assert_eq!(
+            resolved_power_armor,
+            FormKey {
+                local: 0x0018_DFCB,
+                plugin: interner.intern("Fallout4.esm"),
+            },
+            "power-armor OMOD and ARMO references must use the FO4 material association"
+        );
+
+        let source_armor_paint = FormKey {
+            local: 0x0045_2EF4,
+            plugin: interner.intern("SeventySix.esm"),
+        };
+        let resolved_armor_paint = {
+            let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+            mapper.allocate_or_resolve(source_armor_paint, None, kywd)
+        };
+        assert_eq!(
+            resolved_armor_paint,
+            FormKey {
+                local: 0x0024_A0FA,
+                plugin: interner.intern("Fallout4.esm"),
+            },
+            "armor-paint OMOD and ARMO references must use the FO4 paint keyword"
+        );
+
         let source_handmade = FormKey {
             local: 0x0011_3855,
             plugin: interner.intern("SeventySix.esm"),
@@ -8562,6 +21823,45 @@ mod tests {
             })],
             "OMOD MNAM must retain the handmade weapon-family constraint"
         );
+
+        let expected_armor_targets = vec![
+            FieldValue::FormKey(FormKey {
+                local: 0x0024_A0FA,
+                plugin: interner.intern("Fallout4.esm"),
+            }),
+            FieldValue::FormKey(FormKey {
+                local: 0x0018_DFCB,
+                plugin: interner.intern("Fallout4.esm"),
+            }),
+        ];
+        for (record_sig, field_sig) in [("OMOD", "MNAM"), ("ARMO", "KWDA")] {
+            let mut record = Record::new(
+                SigCode::from_str(record_sig).unwrap(),
+                FormKey {
+                    local: 0x0031_B1D4,
+                    plugin: interner.intern("SeventySix.esm"),
+                },
+            );
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str(field_sig).unwrap(),
+                value: FieldValue::List(vec![
+                    FieldValue::FormKey(source_armor_paint),
+                    FieldValue::FormKey(source_power_armor),
+                ]),
+            });
+            {
+                let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+                mapper.rewrite_record(&mut record).unwrap();
+            }
+
+            let FieldValue::List(items) = &record.fields[0].value else {
+                panic!("expected {record_sig} {field_sig} list");
+            };
+            assert_eq!(
+                items, &expected_armor_targets,
+                "{record_sig} {field_sig} must use FO4 armor target keywords"
+            );
+        }
     }
 
     #[test]
@@ -8634,15 +21934,17 @@ mod tests {
                 .insert(source_form_key, target_form_key);
         }
 
-        for (source_local, target_local) in [(0x0079_CCE7, 0x000E_AFB6), (0x0077_2F32, 0x000D_FB33)]
-        {
+        for (source_local, target_plugin, target_local) in [
+            (0x0079_CCE7, "Fallout4.esm", 0x000E_AFB6),
+            (0x0077_2F32, "DLCRobot.esm", 0x0000_1129),
+        ] {
             let source_race = FormKey {
                 local: source_local,
                 plugin: interner.intern("SeventySix.esm"),
             };
             let target_race = FormKey {
                 local: target_local,
-                plugin: interner.intern("Fallout4.esm"),
+                plugin: interner.intern(target_plugin),
             };
             let mut npc = Record::new(
                 SigCode::from_str("NPC_").unwrap(),
@@ -8730,11 +22032,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Fixups use self.interner (same Rodeo as translate_all).
-    //
-    // We can only test this indirectly without real plugin handles: verify that
-    // a ConversionRun's mapper_state is properly reset to None after translate_all
-    // fails (no plugin) and that fixups do not panic.
+    // Fixups use self.interner (same Rodeo as translate_all). Without real
+    // plugin handles this is checked indirectly: mapper_state resets to None
+    // after translate_all fails (no plugin), and fixups don't panic.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -8863,6 +22163,62 @@ mod tests {
         .unwrap();
 
         drop_run(id).unwrap();
+    }
+
+    #[test]
+    fn unified_defers_asset_repairs_but_standalone_still_runs_them() {
+        use crate::phase::{DispatchParams, run_phase};
+        use esp_authoring_core::plugin_runtime::plugin_handle_new_native;
+        for deferred in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let behaviors = root.path().join("data/Meshes/Actors/Deathclaw/Behaviors");
+            std::fs::create_dir_all(&behaviors).unwrap();
+            let filtered = behaviors.join("ambushbehavior.hkx");
+            std::fs::write(&filtered, b"dummy").unwrap();
+            let id = create_run(RunParams {
+                source: Game::Fo4,
+                target: Game::Fo4,
+                source_handle_id: plugin_handle_new_native("Source.esm", Some("fo4")).unwrap(),
+                target_handle_id: plugin_handle_new_native("Output.esp", Some("fo4")).unwrap(),
+                master_handle_ids: vec![],
+                config: RunConfig {
+                    output_plugin_name: "Output.esp".into(),
+                    is_whole_plugin: true,
+                    mod_path: Some(root.path().to_path_buf()),
+                    asset_phases: crate::full_plugin::AssetPhaseFlags {
+                        havok: true,
+                        animations: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+            let dispatch = |params| DispatchParams {
+                mod_path: root.path().to_path_buf(),
+                source_extracted_dir: root.path().to_path_buf(),
+                target_extracted_dir: None,
+                target_data_dir: None,
+                params,
+            };
+            run_phase(
+                id,
+                "fixups_v2",
+                dispatch(serde_json::json!({
+                    "defer_havok_postprocess": deferred,
+                })),
+            )
+            .unwrap();
+            assert_eq!(filtered.exists(), deferred);
+            run_phase(
+                id,
+                "postprocess_havok_assets",
+                dispatch(serde_json::json!({})),
+            )
+            .unwrap();
+            assert!(!filtered.exists());
+            drop_run(id).unwrap();
+        }
     }
 
     #[test]
@@ -9091,11 +22447,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // mod_path / source_extracted_dir flow from RunConfig into the
-    //      FixupContext that apply_fixups_v2 builds for the registry. We don't
-    //      execute fixups end-to-end (it needs real plugin handles); we
-    //      instead reuse the exact lines apply_fixups_v2 uses to build the ctx,
-    //      proving the as_deref() plumbing produces the expected Option<&Path>.
+    // mod_path / source_extracted_dir flow from RunConfig into the FixupContext
+    // apply_fixups_v2 builds. Running fixups needs real plugin handles, so this
+    // reuses apply_fixups_v2's ctx-building lines to check that the as_deref()
+    // plumbing yields the expected Option<&Path>.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -9247,5 +22602,203 @@ mod tests {
         assert!(final_conditions > teleport);
         assert!(final_conditions > actor_specialization);
         assert!(final_conditions < flush);
+    }
+
+    #[test]
+    fn copied_placed_normalization_runs_after_all_cell_copy_paths() {
+        let source = include_str!("run.rs");
+        let interior = source.find("pub fn emit_interior_cells").unwrap();
+        let repair = source.find("pub fn repair_placed_child_refs").unwrap();
+        let repair_end = source[repair..]
+            .find("pub fn synthesize_encounter_zones")
+            .map(|offset| repair + offset)
+            .unwrap();
+
+        assert!(!source[interior..repair].contains("normalize_copied_placed_records"));
+        assert!(source[repair..repair_end].contains("normalize_copied_placed_records"));
+        assert!(source[repair..repair_end].contains("resolve_placed_leveled_bases_for_refs"));
+    }
+
+    #[test]
+    fn interior_recentre_runs_before_insert_and_after_navi_and_door_repairs() {
+        let source = include_str!("run.rs");
+        let emit = source.find("pub fn emit_interior_cells").unwrap();
+        let emit_end = emit
+            + source[emit..]
+                .find("fn translate_and_remap_snapshot_record")
+                .unwrap();
+        let emit_body = &source[emit..emit_end];
+        let recentre = emit_body.find("recentre_cell_children(").unwrap();
+        assert!(recentre > emit_body.rfind("translate_and_remap_snapshot_record(").unwrap());
+        assert!(recentre < emit_body.find("add_interior_cell_with_children_native(").unwrap());
+
+        let navi = source
+            .find("pub fn rebuild_projected_navi(&mut self)")
+            .unwrap();
+        let navi_body = &source[navi..];
+        assert!(
+            navi_body.find("shift_navi_navmesh_infos(").unwrap()
+                > navi_body
+                    .find("rebuild_projected_navi_from_source_native(")
+                    .unwrap()
+        );
+
+        let repair = source.find("pub fn repair_placed_child_refs").unwrap();
+        let repair_end = repair
+            + source[repair..]
+                .find("pub fn synthesize_encounter_zones")
+                .unwrap();
+        let repair_body = &source[repair..repair_end];
+        assert!(
+            repair_body.find("shift_teleport_destinations(").unwrap()
+                > repair_body
+                    .find("repair_placed_teleport_doors::repair_placed_references")
+                    .unwrap()
+        );
+    }
+
+    #[test]
+    fn fo4_placed_ref_target_repair_includes_starfield_and_fo76_sources() {
+        assert!(needs_fo4_placed_ref_target_repair(
+            Game::Starfield,
+            Game::Fo4
+        ));
+        assert!(needs_fo4_placed_ref_target_repair(Game::Fo76, Game::Fo4));
+    }
+
+    #[test]
+    fn fo4_placed_ref_target_repair_excludes_unrelated_pairs() {
+        assert!(!needs_fo4_placed_ref_target_repair(Game::Fo4, Game::Fo4));
+        assert!(!needs_fo4_placed_ref_target_repair(
+            Game::SkyrimSe,
+            Game::Fo4
+        ));
+        assert!(!needs_fo4_placed_ref_target_repair(
+            Game::Fo4,
+            Game::Starfield
+        ));
+        assert!(!needs_fo4_placed_ref_target_repair(
+            Game::Starfield,
+            Game::Starfield
+        ));
+    }
+
+    #[test]
+    fn starfield_ref_target_repair_keeps_fo76_payload_fixups_fo76_only() {
+        let source = include_str!("run.rs");
+        let start = source.find("pub fn repair_placed_child_refs").unwrap();
+        let end = source[start..]
+            .find("pub fn synthesize_encounter_zones")
+            .map(|offset| start + offset)
+            .unwrap();
+        let body = &source[start..end];
+        let normalize = body
+            .find("normalize_copied_placed_records_in_session(")
+            .unwrap();
+        let linked = body.find("repair_placed_linked_refs(").unwrap();
+        let teleport = body
+            .find("repair_placed_teleport_doors::repair_placed_references")
+            .unwrap();
+        let light = body
+            .find("normalize_light_radii::normalize_light_radii")
+            .unwrap();
+        let fo76_gate = "if self.source == Game::Fo76 && self.target == Game::Fo4";
+
+        assert!(body[..normalize].contains(fo76_gate));
+        assert!(normalize < linked);
+        assert!(linked < teleport);
+        assert!(body[teleport..light].contains(fo76_gate));
+    }
+
+    #[test]
+    fn fnv_quest_synthetic_targets_resolve_exactly_and_fail_closed() {
+        use crate::fnv_legacy_scripting::component::FnvQuestSyntheticIntent;
+        use crate::quest_runtime::QuestRuntimeExpectedReceipt;
+
+        let intents = [
+            FnvQuestSyntheticIntent::Scene,
+            FnvQuestSyntheticIntent::DialogueBranch,
+            FnvQuestSyntheticIntent::DedicatedGreetingKeyword,
+            FnvQuestSyntheticIntent::DedicatedGreetingTopic,
+        ];
+        let expected = QuestRuntimeExpectedReceipt {
+            emitted_records: intents.iter().map(|intent| intent.record_key()).collect(),
+            ..Default::default()
+        };
+        let synthetic_targets = intents
+            .iter()
+            .enumerate()
+            .map(|(index, intent)| {
+                (
+                    intent.record_key(),
+                    intent.target_key(format!("{:06X}:Output.esm", 0xF100 + index)),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        validate_fnv_synthetic_target_set(std::slice::from_ref(&expected), &synthetic_targets)
+            .expect("the admitted synthetic set must match the live allocations");
+        let resolved = resolve_fnv_expected_receipt(&expected, &synthetic_targets)
+            .expect("every synthetic intent has a live allocation");
+        assert!(
+            resolved
+                .emitted_records
+                .iter()
+                .all(|record| !record.form_key.starts_with("intent:fnv:"))
+        );
+
+        let mut missing = synthetic_targets.clone();
+        missing.remove(&FnvQuestSyntheticIntent::Scene.record_key());
+        assert_eq!(
+            validate_fnv_synthetic_target_set(std::slice::from_ref(&expected), &missing)
+                .expect_err("a missing allocation must fail closed"),
+            "FNV quest runtime synthetic allocation set differs from admission: expected=4 actual=3"
+        );
+
+        let mut extra = synthetic_targets;
+        extra.insert(
+            crate::quest_runtime::QuestRecordKey::new("SCEN", "intent:fnv:unexpected"),
+            crate::quest_runtime::QuestRecordKey::new("SCEN", "00F200:Output.esm"),
+        );
+        assert_eq!(
+            validate_fnv_synthetic_target_set(&[expected], &extra)
+                .expect_err("an extra allocation must fail closed"),
+            "FNV quest runtime synthetic allocation set differs from admission: expected=4 actual=5"
+        );
+    }
+
+    #[test]
+    fn fnv_quest_vmad_receipt_collects_exact_script_properties() {
+        let authoring = serde_json::json!({
+            "VMAD": {
+                "Scripts": [
+                    {
+                        "ScriptName": "QF_FNV_FO3_11F935",
+                        "Properties": [
+                            {"propertyName": "QuestRef"},
+                            {"propertyName": "StageIndex"},
+                            {"propertyName": "QuestRef"}
+                        ]
+                    },
+                    {
+                        "ScriptName": "FNV_FO3_FnvSliceCompat",
+                        "Properties": []
+                    }
+                ]
+            }
+        });
+
+        assert_eq!(
+            authoring_script_attachments(&authoring),
+            vec![
+                (
+                    "QF_FNV_FO3_11F935".to_string(),
+                    ["QuestRef".to_string(), "StageIndex".to_string()]
+                        .into_iter()
+                        .collect()
+                ),
+                ("FNV_FO3_FnvSliceCompat".to_string(), BTreeSet::new())
+            ]
+        );
     }
 }

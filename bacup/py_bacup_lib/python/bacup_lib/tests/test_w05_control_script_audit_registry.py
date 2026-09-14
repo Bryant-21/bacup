@@ -10,6 +10,7 @@ DOCS = REPO_ROOT / "bacup" / "docs" / "stub_restoration"
 CONTRACT = DOCS / "contracts" / "w05-control-script-audit.md"
 TODO = DOCS / "TODO.md"
 STATUS = DOCS / "status.csv"
+README = DOCS / "README.md"
 GENERATED = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 
 REPORTED_SCRIPTS = {
@@ -80,20 +81,12 @@ REMAINING_DECLARATION_SCRIPTS = {
 }
 
 MARKER_PATCHES = {
-    "W05_MQR_201P_IntercomTriggerScript",
-    "W05_MQR_205P_RaRaCowerTriggerScript",
     "W05_Vault79ElevatorDoorTriggerScript",
 }
 
 AUDIT_TODO_SCRIPTS = {
-    "W05_003P_MusicOverrideTriggerScript",
-    "W05_MQ_004p_UpstairDoorAliasScript",
-    "W05_QT_TriggerScript",
     "W05_RE_FakeKeypadActivatorScript",
-    "W05_RE_MapBoardActivatorScript",
     "W05_Vault79ElevatorDoorTriggerScript",
-    "W05_Vaut79EntranceKeypadScript",
-    "W05_WaywardStateSwapRefScript",
 }
 
 
@@ -164,7 +157,11 @@ def test_deferred_registry_covers_every_new_audit_gap_without_hollow_patches():
         assert entry["blocker"]
         assert entry["removal"]
         assert entry["contract"] == "contracts/w05-control-script-audit.md"
-        assert entry["status"] in {"evidence-blocked", "unsupported-online"}
+        assert entry["status"] in {
+            "evidence-blocked",
+            "record-dependency",
+            "unsupported-online",
+        }
         if entry["patch"] == "none":
             assert entry["marker"] == "0"
             assert contract_entries[script]["patch"] == "none"
@@ -182,15 +179,20 @@ def test_reclassified_status_rows_point_to_the_audit_contract():
         rows = {row["script_name"]: row for row in csv.DictReader(status_file)}
 
     expected = {
+        "W05_003P_MusicOverrideTriggerScript": "patched",
+        "W05_MQ_004p_UpstairDoorAliasScript": "patched",
+        "W05_QT_TriggerScript": "patched",
         "WL005_BombActivateFurnitureScript": "non-defect",
         "WL005_ExplodingDoorSequence02Script": "non-defect",
         "W05_RE_SceneZW01_TriggerScript": "non-defect",
-        "W05_Vaut79EntranceKeypadScript": "evidence-blocked",
         "W05_OverseerCAMP_TutTriggerScript": "patched",
         "W05_MQ_004P_Crane_DoorTriggerScript": "patched",
+        "W05_MQR_201P_IntercomTriggerScript": "patched",
+        "W05_MQR_205P_RaRaCowerTriggerScript": "patched",
+        "W05_MQR_205P_SecurityTriggerScript": "patched",
         "W05_Vault79ElevatorDoorTriggerScript": "patched",
         "W05_RE_ObjectAF01_SelfDestruct_Script": "patched",
-        "W05_WaywardStateSwapRefScript": "unsupported-online",
+        "W05_WaywardStateSwapRefScript": "patched",
         "WL005_DeathBoxMachineScript": "non-defect",
         "WL005_DeathTurretsMachineScript": "non-defect",
         "WL005_ExplodingDoorSequence01Script": "non-defect",
@@ -205,4 +207,47 @@ def test_reclassified_status_rows_point_to_the_audit_contract():
     }
     for script, disposition in expected.items():
         assert rows[script]["terminal_state"] == disposition
-        assert rows[script]["evidence"] == "contracts/w05-control-script-audit.md"
+        if script in {
+            "W05_MQ_004p_UpstairDoorAliasScript",
+        }:
+            assert rows[script]["evidence"] == (
+                "contracts/evidence-blocked-closure-2026-09-01.md"
+            )
+        else:
+            assert "contracts/w05-control-script-audit.md" in rows[script]["evidence"]
+
+
+def test_current_w05_reconciliation_records_delivery_without_claiming_regen():
+    with STATUS.open(encoding="utf-8", newline="") as status_file:
+        rows = {row["script_name"]: row for row in csv.DictReader(status_file)}
+
+    assert rows["W05_QT_TriggerScript"]["terminal_state"] == "patched"
+    assert "memberless and stale" in rows["W05_QT_TriggerScript"]["notes"]
+
+    crane = rows["W05_004P_CraneAliasScript"]
+    assert crane["terminal_state"] == "patched"
+    assert "exact two-member OnHit/OnDeath" in crane["notes"]
+    assert "generated PSC/PEX are absent" in crane["notes"]
+
+    lev = rows["W05_MQR_204P_LevScript"]
+    assert lev["terminal_state"] == "non-defect"
+    assert "zero-member" in lev["notes"]
+    assert "remains unpatched" in lev["notes"]
+
+    music = rows["W05_003P_MusicOverrideTriggerScript"]
+    assert music["terminal_state"] == "patched"
+    assert "generated PSC/PEX from 2026-08-10 contain" in music["notes"]
+    assert "OnTriggerEnter and OnTriggerLeave" in music["notes"]
+
+    readme = README.read_text(encoding="utf-8")
+    assert "0054EDB9 W05_MQA_206P" in readme
+    assert "`W05_MGA_206P`" in readme
+    assert "transcription error" in readme
+    assert "fail forward" in readme
+
+    todo_text = TODO.read_text(encoding="utf-8")
+    for closed_script in (
+        "W05_003P_MusicOverrideTriggerScript",
+        "W05_QT_TriggerScript",
+    ):
+        assert f"W05-AUDIT-TODO|script={closed_script}|" not in todo_text

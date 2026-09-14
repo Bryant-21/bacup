@@ -35,6 +35,9 @@ def test_run_full_regen_merges_pair_sources_before_unified(monkeypatch, tmp_path
     source_strings_dir = paths.source_extracted_dir / "Strings"
     source_strings_dir.mkdir(parents=True)
     paths.additional_source_asset_roots[0].mkdir(parents=True)
+    music_track = paths.source_data_dir / "Music" / "Explore" / "Explore_01.mp3"
+    music_track.parent.mkdir(parents=True)
+    music_track.write_bytes(b"mp3")
     merge_calls: list[dict] = []
     captured_requests: list[PluginPortRequest] = []
     invariant_plugin_names: list[list[str]] = []
@@ -52,10 +55,23 @@ def test_run_full_regen_merges_pair_sources_before_unified(monkeypatch, tmp_path
                 "deduped": 0,
                 "pack_origins": [
                     {
-                        "merged_form_key": "000900@FNV_FO3_Merged.esm",
+                        "merged_form_key": "000900@FalloutNV.esm",
                         "source_game": "fo3",
                         "source_plugin": "Fallout3.esm",
                         "source_form_key": "00000900@Fallout3.esm",
+                    }
+                ],
+                "runtime_origins": [
+                    {
+                        "signature": "QUST",
+                        "merged_form_key": "00A900@FalloutNV.esm",
+                        "source_game": "fo3",
+                        "source_plugin": "Fallout3.esm",
+                        "source_form_key": "00000900@Fallout3.esm",
+                        "contributing_plugin": "ThePitt.esm",
+                        "source_parent_form_key": None,
+                        "merged_parent_form_key": None,
+                        "child_group_type": None,
                     }
                 ],
                 "pack_accounting": {
@@ -70,7 +86,6 @@ def test_run_full_regen_merges_pair_sources_before_unified(monkeypatch, tmp_path
     )
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_existing_outputs", lambda *_a, **_k: None)
     monkeypatch.setattr(
         regen_pipeline,
         "_check_run_invariants",
@@ -99,6 +114,7 @@ def test_run_full_regen_merges_pair_sources_before_unified(monkeypatch, tmp_path
         captured_requests.append(request)
         unified_kwargs.append(kwargs)
         return SimpleNamespace(
+            summary=unified.ConversionSummary(),
             run_result=SimpleNamespace(
                 decisions=[],
                 translated_counts={},
@@ -135,7 +151,7 @@ def test_run_full_regen_merges_pair_sources_before_unified(monkeypatch, tmp_path
     assert merge_call["primary_paths"] == [str(tmp_path / "FalloutNV.esm")]
     assert merge_call["grafted_paths"] == [str(tmp_path / "Fallout3.esm")]
     assert merge_call["source_strings_dir"] == str(source_strings_dir)
-    assert Path(merge_call["output_path"]).name == "FNV_FO3_Merged.esm"
+    assert Path(merge_call["output_path"]).name == "FalloutNV.esm"
     assert Path(merge_call["output_path"]).parent.name == "merge"
     assert not Path(merge_call["output_path"]).is_relative_to(paths.diagnostics_root)
     assert Path(merge_call["report_path"]).parent == Path(
@@ -151,9 +167,9 @@ def test_run_full_regen_merges_pair_sources_before_unified(monkeypatch, tmp_path
     final_build_destination = resolved_mod_root / merged_source.name
     merge_report = paths.diagnostics_root / "merge" / "merge_report.json"
 
-    assert merged_source == paths.diagnostics_root / "merge" / "FNV_FO3_Merged.esm"
+    assert merged_source == paths.diagnostics_root / "merge" / "FalloutNV.esm"
     assert resolved_mod_root == paths.output_root
-    assert final_build_destination == paths.output_root / "FNV_FO3_Merged.esm"
+    assert final_build_destination == paths.output_root / "FalloutNV.esm"
     assert merged_source != final_build_destination
     assert merge_report.parent == merged_source.parent
     assert merge_report.is_file()
@@ -166,12 +182,17 @@ def test_run_full_regen_merges_pair_sources_before_unified(monkeypatch, tmp_path
     assert request.legacy_pack_expected_counts.fnv == 4_885
     assert request.legacy_pack_expected_counts.fo3 == 3_264
     assert request.legacy_pack_origins[0].source_game == "fo3"
+    assert request.legacy_runtime_origins[0]["source_game"] == "fo3"
+    assert request.legacy_runtime_origins[0]["contributing_plugin"] == "ThePitt.esm"
     assert request.source_game == "fnv"
     assert request.target_game == "fo4"
     assert request.output_mod_name == "CustomMojave"
     assert request.options.exclude_signatures == FNV_MVP_EXCLUDE_SIGNATURES
     assert request.additional_source_asset_roots == (tmp_path / "fo3_extracted",)
-    assert invariant_plugin_names == [["FNV_FO3_Merged.esm"]]
+    assert request.legacy_music_tracks[0]["asset_path"] == (
+        "Music/FalloutNV/FNV/Explore/Explore_01.xwm"
+    )
+    assert invariant_plugin_names == [["FalloutNV.esm"]]
 
 
 def test_fatal_pack_preflight_precedes_forced_cleanup_and_all_output_mutation(
@@ -199,6 +220,7 @@ def test_fatal_pack_preflight_precedes_forced_cleanup_and_all_output_mutation(
             Path(merge_options["output_path"]).write_bytes(b"TES4")
             return {
                 "pack_origins": [],
+                "runtime_origins": [],
                 "pack_accounting": {
                     "raw_source": {"fnv": 4_888, "fo3": 4_567},
                     "final_survivors": {"fnv": 4_885, "fo3": 3_264},
@@ -288,9 +310,11 @@ def test_fatal_pack_preflight_precedes_forced_cleanup_and_all_output_mutation(
     assert not list(paths.output_root.parent.glob("bacup-pack-preflight-*"))
 
 
+@pytest.mark.parametrize("serialize_tracks", [True, False])
 def test_run_full_regen_record_failure_skips_validation_and_cache_snapshot(
     monkeypatch,
     tmp_path,
+    serialize_tracks,
 ):
     paths = _paths(tmp_path)
     paths.additional_source_asset_roots[0].mkdir(parents=True)
@@ -302,6 +326,7 @@ def test_run_full_regen_record_failure_skips_validation_and_cache_snapshot(
             Path(merge_options["report_path"]).write_bytes(b"{}\n")
             return {
                 "pack_origins": [],
+                "runtime_origins": [],
                 "pack_accounting": {
                     "raw_source": {"fnv": 4_888, "fo3": 4_567},
                     "final_survivors": {"fnv": 4_885, "fo3": 3_264},
@@ -328,7 +353,7 @@ def test_run_full_regen_record_failure_skips_validation_and_cache_snapshot(
 
     def fail_unified(_request, _runner, **kwargs):
         calls.append("unified")
-        assert kwargs["serialize_tracks"] is True
+        assert kwargs["serialize_tracks"] is serialize_tracks
         assert callable(kwargs["land_cache_hook"])
         raise RuntimeError("Translate Records failed")
 
@@ -337,11 +362,6 @@ def test_run_full_regen_record_failure_skips_validation_and_cache_snapshot(
         regen_pipeline,
         "_write_conversion_reports",
         lambda *_a, **_k: calls.append("failure_reports"),
-    )
-    monkeypatch.setattr(
-        regen_pipeline,
-        "_sanitize_existing_outputs",
-        forbidden("sanitize"),
     )
     monkeypatch.setattr(
         "bacup_lib.models.write_coverage_report",
@@ -377,6 +397,7 @@ def test_run_full_regen_record_failure_skips_validation_and_cache_snapshot(
                 write_land_cache=True,
                 validate_output=True,
                 deep_invariants=True,
+                serialize_tracks=serialize_tracks,
             ),
             pair=get_pair("fnvfo3:fo4"),
             phases=PhaseSelection(lod_mode="none"),
@@ -405,7 +426,7 @@ def test_run_full_regen_rejects_missing_additional_asset_root(tmp_path):
 
 
 def test_unified_record_track_uses_explicit_output_mod_root(tmp_path):
-    merged = tmp_path / "FNV_FO3_Merged.esm"
+    merged = tmp_path / "FalloutNV.esm"
     merged.write_bytes(b"TES4")
     request = PluginPortRequest(
         source_game="fnv",
@@ -436,8 +457,8 @@ def test_unified_record_track_uses_explicit_output_mod_root(tmp_path):
 
     assert (tmp_path / "mods" / "CustomMojave" / ".source_plugin").read_text(
         encoding="utf-8"
-    ) == "FNV_FO3_Merged.esm"
-    assert not (tmp_path / "mods" / "FNV_FO3_Merged").exists()
+    ) == "FalloutNV.esm"
+    assert not (tmp_path / "mods" / "FNV_FO3").exists()
 
 
 def test_run_unified_uses_explicit_output_mod_name_for_merged_source(
@@ -506,10 +527,8 @@ def test_run_unified_uses_explicit_output_mod_name_for_merged_source(
         return _AssetRuns()
 
     monkeypatch.setattr(unified, "run_asset_track", fake_run_asset_track)
-    monkeypatch.setattr(unified, "collect_cache_entries", lambda *_a, **_k: [])
-    monkeypatch.setattr(unified, "write_cache_manifest", lambda *_a, **_k: None)
 
-    merged = tmp_path / "FNV_FO3_Merged.esm"
+    merged = tmp_path / "FalloutNV.esm"
     merged.write_bytes(b"TES4")
     request = PluginPortRequest(
         source_game="fnv",
@@ -535,4 +554,4 @@ def test_run_unified_uses_explicit_output_mod_name_for_merged_source(
     expected = tmp_path / "mods" / "MojaveCapital"
     assert captured_mod_roots == [expected]
     assert expected.is_dir()
-    assert not (tmp_path / "mods" / "FNV_FO3_Merged").exists()
+    assert not (tmp_path / "mods" / "FNV_FO3").exists()

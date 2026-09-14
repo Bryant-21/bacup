@@ -11,6 +11,7 @@ use crate::sym::StringInterner;
 pub(crate) enum SourceFamily {
     LegacyFallout,
     SkyrimSe,
+    Starfield,
 }
 
 fn raw(value: &FieldValue) -> Option<&[u8]> {
@@ -40,6 +41,33 @@ fn field_name<'a>(
         .iter()
         .find(|(key, _)| interner.resolve(*key) == Some(name))
         .map(|(_, value)| value)
+}
+
+fn copy_structured_fields(
+    value: &mut FieldValue,
+    mappings: &[(&str, &str)],
+    interner: &StringInterner,
+) {
+    match value {
+        FieldValue::List(items) => {
+            for item in items {
+                copy_structured_fields(item, mappings, interner);
+            }
+        }
+        FieldValue::Struct(fields) => {
+            let additions = mappings
+                .iter()
+                .filter(|(_, target)| field_name(fields, target, interner).is_none())
+                .filter_map(|(source, target)| {
+                    field_name(fields, source, interner)
+                        .cloned()
+                        .map(|value| (interner.intern(target), value))
+                })
+                .collect::<Vec<_>>();
+            fields.extend(additions);
+        }
+        _ => {}
+    }
 }
 
 fn append_uint_defaults(value: &mut FieldValue, names: &[&str], interner: &StringInterner) {
@@ -192,6 +220,10 @@ fn build_efsh_dnam_from_raw(source: &[u8], family: SourceFamily) -> Option<Vec<u
         // 224 bytes; later revisions extend it through 308 without moving it.
         SourceFamily::LegacyFallout => (224..=308).contains(&source.len()),
         SourceFamily::SkyrimSe => source.len() == 400,
+        // Starfield's EFSH DATA/DNAM layout has not been mapped. Reusing a
+        // legacy family's offsets would silently reinterpret unrelated bytes,
+        // so take the safe-default DNAM instead of fabricating field values.
+        SourceFamily::Starfield => false,
     };
     if !valid {
         return None;
@@ -217,6 +249,8 @@ fn build_efsh_dnam_from_raw(source: &[u8], family: SourceFamily) -> Option<Vec<u
             copy_if_present(source, 384, &mut target, 145, 4);
             copy_if_present(source, 388, &mut target, 149, 8);
         }
+        // Unreachable: the length gate above rejects Starfield outright.
+        SourceFamily::Starfield => {}
     }
     normalize_efsh_enums(&mut target);
     Some(target)
@@ -405,39 +439,148 @@ pub(crate) fn normalize_efsh(record: &mut Record, family: SourceFamily, interner
     });
 }
 
-fn expand_raw_rows(value: &mut FieldValue, source_row: usize, target_row: usize) -> Option<usize> {
-    let bytes = raw(value)?;
-    if bytes.is_empty() || bytes.len() % source_row != 0 {
-        return None;
-    }
-    let rows = bytes.len() / source_row;
-    let mut target = vec![0_u8; rows * target_row];
-    for (source, target) in bytes
-        .chunks_exact(source_row)
-        .zip(target.chunks_exact_mut(target_row))
-    {
-        target[..source_row].copy_from_slice(source);
-    }
-    *value = raw_value(target);
-    Some(rows)
-}
-
-fn structured_rows(value: &FieldValue) -> Option<usize> {
-    match value {
-        FieldValue::List(rows) => Some(rows.len()),
-        FieldValue::Struct(_) => Some(1),
-        _ => None,
-    }
-}
-
 fn push_zero_field(record: &mut Record, sig: [u8; 4], len: usize) {
     record.fields.push(field(sig, raw_value(vec![0_u8; len])));
 }
 
 const FO4_WTHR_NAM0_SIZE: usize = 608;
+const FO4_WTHR_NAM0_ROW: usize = 32;
+/// Byte offset of the `ambient` colour in a Fallout 4 `NAM0`.  It is the fourth
+/// category; the third (offset 64) is the engine's unused slot and is zero in
+/// every vanilla weather.
+const FO4_WTHR_NAM0_AMBIENT: usize = 96;
+/// FO3 stores four periods per weather colour, so each of its ten colours is a
+/// 16-byte row (160 bytes total).  FNV keeps the same ten colours in the same
+/// order but adds Noon and Midnight, widening every row to 24 bytes (240
+/// total).  Neither extra period has a Fallout 4 slot, so only the leading four
+/// are carried — but the row width must still be read from the source length or
+/// every colour past the first lands in the wrong category.
+const FO3_WEATHER_PERIODS: usize = 4;
+const FNV_WEATHER_PERIODS: usize = 6;
+const FNV_WTHR_NAM0_SIZE: usize = 240;
+/// Fallout 4 reads cloud layer speed as an offset from a still 127.
+const FO4_WTHR_CLOUD_SPEED_STILL: u8 = 127;
+/// Fallout 4's fog maximum, absent from the legacy 24-byte fog block.
+const FO4_WTHR_FOG_MAX_DAY: f32 = 0.85;
+const FO4_WTHR_FOG_MAX_NIGHT: f32 = 0.95;
+/// FO3 and FNV name their four cloud layer textures rather than numbering them.
+const LEGACY_CLOUD_LAYER_SIGS: [[u8; 4]; 4] = [*b"DNAM", *b"CNAM", *b"ANAM", *b"BNAM"];
 const DEFAULT_CLOUD_ROWS: usize = 32;
+const LEGACY_TO_FO4_WEATHER_PERIODS: [usize; 8] = [0, 1, 2, 3, 3, 0, 1, 2];
+const FO4_GDRY_NONE: u32 = 0x001B_40E8;
 
-fn rebuild_legacy_wthr_nam0(value: &mut FieldValue) {
+fn fo4_cloud_layer_sig(layer: usize) -> [u8; 4] {
+    [b'0' + layer as u8, b'0', b'T', b'X']
+}
+
+#[derive(Clone, Copy)]
+enum LegacyWeatherProfile {
+    None,
+    Clear,
+    Fog,
+    Rain,
+    Overcast,
+    Radstorm,
+    Dusty,
+}
+
+/// How many periods each periodised weather block stores in the source record.
+///
+/// FO3 stores four (Sunrise, Day, Sunset, Night). FNV widened every one of them
+/// to six by appending Noon and Midnight, neither of which has a Fallout 4
+/// slot. `NAM0` is required on every legacy weather and is the only block whose
+/// length distinguishes the two unambiguously, so it drives `PNAM` too — and it
+/// must be probed before the rewrite loop reshapes `NAM0` into target layout.
+fn legacy_weather_source_periods(record: &Record) -> usize {
+    record
+        .fields
+        .iter()
+        .find(|entry| entry.sig.0 == *b"NAM0")
+        .and_then(|entry| raw(&entry.value))
+        .map_or(FO3_WEATHER_PERIODS, |bytes| {
+            if bytes.len() == FNV_WTHR_NAM0_SIZE {
+                FNV_WEATHER_PERIODS
+            } else {
+                FO3_WEATHER_PERIODS
+            }
+        })
+}
+
+fn expand_legacy_weather_periods(
+    source: &[u8],
+    period_width: usize,
+    source_periods: usize,
+) -> Option<Vec<u8>> {
+    if period_width == 0 || source.len() != period_width * source_periods {
+        return None;
+    }
+    let mut target = vec![0_u8; period_width * 8];
+    // Both games order the leading four periods identically, so FNV's extra two
+    // are simply left behind rather than remapped onto Fallout 4 slots.
+    for (target_period, source_period) in LEGACY_TO_FO4_WEATHER_PERIODS.iter().enumerate() {
+        let source_start = source_period * period_width;
+        let target_start = target_period * period_width;
+        target[target_start..target_start + period_width]
+            .copy_from_slice(&source[source_start..source_start + period_width]);
+    }
+    Some(target)
+}
+
+fn expand_legacy_weather_period_rows(
+    value: &mut FieldValue,
+    period_width: usize,
+    already_target_layout: bool,
+    source_periods: usize,
+) -> Option<usize> {
+    let bytes = raw(value)?;
+    let source_row = period_width * source_periods;
+    let target_row = period_width * 8;
+    if already_target_layout {
+        return (!bytes.is_empty() && bytes.len() % target_row == 0)
+            .then(|| bytes.len() / target_row);
+    }
+    if bytes.is_empty() || bytes.len() % source_row != 0 {
+        return None;
+    }
+    let rows = bytes.len() / source_row;
+    let mut target = Vec::with_capacity(rows * target_row);
+    for source in bytes.chunks_exact(source_row) {
+        target.extend_from_slice(&expand_legacy_weather_periods(
+            source,
+            period_width,
+            source_periods,
+        )?);
+    }
+    *value = raw_value(target);
+    Some(rows)
+}
+
+fn resize_raw_row_array(value: &mut FieldValue, row_width: usize, target_rows: usize) -> bool {
+    let Some(bytes) = raw(value) else {
+        return false;
+    };
+    if row_width == 0 || bytes.len() % row_width != 0 {
+        return false;
+    }
+    let target_len = row_width * target_rows;
+    let mut target = bytes[..bytes.len().min(target_len)].to_vec();
+    target.resize(target_len, 0);
+    *value = raw_value(target);
+    true
+}
+
+fn resize_structured_row_array(value: &mut FieldValue, target_rows: usize) {
+    if matches!(value, FieldValue::Struct(_)) {
+        let first = std::mem::replace(value, FieldValue::None);
+        *value = FieldValue::List(vec![first]);
+    }
+    if let FieldValue::List(rows) = value {
+        rows.truncate(target_rows);
+        rows.resize_with(target_rows, || FieldValue::Struct(Vec::new()));
+    }
+}
+
+fn rebuild_legacy_wthr_nam0(value: &mut FieldValue, source_periods: usize) {
     let Some(source) = raw(value) else {
         *value = raw_value(vec![0_u8; FO4_WTHR_NAM0_SIZE]);
         return;
@@ -445,16 +588,220 @@ fn rebuild_legacy_wthr_nam0(value: &mut FieldValue) {
     if source.len() == FO4_WTHR_NAM0_SIZE {
         return;
     }
-    if source.len() != 160 {
+    // Both source games carry the same ten colours; only the period count
+    // differs, so the row width is what tells them apart.  Leave the FO4-only
+    // trailing categories at zero instead of blacking the entire weather.
+    let source_row = source_periods * 4;
+    if source.is_empty() || source.len() % source_row != 0 {
         *value = raw_value(vec![0_u8; FO4_WTHR_NAM0_SIZE]);
         return;
     }
 
     let mut target = vec![0_u8; FO4_WTHR_NAM0_SIZE];
-    for (source_row, target_row) in source.chunks_exact(16).zip(target.chunks_exact_mut(32)) {
-        target_row[..16].copy_from_slice(source_row);
+    for (source_colour, target_colour) in source
+        .chunks_exact(source_row)
+        .zip(target.chunks_exact_mut(FO4_WTHR_NAM0_ROW))
+    {
+        target_colour.copy_from_slice(
+            &expand_legacy_weather_periods(source_colour, 4, source_periods)
+                .expect("source weather color periods"),
+        );
     }
     *value = raw_value(target);
+}
+
+/// Rename FO3/FNV's named cloud layer textures to Fallout 4's numbered layers.
+/// Dropping them leaves the sky with no cloud layers at all.
+fn carry_legacy_cloud_layer_textures(record: &mut Record) {
+    for (layer, legacy) in LEGACY_CLOUD_LAYER_SIGS.iter().enumerate() {
+        let target = fo4_cloud_layer_sig(layer);
+        if record.fields.iter().any(|entry| entry.sig.0 == target) {
+            continue;
+        }
+        if let Some(entry) = record
+            .fields
+            .iter_mut()
+            .find(|entry| entry.sig.0 == *legacy && !matches!(entry.value, FieldValue::None))
+        {
+            entry.sig = SubrecordSig(target);
+        }
+    }
+    record
+        .fields
+        .retain(|entry| !LEGACY_CLOUD_LAYER_SIGS.contains(&entry.sig.0));
+}
+
+/// Fallout 4 walks all thirty-two cloud layers. The legacy games author at most
+/// four, so the remainder must be masked off rather than rendered untextured.
+fn rebuild_legacy_wthr_disabled_cloud_layers(record: &mut Record) {
+    if record.fields.iter().any(|entry| entry.sig.0 == *b"NAM1") {
+        return;
+    }
+    let disabled = (0..DEFAULT_CLOUD_ROWS).fold(0_u32, |mask, layer| {
+        let sig = fo4_cloud_layer_sig(layer);
+        if record.fields.iter().any(|entry| entry.sig.0 == sig) {
+            mask
+        } else {
+            mask | (1 << layer)
+        }
+    });
+    record
+        .fields
+        .push(field(*b"NAM1", raw_value(disabled.to_le_bytes().to_vec())));
+}
+
+fn normalize_legacy_dalc_value(mut value: FieldValue, interner: &StringInterner) -> FieldValue {
+    match &mut value {
+        FieldValue::Bytes(bytes) if bytes.len() == 32 => value,
+        FieldValue::Bytes(bytes) if bytes.len() == 24 => {
+            let mut target = vec![0_u8; 32];
+            target[..24].copy_from_slice(bytes);
+            raw_value(target)
+        }
+        FieldValue::Struct(_) | FieldValue::List(_) => {
+            append_uint_defaults(
+                &mut value,
+                &[
+                    "ambient_colors_specular_red",
+                    "ambient_colors_specular_green",
+                    "ambient_colors_specular_blue",
+                    "unknown_u8_27",
+                ],
+                interner,
+            );
+            append_float_defaults(&mut value, &["ambient_colors_fresnel_power"], interner);
+            value
+        }
+        _ => raw_value(vec![0_u8; 32]),
+    }
+}
+
+fn rebuild_legacy_wthr_dalc(record: &mut Record, interner: &StringInterner) {
+    let insert_at = record
+        .fields
+        .iter()
+        .position(|entry| entry.sig.0 == *b"DALC")
+        .unwrap_or(record.fields.len());
+    let mut rows = record
+        .fields
+        .iter()
+        .filter(|entry| entry.sig.0 == *b"DALC")
+        .map(|entry| normalize_legacy_dalc_value(entry.value.clone(), interner))
+        .collect::<Vec<_>>();
+    record.fields.retain(|entry| entry.sig.0 != *b"DALC");
+
+    if rows.is_empty()
+        && let Some(ambient_periods) = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"NAM0")
+            .and_then(|entry| raw(&entry.value))
+            .and_then(|bytes| {
+                bytes.get(FO4_WTHR_NAM0_AMBIENT..FO4_WTHR_NAM0_AMBIENT + FO4_WTHR_NAM0_ROW)
+            })
+    {
+        rows = ambient_periods
+            .chunks_exact(4)
+            .map(|period| {
+                let mut dalc = vec![0_u8; 32];
+                for offset in [0, 4, 8, 12, 16, 20, 24] {
+                    dalc[offset..offset + 3].copy_from_slice(&period[..3]);
+                }
+                dalc[28..32].copy_from_slice(&1.0_f32.to_le_bytes());
+                raw_value(dalc)
+            })
+            .collect();
+    }
+
+    let target_rows = if rows.len() <= 4 {
+        rows.resize_with(4, || raw_value(vec![0_u8; 32]));
+        LEGACY_TO_FO4_WEATHER_PERIODS
+            .iter()
+            .map(|source_period| rows[*source_period].clone())
+            .collect::<Vec<_>>()
+    } else {
+        rows.truncate(8);
+        rows.resize_with(8, || raw_value(vec![0_u8; 32]));
+        rows
+    };
+    for (offset, value) in target_rows.into_iter().enumerate() {
+        record.fields.insert(
+            (insert_at + offset).min(record.fields.len()),
+            field(*b"DALC", value),
+        );
+    }
+}
+
+fn legacy_weather_profile(editor_id: &str) -> LegacyWeatherProfile {
+    let editor_id = editor_id.to_ascii_lowercase();
+    if ["interior", "cave", "sewer", "inverted", "nolighting", "off"]
+        .iter()
+        .any(|needle| editor_id.contains(needle))
+    {
+        LegacyWeatherProfile::None
+    } else if ["radstorm", "nuke", "nuked", "fallout", "decay"]
+        .iter()
+        .any(|needle| editor_id.contains(needle))
+    {
+        LegacyWeatherProfile::Radstorm
+    } else if ["dust", "desert", "sand"]
+        .iter()
+        .any(|needle| editor_id.contains(needle))
+    {
+        LegacyWeatherProfile::Dusty
+    } else if ["rain", "thunder"]
+        .iter()
+        .any(|needle| editor_id.contains(needle))
+    {
+        LegacyWeatherProfile::Rain
+    } else if ["fog", "hazy", "toxic", "smoke"]
+        .iter()
+        .any(|needle| editor_id.contains(needle))
+    {
+        LegacyWeatherProfile::Fog
+    } else if editor_id.contains("clear") {
+        LegacyWeatherProfile::Clear
+    } else if ["overcast", "cloudy", "storm"]
+        .iter()
+        .any(|needle| editor_id.contains(needle))
+    {
+        LegacyWeatherProfile::Overcast
+    } else {
+        LegacyWeatherProfile::None
+    }
+}
+
+fn legacy_weather_god_rays(editor_id: &str) -> Vec<u8> {
+    let periods = match legacy_weather_profile(editor_id) {
+        LegacyWeatherProfile::None => [FO4_GDRY_NONE; 4],
+        LegacyWeatherProfile::Clear => [0x0021_6A93, 0x0021_6A92, 0x0021_6A94, FO4_GDRY_NONE],
+        LegacyWeatherProfile::Fog => [0x0021_8FA0, 0x0021_8FA4, 0x0021_8FA1, 0x001C_C192],
+        LegacyWeatherProfile::Rain => [0x0021_15D0, 0x001C_D09F, 0x0021_15D1, 0x001C_C192],
+        LegacyWeatherProfile::Overcast => [0x001C_855C, 0x001C_855D, 0x001C_855E, FO4_GDRY_NONE],
+        LegacyWeatherProfile::Radstorm => [0x001F_495D, 0x0022_4A94, 0x0022_4591, 0x0022_458F],
+        LegacyWeatherProfile::Dusty => [0x001F_61AB, 0x001F_61AD, 0x001F_61AE, 0x001F_61AC],
+    };
+    LEGACY_TO_FO4_WEATHER_PERIODS
+        .iter()
+        .flat_map(|source_period| periods[*source_period].to_le_bytes())
+        .collect()
+}
+
+fn rebuild_legacy_wthr_god_rays(record: &mut Record, interner: &StringInterner) {
+    let existing = record.fields.iter().find_map(|entry| {
+        (entry.sig.0 == *b"WGDR")
+            .then(|| raw(&entry.value))
+            .flatten()
+            .filter(|bytes| bytes.len() == 32)
+            .map(|bytes| raw_value(bytes.to_vec()))
+    });
+    let editor_id = record
+        .eid
+        .and_then(|eid| interner.resolve(eid))
+        .unwrap_or_default();
+    let value = existing.unwrap_or_else(|| raw_value(legacy_weather_god_rays(editor_id)));
+    record.fields.retain(|entry| entry.sig.0 != *b"WGDR");
+    record.fields.push(field(*b"WGDR", value));
 }
 
 fn normalize_fixed_or_default(value: &mut FieldValue, len: usize) {
@@ -493,6 +840,32 @@ fn ensure_single_required(record: &mut Record, sig: [u8; 4], len: usize) {
     }
 }
 
+fn ensure_single_weather_multiplier(record: &mut Record, sig: [u8; 4]) {
+    let mut seen = false;
+    record.fields.retain(|entry| {
+        if entry.sig.0 != sig {
+            return true;
+        }
+        if seen {
+            return false;
+        }
+        seen = true;
+        true
+    });
+    if let Some(entry) = record.fields.iter_mut().find(|entry| entry.sig.0 == sig) {
+        if matches!(&entry.value, FieldValue::Bytes(bytes) if bytes.len() == 4)
+            || matches!(entry.value, FieldValue::Float(_))
+        {
+            return;
+        }
+        entry.value = raw_value(1.0_f32.to_le_bytes().to_vec());
+    } else {
+        record
+            .fields
+            .push(field(sig, raw_value(1.0_f32.to_le_bytes().to_vec())));
+    }
+}
+
 fn wthr_target_order(sig: [u8; 4]) -> usize {
     match sig {
         sig if sig == *b"EDID" => 0,
@@ -528,15 +901,24 @@ fn wthr_target_order(sig: [u8; 4]) -> usize {
     }
 }
 
-/// Rebuild legacy Fallout WTHR layouts for Fallout 4. Source-only DNAM is
-/// removed and target-only fields use the historical zero-tail defaults.
+/// Rebuild legacy Fallout WTHR layouts for Fallout 4.
 pub(crate) fn normalize_legacy_wthr(record: &mut Record, interner: &StringInterner) {
     if record.sig.0 != *b"WTHR" {
         return;
     }
-    record.fields.retain(|entry| entry.sig.0 != *b"DNAM");
+    let already_target_layout = record.fields.iter().any(|entry| {
+        (entry.sig.0 == *b"NAM0"
+            && matches!(&entry.value, FieldValue::Bytes(bytes) if bytes.len() == FO4_WTHR_NAM0_SIZE))
+            || (entry.sig.0 == *b"IMSP"
+                && matches!(&entry.value, FieldValue::Bytes(bytes) if bytes.len() == 32))
+    });
+    carry_legacy_cloud_layer_textures(record);
 
-    let mut pnam_rows = 1_usize;
+    // Probe before the loop: the rewrite below reshapes NAM0 into FO4 layout,
+    // erasing the length that distinguishes a four-period FO3 record from a
+    // six-period FNV one.
+    let source_periods = legacy_weather_source_periods(record);
+    let pnam_rows = DEFAULT_CLOUD_ROWS;
     for entry in &mut record.fields {
         match entry.sig.0 {
             sig if sig == *b"LNAM" || sig == *b"MNAM" || sig == *b"NNAM" => {
@@ -566,13 +948,52 @@ pub(crate) fn normalize_legacy_wthr(record: &mut Record, interner: &StringIntern
             },
             sig if sig == *b"PNAM" => {
                 if raw(&entry.value).is_some() {
-                    if let Some(rows) = expand_raw_rows(&mut entry.value, 16, 32) {
-                        pnam_rows = rows;
-                    } else {
-                        pnam_rows = DEFAULT_CLOUD_ROWS;
+                    if expand_legacy_weather_period_rows(
+                        &mut entry.value,
+                        4,
+                        already_target_layout,
+                        source_periods,
+                    )
+                    .is_none()
+                        || !resize_raw_row_array(&mut entry.value, 32, DEFAULT_CLOUD_ROWS)
+                    {
                         entry.value = raw_value(vec![0_u8; pnam_rows * 32]);
                     }
                 } else {
+                    copy_structured_fields(
+                        &mut entry.value,
+                        &[
+                            ("cloud_colors_night_red", "cloud_colors_early_sunrise_red"),
+                            (
+                                "cloud_colors_night_green",
+                                "cloud_colors_early_sunrise_green",
+                            ),
+                            ("cloud_colors_night_blue", "cloud_colors_early_sunrise_blue"),
+                            ("unknown_u8_15", "unknown_u8_19"),
+                            ("cloud_colors_sunrise_red", "cloud_colors_late_sunrise_red"),
+                            (
+                                "cloud_colors_sunrise_green",
+                                "cloud_colors_late_sunrise_green",
+                            ),
+                            (
+                                "cloud_colors_sunrise_blue",
+                                "cloud_colors_late_sunrise_blue",
+                            ),
+                            ("unknown_u8_3", "unknown_u8_23"),
+                            ("cloud_colors_day_red", "cloud_colors_early_sunset_red"),
+                            ("cloud_colors_day_green", "cloud_colors_early_sunset_green"),
+                            ("cloud_colors_day_blue", "cloud_colors_early_sunset_blue"),
+                            ("unknown_u8_7", "unknown_u8_27"),
+                            ("cloud_colors_sunset_red", "cloud_colors_late_sunset_red"),
+                            (
+                                "cloud_colors_sunset_green",
+                                "cloud_colors_late_sunset_green",
+                            ),
+                            ("cloud_colors_sunset_blue", "cloud_colors_late_sunset_blue"),
+                            ("unknown_u8_11", "unknown_u8_31"),
+                        ],
+                        interner,
+                    );
                     append_uint_defaults(
                         &mut entry.value,
                         &[
@@ -595,23 +1016,41 @@ pub(crate) fn normalize_legacy_wthr(record: &mut Record, interner: &StringIntern
                         ],
                         interner,
                     );
-                    pnam_rows = structured_rows(&entry.value).unwrap_or(1).max(1);
+                    resize_structured_row_array(&mut entry.value, DEFAULT_CLOUD_ROWS);
                 }
             }
-            sig if sig == *b"NAM0" => rebuild_legacy_wthr_nam0(&mut entry.value),
+            sig if sig == *b"NAM0" => rebuild_legacy_wthr_nam0(&mut entry.value, source_periods),
             sig if sig == *b"NAM4" => {
-                if let FieldValue::Bytes(bytes) = &entry.value
-                    && (bytes.is_empty() || bytes.len() % 4 != 0)
+                if raw(&entry.value).is_some()
+                    && !resize_raw_row_array(&mut entry.value, 4, DEFAULT_CLOUD_ROWS)
                 {
                     entry.value = raw_value(vec![0_u8; pnam_rows * 4]);
                 }
             }
             sig if sig == *b"JNAM" => {
                 if raw(&entry.value).is_some() {
-                    if expand_raw_rows(&mut entry.value, 16, 32).is_none() {
+                    if expand_legacy_weather_period_rows(
+                        &mut entry.value,
+                        4,
+                        already_target_layout,
+                        source_periods,
+                    )
+                    .is_none()
+                        || !resize_raw_row_array(&mut entry.value, 32, DEFAULT_CLOUD_ROWS)
+                    {
                         entry.value = raw_value(vec![0_u8; pnam_rows * 32]);
                     }
                 } else {
+                    copy_structured_fields(
+                        &mut entry.value,
+                        &[
+                            ("cloud_alphas_night", "cloud_alphas_early_sunrise"),
+                            ("cloud_alphas_sunrise", "cloud_alphas_late_sunrise"),
+                            ("cloud_alphas_day", "cloud_alphas_early_sunset"),
+                            ("cloud_alphas_sunset", "cloud_alphas_late_sunset"),
+                        ],
+                        interner,
+                    );
                     append_float_defaults(
                         &mut entry.value,
                         &[
@@ -622,18 +1061,43 @@ pub(crate) fn normalize_legacy_wthr(record: &mut Record, interner: &StringIntern
                         ],
                         interner,
                     );
+                    resize_structured_row_array(&mut entry.value, DEFAULT_CLOUD_ROWS);
                 }
             }
             sig if sig == *b"FNAM" => match &mut entry.value {
                 FieldValue::Bytes(bytes) if bytes.len() == 72 => {}
+                FieldValue::Bytes(bytes) if bytes.len() == 24 => {
+                    let mut target = vec![0_u8; 72];
+                    target[..24].copy_from_slice(bytes);
+                    target[24..28].copy_from_slice(&FO4_WTHR_FOG_MAX_DAY.to_le_bytes());
+                    target[28..32].copy_from_slice(&FO4_WTHR_FOG_MAX_NIGHT.to_le_bytes());
+                    entry.value = raw_value(target);
+                }
                 _ => entry.value = raw_value(vec![0_u8; 72]),
             },
             sig if sig == *b"IMSP" => {
                 if raw(&entry.value).is_some() {
-                    if expand_raw_rows(&mut entry.value, 16, 32).is_none() {
+                    if expand_legacy_weather_period_rows(
+                        &mut entry.value,
+                        4,
+                        already_target_layout,
+                        source_periods,
+                    )
+                    .is_none()
+                    {
                         entry.value = raw_value(vec![0_u8; 32]);
                     }
                 } else {
+                    copy_structured_fields(
+                        &mut entry.value,
+                        &[
+                            ("night", "early_sunrise"),
+                            ("sunrise", "late_sunrise"),
+                            ("day", "early_sunset"),
+                            ("sunset", "late_sunset"),
+                        ],
+                        interner,
+                    );
                     append_uint_defaults(
                         &mut entry.value,
                         &[
@@ -651,39 +1115,32 @@ pub(crate) fn normalize_legacy_wthr(record: &mut Record, interner: &StringIntern
             sig if sig == *b"VNAM" || sig == *b"WNAM" => {
                 normalize_fixed_or_default(&mut entry.value, 4)
             }
-            sig if sig == *b"DALC" => {
-                if raw(&entry.value).is_some() {
-                    if expand_raw_rows(&mut entry.value, 24, 32).is_none() {
-                        entry.value = raw_value(vec![0_u8; 32]);
-                    }
-                } else {
-                    append_uint_defaults(
-                        &mut entry.value,
-                        &[
-                            "ambient_colors_specular_red",
-                            "ambient_colors_specular_green",
-                            "ambient_colors_specular_blue",
-                            "unknown_u8_27",
-                        ],
-                        interner,
-                    );
-                    append_float_defaults(
-                        &mut entry.value,
-                        &["ambient_colors_fresnel_power"],
-                        interner,
-                    );
-                }
-            }
             _ => {}
         }
     }
 
     if !record.fields.iter().any(|entry| entry.sig.0 == *b"PNAM") {
         push_zero_field(record, *b"PNAM", DEFAULT_CLOUD_ROWS * 32);
-        pnam_rows = DEFAULT_CLOUD_ROWS;
     }
     if !record.fields.iter().any(|entry| entry.sig.0 == *b"JNAM") {
-        push_zero_field(record, *b"JNAM", pnam_rows * 32);
+        // Neither source game stores per-layer cloud alpha. Zero would hide
+        // every cloud layer, so default to Fallout 4's fully opaque 1.0.
+        record.fields.push(field(
+            *b"JNAM",
+            raw_value(
+                std::iter::repeat_n(1.0_f32.to_le_bytes(), pnam_rows * 8)
+                    .flatten()
+                    .collect(),
+            ),
+        ));
+    }
+    for sig in [*b"RNAM", *b"QNAM"] {
+        if !record.fields.iter().any(|entry| entry.sig.0 == sig) {
+            record.fields.push(field(
+                sig,
+                raw_value(vec![FO4_WTHR_CLOUD_SPEED_STILL; DEFAULT_CLOUD_ROWS]),
+            ));
+        }
     }
     if !record.fields.iter().any(|entry| entry.sig.0 == *b"FNAM") {
         push_zero_field(record, *b"FNAM", 72);
@@ -691,19 +1148,9 @@ pub(crate) fn normalize_legacy_wthr(record: &mut Record, interner: &StringIntern
     if !record.fields.iter().any(|entry| entry.sig.0 == *b"IMSP") {
         push_zero_field(record, *b"IMSP", 32);
     }
-
-    let mut dalc_seen = 0_usize;
-    record.fields.retain(|entry| {
-        if entry.sig.0 != *b"DALC" {
-            return true;
-        }
-        dalc_seen += 1;
-        dalc_seen <= 8
-    });
-    while dalc_seen < 8 {
-        push_zero_field(record, *b"DALC", 32);
-        dalc_seen += 1;
-    }
+    rebuild_legacy_wthr_disabled_cloud_layers(record);
+    rebuild_legacy_wthr_god_rays(record, interner);
+    rebuild_legacy_wthr_dalc(record, interner);
 
     for (sig, len) in [
         (*b"LNAM", 4),
@@ -719,12 +1166,13 @@ pub(crate) fn normalize_legacy_wthr(record: &mut Record, interner: &StringIntern
         (*b"DATA", 20),
         (*b"NAM1", 4),
         (*b"IMSP", 32),
+        (*b"WGDR", 32),
         (*b"UNAM", 24),
-        (*b"VNAM", 4),
-        (*b"WNAM", 4),
     ] {
         ensure_single_required(record, sig, len);
     }
+    ensure_single_weather_multiplier(record, *b"VNAM");
+    ensure_single_weather_multiplier(record, *b"WNAM");
 
     // Rebuild target-required fields into FO4 schema order. Stable sorting
     // preserves repeated DALC rows and optional fields within each rank.
@@ -806,6 +1254,333 @@ pub(crate) fn normalize_skyrim_proj(record: &mut Record) {
         .insert(insert_at + 1, field(*b"DNAM", raw_value(target)));
 }
 
+/// FO4 landscape `TXST` object bounds, copied from every vanilla landscape
+/// texture set (e.g. `LandscapeDirtGravel01` in `Fallout4.esm`).
+const FO4_LANDSCAPE_TXST_BOUNDS: [(&str, i64); 6] = [
+    ("object_bounds_x1", -8),
+    ("object_bounds_y1", -30),
+    ("object_bounds_z1", -20),
+    ("object_bounds_x2", 7),
+    ("object_bounds_y2", 30),
+    ("object_bounds_z2", 20),
+];
+
+/// Derive FO4's `_s` smooth/spec path from a normal map path, matching the
+/// `_n` → `_s` rename the texture engine's `LegacySpecGloss` task uses when it
+/// bakes the normal's alpha (plus any env mask) into the FO4 spec map.
+fn smooth_spec_path(normal: &str) -> Option<String> {
+    let trimmed = normal.trim().trim_matches('\0');
+    let stem_end = trimmed.rfind('.')?;
+    let (stem, ext) = trimmed.split_at(stem_end);
+    let index = stem.to_ascii_lowercase().rfind("_n")?;
+    Some(format!("{}_s{ext}", &stem[..index]))
+}
+
+fn string_field<'a>(
+    record: &'a Record,
+    sig: [u8; 4],
+    interner: &'a StringInterner,
+) -> Option<&'a str> {
+    let entry = record.fields.iter().find(|entry| entry.sig.0 == sig)?;
+    let FieldValue::String(sym) = entry.value else {
+        return None;
+    };
+    let value = interner.resolve(sym)?.trim().trim_matches('\0');
+    (!value.is_empty()).then_some(value)
+}
+
+/// Point `TX07` — FO4's smooth/spec slot, verified against all 382 vanilla
+/// `Fallout4.esm` texture sets — at the `_s` map derived from `TX01`.
+///
+/// FNV/FO3 have no spec slot at all, so `TX07` is always empty for them. Their
+/// `TX02` env mask is folded into `_s.R` by the texture engine and never ships
+/// standalone, so it is dropped rather than left dangling in FO4's unrelated
+/// `TX02`. Skyrim does carry its own `_s` into `TX07`; an authored value there
+/// is left alone and only an empty slot is filled.
+pub(crate) fn normalize_txst_smooth_spec(
+    record: &mut Record,
+    family: SourceFamily,
+    interner: &StringInterner,
+) {
+    if record.sig.0 != *b"TXST" {
+        return;
+    }
+    if family == SourceFamily::LegacyFallout {
+        record.fields.retain(|entry| entry.sig.0 != *b"TX02");
+    }
+    if string_field(record, *b"TX07", interner).is_some() {
+        return;
+    }
+
+    let Some(spec) = string_field(record, *b"TX01", interner).and_then(smooth_spec_path) else {
+        return;
+    };
+    record.fields.retain(|entry| entry.sig.0 != *b"TX07");
+    record
+        .fields
+        .push(field(*b"TX07", FieldValue::String(interner.intern(&spec))));
+}
+
+/// Apply the vanilla FO4 landscape `TXST` shape: real object bounds and the
+/// `NoSpecularMap` flag. Every vanilla landscape texture set carries both, and
+/// the FO76 terrain emitter already writes them; translated Gamebryo texture
+/// sets inherit an empty `OBND` and no flags instead.
+pub(crate) fn apply_fo4_landscape_txst_shape(record: &mut Record, interner: &StringInterner) {
+    if record.sig.0 != *b"TXST" {
+        return;
+    }
+
+    let bounds = FieldValue::Struct(
+        FO4_LANDSCAPE_TXST_BOUNDS
+            .iter()
+            .map(|(name, value)| (interner.intern(name), FieldValue::Int(*value)))
+            .collect(),
+    );
+    match record
+        .fields
+        .iter_mut()
+        .find(|entry| entry.sig.0 == *b"OBND")
+    {
+        Some(entry) => entry.value = bounds,
+        None => record.fields.insert(0, field(*b"OBND", bounds)),
+    }
+
+    // DNAM bit 0 — the flag vanilla landscape texture sets set alongside a
+    // populated TX02.
+    const NO_SPECULAR_MAP: u16 = 0x0001;
+    match record
+        .fields
+        .iter_mut()
+        .find(|entry| entry.sig.0 == *b"DNAM")
+    {
+        Some(entry) => {
+            let flags = match &entry.value {
+                FieldValue::Int(value) => *value as u16,
+                FieldValue::Uint(value) => *value as u16,
+                _ => 0,
+            };
+            entry.value = FieldValue::Uint(u64::from(flags | NO_SPECULAR_MAP));
+        }
+        None => record.fields.push(field(
+            *b"DNAM",
+            FieldValue::Uint(u64::from(NO_SPECULAR_MAP)),
+        )),
+    }
+}
+
+/// FO3 and FNV share one 196-byte `WATR.DNAM`; only bytes 0..16 differ (FNV
+/// names them wind/wave globals, FO3 leaves them unknown). Every field from
+/// `sun_power` at offset 16 onward sits at an identical offset in both, so a
+/// single map serves the whole legacy family. A handful of records stop at 184
+/// bytes (the three trailing amplitude scales are absent), so every read is
+/// bounds-guarded.
+const LEGACY_WATR_DNAM_MIN_SIZE: usize = 184;
+const LEGACY_WATR_DNAM_SIZE: usize = 196;
+const FO4_WATR_DNAM_SIZE: usize = 201;
+
+/// FO4-only `WATR.DNAM` fields have no legacy counterpart: FO4 models water
+/// with colour/alpha depth ranges, silt, and per-layer noise falloff that
+/// FO3/FNV's shader simply did not have. Left zero they produce invisible,
+/// unlit water, so they are seeded from one real vanilla exterior water —
+/// `Fallout4.esm:0C8633 ExtLakeWater` — rather than mixing per-field medians,
+/// which would not describe any water the engine actually ships.
+fn default_fo4_watr_dnam() -> Vec<u8> {
+    let mut out = vec![0_u8; FO4_WATR_DNAM_SIZE];
+    for (offset, value) in [
+        (0_usize, 1_412.999_9_f32), // fog depth amount
+        (12, 1.0),                  // colour shallow range
+        (16, 0.869_850_1),          // colour deep range
+        (20, 0.0),                  // shallow alpha
+        (24, 1.0),                  // deep alpha — 1.0 in all 42 vanilla waters
+        (28, 1.0),                  // alpha shallow range
+        (32, 0.891_994_83),         // alpha deep range
+        (52, 0.402_199_98),         // normal magnitude
+        (56, 1.0),                  // shallow normal falloff
+        (60, 0.997_394),            // deep normal falloff
+        (72, 0.996_331_3),          // surface effect falloff
+        (104, 4.858_999_7),         // sun specular magnitude
+        (108, 10000.0),             // sun sparkle power
+        (112, 3.626_999_9),         // sun sparkle magnitude
+        (124, 211.0),               // interior specular power
+        // Layer UV scales stay vanilla: they are calibrated to the noise
+        // texture, and NAM2..NAM4 below ship FO4's textures, not the legacy
+        // one. Legacy UV scales (median 100) are ~25x off FO4's and would
+        // tile the FO4 noise maps into visible garbage.
+        (164, 2572.0),
+        (168, 1232.0),
+        (172, 398.999_97),
+        (176, 2_433.843),   // layer 1 noise falloff
+        (180, 4_066.508_8), // layer 2 noise falloff
+        (184, 3_324.313_5), // layer 3 noise falloff
+        (188, 1.0),         // silt amount
+    ] {
+        out[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    out[192..195].copy_from_slice(&[106, 82, 64]); // silt light colour
+    out[196..199].copy_from_slice(&[53, 49, 36]); // silt dark colour
+    out[200] = 1; // screen space reflections
+    out
+}
+
+/// `(legacy_offset, fo4_offset)` for float fields that carry the same meaning
+/// in both shaders. Fields with no shared meaning — legacy above-water fog,
+/// rain simulator, distortion/shininess/HDR multiplier, normals noise scale
+/// and depth falloff — are intentionally absent and keep their vanilla default.
+const LEGACY_TO_FO4_WATR_FLOATS: &[(usize, usize)] = &[
+    (140, 40),  // under-water fog amount
+    (148, 48),  // under-water fog distance far plane
+    (20, 64),   // reflectivity amount
+    (24, 68),   // fresnel amount
+    (76, 76),   // displacement simulator force
+    (80, 80),   // displacement simulator velocity
+    (84, 84),   // displacement simulator falloff
+    (88, 88),   // displacement simulator dampener
+    (72, 92),   // displacement simulator starting size
+    (16, 100),  // sun power -> sun specular power
+    (164, 116), // light radius -> interior specular radius
+    (168, 120), // light brightness -> interior specular brightness
+    (100, 128), // noise layer 1 wind direction
+    (104, 132), // noise layer 2 wind direction
+    (108, 136), // noise layer 3 wind direction
+    (112, 140), // noise layer 1 wind speed
+    (116, 144), // noise layer 2 wind speed
+    (120, 148), // noise layer 3 wind speed
+    (184, 152), // noise layer 1 amplitude scale
+    (188, 156), // noise layer 2 amplitude scale
+    (192, 160), // noise layer 3 amplitude scale
+];
+
+fn read_f32(source: &[u8], offset: usize) -> Option<f32> {
+    let slice = source.get(offset..offset + 4)?;
+    Some(f32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn write_f32(target: &mut [u8], offset: usize, value: f32) {
+    target[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn copy_rgb(source: &[u8], source_offset: usize, target: &mut [u8], target_offset: usize) {
+    let Some(rgb) = source.get(source_offset..source_offset + 3) else {
+        return;
+    };
+    target[target_offset..target_offset + 3].copy_from_slice(rgb);
+}
+
+fn build_fo4_watr_dnam(source: Option<&[u8]>) -> Vec<u8> {
+    let mut target = default_fo4_watr_dnam();
+    let Some(source) = source
+        .filter(|bytes| (LEGACY_WATR_DNAM_MIN_SIZE..=LEGACY_WATR_DNAM_SIZE).contains(&bytes.len()))
+    else {
+        return target;
+    };
+
+    for &(source_offset, target_offset) in LEGACY_TO_FO4_WATR_FLOATS {
+        if let Some(value) = read_f32(source, source_offset) {
+            write_f32(&mut target, target_offset, value);
+        }
+    }
+
+    copy_rgb(source, 40, &mut target, 4); // shallow colour
+    copy_rgb(source, 44, &mut target, 8); // deep colour
+    copy_rgb(source, 48, &mut target, 96); // reflection colour
+    // FO4 tints everything seen through the surface with its own under-water
+    // colour, which the legacy shader had no slot for. Seeding it from the
+    // legacy deep colour keeps each water's identity (irradiated green stays
+    // green, blood stays red) instead of forcing one constant tint everywhere.
+    copy_rgb(source, 44, &mut target, 36);
+
+    // Legacy "above water fog distance far plane" is the same concept as FO4's
+    // fog depth amount: how far you see into the water. Zero would collapse the
+    // shallow->deep blend, so fall back to the vanilla default.
+    if let Some(far_plane) = read_f32(source, 36).filter(|value| *value > 0.0) {
+        write_f32(&mut target, 0, far_plane);
+    }
+    // Every vanilla FO4 water keeps the near fog plane at or below zero; a few
+    // legacy records store a positive one, which inverts the depth gradient.
+    if let Some(near_fog) = read_f32(source, 144) {
+        write_f32(&mut target, 44, near_fog.min(0.0));
+    }
+
+    target
+}
+
+/// FO4's water shader reads three tiling noise textures. FO3/FNV have a single
+/// `NNAM` noise map whose content and channel use do not transfer, and which
+/// the asset pipeline does not port, so all three layers take stock FO4
+/// textures — the same triple `ExtLakeWater` uses.
+const FO4_WATR_NOISE_TEXTURES: [(&[u8; 4], &str); 3] = [
+    (b"NAM2", "data\\Textures\\Water\\DefaultWater.dds"),
+    (b"NAM3", "data\\Textures\\Water\\ChurningWaterTile.dds"),
+    (b"NAM4", "data\\Textures\\Water\\DefaultWater.dds"),
+];
+
+/// Rebuild a legacy `WATR` into Fallout 4's contract.
+///
+/// All 42 vanilla FO4 waters carry `DATA`, `DNAM`, `NAM0`..`NAM4`; a legacy
+/// record supplies only `DATA`/`DNAM`, and its `DNAM` uses an incompatible
+/// layout that FO4 would otherwise read field-for-field from the wrong offset.
+pub(crate) fn normalize_legacy_watr(record: &mut Record, interner: &StringInterner) {
+    if record.sig.0 != *b"WATR" {
+        return;
+    }
+    // Already-FO4-shaped input (re-run, or a record that reached here through
+    // another path) must not be rebuilt from its own output.
+    if record.fields.iter().any(|entry| {
+        entry.sig.0 == *b"DNAM"
+            && matches!(raw(&entry.value), Some(bytes) if bytes.len() == FO4_WATR_DNAM_SIZE)
+    }) {
+        return;
+    }
+
+    let source_dnam = record
+        .fields
+        .iter()
+        .find(|entry| entry.sig.0 == *b"DNAM")
+        .and_then(|entry| raw(&entry.value))
+        .map(<[u8]>::to_vec);
+    let target_dnam = build_fo4_watr_dnam(source_dnam.as_deref());
+
+    // NNAM (legacy noise map) and MNAM have no FO4 WATR slot at all.
+    record.fields.retain(|entry| {
+        !matches!(entry.sig.0, sig if sig == *b"DATA"
+            || sig == *b"DNAM"
+            || sig == *b"NNAM"
+            || sig == *b"MNAM"
+            || sig == *b"NAM0"
+            || sig == *b"NAM1"
+            || sig == *b"NAM2"
+            || sig == *b"NAM3"
+            || sig == *b"NAM4")
+    });
+
+    // Anchor on GNAM *after* the retain: the removed NNAM/MNAM sit before DATA
+    // in the legacy field order, so an index taken beforehand would be stale.
+    // Vanilla FO4 orders these DATA, DNAM, GNAM, NAM0..NAM4.
+    let insert_at = record
+        .fields
+        .iter()
+        .position(|entry| entry.sig.0 == *b"GNAM")
+        .unwrap_or(record.fields.len());
+
+    // Vanilla FO4 DATA is empty; the legacy uint16 damage value has no slot.
+    record
+        .fields
+        .insert(insert_at, field(*b"DATA", raw_value(Vec::new())));
+    record
+        .fields
+        .insert(insert_at + 1, field(*b"DNAM", raw_value(target_dnam)));
+
+    // Linear and angular velocity: zero is still water, and is what every
+    // vanilla NAM1 and the most common vanilla NAM0 already hold.
+    push_zero_field(record, *b"NAM0", 12);
+    push_zero_field(record, *b"NAM1", 12);
+    for (sig, path) in FO4_WATR_NOISE_TEXTURES {
+        record
+            .fields
+            .push(field(*sig, FieldValue::String(interner.intern(path))));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -831,10 +1606,151 @@ mod tests {
             .unwrap()
     }
 
+    fn push_str(record: &mut Record, sig: [u8; 4], value: &str, interner: &StringInterner) {
+        record
+            .fields
+            .push(field(sig, FieldValue::String(interner.intern(value))));
+    }
+
+    fn slot<'a>(record: &'a Record, sig: [u8; 4], interner: &'a StringInterner) -> Option<&'a str> {
+        string_field(record, sig, interner)
+    }
+
+    fn txst_with_slots(interner: &StringInterner, slots: &[([u8; 4], &str)]) -> Record {
+        let mut txst = record("TXST", interner);
+        for (sig, value) in slots {
+            push_str(&mut txst, *sig, value, interner);
+        }
+        txst
+    }
+
+    #[test]
+    fn legacy_txst_gains_spec_slot_derived_from_the_normal() {
+        let interner = StringInterner::new();
+        let mut txst = txst_with_slots(
+            &interner,
+            &[
+                (*b"TX00", "architecture\\suburban\\suburbanrubble01.dds"),
+                (*b"TX01", "architecture\\suburban\\suburbanrubble01_n.dds"),
+            ],
+        );
+
+        normalize_txst_smooth_spec(&mut txst, SourceFamily::LegacyFallout, &interner);
+
+        assert_eq!(
+            slot(&txst, *b"TX07", &interner),
+            Some("architecture\\suburban\\suburbanrubble01_s.dds"),
+            "FO4 reads the smooth/spec map from TX07, not TX02"
+        );
+    }
+
+    #[test]
+    fn legacy_txst_drops_the_env_mask_that_never_ships() {
+        // FNV/FO3 env masks are baked into `_s.R` by the texture engine and are
+        // never written as standalone textures, so carrying TX02 through leaves
+        // a dangling ref in an unrelated FO4 slot.
+        let interner = StringInterner::new();
+        let mut txst = txst_with_slots(
+            &interner,
+            &[
+                (*b"TX00", "weapons\\2handhandle\\gatlinglaser.dds"),
+                (*b"TX01", "weapons\\2handhandle\\gatlinglaser_n.dds"),
+                (*b"TX02", "weapons\\2handhandle\\gatlinglaser_m.dds"),
+            ],
+        );
+
+        normalize_txst_smooth_spec(&mut txst, SourceFamily::LegacyFallout, &interner);
+
+        assert_eq!(slot(&txst, *b"TX02", &interner), None);
+        assert_eq!(
+            slot(&txst, *b"TX07", &interner),
+            Some("weapons\\2handhandle\\gatlinglaser_s.dds")
+        );
+    }
+
+    #[test]
+    fn skyrim_txst_keeps_its_own_spec_map_and_env_mask() {
+        let interner = StringInterner::new();
+        let mut txst = txst_with_slots(
+            &interner,
+            &[
+                (*b"TX00", "actors\\character\\female\\femalebody_1.dds"),
+                (*b"TX01", "actors\\character\\female\\femalebody_1_n.dds"),
+                (*b"TX02", "actors\\character\\female\\femalebody_1_sk.dds"),
+                (*b"TX07", "actors\\character\\female\\femalebody_1_s.dds"),
+            ],
+        );
+
+        normalize_txst_smooth_spec(&mut txst, SourceFamily::SkyrimSe, &interner);
+
+        assert_eq!(
+            slot(&txst, *b"TX07", &interner),
+            Some("actors\\character\\female\\femalebody_1_s.dds"),
+            "an authored Skyrim spec map must not be overwritten"
+        );
+        assert_eq!(
+            slot(&txst, *b"TX02", &interner),
+            Some("actors\\character\\female\\femalebody_1_sk.dds"),
+            "Skyrim env masks do ship; only the legacy Fallout ones are dropped"
+        );
+    }
+
+    #[test]
+    fn model_space_normals_yield_no_spec_slot() {
+        // `_msn` carries no `_n` token, so there is no `_s` sibling to name.
+        let interner = StringInterner::new();
+        let mut txst = txst_with_slots(
+            &interner,
+            &[(*b"TX01", "actors\\character\\female\\femalehead_msn.dds")],
+        );
+
+        normalize_txst_smooth_spec(&mut txst, SourceFamily::SkyrimSe, &interner);
+
+        assert_eq!(slot(&txst, *b"TX07", &interner), None);
+    }
+
+    #[test]
+    fn landscape_txst_gains_vanilla_bounds_and_no_specular_map_flag() {
+        let interner = StringInterner::new();
+        let mut txst = record("TXST", &interner);
+        txst.fields
+            .push(field(*b"OBND", FieldValue::Struct(Default::default())));
+        push_str(
+            &mut txst,
+            *b"TX00",
+            "landscape\\burntground01.dds",
+            &interner,
+        );
+
+        apply_fo4_landscape_txst_shape(&mut txst, &interner);
+
+        let FieldValue::Struct(bounds) = &txst
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"OBND")
+            .unwrap()
+            .value
+        else {
+            panic!("object bounds should stay a struct");
+        };
+        let x1 = bounds
+            .iter()
+            .find(|(name, _)| interner.resolve(*name) == Some("object_bounds_x1"))
+            .map(|(_, value)| value.clone());
+        assert_eq!(x1, Some(FieldValue::Int(-8)));
+
+        let dnam = txst
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"DNAM")
+            .map(|entry| entry.value.clone());
+        assert_eq!(dnam, Some(FieldValue::Uint(1)));
+    }
+
     const WTHR_REQUIRED_ORDER: &[&str] = &[
         "LNAM", "MNAM", "NNAM", "RNAM", "QNAM", "PNAM", "JNAM", "NAM0", "NAM4", "FNAM", "DATA",
-        "NAM1", "IMSP", "DALC", "DALC", "DALC", "DALC", "DALC", "DALC", "DALC", "DALC", "UNAM",
-        "VNAM", "WNAM",
+        "NAM1", "IMSP", "WGDR", "DALC", "DALC", "DALC", "DALC", "DALC", "DALC", "DALC", "DALC",
+        "UNAM", "VNAM", "WNAM",
     ];
 
     fn assert_wthr_contract(wthr: &Record, cloud_rows: usize) {
@@ -859,6 +1775,7 @@ mod tests {
             (*b"DATA", 20),
             (*b"NAM1", 4),
             (*b"IMSP", 32),
+            (*b"WGDR", 32),
             (*b"UNAM", 24),
             (*b"VNAM", 4),
             (*b"WNAM", 4),
@@ -1016,48 +1933,435 @@ mod tests {
         assert!(!dnam.contains(&0xDD));
     }
 
-    fn legacy_wthr_fixture(interner: &StringInterner) -> Record {
+    fn legacy_wthr_fixture(interner: &StringInterner, nam0_len: usize) -> Record {
         let mut wthr = record("WTHR", interner);
+        wthr.eid = Some(interner.intern("NVWastelandClear"));
         push(&mut wthr, *b"LNAM", 32_u32.to_le_bytes().to_vec());
         push(&mut wthr, *b"RNAM", (0_u8..32).collect());
         push(&mut wthr, *b"QNAM", (32_u8..64).collect());
         push(&mut wthr, *b"DATA", (0_u8..15).collect());
-        push(&mut wthr, *b"PNAM", (0_u8..32).collect());
-        let mut nam0 = vec![0_u8; 160];
+        // PNAM's row width tracks NAM0's: both widen from four periods to six
+        // in FNV, so the fixture must stay internally consistent.
+        let pnam_len = if nam0_len == 240 { 96 } else { 64 };
+        push(
+            &mut wthr,
+            *b"PNAM",
+            (0..pnam_len).map(|index| (index & 0xff) as u8).collect(),
+        );
+        let mut nam0 = vec![0_u8; nam0_len];
         for (index, byte) in nam0.iter_mut().enumerate() {
             *byte = (index & 0xff) as u8;
         }
         push(&mut wthr, *b"NAM0", nam0);
         push(&mut wthr, *b"FNAM", vec![0x5A; 72]);
+        for period in 0_u8..4 {
+            push(&mut wthr, *b"DALC", vec![period + 1; 24]);
+        }
         wthr
+    }
+
+    /// Ten weather colours tagged `(row + 1) << 8 | period`, laid out with the
+    /// caller's period count so a test can state which source game it means.
+    fn legacy_nam0(row_width: usize) -> Vec<u8> {
+        let mut source = vec![0_u8; 10 * row_width];
+        for (row, chunk) in source.chunks_exact_mut(row_width).enumerate() {
+            for period in 0..row_width / 4 {
+                let value = ((row as u32 + 1) << 8) | period as u32;
+                chunk[period * 4..period * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        source
+    }
+
+    fn set_field(record: &mut Record, sig: [u8; 4], bytes: Vec<u8>) {
+        record
+            .fields
+            .iter_mut()
+            .find(|entry| entry.sig.0 == sig)
+            .expect("fixture field")
+            .value = raw_value(bytes);
+    }
+
+    fn assert_ten_colours_expand_to_fo4_periods(wthr: &Record) {
+        for row in 0..10 {
+            let actual = period_values(&bytes(wthr, b"NAM0")[row * 32..row * 32 + 32]);
+            let source = (0..4)
+                .map(|period| ((row as u32 + 1) << 8) | period)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual,
+                vec![
+                    source[0], source[1], source[2], source[3], source[3], source[0], source[1],
+                    source[2]
+                ],
+                "weather colour row {row}"
+            );
+        }
+        // FO3 and FNV both stop at ten colours; the Fallout 4-only categories
+        // past that point stay zero rather than inheriting neighbouring rows.
+        assert!(bytes(wthr, b"NAM0")[320..].iter().all(|byte| *byte == 0));
+    }
+
+    fn period_values(bytes: &[u8]) -> Vec<u32> {
+        bytes
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect()
     }
 
     fn assert_legacy_wthr_rebuild(mut wthr: Record, interner: &StringInterner) {
         normalize_legacy_wthr(&mut wthr, interner);
-        assert_wthr_contract(&wthr, 2);
+        assert_wthr_contract(&wthr, DEFAULT_CLOUD_ROWS);
+        let periods = [0_usize, 1, 2, 3, 3, 0, 1, 2];
+        let source_pnam = (0_u8..16).collect::<Vec<_>>();
+        let expected_pnam = periods
+            .iter()
+            .flat_map(|period| source_pnam[period * 4..period * 4 + 4].iter().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(&bytes(&wthr, b"PNAM")[..32], expected_pnam);
+        // The fixture authors four cloud layers; the remaining twenty-eight
+        // Fallout 4 layers stay zero.
+        assert!(bytes(&wthr, b"PNAM")[128..].iter().all(|byte| *byte == 0));
+
+        let source_nam0 = (0_u8..16).collect::<Vec<_>>();
+        let expected_nam0 = periods
+            .iter()
+            .flat_map(|period| source_nam0[period * 4..period * 4 + 4].iter().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(&bytes(&wthr, b"NAM0")[..32], expected_nam0);
+
+        let dalc = wthr
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.0 == *b"DALC")
+            .map(|entry| raw(&entry.value).unwrap())
+            .collect::<Vec<_>>();
+        for (row, source_period) in dalc.iter().zip(periods) {
+            assert_eq!(&row[..24], &[source_period as u8 + 1; 24]);
+            assert_eq!(&row[24..], &[0; 8]);
+        }
+
         assert_eq!(
-            &bytes(&wthr, b"PNAM")[..16],
-            &(0_u8..16).collect::<Vec<_>>()
+            period_values(bytes(&wthr, b"WGDR")),
+            vec![
+                0x0021_6A93,
+                0x0021_6A92,
+                0x0021_6A94,
+                0x001B_40E8,
+                0x001B_40E8,
+                0x0021_6A93,
+                0x0021_6A92,
+                0x0021_6A94,
+            ]
         );
-        assert_eq!(&bytes(&wthr, b"PNAM")[16..32], &[0; 16]);
-        assert_eq!(
-            &bytes(&wthr, b"NAM0")[..16],
-            &(0_u8..16).collect::<Vec<_>>()
-        );
-        assert_eq!(&bytes(&wthr, b"NAM0")[16..32], &[0; 16]);
         assert_eq!(bytes(&wthr, b"FNAM"), &[0x5A; 72]);
+        assert_eq!(
+            f32::from_le_bytes(bytes(&wthr, b"VNAM").try_into().unwrap()),
+            1.0
+        );
+        assert_eq!(
+            f32::from_le_bytes(bytes(&wthr, b"WNAM").try_into().unwrap()),
+            1.0
+        );
     }
 
     #[test]
     fn wthr_fnv_rebuilds_complete_fo4_required_contract() {
         let interner = StringInterner::new();
-        assert_legacy_wthr_rebuild(legacy_wthr_fixture(&interner), &interner);
+        assert_legacy_wthr_rebuild(legacy_wthr_fixture(&interner, 240), &interner);
     }
 
     #[test]
     fn wthr_fo3_rebuilds_complete_fo4_required_contract() {
         let interner = StringInterner::new();
-        assert_legacy_wthr_rebuild(legacy_wthr_fixture(&interner), &interner);
+        assert_legacy_wthr_rebuild(legacy_wthr_fixture(&interner, 160), &interner);
+    }
+
+    #[test]
+    fn legacy_wthr_preserves_source_fog_and_synthesizes_directional_ambient() {
+        let interner = StringInterner::new();
+        let mut wthr = legacy_wthr_fixture(&interner, 160);
+        wthr.fields.retain(|entry| entry.sig.0 != *b"DALC");
+        let source_fog = (1_u32..=6)
+            .flat_map(|value| f32::from_bits(value).to_le_bytes())
+            .collect::<Vec<_>>();
+        set_field(&mut wthr, *b"FNAM", source_fog.clone());
+
+        normalize_legacy_wthr(&mut wthr, &interner);
+
+        assert_eq!(&bytes(&wthr, b"FNAM")[..24], source_fog);
+        // Fallout 4 clamps fog with a maximum the legacy 24-byte block has no
+        // slot for; zero there leaves distance fog switched off entirely.
+        let fog = bytes(&wthr, b"FNAM");
+        assert_eq!(f32::from_le_bytes(fog[24..28].try_into().unwrap()), 0.85);
+        assert_eq!(f32::from_le_bytes(fog[28..32].try_into().unwrap()), 0.95);
+        assert!(fog[32..].iter().all(|byte| *byte == 0));
+
+        // Directional ambient is synthesised from the `ambient` colour, which
+        // is the fourth NAM0 category.  The third is the engine's unused slot.
+        let target_ambient = &bytes(&wthr, b"NAM0")[96..128];
+        let dalc = wthr
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.0 == *b"DALC")
+            .map(|entry| raw(&entry.value).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(dalc.len(), 8);
+        for (period, row) in target_ambient.chunks_exact(4).zip(dalc) {
+            for offset in [0, 4, 8, 12, 16, 20, 24] {
+                assert_eq!(&row[offset..offset + 3], &period[..3]);
+            }
+            assert_eq!(f32::from_le_bytes(row[28..32].try_into().unwrap()), 1.0);
+        }
+    }
+
+    /// Four cloud layers tagged `(layer + 1) << 8 | period`.
+    fn legacy_pnam(row_width: usize) -> Vec<u8> {
+        let mut source = vec![0_u8; 4 * row_width];
+        for (layer, chunk) in source.chunks_exact_mut(row_width).enumerate() {
+            for period in 0..row_width / 4 {
+                let value = ((layer as u32 + 1) << 8) | period as u32;
+                chunk[period * 4..period * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        source
+    }
+
+    fn assert_four_layers_expand_to_fo4_periods(wthr: &Record) {
+        for layer in 0..4 {
+            let actual = period_values(&bytes(wthr, b"PNAM")[layer * 32..layer * 32 + 32]);
+            let source = (0..4)
+                .map(|period| ((layer as u32 + 1) << 8) | period)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual,
+                vec![
+                    source[0], source[1], source[2], source[3], source[3], source[0], source[1],
+                    source[2]
+                ],
+                "cloud layer {layer}"
+            );
+        }
+    }
+
+    #[test]
+    fn wthr_fnv_reads_six_periods_per_cloud_layer() {
+        let interner = StringInterner::new();
+        let mut wthr = legacy_wthr_fixture(&interner, 240);
+        set_field(&mut wthr, *b"PNAM", legacy_pnam(24));
+
+        normalize_legacy_wthr(&mut wthr, &interner);
+
+        assert_wthr_contract(&wthr, DEFAULT_CLOUD_ROWS);
+        assert_four_layers_expand_to_fo4_periods(&wthr);
+    }
+
+    #[test]
+    fn wthr_fo3_reads_four_periods_per_cloud_layer() {
+        let interner = StringInterner::new();
+        let mut wthr = legacy_wthr_fixture(&interner, 160);
+        set_field(&mut wthr, *b"PNAM", legacy_pnam(16));
+
+        normalize_legacy_wthr(&mut wthr, &interner);
+
+        assert_wthr_contract(&wthr, DEFAULT_CLOUD_ROWS);
+        assert_four_layers_expand_to_fo4_periods(&wthr);
+    }
+
+    #[test]
+    fn wthr_fnv_reads_six_periods_per_weather_colour() {
+        let interner = StringInterner::new();
+        let mut wthr = legacy_wthr_fixture(&interner, 240);
+        set_field(&mut wthr, *b"NAM0", legacy_nam0(24));
+
+        normalize_legacy_wthr(&mut wthr, &interner);
+
+        assert_wthr_contract(&wthr, DEFAULT_CLOUD_ROWS);
+        assert_ten_colours_expand_to_fo4_periods(&wthr);
+    }
+
+    #[test]
+    fn wthr_fo3_reads_four_periods_per_weather_colour() {
+        let interner = StringInterner::new();
+        let mut wthr = legacy_wthr_fixture(&interner, 160);
+        set_field(&mut wthr, *b"NAM0", legacy_nam0(16));
+
+        normalize_legacy_wthr(&mut wthr, &interner);
+
+        assert_wthr_contract(&wthr, DEFAULT_CLOUD_ROWS);
+        assert_ten_colours_expand_to_fo4_periods(&wthr);
+    }
+
+    #[test]
+    fn legacy_wthr_carries_cloud_layer_textures_and_disables_unused_layers() {
+        let interner = StringInterner::new();
+        let mut wthr = legacy_wthr_fixture(&interner, 240);
+        for (sig, path) in [
+            (*b"DNAM", "sky\\upper.dds\0"),
+            (*b"CNAM", "sky\\lower.dds\0"),
+            (*b"ANAM", "sky\\two.dds\0"),
+            (*b"BNAM", "sky\\three.dds\0"),
+        ] {
+            push(&mut wthr, sig, path.as_bytes().to_vec());
+        }
+
+        normalize_legacy_wthr(&mut wthr, &interner);
+
+        for (sig, path) in [
+            (*b"00TX", "sky\\upper.dds\0"),
+            (*b"10TX", "sky\\lower.dds\0"),
+            (*b"20TX", "sky\\two.dds\0"),
+            (*b"30TX", "sky\\three.dds\0"),
+        ] {
+            assert_eq!(bytes(&wthr, &sig), path.as_bytes(), "layer {sig:?}");
+        }
+        for sig in [*b"DNAM", *b"CNAM", *b"ANAM", *b"BNAM"] {
+            assert!(!wthr.fields.iter().any(|entry| entry.sig.0 == sig));
+        }
+        // Only the four authored layers exist, so Fallout 4 must be told not to
+        // walk the other twenty-eight.
+        assert_eq!(
+            u32::from_le_bytes(bytes(&wthr, b"NAM1").try_into().unwrap()),
+            !0b1111_u32
+        );
+    }
+
+    #[test]
+    fn legacy_wthr_defaults_clouds_to_visible_and_still() {
+        let interner = StringInterner::new();
+        let mut wthr = legacy_wthr_fixture(&interner, 240);
+        wthr.fields
+            .retain(|entry| !matches!(entry.sig.0, sig if sig == *b"RNAM" || sig == *b"QNAM"));
+
+        normalize_legacy_wthr(&mut wthr, &interner);
+
+        // Zero alpha hides every cloud layer, and zero speed scrolls them at
+        // full rate; Fallout 4's neutral values are 1.0 and 127.
+        for alpha in bytes(&wthr, b"JNAM").chunks_exact(4) {
+            assert_eq!(f32::from_le_bytes(alpha.try_into().unwrap()), 1.0);
+        }
+        for sig in [*b"RNAM", *b"QNAM"] {
+            assert!(bytes(&wthr, &sig).iter().all(|speed| *speed == 127));
+        }
+    }
+
+    #[test]
+    fn legacy_wthr_structured_periods_copy_source_values() {
+        let interner = StringInterner::new();
+        let mut wthr = record("WTHR", &interner);
+        wthr.fields.push(field(
+            *b"PNAM",
+            FieldValue::Struct(
+                [
+                    ("cloud_colors_sunrise_red", 1_u64),
+                    ("cloud_colors_day_red", 2),
+                    ("cloud_colors_sunset_red", 3),
+                    ("cloud_colors_night_red", 4),
+                ]
+                .into_iter()
+                .map(|(name, value)| (interner.intern(name), FieldValue::Uint(value)))
+                .collect(),
+            ),
+        ));
+        wthr.fields.push(field(
+            *b"JNAM",
+            FieldValue::Struct(
+                [
+                    ("cloud_alphas_sunrise", 1.0_f32),
+                    ("cloud_alphas_day", 2.0),
+                    ("cloud_alphas_sunset", 3.0),
+                    ("cloud_alphas_night", 4.0),
+                ]
+                .into_iter()
+                .map(|(name, value)| (interner.intern(name), FieldValue::Float(value)))
+                .collect(),
+            ),
+        ));
+        wthr.fields.push(field(
+            *b"IMSP",
+            FieldValue::Struct(
+                [("sunrise", 1_u64), ("day", 2), ("sunset", 3), ("night", 4)]
+                    .into_iter()
+                    .map(|(name, value)| (interner.intern(name), FieldValue::Uint(value)))
+                    .collect(),
+            ),
+        ));
+
+        normalize_legacy_wthr(&mut wthr, &interner);
+
+        let FieldValue::List(pnam_rows) = &wthr
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"PNAM")
+            .unwrap()
+            .value
+        else {
+            panic!("structured PNAM rows");
+        };
+        assert_eq!(pnam_rows.len(), DEFAULT_CLOUD_ROWS);
+        let FieldValue::Struct(pnam) = &pnam_rows[0] else {
+            panic!("structured PNAM");
+        };
+        for (name, expected) in [
+            ("cloud_colors_early_sunrise_red", 4),
+            ("cloud_colors_late_sunrise_red", 1),
+            ("cloud_colors_early_sunset_red", 2),
+            ("cloud_colors_late_sunset_red", 3),
+        ] {
+            assert_eq!(
+                field_name(pnam, name, &interner),
+                Some(&FieldValue::Uint(expected)),
+                "{name}"
+            );
+        }
+
+        let FieldValue::List(jnam_rows) = &wthr
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"JNAM")
+            .unwrap()
+            .value
+        else {
+            panic!("structured JNAM rows");
+        };
+        assert_eq!(jnam_rows.len(), DEFAULT_CLOUD_ROWS);
+        let FieldValue::Struct(jnam) = &jnam_rows[0] else {
+            panic!("structured JNAM");
+        };
+        for (name, expected) in [
+            ("cloud_alphas_early_sunrise", 4.0),
+            ("cloud_alphas_late_sunrise", 1.0),
+            ("cloud_alphas_early_sunset", 2.0),
+            ("cloud_alphas_late_sunset", 3.0),
+        ] {
+            assert_eq!(
+                field_name(jnam, name, &interner),
+                Some(&FieldValue::Float(expected)),
+                "{name}"
+            );
+        }
+
+        let FieldValue::Struct(imsp) = &wthr
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"IMSP")
+            .unwrap()
+            .value
+        else {
+            panic!("structured IMSP");
+        };
+        for (name, expected) in [
+            ("early_sunrise", 4),
+            ("late_sunrise", 1),
+            ("early_sunset", 2),
+            ("late_sunset", 3),
+        ] {
+            assert_eq!(
+                field_name(imsp, name, &interner),
+                Some(&FieldValue::Uint(expected)),
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -1143,5 +2447,212 @@ mod tests {
         normalize_skyrim_proj(&mut stat);
 
         assert_eq!(stat.fields, before);
+    }
+
+    /// The real 196-byte `DNAM` of `FalloutNV.esm:1009CA NVCleanWater` — the
+    /// record that shipped brown. Its bytes 8..12 are the float `0.2` (wave
+    /// amplitude), which FO4 was reading as the deep fog colour RGBA
+    /// (205,204,76), and its bytes 140..152 are colour/float bytes that FO4 was
+    /// reading as denormal under-water fog distances.
+    const NV_CLEAN_WATER_DNAM: &[u8] = b"\
+        \x00\x00\x40\x40\x00\x00\xb4\x42\xcd\xcc\x4c\x3e\x00\x00\x80\x3e\
+        \x00\x80\x4e\x44\x9a\x99\x19\x3f\x00\x00\x40\x3f\x00\x00\x00\x00\
+        \x00\x00\xa0\xc2\x00\x80\x54\x44\x34\x4b\x42\x00\x16\x29\x22\x00\
+        \x15\x20\x17\x00\x00\x1d\x47\x00\xcd\xcc\xcc\x3d\x9a\x99\x19\x3f\
+        \xf6\x28\x7c\x3f\x00\x00\x00\x40\x0a\xd7\x23\x3c\xcd\xcc\xcc\x3e\
+        \x9a\x99\x19\x3f\xf6\x28\x7c\x3f\x00\x00\x20\x41\xcd\xcc\x4c\x3d\
+        \x5c\x8f\x56\x41\x00\x00\x34\x43\x00\x00\x20\x41\x00\x00\x86\x42\
+        \xb8\x1e\x85\x3d\x02\x2b\x07\x3d\x68\x91\xed\x3c\x00\x00\x00\x00\
+        \xea\x95\x32\x3c\x00\x00\x40\x3f\x00\x00\x7a\x44\x00\x00\x80\x3f\
+        \x00\x40\x1c\xc5\x00\xe0\xab\x45\x00\x00\x16\x44\x00\x00\xfa\x43\
+        \x00\x00\x80\x3f\x00\x40\x1c\x46\x00\x00\xc8\x42\x00\x00\x00\x00\
+        \x00\x00\x00\x00\x00\x00\x00\x00\x9a\x99\x99\x3e\x9d\x80\x06\x3f\
+        \x3b\x01\x0d\x3e";
+
+    /// Mirrors the real field order of `FalloutNV.esm:1009CA` — importantly
+    /// NNAM and MNAM come *before* DATA, so any index into `fields` taken
+    /// before they are dropped goes stale.
+    fn legacy_watr(interner: &StringInterner, dnam: &[u8]) -> Record {
+        let mut watr = record("WATR", interner);
+        push_str(
+            &mut watr,
+            *b"NNAM",
+            "Data\\Textures\\Water\\WastelandWaterPotomac.dds",
+            interner,
+        );
+        push(&mut watr, *b"ANAM", vec![50]);
+        push(&mut watr, *b"FNAM", vec![1]);
+        push_str(&mut watr, *b"MNAM", "", interner);
+        push(&mut watr, *b"SNAM", vec![0_u8; 4]);
+        push(&mut watr, *b"XNAM", vec![0_u8; 4]);
+        push(&mut watr, *b"DATA", vec![0, 0]);
+        push(&mut watr, *b"DNAM", dnam.to_vec());
+        push(&mut watr, *b"GNAM", vec![0_u8; 12]);
+        watr
+    }
+
+    fn sig_order(record: &Record) -> Vec<String> {
+        record
+            .fields
+            .iter()
+            .map(|entry| String::from_utf8(entry.sig.0.to_vec()).unwrap())
+            .collect()
+    }
+
+    fn f32_at(bytes: &[u8], offset: usize) -> f32 {
+        f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn legacy_watr_dnam_relayouts_colours_out_of_the_float_slots() {
+        let interner = StringInterner::new();
+        assert_eq!(NV_CLEAN_WATER_DNAM.len(), LEGACY_WATR_DNAM_SIZE);
+        let mut watr = legacy_watr(&interner, NV_CLEAN_WATER_DNAM);
+
+        normalize_legacy_watr(&mut watr, &interner);
+
+        let dnam = bytes(&watr, b"DNAM");
+        assert_eq!(dnam.len(), FO4_WATR_DNAM_SIZE);
+        // The bug: FO4 read the deep fog colour as (205,204,76) — the bytes of
+        // the float 0.2. It must now be the legacy deep colour.
+        assert_ne!(&dnam[8..11], &[205, 204, 76]);
+        assert_eq!(&dnam[8..11], &[22, 41, 34], "deep colour");
+        assert_eq!(&dnam[4..7], &[52, 75, 66], "shallow colour");
+        assert_eq!(&dnam[96..99], &[21, 32, 23], "reflection colour");
+        // Under-water colour is seeded from the legacy deep colour so each
+        // water keeps its tint rather than taking one shared constant.
+        assert_eq!(&dnam[36..39], &[22, 41, 34], "under-water colour");
+    }
+
+    #[test]
+    fn legacy_watr_underwater_fog_is_no_longer_denormal() {
+        let interner = StringInterner::new();
+        let mut watr = legacy_watr(&interner, NV_CLEAN_WATER_DNAM);
+
+        normalize_legacy_watr(&mut watr, &interner);
+
+        let dnam = bytes(&watr, b"DNAM");
+        // Guards against denormals (6.09e-39 / 3.14e-39 / 2.12e-39), which give
+        // a zero-distance, fully dense fog tinting everything seen through the surface.
+        assert_eq!(f32_at(dnam, 40), 1.0, "under-water fog amount");
+        assert_eq!(f32_at(dnam, 44), -2500.0, "under-water near fog");
+        assert_eq!(f32_at(dnam, 48), 5500.0, "under-water far fog");
+        assert!(f32_at(dnam, 52).is_normal(), "normal magnitude");
+    }
+
+    #[test]
+    fn legacy_watr_carries_shared_scalar_fields_to_fo4_offsets() {
+        let interner = StringInterner::new();
+        let mut watr = legacy_watr(&interner, NV_CLEAN_WATER_DNAM);
+
+        normalize_legacy_watr(&mut watr, &interner);
+
+        let dnam = bytes(&watr, b"DNAM");
+        assert_eq!(f32_at(dnam, 64), 0.6000000238418579, "reflectivity");
+        assert_eq!(f32_at(dnam, 68), 0.75, "fresnel");
+        assert_eq!(f32_at(dnam, 100), 826.0, "sun specular power");
+        // Legacy above-water fog far plane becomes FO4's fog depth amount.
+        assert_eq!(f32_at(dnam, 0), 850.0, "fog depth amount");
+    }
+
+    #[test]
+    fn legacy_watr_gains_the_fo4_subrecord_contract() {
+        let interner = StringInterner::new();
+        let mut watr = legacy_watr(&interner, NV_CLEAN_WATER_DNAM);
+
+        normalize_legacy_watr(&mut watr, &interner);
+
+        // All 42 vanilla FO4 waters carry these.
+        for sig in [
+            b"DATA", b"DNAM", b"NAM0", b"NAM1", b"NAM2", b"NAM3", b"NAM4",
+        ] {
+            assert!(
+                watr.fields.iter().any(|entry| entry.sig.0 == *sig),
+                "missing {}",
+                std::str::from_utf8(sig).unwrap()
+            );
+        }
+        // Legacy-only slots with no FO4 WATR counterpart.
+        for sig in [b"NNAM", b"MNAM"] {
+            assert!(
+                !watr.fields.iter().any(|entry| entry.sig.0 == *sig),
+                "kept legacy {}",
+                std::str::from_utf8(sig).unwrap()
+            );
+        }
+        // Vanilla FO4 orders these DATA, DNAM, GNAM, NAM0..NAM4, and the
+        // dropped NNAM/MNAM precede DATA in the legacy record.
+        assert_eq!(
+            sig_order(&watr),
+            [
+                "ANAM", "FNAM", "SNAM", "XNAM", "DATA", "DNAM", "GNAM", "NAM0", "NAM1", "NAM2",
+                "NAM3", "NAM4"
+            ]
+        );
+        assert!(bytes(&watr, b"DATA").is_empty(), "vanilla DATA is empty");
+        assert_eq!(bytes(&watr, b"NAM0").len(), 12);
+        assert_eq!(bytes(&watr, b"NAM1").len(), 12);
+        assert_eq!(
+            slot(&watr, *b"NAM3", &interner),
+            Some("data\\Textures\\Water\\ChurningWaterTile.dds")
+        );
+    }
+
+    #[test]
+    fn legacy_watr_normalization_is_idempotent() {
+        let interner = StringInterner::new();
+        let mut watr = legacy_watr(&interner, NV_CLEAN_WATER_DNAM);
+
+        normalize_legacy_watr(&mut watr, &interner);
+        let once = watr.fields.clone();
+        normalize_legacy_watr(&mut watr, &interner);
+
+        assert_eq!(watr.fields, once, "second pass must not rebuild output");
+    }
+
+    #[test]
+    fn legacy_watr_without_usable_dnam_still_emits_the_fo4_shape() {
+        let interner = StringInterner::new();
+        // A malformed/absent source DNAM must still yield valid FO4 water
+        // rather than a zeroed struct, which renders as invisible flat water.
+        let mut watr = legacy_watr(&interner, &[0_u8; 24]);
+
+        normalize_legacy_watr(&mut watr, &interner);
+
+        let dnam = bytes(&watr, b"DNAM");
+        assert_eq!(dnam.len(), FO4_WATR_DNAM_SIZE);
+        assert_eq!(f32_at(dnam, 24), 1.0, "deep alpha");
+        assert_eq!(dnam[200], 1, "screen space reflections");
+    }
+
+    #[test]
+    fn legacy_watr_short_dnam_maps_what_is_present() {
+        let interner = StringInterner::new();
+        // 184-byte records exist in FalloutNV.esm: the three trailing
+        // amplitude scales are absent and must not be read out of bounds.
+        let mut watr = legacy_watr(&interner, &NV_CLEAN_WATER_DNAM[..LEGACY_WATR_DNAM_MIN_SIZE]);
+
+        normalize_legacy_watr(&mut watr, &interner);
+
+        let dnam = bytes(&watr, b"DNAM");
+        assert_eq!(dnam.len(), FO4_WATR_DNAM_SIZE);
+        assert_eq!(&dnam[8..11], &[22, 41, 34], "deep colour still mapped");
+        // Layer 1 amplitude (legacy offset 184) is past the end; the vanilla
+        // default of 0.0 is left in place rather than reading garbage.
+        assert_eq!(f32_at(dnam, 152), 0.0, "absent amplitude stays default");
+    }
+
+    #[test]
+    fn legacy_watr_clamps_a_positive_near_fog_plane() {
+        let interner = StringInterner::new();
+        let mut source = NV_CLEAN_WATER_DNAM.to_vec();
+        // A few legacy records store a positive near plane, which inverts the
+        // depth gradient in FO4; every vanilla FO4 water keeps it <= 0.
+        source[144..148].copy_from_slice(&746.0_f32.to_le_bytes());
+        let mut watr = legacy_watr(&interner, &source);
+
+        normalize_legacy_watr(&mut watr, &interner);
+
+        assert_eq!(f32_at(bytes(&watr, b"DNAM"), 44), 0.0);
     }
 }

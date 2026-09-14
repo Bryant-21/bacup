@@ -12,13 +12,9 @@ def phase_resolve(orchestrator, runner: ConversionRunner, progress: PhaseProgres
     progress.completed_items = 1
     progress.current_item = "Dependency graph"
 
-    # Augment the graph with content the main walker cannot reach via
-    # record references alone:
-    #   - ATX (Atomic Shop) skin BGSMs and their textures, plus a
-    #     synthesized MaterialSwap record per skin variant.
-    #   - Heuristic per-weapon sound samples discovered by EditorID
-    #     token-matching against ``sound/fx/wpn/<dir>/`` directories.
-    # Both passes are best-effort: silent on no-match.
+    # Add content the record walker can't reach by reference: ATX skin BGSMs,
+    # their textures and one synthesized MaterialSwap per variant, plus weapon
+    # sounds matched by EditorID tokens under ``sound/fx/wpn/<dir>/``. Best-effort.
     orchestrator._augment_graph_with_atx_and_sounds(runner)
 
     n_records = len(orchestrator.graph.all_records)

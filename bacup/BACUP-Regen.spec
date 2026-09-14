@@ -70,6 +70,13 @@ creation_datas = [
         os.path.join(creation_package_root, "esp", "schema", "data"),
         "creation_lib/esp/schema/data",
     ),
+    # Papyrus default-parameter/event manifest and user-flag definitions.
+    # Without these the type universe synthesized from the game's .pex is wrong
+    # and every converted script fails to compile.
+    (
+        os.path.join(creation_package_root, "pex", "data"),
+        "creation_lib/pex/data",
+    ),
     (
         os.path.join(creation_package_root, "renderer", "shaders"),
         "creation_lib/renderer/shaders",

@@ -60,10 +60,10 @@ EXPECTED_DEFERRED = {
     "AliasSendStoryEventOnActivate", "BloodEagleSpotterAlarmActivatorScript",
     "DefaultDestructible2StateActivator", "DefaultExplosionOnTriggerEnter",
     "DefaultCompleteChallengeOnActivate", "DefaultFishingActivator",
-    "DefaultLightningQuestTrigger", "DefaultAliasOnActivateGiveItem",
-    "DefaultAliasSetStageOnKeypadSuccess", "DefaultActivatorVendorFactionScript",
+    "DefaultLightningQuestTrigger", "DefaultAliasSetStageOnKeypadSuccess",
+    "DefaultActivatorVendorFactionScript",
     "DefaultOnActivateChangePrompt", "DefaultApplyDiseaseOnTriggerEnter",
-    "DefaultChallengeMessageOnActivateAlias", "DefaultChallengeMessageOnActivateColl",
+    "DefaultChallengeMessageOnActivateColl",
     "DefaultChallengeMessageOnActivateRef", "DefaultCollAliasOnActivateGiveItems",
     "DefaultCollectionAliasOnActivateGive", "DefaultQuestTriggerRespawnVIPScript",
     "DefaultTriggerThrottledEventScript", "DefaultTriggerRespawnActorGroup",
@@ -143,7 +143,7 @@ def test_adhoc_registry_captures_only_the_reviewed_deferred_surfaces_with_closur
     entries = _adhoc_entries()
     scripts = {entry["script"] for entry in entries}
     assert scripts == EXPECTED_DEFERRED
-    assert len(entries) == len(scripts) == 28
+    assert len(entries) == len(scripts) == 26
 
     valid_statuses = {"evidence-blocked", "record-dependency", "unsupported-online"}
     for entry in entries:
@@ -185,14 +185,15 @@ def test_reviewed_status_rows_point_to_their_batch_contract_or_are_explicitly_ab
     by_script = {row["script_name"].lower(): row for row in rows}
     present = {
         "BloodEagleSpotterAlarmActivatorScript": ("unsupported-online", "a"),
-        "DefaultAliasOnActivateGiveItem": ("record-dependency", "b"),
-        "DefaultAliasSetStageOnKeypadSuccess": ("record-dependency", "b"),
+        "DefaultAliasOnActivateGiveItem": ("patched", "b"),
+        # SH-01 replaced the record-dependency blocker with a real adapter.
+        "DefaultAliasSetStageOnKeypadSuccess": ("patched", "b"),
         "DefaultActivatorVendorFactionScript": ("patched", "c"),
-        "DefaultChallengeMessageOnActivateAlias": ("evidence-blocked", "c"),
-        "DefaultQuestTriggerRespawnVIPScript": ("evidence-blocked", "c"),
-        "DefaultKeypadScript": ("evidence-blocked", "d"),
-        "defaultkeypaddoorscript": ("evidence-blocked", "d"),
-        "DefaultKeypadTimedSwitchScript": ("evidence-blocked", "d"),
+        "DefaultChallengeMessageOnActivateAlias": ("patched", "c"),
+        "DefaultQuestTriggerRespawnVIPScript": ("patched", "c"),
+        "DefaultKeypadScript": ("patched", "d"),
+        "defaultkeypaddoorscript": ("unsupported-online", "d"),
+        "DefaultKeypadTimedSwitchScript": ("unsupported-online", "d"),
         "Default2StateSyncActivator": ("patched", "e"),
         "DefaultDestructibleMultiStateActivator": ("patched", "e"),
         "DefaultExplosionOnActivate": ("patched", "e"),
@@ -201,7 +202,28 @@ def test_reviewed_status_rows_point_to_their_batch_contract_or_are_explicitly_ab
     for script, (state, batch) in present.items():
         row = by_script[script.lower()]
         assert row["terminal_state"] == state
-        assert row["evidence"] == f"contracts/ad-hoc-default-script-repairs-batch-{batch}.md"
+        expected_evidence = f"contracts/ad-hoc-default-script-repairs-batch-{batch}.md"
+        if script == "DefaultAliasOnActivateGiveItem":
+            expected_evidence = "contracts/default-alias-on-activate-give-item-closure.md"
+        if script == "DefaultChallengeMessageOnActivateAlias":
+            expected_evidence = "contracts/root-nonfragment-gap-closure-2026-08-11.md"
+        if script in {
+            "DefaultAliasSetStageOnKeypadSuccess",
+            "DefaultKeypadScript",
+        }:
+            expected_evidence = (
+                "contracts/fo4-keypad-numeric-entry-adapter-2026-09-09.md"
+            )
+        if script == "DefaultQuestTriggerRespawnVIPScript":
+            expected_evidence = (
+                "contracts/companion-local-runtime-2026-09-01.md"
+            )
+        if script in {
+            "defaultkeypaddoorscript",
+            "DefaultKeypadTimedSwitchScript",
+        }:
+            expected_evidence = "contracts/evidence-blocked-closure-2026-09-01.md"
+        assert row["evidence"] == expected_evidence
 
     absent = {script for script in BATCH_MANIFEST["e"] if script.lower() not in by_script}
     assert {"DefaultMultiStateActivator", "DefaultMultiStateClientSideActivator", "DefaultSequentialStateActivator"} <= absent

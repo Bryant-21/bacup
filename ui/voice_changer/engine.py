@@ -7,12 +7,18 @@ from typing import Any
 import numpy as np
 import pedalboard
 
-from ui.voice_changer.custom_effects import comb_filter, tremolo, white_noise_mix
+from ui.voice_changer.custom_effects import (
+    comb_filter,
+    formant_shift,
+    subharmonic,
+    tremolo,
+    white_noise_mix,
+)
 
 _log = logging.getLogger("toolkit.voice_changer.engine")
 
 # Custom effects processed directly on numpy arrays (not through Pedalboard)
-_CUSTOM_EFFECTS = {"CombFilter", "Tremolo", "WhiteNoiseMix"}
+_CUSTOM_EFFECTS = {"CombFilter", "Tremolo", "WhiteNoiseMix", "FormantShift", "Subharmonic"}
 
 # Map of type string -> Pedalboard class
 _NATIVE_EFFECT_MAP: dict[str, type] = {
@@ -68,6 +74,10 @@ def _apply_custom_effect(
         return tremolo(audio, sample_rate=sample_rate, **params)
     elif effect_type == "WhiteNoiseMix":
         return white_noise_mix(audio, **params)
+    elif effect_type == "FormantShift":
+        return formant_shift(audio, sample_rate=sample_rate, **params)
+    elif effect_type == "Subharmonic":
+        return subharmonic(audio, sample_rate=sample_rate, **params)
     else:
         raise ValueError(f"Unknown custom effect: {effect_type!r}")
 

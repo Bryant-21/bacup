@@ -32,11 +32,11 @@
         "max_vertices": 32767,
         "optimize_unseen": "Off",
         "diffuse_size": 512,
-        "diffuse_format": "Bc1",
+        "diffuse_format": "Bc3",
         "diffuse_mipmap": true,
         "normal_size": 512,
-        "normal_format": "Bc1",
-        "normal_mipmap": false,
+        "normal_format": "Bc3",
+        "normal_mipmap": true,
         "normal_rise": 1.0
       },
       {
@@ -44,11 +44,11 @@
         "max_vertices": 32767,
         "optimize_unseen": "Off",
         "diffuse_size": 512,
-        "diffuse_format": "Bc1",
-        "diffuse_mipmap": false,
+        "diffuse_format": "Bc3",
+        "diffuse_mipmap": true,
         "normal_size": 512,
-        "normal_format": "Bc1",
-        "normal_mipmap": false,
+        "normal_format": "Bc3",
+        "normal_mipmap": true,
         "normal_rise": 1.0
       },
       {
@@ -56,11 +56,11 @@
         "max_vertices": 32767,
         "optimize_unseen": "Off",
         "diffuse_size": 512,
-        "diffuse_format": "Bc1",
-        "diffuse_mipmap": false,
+        "diffuse_format": "Bc3",
+        "diffuse_mipmap": true,
         "normal_size": 512,
-        "normal_format": "Bc1",
-        "normal_mipmap": false,
+        "normal_format": "Bc3",
+        "normal_mipmap": true,
         "normal_rise": 1.0
       },
       {
@@ -68,11 +68,11 @@
         "max_vertices": 32767,
         "optimize_unseen": "Off",
         "diffuse_size": 512,
-        "diffuse_format": "Bc1",
-        "diffuse_mipmap": false,
+        "diffuse_format": "Bc3",
+        "diffuse_mipmap": true,
         "normal_size": 512,
-        "normal_format": "Bc1",
-        "normal_mipmap": false,
+        "normal_format": "Bc3",
+        "normal_mipmap": true,
         "normal_rise": 1.0
       }
     ],

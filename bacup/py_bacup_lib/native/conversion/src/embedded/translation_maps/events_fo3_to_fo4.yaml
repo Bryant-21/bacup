@@ -9,6 +9,7 @@ drop:
 # Direct 1:1 mappings
 events:
   "hit": "HitFrame"
+  "Hit": "HitFrame"
   "Equip": "weaponDraw"
   "Unequip": "weaponSheathe"
 

@@ -1,27 +1,17 @@
 //! Fixup: null the `Keyword` field of QUST ALLA "Linked Alias" elements whose
 //! keyword FormID does not resolve to a KYWD in the output plugin or its masters.
 //!
-//! # Root cause
-//! ALLA "Linked Aliases" is `array_struct:I,i` = (KYWD FormID `linked_aliases_keyword`,
-//! alias-index i32). The keyword is a KYWD formlink (`null_allowed`). Some FO76
-//! QUSTs carry an ALLA keyword pointing at a FO76 self-KYWD (e.g. `RELinkPatrol`,
-//! `SeventySix.esm:0002FD66`) that has NO FO4 equivalent and is dropped during
-//! conversion. The dropped record's FormID is left UNMAPPED (still load index 0),
-//! so under the FO4 master order it now addresses a *different* record in
-//! `Fallout4.esm` (e.g. `0002FD66` is a REFR there). xEdit reports
+//! ALLA is `array_struct:I,i` (KYWD FormID `linked_aliases_keyword`, alias-index
+//! i32). Some FO76 QUSTs point the keyword at a FO76 self-KYWD with no FO4
+//! equivalent (e.g. `RELinkPatrol`, `SeventySix.esm:0002FD66`). The dropped record
+//! stays unmapped at load index 0, so under FO4 master order it addresses a
+//! different `Fallout4.esm` record (`0002FD66` is a REFR there), and xEdit reports
 //! "ALLA \ Linked Alias \ Keyword -> Found a REFR reference, expected: KYWD,NULL".
 //!
-//! # What this does
-//! Builds the set of every valid KYWD encoded FormID (output plugin + target
-//! masters), in the same `(load_index << 24) | local` encoding the ALLA keyword
-//! bytes use. For each output QUST, every ALLA element whose keyword is non-zero
-//! and not a known KYWD has its keyword zeroed (KYWD is `null_allowed`, so a NULL
-//! keyword is FO4-valid). The alias-index half of the element is untouched (its
-//! dangling-index cleanup happens in `target_normalize::emit_qust_alias_segment`).
-//!
-//! Idempotent: an ALLA whose keywords all resolve (or are already NULL) is left
-//! byte-identical. ALLA reaches the decoded record as raw `Bytes` (the generic
-//! decoder leaves `array_struct:` codecs unparsed).
+//! Unknown non-zero keywords are zeroed (KYWD is `null_allowed`), matched in the
+//! `(load_index << 24) | local` encoding the ALLA bytes use. The alias index is left
+//! to `target_normalize::emit_qust_alias_segment`. ALLA arrives as raw `Bytes` (the
+//! generic decoder leaves `array_struct:` unparsed). Idempotent.
 
 use rustc_hash::FxHashSet;
 
@@ -104,10 +94,7 @@ impl Fixup for NullInvalidQustAllaKeywordsFixup {
 
 /// Build the set of every valid KYWD encoded FormID across the output plugin and
 /// the target masters, in the same `(load_index << 24) | local` encoding the ALLA
-/// keyword bytes use.
-///
-/// `pub(crate)`: shared with the store2 sweep visitor (Plan 4) so both drivers
-/// gather through the identical code path.
+/// keyword bytes use. `pub(crate)` so the store2 sweep visitor shares this code path.
 pub(crate) fn collect_valid_keyword_encoded_ids(
     session: &mut PluginSession,
     interner: &StringInterner,
@@ -166,9 +153,7 @@ fn encode_form_id(fk: &FormKey, interner: &StringInterner, masters: &[String]) -
 
 /// Zero the keyword (first 4 bytes) of every ALLA element whose keyword is
 /// non-zero and not a known KYWD. Returns `true` when at least one keyword was
-/// nulled.
-///
-/// `pub(crate)`: the store2 sweep visitor (Plan 4) calls this same kernel.
+/// nulled. `pub(crate)`: the store2 sweep visitor calls this same kernel.
 pub(crate) fn null_invalid_alla_keywords(
     record: &mut Record,
     valid_keyword_ids: &FxHashSet<u32>,

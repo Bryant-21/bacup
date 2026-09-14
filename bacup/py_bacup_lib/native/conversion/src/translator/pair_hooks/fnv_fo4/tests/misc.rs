@@ -123,7 +123,7 @@ fn pre_translate_drops_fnv_debr_legacy_modt_rows() {
     push_field(
         &mut record,
         "DATA",
-        FieldValue::Bytes(smallvec::smallvec![50, b'a', 0, 1]),
+        FieldValue::Bytes(smallvec::smallvec![50, b'a', b'.', b'n', b'i', b'f', 0, 1]),
     );
     push_field(
         &mut record,
@@ -153,6 +153,12 @@ fn pre_translate_drops_fnv_debr_legacy_modt_rows() {
             .collect::<Vec<_>>(),
         vec!["DATA", "DATA"]
     );
+    let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+        panic!("raw debris row must remain bytes")
+    };
+    let target = std::str::from_utf8(&bytes[1..bytes.len() - 2]).unwrap();
+    assert!(target.starts_with("b21_fnvfo3_debr_"));
+    assert!(target.ends_with("\\a.nif"));
 }
 
 #[test]
@@ -163,7 +169,26 @@ fn capture_scri_target_returns_script_name_when_present() {
     push_field(&mut record, "SCRI", FieldValue::String(scri_sym));
 
     let result = FnvFo4Hook::capture_scri_target(&record, &interner);
-    assert_eq!(result, Some("MyCustomScript"));
+    assert_eq!(result.as_deref(), Some("MyCustomScript"));
+}
+
+#[test]
+fn capture_scri_target_renders_formkey_for_live_fnv_npc_links() {
+    let interner = StringInterner::new();
+    for (npc_local, scpt_local) in [(0x1300F0, 0x166305), (0x123193, 0x123191)] {
+        let mut record = Record::new(
+            SigCode::from_str("NPC_").unwrap(),
+            FormKey::parse(&format!("{npc_local:06X}@FalloutNV.esm"), &interner).unwrap(),
+        );
+        let script = FormKey::parse(&format!("{scpt_local:06X}@FalloutNV.esm"), &interner).unwrap();
+        push_field(&mut record, "SCRI", FieldValue::FormKey(script));
+
+        assert_eq!(
+            FnvFo4Hook::capture_scri_target(&record, &interner),
+            Some(format!("{scpt_local:06X}:FalloutNV.esm")),
+            "NPC {npc_local:06X} must retain its SCPT link"
+        );
+    }
 }
 
 #[test]
@@ -188,13 +213,57 @@ fn capture_scri_target_returns_none_when_scri_is_empty_string() {
 }
 
 #[test]
-fn capture_scri_target_returns_none_when_scri_value_is_not_string() {
+fn capture_scri_target_rejects_non_string_non_formkey_values() {
     let mut interner = StringInterner::new();
-    let mut record = make_record("NPC_", &mut interner);
-    push_field(&mut record, "SCRI", FieldValue::Int(42));
+    for value in [
+        FieldValue::Int(42),
+        FieldValue::Bytes(smallvec::smallvec![0x05, 0x63, 0x16, 0x00]),
+    ] {
+        let mut record = make_record("NPC_", &mut interner);
+        push_field(&mut record, "SCRI", value);
+        assert!(FnvFo4Hook::capture_scri_target(&record, &interner).is_none());
+    }
+}
 
-    let result = FnvFo4Hook::capture_scri_target(&record, &interner);
-    assert!(result.is_none());
+#[test]
+fn pre_translate_drops_only_the_proven_fnv_npc_tail_collisions() {
+    let interner = StringInterner::new();
+
+    for npc_local in [0x123193, 0x1300F0] {
+        let mut record = Record::new(
+            SigCode::from_str("NPC_").unwrap(),
+            FormKey::parse(&format!("{npc_local:06X}@FalloutNV.esm"), &interner).unwrap(),
+        );
+        push_field(&mut record, "NAM4", FieldValue::Uint(6));
+        push_field(&mut record, "NAM6", FieldValue::Float(1.0));
+        push_field(&mut record, "NAM7", FieldValue::Float(1.0));
+
+        FnvFo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        assert!(
+            !record
+                .fields
+                .iter()
+                .any(|field| field.sig.as_str() == "NAM4"),
+            "NPC {npc_local:06X} must not map FNV Impact Material to FO4 HeightMax"
+        );
+        assert!(
+            !record
+                .fields
+                .iter()
+                .any(|field| field.sig.as_str() == "NAM7"),
+            "NPC {npc_local:06X} must not map FNV weight to FO4 Unused"
+        );
+        assert!(
+            record
+                .fields
+                .iter()
+                .any(|field| field.sig.as_str() == "NAM6"),
+            "NPC {npc_local:06X} keeps its compatible scalar height"
+        );
+    }
 }
 
 // -------------------------------------------------------------------------

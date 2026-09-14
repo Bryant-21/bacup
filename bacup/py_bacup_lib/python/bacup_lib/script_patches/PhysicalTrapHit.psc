@@ -30,8 +30,16 @@ State canhit
         If DiseaseSpell != None
             DiseaseSpell.Cast(Self, akTarget)
         EndIf
+        ; Weapon.Fire resolves ammo off the source's actor process when akAmmo is
+        ; None. Self is an activator, so that lookup returns null and the engine
+        ; faults. Vanilla only ever fires from a non-actor with an explicit ammo
+        ; (see tpFragGrenadeShrapnelSCRIPT). Melee payloads have none, and
+        ; ProcessTrapHit above has already applied the damage, so skip them.
         If hitFX != None
-            hitFX.Fire(Self)
+            Ammo hitFXAmmo = hitFX.GetAmmo()
+            If hitFXAmmo != None
+                hitFX.Fire(Self, hitFXAmmo)
+            EndIf
         EndIf
         Actor targetActor = akTarget as Actor
         If targetActor != None && soundLevel > 0

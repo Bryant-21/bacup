@@ -1,21 +1,15 @@
 //! Inject missing HitFrame annotation events into attack animations.
 //!
-
-//!
-//! # What this does
-//! FO76 attack animations have `preHitFrame` and `weaponSwing` but no `HitFrame`.
-//! FO4 requires `HitFrame` for damage timing.  This fixup scans all `attack*.hkx`
-//! files in `ctx.mod_path/meshes/.../animations/` directories, and injects a
-//! `HitFrame` annotation at the most appropriate time:
-//!   1. `WeaponSweepAttackStart` time (if present) — the actual impact moment.
-//!   2. Midpoint between `weaponSwing` and the next later event (fallback).
+//! FO76 attack clips have `preHitFrame` and `weaponSwing` but no `HitFrame`,
+//! which FO4 needs for damage timing. Each `attack*.hkx` under
+//! `ctx.mod_path/meshes/.../animations/` with `preHitFrame` and no `HitFrame`
+//! gets one at, in order of preference:
+//!   1. `WeaponSweepAttackStart`, the actual impact moment.
+//!   2. The midpoint between `weaponSwing` and the next later event.
 //!   3. `weaponSwing + 0.1` if weaponSwing is the last event.
-//!   4. `preHitFrame + 0.1` if no weaponSwing exists.
+//!   4. `preHitFrame + 0.1` if there is no weaponSwing.
 //!
-//! Only fires if the file has `preHitFrame` but no `HitFrame`.
-//!
-//! # FixupReport mapping
-//! `records_changed` = number of animation files patched.
+//! `records_changed` counts patched files.
 
 use std::path::{Path, PathBuf};
 
@@ -89,7 +83,7 @@ pub fn inject_hitframe_events_in_mod_path(mod_path: &Path) -> Result<FixupReport
     })
 }
 
-fn mesh_roots_for_mod_path(mod_path: &Path) -> Vec<PathBuf> {
+pub(crate) fn mesh_roots_for_mod_path(mod_path: &Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let data_meshes = mod_path.join("data").join("Meshes");
     if data_meshes.is_dir() {
@@ -153,7 +147,7 @@ fn process_inject_hitframe(hkx_path: &Path) -> Result<bool, Box<dyn std::error::
 }
 
 /// Collect `(time, text)` pairs from an annotation array.
-fn collect_events(anns: &[HkxValue]) -> Vec<(f32, String)> {
+pub(crate) fn collect_events(anns: &[HkxValue]) -> Vec<(f32, String)> {
     let mut events = Vec::new();
     for ann in anns {
         let members = match ann.as_object_members() {
@@ -265,7 +259,7 @@ fn inject_hitframe_into(anns: &mut Vec<HkxValue>) -> bool {
 // Directory walker — only "attack*.hkx" files
 // ---------------------------------------------------------------------------
 
-fn walk_attack_hkx_files(dir: &Path, f: &mut impl FnMut(&Path)) {
+pub(crate) fn walk_attack_hkx_files(dir: &Path, f: &mut impl FnMut(&Path)) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };

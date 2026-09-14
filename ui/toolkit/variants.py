@@ -20,6 +20,7 @@ class AppVariant:
     minimum_window_size: tuple[int, int] | None = None
     start_centered: bool = False
     auto_hide_single_window_tabs: bool = False
+    include_status_bar: bool = False
 
     @property
     def is_standalone(self) -> bool:
@@ -35,6 +36,7 @@ FIRST_STANDALONE_VARIANT_IDS = (
     "materials",
     "esp_editor",
     "world_viewer",
+    "playstation_converter",
 )
 
 VARIANTS: dict[str, AppVariant] = {
@@ -111,6 +113,18 @@ VARIANTS: dict[str, AppVariant] = {
         workspace_ids=("world_viewer",),
         default_workspace="world_viewer",
         icon_path="resource/icon.ico",
+    ),
+    "playstation_converter": AppVariant(
+        id="playstation_converter",
+        exe_name="PlayStation Converter",
+        window_title="PlayStation Converter",
+        workspace_ids=("playstation_converter",),
+        default_workspace="playstation_converter",
+        icon_path="resource/icon.ico",
+        include_index_settings=False,
+        minimum_window_size=(760, 560),
+        start_centered=True,
+        auto_hide_single_window_tabs=True,
     ),
 }
 

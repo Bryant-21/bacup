@@ -11,7 +11,7 @@ import numpy as np
 from imgui_bundle import imgui
 
 from creation_lib.ui.widgets import pick_folder
-from ui.tools.imgui_helpers import draw_path_row, pick_file, begin_form, end_form
+from creation_lib.ui.widgets.forms import draw_path_row, pick_file, begin_form, end_form
 
 _log = logging.getLogger("palette.app")
 _NS = "##palette_app"

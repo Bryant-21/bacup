@@ -1,9 +1,6 @@
 //! `remap_formkey` transform — rewrites FormKey plugin names embedded as
 //! strings inside struct/list field values.
 //!
-//! Python source: `translator.py` lines 793-807 + helper `_deep_remap_formkey`
-//! at lines 219-227.
-//!
 //! The transform replaces every occurrence of `source_esm` with `target_esm`
 //! in all `FieldValue::String` leaves, recursing through `List` and `Struct`
 //! variants. `FieldValue::FormKey` typed values are NOT touched here — those

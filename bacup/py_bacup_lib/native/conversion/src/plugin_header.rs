@@ -1,32 +1,21 @@
 //! TES4 plugin-header normalization for FO4 conversion targets.
 //!
-//! Stamps the converted plugin's TES4 record with a known author tag and an
-//! INTV subrecord (info version = 1) so the resulting file looks like a fresh
-//! mod authored by this toolkit rather than a verbatim copy of a vanilla ESM.
+//! Stamps the target's TES4 with an author tag (`header.author`, emitted as
+//! `CNAM`) and `INTV` = 1 (in `header.extra_subrecords`), so the output reads
+//! as a fresh mod rather than a copy of a vanilla ESM.
 //!
-//! The author and INTV fields are both written via `ParsedPluginHeader`:
-//! - `header.author` → emitted as a `CNAM` subrecord by
-//!   `header_subrecords_from_parsed`.
-//! - `INTV` is appended to `header.extra_subrecords`, the catch-all bucket
-//!   for header subrecords that don't have a typed slot.
+//! A plugin loaded from disk (e.g. the seed plugin from
+//! `build_authoring_dir_streaming_native`) keeps its TES4 bytes in
+//! `header.raw_subrecords`, which `header_subrecords_from_parsed` emits instead
+//! of the typed fields. Every header edit here therefore clears
+//! `raw_subrecords`.
 //!
-//! For target plugins loaded from disk (e.g. the seed plugin built by
-//! `build_authoring_dir_streaming_native`), the TES4 record's raw subrecord
-//! payload is captured into `header.raw_subrecords` and short-circuits the
-//! typed-field write path in `header_subrecords_from_parsed`. Mutations to
-//! `header.author` / `header.extra_subrecords` are silently dropped unless
-//! `raw_subrecords` is also cleared (so the typed-field path runs at emit
-//! time). This module clears `raw_subrecords` whenever it touches the header.
+//! `encode_record_for_target` compresses the CELL/LAND records it encodes, but
+//! records already in the seed plugin (notably FO76→FO4 terrain CELLs) skip that
+//! path, so this module stamps COMPRESSED across the target tree once at run
+//! creation.
 //!
-//! A `force_compressed_for_target` stamp exists for CELL/LAND records
-//! emitted through `encode_record_for_target` (the per-translation path),
-//! but records already present in the seed plugin never go through that
-//! path. Those CELL/LAND records — terrain CELLs in particular, which come
-//! from the FO76→FO4 terrain authoring-dir build — also need the
-//! COMPRESSED flag on FO4 emit, so this module walks the target plugin
-//! tree and stamps it once at run creation.
-//!
-//! Only the FO4 target path is currently handled. Other targets are no-ops.
+//! Non-FO4 targets are no-ops.
 
 use bytes::Bytes;
 use esp_authoring_core::plugin_runtime::{
@@ -45,28 +34,17 @@ pub const FO4_CONVERSION_INTV_BYTES: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 
 /// Apply plugin-header normalization to the target plugin handle.
 ///
-/// For FO4 targets:
-///   - `header.author` is set to `FO4_CONVERSION_AUTHOR`.
-///   - An `INTV` subrecord with payload `FO4_CONVERSION_INTV_BYTES` is
-///     ensured present in `header.extra_subrecords` (idempotent: existing
-///     INTV entries are replaced rather than duplicated).
-///   - `header.raw_subrecords` is cleared so the typed-field write path
-///     in `header_subrecords_from_parsed` picks up the author + INTV.
-///   - Every CELL and LAND record in the target plugin's record tree has
-///     the COMPRESSED record-header flag (0x00040000) stamped on, so
-///     `io::record_bytes_from_parsed` gzips the payload at emit time.
-///
-/// For non-FO4 targets this is a no-op so existing pipelines are unaffected.
+/// For FO4: sets `header.author`, upserts one `INTV` in `extra_subrecords`,
+/// clears `raw_subrecords`, and stamps COMPRESSED (0x00040000) on every CELL
+/// and LAND so `io::record_bytes_from_parsed` compresses them at emit. No-op
+/// for other targets.
 pub fn normalize_target_plugin_header(
     target_handle_id: u64,
     target_game: &str,
 ) -> Result<(), RunError> {
-    // Canonical target-game identifier is the lowercase string `"fo4"`
-    // produced by `Game::as_str()`. Strict-match here so a typo'd or
-    // miscased target ("FO4", "Fallout4") surfaces as a debug-build
-    // assertion failure rather than silently no-op'ing past the
-    // normalization. Other targets are intentional no-ops (only FO4 is
-    // currently wired).
+    // `Game::as_str()` yields lowercase `"fo4"`. A miscased target ("FO4",
+    // "Fallout4") fails this in debug builds instead of silently skipping
+    // normalization.
     debug_assert!(
         target_game == target_game.to_ascii_lowercase().trim(),
         "target_game must be canonical-lowercase (got {target_game:?}); upstream caller bug"
@@ -101,9 +79,8 @@ pub fn normalize_target_plugin_header(
             semantic_type: None,
         });
     }
-    // header_subrecords_from_parsed short-circuits to raw_subrecords when
-    // non-empty (line 1090 of esp/src/io.rs), which would silently drop the
-    // author + INTV edits above. Clear it so the typed-field path runs.
+    // header_subrecords_from_parsed (esp/src/io.rs) emits raw_subrecords when
+    // non-empty, which would drop the author + INTV edits above.
     header.raw_subrecords.clear();
 
     stamp_compressed_on_cell_and_land(&mut slot.parsed.root_items);
@@ -130,19 +107,11 @@ fn stamp_compressed_if_cell_or_land(record: &mut ParsedRecord) {
 
 /// Stamp a TES4 `SNAM` (plugin description) on a target plugin handle.
 ///
-/// Used by the Appalachia upgrade-generation SNAM version stamp: the mod
-/// version string (e.g. `"alpha2"`) is written into `SNAM` so a later run
-/// can detect the installed version by reading it back from the deployed
-/// ESM (see `conversion/version_stamp.py::read_plugin_snam`).
-///
-/// Mirrors `normalize_target_plugin_header`'s FO4-only gating (`target_game`
-/// must be the canonical lowercase `"fo4"`; other targets are a no-op) and
-/// its `header.author`/CNAM write path — `header.description` is the typed
-/// field `header_subrecords_from_parsed` (esp/src/io.rs) emits as `SNAM`.
-///
-/// As with the CNAM/INTV write, `header.raw_subrecords` is cleared so the
-/// typed-field write path picks up the new description instead of the
-/// short-circuit raw-bytes path silently dropping it.
+/// Carries the Appalachia upgrade version string (e.g. `"alpha2"`) so a later
+/// run can read the installed version back from the deployed ESM
+/// (`bacup_lib/version_stamp.py::read_plugin_snam`). FO4-only like
+/// `normalize_target_plugin_header`, and likewise clears `raw_subrecords` so the
+/// typed `header.description` is emitted as `SNAM`.
 pub fn set_tes4_snam(target_handle_id: u64, target_game: &str, text: &str) -> Result<(), RunError> {
     if target_game != "fo4" {
         return Ok(());
@@ -247,12 +216,9 @@ mod tests {
 
     #[test]
     fn normalize_clears_header_raw_subrecords_so_typed_fields_take_effect() {
-        // Regression: when the target plugin is loaded from disk (e.g. a seed
-        // plugin built by build_authoring_dir_streaming_native), the TES4
-        // record's raw subrecord payload is captured into
-        // `header.raw_subrecords`. `header_subrecords_from_parsed`
-        // short-circuits to that vector on emit, so author/INTV edits to the
-        // typed fields are silently dropped unless raw_subrecords is cleared.
+        // A plugin loaded from disk keeps its TES4 bytes in
+        // `header.raw_subrecords`, which `header_subrecords_from_parsed` emits
+        // instead of the typed fields, so author/INTV edits need it cleared.
         let target = match plugin_handle_new_native("Phase8Hdr.esp", Some("fo4")) {
             Ok(id) => id,
             Err(_) => return,
@@ -387,8 +353,6 @@ mod tests {
 
     #[test]
     fn set_tes4_snam_round_trips_on_fo4_target() {
-        // Task 2 (Appalachia upgrade-generation): set_tes4_snam("alpha2") on
-        // an FO4 target must be readable back as "alpha2".
         let target = match plugin_handle_new_native("Phase8SnamTest.esp", Some("fo4")) {
             Ok(id) => id,
             Err(_) => return, // no Python runtime in unit tests

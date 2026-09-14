@@ -28,6 +28,8 @@ SCRIPTS = (
     "Fragments:Quests:QF_W05_MQS_204P_0040C458",
     "Fragments:Quests:QF_W05_MQS_205P_0041CB6D",
 )
+BRAIN_PREP = "W05_MQS_203P_BrainPrepScript"
+EXPECTED_COUNTS = dict(zip(SCRIPTS, (59, 40, 48, 3, 36, 33), strict=True))
 
 NEW_STAGES = {
     SCRIPTS[0]: (
@@ -78,6 +80,7 @@ NEW_STAGES = {
     ),
     SCRIPTS[2]: (
         300,
+        301,
         400,
         500,
         700,
@@ -90,7 +93,6 @@ NEW_STAGES = {
         1003,
         1004,
         1200,
-        1300,
         1400,
         1510,
         1520,
@@ -105,12 +107,21 @@ NEW_STAGES = {
         300,
         360,
         370,
+        380,
         390,
+        400,
+        500,
         525,
         550,
         600,
+        615,
+        625,
+        635,
+        645,
+        655,
         700,
         800,
+        900,
         1000,
         9000,
     ),
@@ -188,13 +199,14 @@ def _merged_production_source(script_name: str) -> str:
 def test_playthrough_patch_contract_and_production_merge(script_name: str):
     patch = _script_patch_source(script_name)
     assert patch is not None
-    assert patch.count("; TODO") == 1
+    assert patch.count("; TODO") == 0
     assert _iter_papyrus_states(patch.splitlines()) == []
     assert not any(
         line.strip().lower().startswith("scriptname ") for line in patch.splitlines()
     )
 
     members = _member_names(patch)
+    assert len(members) == EXPECTED_COUNTS[script_name]
     for stage in NEW_STAGES[script_name]:
         assert members.count(_fragment_member(stage)) == 1
 
@@ -216,6 +228,56 @@ def test_terminal_handoff_uses_surviving_story_manager_keyword(script_name: str)
     assert ".Start()" not in body
 
 
+def test_foundation_choice_stops_raider_route_before_completion_and_handoff():
+    patch = _script_patch_source(SCRIPTS[3])
+    assert patch is not None
+    body = _member_body(patch, _fragment_member(9000))
+
+    opposing_route = (
+        "W05_MQ_102P_A",
+        "W05_MQR_201P",
+        "W05_MQR_202P",
+        "W05_MQR_203P",
+        "W05_MQR_Choice",
+    )
+    stop_calls = []
+    for quest_name in opposing_route:
+        guard = f"If {quest_name} != None"
+        stop_call = f"{quest_name}.Stop()"
+        assert guard in body
+        assert stop_call in body
+        assert body.index(guard) < body.index(stop_call)
+        stop_calls.append(stop_call)
+
+    completion = "playerRef.SetValue(W05_MQS_Choice_QuestComplete, 1.0)"
+    handoff = "W05_MQS_204P_QuestStartKeyword.SendStoryEvent"
+    assert [body.index(call) for call in stop_calls] == sorted(
+        body.index(call) for call in stop_calls
+    )
+    assert body.index(stop_calls[-1]) < body.index(completion)
+    assert body.index(completion) < body.index(handoff)
+    assert ".Start()" not in body
+
+
+def test_brain_prep_advances_only_for_the_correct_button_and_merges_once():
+    patch = _script_patch_source(BRAIN_PREP)
+    assert patch is not None
+    body = _member_body(patch, "onactivate")
+
+    correct_branch = body[body.index("if selectedButton == CorrectButton") :]
+    success, failure = correct_branch.split("    else", maxsplit=1)
+    assert "player.SetValue(AVToSet, 1.0)" in success
+    assert success.count("TryToSetStage()") == 1
+    assert "player.SetValue(AVToSet, 0.0)" in failure
+    assert "TryToSetStage()" not in failure
+
+    skeleton = _production_skeleton(BRAIN_PREP)
+    merged = _merge_script_method_patches(skeleton, patch)
+    assert _member_names(merged).count("onactivate") == 1
+    assert _member_body(merged, "onactivate") == body
+    assert _merge_script_method_patches(merged, patch) == merged
+
+
 def test_local_single_player_substitutes_cover_removed_producers():
     trade_secrets = _script_patch_source(SCRIPTS[0])
     acrobat = _script_patch_source(SCRIPTS[1])
@@ -232,10 +294,17 @@ def test_local_single_player_substitutes_cover_removed_producers():
     assert "SetValue(W05_MQS_203P_HasPreppedGregBrain, 1.0)" in robobrain
     assert "SetValue(W05_MQS_203P_HasPreppedGinaBrain, 1.0)" in robobrain
 
-    cave_bypass = _member_body(cave, _fragment_member(600))
-    assert cave_bypass.count(".Disable()") == 10
-    assert "SetStage(700)" in cave_bypass
-    assert "AddItem(W05_MQS_204P_IntelligenceModule" in cave
+    cave_entry = _member_body(cave, _fragment_member(600))
+    assert "SetObjectiveCompleted(50)" in cave_entry
+    assert "SetObjectiveDisplayed(60)" in cave_entry
+    assert "W05_MQS_204P_005_TheCaveScene.Start()" in cave_entry
+    assert "SetStage(700)" not in cave_entry
+    assert ".Disable()" not in cave_entry
+    for stage in (615, 625, 635, 645, 655):
+        receiver = _member_body(cave, _fragment_member(stage))
+        assert "wallRef.Activate(playerRef)" in receiver
+        assert ".Disable()" not in receiver
+    assert "moduleContainer.AddItem(W05_MQS_204P_IntelligenceModule" in cave
     assert "SetValue(W05_MQS_205P_LaserGridState, 1.0)" in vault
     assert "Alias_AtriumExit.GetReference()" in vault
 
@@ -252,14 +321,14 @@ def test_reviewed_stage_edges_are_guarded_and_ordered():
     assert cave is not None
     assert vault is not None
 
-    assert _fragment_member(430) not in _member_names(trade_secrets)
+    assert _fragment_member(430) in _member_names(trade_secrets)
     assert _fragment_member(1050) not in _member_names(trade_secrets)
 
     scene_four = _member_body(trade_secrets, _fragment_member(1025))
     assert scene_four.index("W05_MQS_201P_Scene4.Start()") < scene_four.index(
         "W05_MQS_201P_Scene4.IsPlaying()"
     )
-    assert scene_four.index("IsStageDone(1050)") < scene_four.index("SetStage(1200)")
+    assert scene_four.index("IsStageDone(1200)") < scene_four.index("SetStage(1200)")
 
     plane_bypass = _member_body(trade_secrets, _fragment_member(902))
     assert plane_bypass.index("PlayerBypassVertibotPart") < plane_bypass.index(
@@ -296,11 +365,10 @@ def test_reviewed_stage_edges_are_guarded_and_ordered():
     )
 
     instance_edge = _member_body(acrobat, _fragment_member(700))
-    assert "Alias_TL_Instance_Actor_Jen.GetReference()" in instance_edge
-    assert "Alias_TL_Instance_Actor_Spy.GetReference()" in instance_edge
-    assert instance_edge.index("jenRef != None && spyRef != None") < instance_edge.index(
-        "SetStage(720)"
+    assert instance_edge.index("SetObjectiveCompleted(600)") < instance_edge.index(
+        "SetObjectiveDisplayed(700)"
     )
+    assert "SetStage(720)" not in instance_edge
 
     spy_died = _member_body(acrobat, _fragment_member(751))
     spy_lived = _member_body(acrobat, _fragment_member(752))
@@ -310,49 +378,58 @@ def test_reviewed_stage_edges_are_guarded_and_ordered():
     assert "SetStage(800)" not in spy_lived
 
     robobrain_members = _member_names(robobrain)
-    for unsupported_stage in (200, 600, 1600):
-        assert _fragment_member(unsupported_stage) not in robobrain_members
+    for restored_stage in (200, 600, 1600):
+        assert _fragment_member(restored_stage) in robobrain_members
 
     dome_pickup = _member_body(robobrain, _fragment_member(1200))
     assert "SetStage(1300)" not in dome_pickup
 
-    brain_assembly = _member_body(robobrain, _fragment_member(1300))
-    assert "Bool assembledChoice = False" in brain_assembly
-    for choice in ("Dias", "Greg", "Gina"):
-        assert f"GetValue(W05_MQS_203P_Chose{choice})" in brain_assembly
-        assert f"SetValue(W05_MQS_203P_Chose{choice}" not in brain_assembly
-    assert "If assembledChoice && GetStage() < 1400" in brain_assembly
+    stage_100 = _member_body(robobrain, _fragment_member(100))
+    assert stage_100.index("SetObjectiveCompleted(10)") < stage_100.index(
+        "SetObjectiveDisplayed(20)"
+    )
+    assert ".Start()" not in stage_100
+
+    stage_300 = _member_body(robobrain, _fragment_member(300))
+    assert stage_300.index("SetObjectiveCompleted(30)") < stage_300.index(
+        "SetObjectiveDisplayed(40)"
+    )
+    assert ".Start()" not in stage_300
+
+    stage_301 = _member_body(robobrain, _fragment_member(301))
+    scene = "W05_MQS_203P_005_RobcoEntrance"
+    assert f"{scene} != None" in stage_301
+    assert f"!{scene}.IsPlaying()" in stage_301
+    assert stage_301.index(f"{scene} != None") < stage_301.index(f"{scene}.Start()")
+    assembly = _member_body(robobrain, _fragment_member(1300))
+    assert "RemoveItem(W05_MQS_203P_RobobrainDome" in assembly
+    assert "SetObjectiveDisplayed(110)" in assembly
+    assert "SetStage(1400)" not in assembly
 
     tool_choice = _member_body(robobrain, _fragment_member(1400))
     assert "ElseIf playerRef.GetValue(W05_MQS_203P_ChoseGina)" in tool_choice
     assert "\n        Else\n" not in tool_choice
 
-    vault_entry = _member_body(cave, _fragment_member(15))
-    assert "Alias_EnableMarkerVault79.GetReference()" in vault_entry
-    assert "Alias_currentPlayer.GetReference()" in vault_entry
-    assert vault_entry.index("W05_MQS_204P_ActorEnableMarker.Enable()") < vault_entry.index(
-        "SetStage(90)"
-    )
-    assert _fragment_member(1100) not in _member_names(cave)
+    assert _fragment_member(15) in _member_names(cave)
+    assert _fragment_member(1100) in _member_names(cave)
 
     assert _fragment_member(600) not in _member_names(vault)
     motherlode_scene = _member_body(vault, _fragment_member(200))
     assert "W05_MQS_205P_005_MotherlodeScene.Start()" in motherlode_scene
-    assert "W05_MQS_205P_006_MotherlodeSpeaks.Start()" not in vault
+    assert "W05_MQS_205P_006_MotherlodeSpeaks.Start()" in vault
 
     atrium_scene = _member_body(vault, _fragment_member(2100))
     assert "W05_MQS_205P_017_AtriumScene.Start()" in atrium_scene
     assert "SetStage(2200)" not in atrium_scene
 
 
-def test_excluded_online_reward_reputation_and_raider_surfaces_are_not_recreated():
+def test_excluded_online_reward_and_reputation_surfaces_are_not_recreated():
     patches = "\n".join(_script_patch_source(name) or "" for name in SCRIPTS)
     for forbidden in (
         "EWS",
         "GoldBullion",
         "Rep_Mod_",
         "Reputation_AV_",
-        "W05_MQR_",
         "W05_MQS_204P_WarningMSG.Show",
     ):
         assert forbidden not in patches
@@ -379,6 +456,23 @@ def test_full_production_merge_native_compiles_for_fo4(
         game="fo4",
         flags=str(base_source / "Institute_Papyrus_Flags.flg"),
         source_path=f"{script_name.replace(':', '/')}.psc",
+    )
+
+    diagnostics = "\n".join(str(item) for item in result.diagnostics)
+    assert result.ok, diagnostics
+    assert result.pex_bytes is not None
+
+
+def test_brain_prep_full_production_merge_native_compiles_for_fo4():
+    base_source = _fo4_base_source()
+    assert base_source is not None, "FO4 base Papyrus sources unavailable"
+
+    result = compile_psc(
+        _merged_production_source(BRAIN_PREP),
+        imports=[str(base_source)],
+        game="fo4",
+        flags=str(base_source / "Institute_Papyrus_Flags.flg"),
+        source_path=f"{BRAIN_PREP}.psc",
     )
 
     diagnostics = "\n".join(str(item) for item in result.diagnostics)

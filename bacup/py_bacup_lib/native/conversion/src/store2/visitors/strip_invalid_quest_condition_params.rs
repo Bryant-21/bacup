@@ -38,13 +38,8 @@ impl RecordVisitor for StripInvalidQuestConditionParamsVisitor {
             .target_schema
             .as_deref()
             .ok_or_else(|| FixupError::Other("missing target schema in fixup config".into()))?;
-        let quest_index = collect_quest_condition_index(
-            session,
-            mapper.interner,
-            config,
-            target_schema,
-            &mut report,
-        )?;
+        let quest_index =
+            collect_quest_condition_index(session, mapper, config, target_schema, &mut report)?;
         // Degenerate-guard parity: no QUST or WRLD anywhere → cannot classify.
         let candidate_sigs = if !quest_index.can_classify_conditions() {
             Vec::new()
@@ -87,12 +82,17 @@ impl RecordVisitor for StripInvalidQuestConditionParamsVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixups::strip_invalid_quest_condition_params::StripInvalidQuestConditionParamsFixup;
+    use crate::fixups::strip_invalid_quest_condition_params::{
+        StripInvalidQuestConditionParamsFixup, repair_final_quest_reference_conditions,
+    };
+    use crate::formkey_mapper::{FormKeyMapper, MapperOptions, MapperState};
     use crate::ids::{FormKey, SigCode, SubrecordSig};
     use crate::record::{FieldEntry, FieldValue, RecordFlags};
     use crate::session::open_session;
     use crate::store2::test_util::assert_handles_equal;
+    use crate::store2::visitor::{MasterScanCache, Sweep, run_sweep};
     use crate::store2::visitors::port_test_util::*;
+    use esp_authoring_core::plugin_runtime::plugin_handle_new_native;
     use smallvec::SmallVec;
 
     /// CTDA blob (32 bytes): function id at offset 8, param1 at 12, param2 at 16.
@@ -105,6 +105,23 @@ mod tests {
             sig: SubrecordSig::from_str("CTDA").unwrap(),
             value: FieldValue::Bytes(SmallVec::from_vec(b)),
         }
+    }
+
+    fn field(sig: &str, bytes: &[u8]) -> FieldEntry {
+        FieldEntry {
+            sig: SubrecordSig::from_str(sig).unwrap(),
+            value: FieldValue::Bytes(SmallVec::from_slice(bytes)),
+        }
+    }
+
+    fn source_pack_get_stage_done(stage: u32) -> FieldEntry {
+        let mut condition = ctda(59, stage, 0);
+        let FieldValue::Bytes(bytes) = &mut condition.value else {
+            unreachable!();
+        };
+        bytes[4..8].copy_from_slice(&1f32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
+        condition
     }
 
     fn push_vmad_string(out: &mut Vec<u8>, value: &str) {
@@ -165,6 +182,32 @@ mod tests {
         (alias, form_id)
     }
 
+    fn pack_stage_condition(handle: u64) -> Option<(u32, u32)> {
+        let interner = crate::sym::StringInterner::new();
+        let mut session = open_session(handle, None).expect("session");
+        let schema = session.schema().expect("schema");
+        let pack_sig = SigCode::from_str("PACK").unwrap();
+        let fk = session
+            .form_keys_of_sig(pack_sig, &interner)
+            .unwrap()
+            .into_iter()
+            .find(|fk| fk.local == 0x2B_00CE)
+            .expect("FF08_ShutDown");
+        let record = session.record_decoded(&fk, &schema, &interner).unwrap();
+        let bytes = record
+            .fields
+            .iter()
+            .find_map(|field| (field.sig.0 == *b"CTDA").then_some(&field.value))
+            .and_then(|value| match value {
+                FieldValue::Bytes(bytes) => Some(bytes.as_slice()),
+                _ => None,
+            })?;
+        Some((
+            u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+            u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+        ))
+    }
+
     fn rec(
         sig: &str,
         local: u32,
@@ -191,9 +234,192 @@ mod tests {
         }
     }
 
+    fn wayward_record(
+        sig: &str,
+        local: u32,
+        fields: Vec<FieldEntry>,
+        interner: &crate::sym::StringInterner,
+    ) -> crate::record::Record {
+        crate::record::Record {
+            sig: SigCode::from_str(sig).unwrap(),
+            form_key: FormKey {
+                local,
+                plugin: interner.intern("SeventySix.esm"),
+            },
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: fields.into_iter().collect(),
+            warnings: SmallVec::new(),
+        }
+    }
+
+    #[test]
+    fn production_sweep_restores_wayward_pack_gates_and_final_pass_preserves_them() {
+        let source_handle =
+            plugin_handle_new_native("SeventySix.esm", Some("fo76")).expect("source handle");
+        let target_handle =
+            plugin_handle_new_native("SeventySix.esm", Some("fo4")).expect("target handle");
+        let interner = crate::sym::StringInterner::new();
+        let owner = 0x0040_5E14u32;
+        let pack_fixtures = [
+            (
+                0x0040_BD1E,
+                vec![
+                    "000000000000803F3B000000C2010000000000000000000000000000FFFFFFFF",
+                    "00000000000000003B000000D6010000000000000000000000000000FFFFFFFF",
+                ],
+            ),
+            (
+                0x0040_BD22,
+                vec!["000000000000803F3B00944312020000000000000000000000000000FFFFFFFF"],
+            ),
+            (
+                0x0058_52E4,
+                vec!["000000000000803F3B00944326020000000000000000000000000000FFFFFFFF"],
+            ),
+        ];
+
+        let source_schema = {
+            let mut session = open_session(source_handle, None).expect("source session");
+            let schema = session.schema().expect("source schema");
+            let quest = wayward_record(
+                "QUST",
+                owner,
+                [450u16, 470, 530, 550]
+                    .into_iter()
+                    .map(|stage| field("INDX", &stage.to_le_bytes()))
+                    .collect(),
+                &interner,
+            );
+            session
+                .add_record(quest, schema.as_ref(), &interner)
+                .expect("source quest");
+            for (pack, conditions) in &pack_fixtures {
+                let mut fields: Vec<_> = conditions
+                    .iter()
+                    .map(|condition| field("CTDA", &hex::decode(condition).unwrap()))
+                    .collect();
+                fields.push(field("QNAM", &owner.to_le_bytes()));
+                session
+                    .add_record(
+                        wayward_record("PACK", *pack, fields, &interner),
+                        schema.as_ref(),
+                        &interner,
+                    )
+                    .expect("source pack");
+            }
+            schema
+        };
+        let target_schema = {
+            let mut session = open_session(target_handle, None).expect("target session");
+            let schema = session.schema().expect("target schema");
+            let quest = wayward_record(
+                "QUST",
+                owner,
+                [450u16, 470, 530, 550]
+                    .into_iter()
+                    .map(|stage| field("INDX", &stage.to_le_bytes()))
+                    .collect(),
+                &interner,
+            );
+            session
+                .add_record(quest, schema.as_ref(), &interner)
+                .expect("target quest");
+            for (pack, _) in &pack_fixtures {
+                session
+                    .add_record(
+                        wayward_record(
+                            "PACK",
+                            *pack,
+                            vec![field("QNAM", &owner.to_le_bytes())],
+                            &interner,
+                        ),
+                        schema.as_ref(),
+                        &interner,
+                    )
+                    .expect("target pack without translated CTDA");
+            }
+            schema
+        };
+
+        let mut config = FixupConfig::default();
+        config.source_schema = Some(source_schema);
+        config.target_schema = Some(target_schema);
+        let mut mapper_state = MapperState::new(std::iter::empty(), MapperOptions::default());
+        let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &interner);
+        for local in [owner, 0x0040_BD1E, 0x0040_BD22, 0x0058_52E4] {
+            let form_key = FormKey {
+                local,
+                plugin: interner.intern("SeventySix.esm"),
+            };
+            mapper.add_mapping(form_key, form_key);
+        }
+
+        {
+            let mut session =
+                open_session(target_handle, Some(source_handle)).expect("production session");
+            let sweep = Sweep {
+                label: "wayward_pack_condition_recovery",
+                visitors: vec![Box::new(StripInvalidQuestConditionParamsVisitor)],
+            };
+            let reports = run_sweep(
+                &mut session,
+                &mut mapper,
+                &config,
+                &sweep,
+                &mut MasterScanCache::default(),
+            )
+            .expect("condition sweep");
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].1.records_changed, 3);
+            repair_final_quest_reference_conditions(&mut session, &interner, &config)
+                .expect("final condition repair");
+        }
+
+        let expected = [
+            (0x0040_BD1E, vec![(450, 1.0), (470, 0.0)]),
+            (0x0040_BD22, vec![(530, 1.0)]),
+            (0x0058_52E4, vec![(550, 1.0)]),
+        ];
+        let mut session = open_session(target_handle, None).expect("result session");
+        for (pack, expected_conditions) in expected {
+            let form_key = FormKey {
+                local: pack,
+                plugin: interner.intern("SeventySix.esm"),
+            };
+            let record = session
+                .record_decoded(
+                    &form_key,
+                    config.target_schema.as_deref().unwrap(),
+                    &interner,
+                )
+                .expect("recovered pack");
+            let conditions: Vec<_> = record
+                .fields
+                .iter()
+                .filter_map(|entry| match (&entry.sig.0, &entry.value) {
+                    (b"CTDA", FieldValue::Bytes(bytes)) => Some(bytes.as_slice()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(conditions.len(), expected_conditions.len());
+            for (bytes, (stage, comparison)) in conditions.iter().zip(expected_conditions) {
+                assert_eq!(u16::from_le_bytes(bytes[8..10].try_into().unwrap()), 59);
+                assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), owner);
+                assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), stage);
+                assert_eq!(
+                    f32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+                    comparison
+                );
+            }
+        }
+    }
+
     #[test]
     fn visitor_matches_legacy_fixup() {
         let cobj = 0x0004_695C;
+        let owner_quest = 0x0000_0801;
+        let owner_stage = 530;
         let (pack_vmad, pack_alias_offset) = pack_fragment_vmad_object_property(10, cobj);
         let (h_old, h_new) = seed_twin("QuestCtda.esp", |session, schema, interner| {
             let worldspace = rec("WRLD", 0x25_DA15, "Worldspace", vec![], interner);
@@ -202,9 +428,13 @@ mod tests {
             // rewritten to the output WRLD and a null-param2 fn-576 CTDA.
             let qust = rec(
                 "QUST",
-                0x801,
+                owner_quest,
                 "Qust",
-                vec![ctda(310, 0x0125_DA15, 0), ctda(576, 0, 0)],
+                vec![
+                    field("INDX", &(owner_stage as u16).to_le_bytes()),
+                    ctda(310, 0x0125_DA15, 0),
+                    ctda(576, 0, 0),
+                ],
                 interner,
             );
             // INFO ownership is group topology and therefore unavailable to the
@@ -224,8 +454,9 @@ mod tests {
                 vec![
                     FieldEntry {
                         sig: SubrecordSig::from_str("QNAM").unwrap(),
-                        value: FieldValue::Bytes(SmallVec::from_slice(&cobj.to_le_bytes())),
+                        value: FieldValue::Bytes(SmallVec::from_slice(&owner_quest.to_le_bytes())),
                     },
+                    source_pack_get_stage_done(owner_stage),
                     FieldEntry {
                         sig: SubrecordSig::from_str("VMAD").unwrap(),
                         value: FieldValue::Bytes(SmallVec::from_vec(pack_vmad.clone())),
@@ -255,5 +486,9 @@ mod tests {
         assert_handles_equal(h_old, h_new);
         assert_eq!(pack_fragment_object(h_old, pack_alias_offset), (-1, cobj));
         assert_eq!(pack_fragment_object(h_new, pack_alias_offset), (-1, cobj));
+        // The shared port-test helper intentionally opens no source handle, so
+        // source-only PACK lowering must fail closed in both implementations.
+        assert_eq!(pack_stage_condition(h_old), None);
+        assert_eq!(pack_stage_condition(h_new), None);
     }
 }

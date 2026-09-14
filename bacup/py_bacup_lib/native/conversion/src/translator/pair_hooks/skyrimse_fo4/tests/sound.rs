@@ -1,7 +1,7 @@
 fn sopm_record(interner: &StringInterner) -> Record {
     Record::new(
         SigCode::from_str("SOPM").unwrap(),
-        FormKey::parse("07E5DC@Skyrim_Merged.esm", interner).unwrap(),
+        FormKey::parse("07E5DC@Skyrim.esm", interner).unwrap(),
     )
 }
 
@@ -22,7 +22,7 @@ fn source_attenuation(min_distance: f32, max_distance: f32) -> Vec<u8> {
 
 fn run_pre_translate(record: &mut Record, interner: &StringInterner) {
     SkyrimSeFo4Hook
-        .pre_translate(&mut PairCtx { interner }, record)
+        .pre_translate(&mut PairCtx::new(interner), record)
         .unwrap();
 }
 
@@ -166,7 +166,7 @@ fn full_translator_preserves_live_legacy_defined_speaker_sopm() {
     let interner = StringInterner::new();
     let translator = Translator::new(Game::SkyrimSe, Game::Fo4).unwrap();
     let source_schema = AuthoringSchema::for_game("skyrimse").unwrap();
-    let form_key = FormKey::parse("0B4247@Skyrim_Merged.esm", &interner).unwrap();
+    let form_key = FormKey::parse("0B4247@Skyrim.esm", &interner).unwrap();
     let source = ParsedRecord {
         signature: "SOPM".into(),
         form_id: 0x000B_4247,
@@ -199,7 +199,7 @@ fn full_translator_preserves_live_legacy_defined_speaker_sopm() {
         &form_key,
         &source_schema,
         &[],
-        "Skyrim_Merged.esm",
+        "Skyrim.esm",
         None,
         false,
         &interner,
@@ -217,9 +217,7 @@ fn full_translator_preserves_live_legacy_defined_speaker_sopm() {
 
     translator
         .pre_translate(
-            &mut PairCtx {
-                interner: &interner,
-            },
+            &mut PairCtx::new(&interner),
             &mut record,
         )
         .unwrap();
@@ -238,9 +236,7 @@ fn full_translator_preserves_live_legacy_defined_speaker_sopm() {
     };
     translator
         .post_translate(
-            &mut PairCtx {
-                interner: &interner,
-            },
+            &mut PairCtx::new(&interner),
             &mut translated,
         )
         .unwrap();

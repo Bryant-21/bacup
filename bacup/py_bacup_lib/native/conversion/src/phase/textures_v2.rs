@@ -142,6 +142,7 @@ impl Phase for ConvertTexturesV2Phase {
 
         let engine_params = TextureEngineParams {
             source_extracted,
+            source_inventory: ctx.run.source_asset_inventory.clone(),
             data_root: ctx.mod_path.join("data"),
             source_game: ctx.run.source.as_str().to_string(),
             target_game: ctx.run.target.as_str().to_string(),
@@ -157,6 +158,7 @@ impl Phase for ConvertTexturesV2Phase {
             namespace: crate::run::base_asset_namespace_for_run(ctx.run),
             target_dirs,
             target_assets: ctx.run.target_assets.clone(),
+            base_overwrite_prefixes: crate::run::base_overwrite_prefixes_for_run(ctx.run),
             skip_existing: p
                 .get("skip_existing")
                 .and_then(|v| v.as_bool())
@@ -256,6 +258,37 @@ impl Phase for ConvertTexturesV2Phase {
                 report.gpu.overflow_to_cpu,
                 report.gpu.gpu_failures,
                 report.elapsed_ms
+            ),
+        });
+
+        let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+            phase: "convert_textures_v2",
+            level: LogLevel::Info,
+            message: format!(
+                "textures_v2: exclusive_worker_ms[read={:.3} decode={:.3} material={:.3} mips={:.3} encode={:.3} gpu_wait={:.3} write={:.3} copy={:.3}] gpu_service_ms[queue_sum={:.3} dispatch={:.3} blocking_call_within_dispatch={:.3}]",
+                report.timings.read_ns as f64 / 1e6,
+                report.timings.decode_ns as f64 / 1e6,
+                report.timings.material_ns as f64 / 1e6,
+                report.timings.mips_ns as f64 / 1e6,
+                report.timings.encode_ns as f64 / 1e6,
+                report.timings.gpu_wait_ns as f64 / 1e6,
+                report.timings.write_ns as f64 / 1e6,
+                report.timings.copy_ns as f64 / 1e6,
+                report.gpu.queue_ns as f64 / 1e6,
+                report.gpu.dispatch_ns as f64 / 1e6,
+                report.gpu.blocking_call_ns as f64 / 1e6,
+            ),
+        });
+
+        let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+            phase: "convert_textures_v2",
+            level: LogLevel::Info,
+            message: format!(
+                "textures_v2: write_detail_ms[directory={:.3} open={:.3} write={:.3} close={:.3}] io[directory_calls={} directory_cache_hits={} write_calls={} bytes={}]",
+                report.timings.directory_ns as f64 / 1e6, report.timings.open_ns as f64 / 1e6,
+                report.timings.file_write_ns as f64 / 1e6, report.timings.close_ns as f64 / 1e6,
+                report.timings.directory_calls, report.timings.directory_cache_hits,
+                report.timings.write_calls, report.timings.write_bytes,
             ),
         });
 

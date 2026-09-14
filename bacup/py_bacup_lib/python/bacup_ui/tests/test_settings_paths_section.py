@@ -73,6 +73,21 @@ def test_paths_edits_round_trip_to_canonical_game_paths(tmp_path):
     assert settings.get_script_source_paths() == ["E:/SharedScripts"]
 
 
+def test_fo76_pts_root_round_trips_to_canonical_game_paths(tmp_path):
+    settings = _settings(tmp_path)
+    window = _window(settings)
+    window.open("paths")
+    paths_section._state.game_paths["fo76"]["pts_root"] = (
+        "N:/Steam Games/steamapps/common/Fallout 76 Playtest"
+    )
+
+    window._save_settings()
+
+    assert settings.get_game_paths("fo76")["pts_root_dir"] == (
+        "N:/Steam Games/steamapps/common/Fallout 76 Playtest"
+    )
+
+
 def test_paths_edit_exports_canonical_value_instead_of_stale_window_copy(tmp_path):
     settings = _settings(tmp_path)
     settings.set_game_root_dir("fnv", "C:/Old/Fallout New Vegas")

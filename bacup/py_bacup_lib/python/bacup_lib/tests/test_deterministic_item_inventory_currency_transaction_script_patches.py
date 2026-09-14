@@ -17,19 +17,12 @@ from creation_lib.pex.native_runtime import compile_psc
 REPO_ROOT = Path(__file__).resolve().parents[5]
 SOURCE_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 
-# Every script patched by shard
-# w2-deterministic-item-inventory-currency-transaction-ungrouped-deterministic-item-inventory-currency-transaction,
-# mapped to the top-level member(s) its patch must supply. VendorInteractChoiceScript
-# and Perks:FrogCollectingPerkScript were reclassified `record-dependency` (the live
-# converted plugin dropped their VMAD entirely) and are intentionally NOT patched —
-# see the shard contract's "Record-dependency rows" section.
-#
-# All of these are deterministic guarded one-shot handlers (no named states or
-# timers of their own) — a full compile of the merged patch is sufficient
-# coverage; see repair-papyrus-stubs SKILL.md's dedicated-test-file criteria.
+# Each patched script mapped to the top-level member(s) its patch must supply.
+# All are guarded one-shot handlers with no named states or timers of their own,
+# covered by a full compile of the merged patch.
 PATCH_CASES = {
     "capsStashScript": {"onactivate"},
-    "RSVP00_OnContainerChangedSetAV": {"onequipped"},
+    "RSVP00_OnContainerChangedSetAV": {"oncontainerchanged"},
     "VSTempResourceCollectorScript": {"onactivate"},
     "EggClusterContainerScript": {"oninit", "onitemremoved"},
     "MTRZ05_MapScript": {"onequipped"},
@@ -37,6 +30,7 @@ PATCH_CASES = {
     "TalesFromWV_OnActivateAddItem": {"onactivate"},
     "MQ_Overseer_HolotapeScript": {"onequipped"},
     "Fishing:LindaLeeChumTroughScript": {"onactivate"},
+    "Perks:FrogCollectingPerkScript": {"onentryrun"},
 }
 
 
@@ -114,9 +108,15 @@ def test_merged_patch_native_compiles_for_fo4(script_name: str):
     assert result.pex_bytes is not None
 
 
-def test_vendor_interact_choice_and_frog_collecting_perk_are_not_patched():
-    """Both were reclassified `record-dependency`: the live converted plugin
-    dropped VMAD entirely on every affected record, so there is no binding for
-    a script-body patch to attach to. See contract sections 5 and 7."""
-    assert _script_patch_source("VendorInteractChoiceScript") is None
-    assert _script_patch_source("Perks:FrogCollectingPerkScript") is None
+def test_vendor_and_frog_perk_handlers_are_patched():
+    assert _script_patch_source("VendorInteractChoiceScript") is not None
+    assert _script_patch_source("Perks:FrogCollectingPerkScript") is not None
+
+
+def test_frog_collecting_perk_handler_matches_bound_entry_contract():
+    patch = _script_patch_source("Perks:FrogCollectingPerkScript")
+    assert patch is not None
+
+    assert "If auiEntryID == 0" in patch
+    assert patch.count("akOwner.AddItem(FrogItem, 1)") == 1
+    assert "akTarget." not in patch

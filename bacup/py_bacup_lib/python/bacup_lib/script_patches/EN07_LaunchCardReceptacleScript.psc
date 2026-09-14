@@ -28,6 +28,16 @@ State Waiting
             Return
         EndIf
 
+        Quest personalQuest = Game.GetFormFromFile(0x003E03AA, "SeventySix.esm") as Quest
+        If personalQuest == None || !personalQuest.IsStageDone(530)
+            If !bBlockFailure
+                bBlockFailure = True
+                BroadcastFailureSound()
+                StartTimer(iAudioCooldown, iFailureID)
+            EndIf
+            Return
+        EndIf
+
         bProcessActivation = True
         GoToState("active")
         akActionRef.RemoveItem(Nuke_LaunchCard, 1, True)

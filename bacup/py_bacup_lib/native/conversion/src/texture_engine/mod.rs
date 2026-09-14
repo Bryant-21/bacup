@@ -37,6 +37,8 @@ pub struct TextureJob {
 /// `fo76_normalized_normal_to_fo4_buffer` (the clamp ops are no-ops on
 /// u8-sourced data).
 pub fn kernel_normal_zero_b(rgba: &mut [u8]) {
+    let _timer =
+        directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Material);
     for px in rgba.chunks_exact_mut(4) {
         px[2] = 0;
     }
@@ -70,6 +72,7 @@ pub struct TextureEntryIn {
 
 pub struct TextureEngineParams {
     pub source_extracted: PathBuf,
+    pub source_inventory: Option<std::sync::Arc<crate::source_inventory::SourceAssetInventory>>,
     /// `<mod>/data` — outputs land under `data_root/Textures/...`.
     pub data_root: PathBuf,
     pub source_game: String,
@@ -87,6 +90,9 @@ pub struct TextureEngineParams {
     /// Target-game dirs for the diffuse-keyed base-owned skip.
     pub target_dirs: Vec<PathBuf>,
     pub target_assets: Option<std::sync::Arc<crate::target_assets::TargetAssetStore>>,
+    /// Data-relative prefixes exempt from the base-owned skip, so the source
+    /// game's version of a kit deliberately overwrites the target's.
+    pub base_overwrite_prefixes: Vec<String>,
     pub skip_existing: bool,
     pub use_gpu: bool,
     pub gpu_min_pixels: u32,
@@ -132,11 +138,13 @@ pub struct TextureEngineReport {
     pub mip_flooded_outputs: u64,
     pub class: ClassCounters,
     pub gpu: gpu_service::GpuServiceStats,
+    pub timings: directxtex_native::profiling::Timings,
     pub elapsed_ms: u64,
 }
 
 #[derive(Default)]
 struct GroupOutcome {
+    timings: directxtex_native::profiling::Timings,
     outputs_written: u64,
     failed: u64,
     skipped_existing: u64,
@@ -201,6 +209,21 @@ fn texture_task_label(task: &TextureTask) -> String {
             lighting.path.display(),
             out_specular.path.display()
         ),
+        TextureTask::StarfieldPbr {
+            diffuse,
+            metallic,
+            roughness,
+            out_diffuse,
+            out_specular,
+            ..
+        } => format!(
+            "starfield pbr {}, {}, {} -> {}, {}",
+            diffuse.path.display(),
+            metallic.path.display(),
+            roughness.path.display(),
+            out_diffuse.path.display(),
+            out_specular.path.display()
+        ),
         TextureTask::LegacySpecGloss {
             normal,
             envmask,
@@ -229,9 +252,49 @@ fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
+struct TerrainFallbackInputs {
+    _directory: tempfile::TempDir,
+    flat_normal: PathBuf,
+    dielectric_reflectivity: PathBuf,
+}
+
+fn create_starfield_terrain_fallbacks() -> Result<TerrainFallbackInputs, String> {
+    let directory = tempfile::Builder::new()
+        .prefix("bacup-sf-terrain-")
+        .tempdir()
+        .map_err(|error| format!("create Starfield terrain fallback directory: {error}"))?;
+    let flat_normal = directory.path().join("flat_normal.dds");
+    let dielectric_reflectivity = directory.path().join("dielectric_reflectivity.dds");
+    let pixels = 4 * 4;
+    directxtex_native::write_dds_rgba_image(
+        &flat_normal,
+        4,
+        4,
+        &[128, 128, 255, 255].repeat(pixels),
+        "R8G8B8A8_UNORM",
+        false,
+    )
+    .map_err(|error| format!("write flat terrain normal fallback: {error}"))?;
+    directxtex_native::write_dds_rgba_image(
+        &dielectric_reflectivity,
+        4,
+        4,
+        &[0, 0, 0, 255].repeat(pixels),
+        "R8G8B8A8_UNORM",
+        false,
+    )
+    .map_err(|error| format!("write dielectric terrain reflectivity fallback: {error}"))?;
+    Ok(TerrainFallbackInputs {
+        _directory: directory,
+        flat_normal,
+        dielectric_reflectivity,
+    })
+}
+
 fn terrain_texture_request(
     job: &TerrainTextureJob,
     params: &TextureEngineParams,
+    fallbacks: Option<&TerrainFallbackInputs>,
 ) -> Result<TextureSetPathRequest, String> {
     let prefix = job.output_prefix.trim().replace('\\', "/");
     let relative = Path::new(&prefix);
@@ -252,8 +315,6 @@ fn terrain_texture_request(
     }
     for (role, value) in [
         ("diffuse", &job.diffuse_path),
-        ("normal", &job.normal_path),
-        ("reflectivity", &job.reflectivity_path),
         ("lighting", &job.lighting_path),
     ] {
         if value.trim().is_empty() {
@@ -263,6 +324,31 @@ fn terrain_texture_request(
             ));
         }
     }
+
+    let normal = if job.normal_path.trim().is_empty() {
+        fallbacks
+            .map(|value| value.flat_normal.clone())
+            .ok_or_else(|| {
+                format!(
+                    "terrain texture job {} has no normal input",
+                    job.output_prefix
+                )
+            })?
+    } else {
+        PathBuf::from(&job.normal_path)
+    };
+    let reflectivity = if job.reflectivity_path.trim().is_empty() {
+        fallbacks
+            .map(|value| value.dielectric_reflectivity.clone())
+            .ok_or_else(|| {
+                format!(
+                    "terrain texture job {} has no reflectivity input",
+                    job.output_prefix
+                )
+            })?
+    } else {
+        PathBuf::from(&job.reflectivity_path)
+    };
 
     let output_base = params.data_root.join(relative);
     Ok(TextureSetPathRequest {
@@ -275,11 +361,11 @@ fn terrain_texture_request(
             },
             TexturePathInput {
                 role: "normal".to_owned(),
-                path: PathBuf::from(&job.normal_path),
+                path: normal,
             },
             TexturePathInput {
                 role: "reflectivity".to_owned(),
-                path: PathBuf::from(&job.reflectivity_path),
+                path: reflectivity,
             },
             TexturePathInput {
                 role: "lighting".to_owned(),
@@ -321,10 +407,14 @@ pub fn run_texture_engine(
     progress: Option<&(dyn Fn(u64, u64) + Sync)>,
 ) -> Result<TextureEngineReport, String> {
     let source_game = params.source_game.to_ascii_lowercase();
-    let is_gamebryo = matches!(source_game.as_str(), "fnv" | "fo3" | "skyrim" | "skyrimse");
-    if (params.source_game != "fo76" && !is_gamebryo) || params.target_game != "fo4" {
+    let target_game = params.target_game.to_ascii_lowercase();
+    let supported_source = matches!(
+        source_game.as_str(),
+        "fo76" | "fnv" | "fo3" | "skyrim" | "skyrimse" | "starfield"
+    );
+    if !supported_source || target_game != "fo4" {
         return Err(format!(
-            "texture_engine supports fo76/fnv/fo3/skyrimse -> fo4 only (got {}->{})",
+            "texture_engine supports fo76/fnv/fo3/skyrimse/starfield -> fo4 only (got {}->{})",
             params.source_game, params.target_game
         ));
     }
@@ -334,13 +424,16 @@ pub fn run_texture_engine(
 
     // 1. Input set — mirror of the legacy phase.
     let mut entries: Vec<TextureEntry> = if params.convert_all {
-        enumerate_source_textures(&params.source_extracted)
-            .into_iter()
-            .map(|source_path| TextureEntry {
-                source_path,
-                output_subpath: None,
-            })
-            .collect()
+        enumerate_source_textures_with_inventory(
+            &params.source_extracted,
+            params.source_inventory.as_deref(),
+        )
+        .into_iter()
+        .map(|source_path| TextureEntry {
+            source_path,
+            output_subpath: None,
+        })
+        .collect()
     } else {
         params
             .textures
@@ -404,6 +497,15 @@ pub fn run_texture_engine(
         .filter(|job| seen_terrain_prefixes.insert(job.output_prefix.to_ascii_lowercase()))
         .cloned()
         .collect();
+    let terrain_fallbacks = if source_game == "starfield"
+        && terrain_jobs
+            .iter()
+            .any(|job| job.normal_path.trim().is_empty() || job.reflectivity_path.trim().is_empty())
+    {
+        Some(create_starfield_terrain_fallbacks()?)
+    } else {
+        None
+    };
 
     if entries.is_empty() && terrain_jobs.is_empty() {
         return Ok(TextureEngineReport::default());
@@ -437,27 +539,30 @@ pub fn run_texture_engine(
         sink: sink.as_ref(),
     });
 
-    let register_paths_with_sink =
-        |paths: Vec<&std::path::Path>, outcome: &mut GroupOutcome, context: &str| {
-            let Some(sink) = &params.sink else {
-                return;
-            };
-            for path in paths {
-                if !path.is_file() {
-                    continue;
-                }
-                let Ok(rel) = path.strip_prefix(&params.data_root) else {
-                    continue;
-                };
-                let rel_str = rel.to_string_lossy().replace('\\', "/");
-                if let Err(err) = sink.add_existing_file(&rel_str, path) {
-                    outcome.failed += 1;
-                    outcome.error_messages.push(format!(
-                        "texture sink registration failed {context}: {rel_str}: {err}"
-                    ));
-                }
-            }
+    let register_paths_with_sink = |paths: Vec<&std::path::Path>,
+                                    outcome: &mut GroupOutcome,
+                                    context: &str| {
+        let _timer =
+            directxtex_native::profiling::Timer::new(directxtex_native::profiling::Stage::Write);
+        let Some(sink) = &params.sink else {
+            return;
         };
+        for path in paths {
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(&params.data_root) else {
+                continue;
+            };
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            if let Err(err) = sink.add_existing_file(&rel_str, path) {
+                outcome.failed += 1;
+                outcome.error_messages.push(format!(
+                    "texture sink registration failed {context}: {rel_str}: {err}"
+                ));
+            }
+        }
+    };
 
     let process_request = |request: &TextureSetPathRequest,
                            group_label: &str,
@@ -473,6 +578,7 @@ pub fn run_texture_engine(
             &params.data_root,
             &params.target_dirs,
             params.target_assets.as_deref(),
+            &params.base_overwrite_prefixes,
         ) {
             let mut missing_identity_outputs = request.outputs.clone();
             missing_identity_outputs.retain(|output| {
@@ -550,7 +656,7 @@ pub fn run_texture_engine(
             let task_result = catch_unwind(AssertUnwindSafe(|| {
                 executors::execute_task_with_landscape_mip_flooding(
                     &task,
-                    params.conv_params,
+                    request.params,
                     &gpu,
                     params.use_gpu,
                     params.gpu_min_pixels,
@@ -605,13 +711,15 @@ pub fn run_texture_engine(
         outcome
     };
 
-    let process = |item: &TextureWorkItem| -> GroupOutcome {
+    let output_directories =
+        std::sync::Arc::new(directxtex_native::output_directories::OutputDirectories::default());
+    let process_in_scope = |item: &TextureWorkItem| -> GroupOutcome {
         let mut outcome = GroupOutcome::default();
         let group_label = texture_group_label(item);
         if cancel.load(Ordering::Relaxed) {
             return outcome;
         }
-        if let Err(err) = std::fs::create_dir_all(&item.output_dir) {
+        if let Err(err) = directxtex_native::profiling::create_dir_all(&item.output_dir) {
             outcome.failed += item.group.files.len() as u64;
             outcome.error_messages.push(format!(
                 "texture group failed {group_label}: create {}: {err}",
@@ -636,11 +744,25 @@ pub fn run_texture_engine(
         };
         process_request(&request, &group_label, params.pbr_carry, false)
     };
+    let process = |item: &TextureWorkItem| {
+        let (mut outcome, timings) = output_directories
+            .scope(|| directxtex_native::profiling::capture(|| process_in_scope(item)));
+        outcome.timings = timings;
+        outcome
+    };
 
     let process_terrain = |job: &TerrainTextureJob| -> GroupOutcome {
         let label = format!("terrain bundle {}", job.output_prefix);
-        match terrain_texture_request(job, params) {
-            Ok(request) => process_request(&request, &label, false, true),
+        match terrain_texture_request(job, params, terrain_fallbacks.as_ref()) {
+            Ok(request) => {
+                let (mut outcome, timings) = output_directories.scope(|| {
+                    directxtex_native::profiling::capture(|| {
+                        process_request(&request, &label, false, true)
+                    })
+                });
+                outcome.timings = timings;
+                outcome
+            }
             Err(error) => GroupOutcome {
                 failed: 1,
                 error_messages: vec![format!("texture job failed {label}: {error}")],
@@ -691,15 +813,8 @@ pub fn run_texture_engine(
         });
         regular.chain(terrain).collect()
     };
-    let outcomes: Vec<GroupOutcome> = if let Some(workers) = params.workers.filter(|w| *w > 0) {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(workers)
-            .build()
-            .map_err(|e| format!("texture engine pool: {e}"))?
-            .install(run_all)
-    } else {
-        run_all()
-    };
+    let outcomes: Vec<GroupOutcome> = crate::worker_pool::install(params.workers, run_all)
+        .map_err(|e| format!("texture engine pool: {e}"))?;
 
     if cancel.load(Ordering::Relaxed) {
         return Err("texture engine cancelled".to_string());
@@ -712,6 +827,7 @@ pub fn run_texture_engine(
         ..Default::default()
     };
     for o in outcomes {
+        report.timings.add(o.timings);
         report.outputs_written += o.outputs_written;
         report.failed += o.failed;
         report.skipped_existing += o.skipped_existing;
@@ -731,6 +847,23 @@ pub fn run_texture_engine(
         report.class.legacy_residue_ms += o.legacy_residue_ms;
     }
     Ok(report)
+}
+
+fn enumerate_source_textures_with_inventory(
+    source_extracted: &Path,
+    inventory: Option<&crate::source_inventory::SourceAssetInventory>,
+) -> Vec<String> {
+    let Some(files) = inventory.and_then(|inventory| {
+        inventory.files_if_compatible(&source_extracted.join("Textures"), &[".dds"])
+    }) else {
+        return enumerate_source_textures(source_extracted);
+    };
+    let mut files = files
+        .into_iter()
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .collect::<Vec<_>>();
+    files.sort();
+    files
 }
 
 #[cfg(test)]
@@ -760,6 +893,7 @@ mod tests {
     fn base_params(source: &Path, data_root: &Path) -> TextureEngineParams {
         TextureEngineParams {
             source_extracted: source.to_path_buf(),
+            source_inventory: None,
             data_root: data_root.to_path_buf(),
             source_game: "fo76".to_string(),
             target_game: "fo4".to_string(),
@@ -772,6 +906,7 @@ mod tests {
             namespace: String::new(),
             target_dirs: Vec::new(),
             target_assets: None,
+            base_overwrite_prefixes: Vec::new(),
             skip_existing: false,
             use_gpu: false,
             gpu_min_pixels: 512 * 512,
@@ -810,6 +945,19 @@ mod tests {
         assert_eq!(report.class.bundle, 1);
         assert_eq!(report.no_request_groups, 0);
         assert_eq!(report.failed, 0);
+        assert!(report.timings.read_ns > 0);
+        assert!(report.timings.decode_ns > 0);
+        assert!(report.timings.material_ns > 0);
+        assert!(report.timings.mips_ns > 0);
+        assert!(report.timings.encode_ns > 0);
+        assert!(report.timings.write_ns > 0);
+        assert!(report.timings.directory_cache_hits > 0);
+        assert!(report.timings.open_ns > 0);
+        assert!(report.timings.file_write_ns > 0);
+        assert!(report.timings.close_ns > 0);
+        assert!(report.timings.write_bytes > 0);
+        assert!(report.timings.copy_ns > 0);
+        assert_eq!(report.timings.gpu_wait_ns, 0);
         // PassThrough(_d) + PerTexel(_n) + bundle d/s/g... glow only when _l has
         // an alpha-emitting output — count written files on disk instead:
         assert!(
@@ -832,6 +980,53 @@ mod tests {
             tmp.join("mod/data/Textures/C/loose.dds".replace('/', std::path::MAIN_SEPARATOR_STR))
                 .is_file()
         );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn engine_writes_standalone_gamebryo_cubemap() {
+        let tmp = std::env::temp_dir().join("engine_gamebryo_standalone_cubemap");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let source = tmp.join("source");
+        let input = source.join("Textures/effects/ShinyDull_e.dds");
+        std::fs::create_dir_all(input.parent().unwrap()).unwrap();
+        let mut image = directxtex_native::ScratchImage::default();
+        image
+            .initialize_cube(
+                directxtex_native::DXGI_FORMAT_R8G8B8A8_UNORM,
+                32,
+                32,
+                1,
+                1,
+                directxtex_native::CP_FLAGS_NONE,
+            )
+            .unwrap();
+        image.pixels_mut().fill(200);
+        std::fs::write(
+            &input,
+            image
+                .save_dds(directxtex_native::DDS_FLAGS_NONE)
+                .unwrap()
+                .buffer(),
+        )
+        .unwrap();
+
+        let data_root = tmp.join("mod/data");
+        let mut params = base_params(&source, &data_root);
+        params.source_game = "fnv".to_owned();
+        params.textures = vec![TextureEntryIn {
+            source_path: input.to_string_lossy().into_owned(),
+            output_subpath: None,
+        }];
+        let report = run(&params);
+
+        assert_eq!(report.failed, 0, "{:?}", report.errors);
+        assert_eq!(report.outputs_written, 1);
+        assert_eq!(report.class.bundle, 1);
+        let output = data_root.join("Textures/effects/ShinyDull_e.dds");
+        let probe = directxtex_native::read_dds_probe(&output).unwrap();
+        assert!(probe.is_cubemap);
+        assert_eq!((probe.width, probe.height, probe.mip_levels), (128, 128, 8));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -873,6 +1068,45 @@ mod tests {
                 "expected {expected}, got {actual}"
             );
         }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn engine_applies_per_group_rockcliff76_gloss_cap() {
+        let tmp = std::env::temp_dir().join("engine_rockcliff76_gloss_cap");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let source = tmp.join("source");
+        write_uniform_tex(
+            &source,
+            "Textures/Landscape/Rocks/RockCliff76_d.dds",
+            [128, 128, 128, 255],
+        );
+        write_uniform_tex(
+            &source,
+            "Textures/Landscape/Rocks/RockCliff76_r.dds",
+            [0, 0, 0, 255],
+        );
+        write_uniform_tex(
+            &source,
+            "Textures/Landscape/Rocks/RockCliff76_l.dds",
+            [255, 255, 0, 255],
+        );
+
+        let mut params = base_params(&source, &tmp.join("mod").join("data"));
+        params.convert_all = true;
+        let report = run(&params);
+
+        assert_eq!(report.failed, 0);
+        let output = tmp.join(
+            "mod/data/Textures/Landscape/Rocks/RockCliff76_s.dds"
+                .replace('/', std::path::MAIN_SEPARATOR_STR),
+        );
+        let image = directxtex_native::read_dds_float_rgba_image(&output).unwrap();
+        assert!(
+            (image.rgba[1] - crate::phase::textures::MATTE_FO76_GLOSS_MULTIPLIER).abs() < 0.02,
+            "expected capped gloss, got {}",
+            image.rgba[1]
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -950,6 +1184,55 @@ mod tests {
         )
         .unwrap();
         assert!(diffuse.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn starfield_terrain_jobs_synthesize_missing_normal_and_reflectivity() {
+        let tmp = std::env::temp_dir().join("engine_starfield_terrain_fallbacks");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let source = tmp.join("source");
+        for suffix in ["d", "l"] {
+            write_tex(
+                &source,
+                &format!("Textures/Land/soil_{suffix}.dds"),
+                16,
+                16,
+                "R8G8B8A8_UNORM",
+                true,
+            );
+        }
+        let input = |suffix: &str| {
+            source
+                .join("Textures")
+                .join("Land")
+                .join(format!("soil_{suffix}.dds"))
+                .to_string_lossy()
+                .into_owned()
+        };
+        let data_root = tmp.join("mod").join("data");
+        let mut params = base_params(&source, &data_root);
+        params.source_game = "starfield".to_owned();
+        params.terrain_jobs = vec![TerrainTextureJob {
+            diffuse_path: input("d"),
+            normal_path: String::new(),
+            reflectivity_path: String::new(),
+            lighting_path: input("l"),
+            output_prefix: "textures/terrain/new_atlantis/Soil".to_owned(),
+        }];
+
+        let report = run(&params);
+
+        assert_eq!(report.failed, 0, "{:?}", report.errors);
+        assert_eq!(report.outputs_written, 4);
+        for suffix in ["d", "n", "s", "g"] {
+            assert!(
+                data_root
+                    .join("textures/terrain/new_atlantis")
+                    .join(format!("Soil_{suffix}.dds"))
+                    .is_file()
+            );
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1208,6 +1491,54 @@ mod tests {
     }
 
     #[test]
+    fn starfield_pbr_bundle_writes_fo4_texture_set() {
+        let tmp = std::env::temp_dir().join("engine_starfield_pbr");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let source = tmp.join("source");
+        for (name, rgba) in [
+            ("wall_color.dds", [128, 64, 32, 255]),
+            ("wall_normal.dds", [128, 128, 255, 255]),
+            ("wall_rough.dds", [64, 64, 64, 255]),
+            ("wall_metal.dds", [0, 0, 0, 255]),
+            ("wall_ao.dds", [255, 255, 255, 255]),
+            ("wall_emissive.dds", [16, 32, 64, 255]),
+        ] {
+            write_uniform_tex(&source, &format!("Textures/Architecture/{name}"), rgba);
+        }
+
+        let data_root = tmp.join("mod").join("data");
+        let mut params = base_params(&source, &data_root);
+        params.source_game = "starfield".to_owned();
+        params.convert_all = true;
+        let report = run(&params);
+
+        assert_eq!(report.failed, 0, "{:?}", report.errors);
+        assert_eq!(report.outputs_written, 4);
+        for name in ["wall_d.dds", "wall_n.dds", "wall_s.dds", "wall_g.dds"] {
+            assert!(
+                data_root.join("Textures/Architecture").join(name).is_file(),
+                "missing {name}"
+            );
+        }
+        assert!(
+            !data_root
+                .join("Textures/Architecture/wall_rough.dds")
+                .exists()
+        );
+        assert!(
+            !data_root
+                .join("Textures/Architecture/wall_metal.dds")
+                .exists()
+        );
+        let spec = directxtex_native::read_dds_float_rgba_image(
+            &data_root.join("Textures/Architecture/wall_s.dds"),
+        )
+        .unwrap();
+        assert!((spec.rgba[1] - 0.75).abs() < 0.03, "gloss={}", spec.rgba[1]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn pbr_carry_preserves_diffuse_keyed_base_owned_skip() {
         let tmp = std::env::temp_dir().join("engine_pbr_base_owned");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1345,6 +1676,30 @@ mod tests {
     }
 
     #[test]
+    fn source_inventory_texture_enumeration_matches_direct_walker() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        for relative in [
+            "Textures/Actors/Nested/body_d.DDS",
+            "Textures/Landscape/rocks_n.dds",
+            "Textures/ignore.txt",
+        ] {
+            let path = source.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        let inventory = crate::source_inventory::SourceAssetInventory::default();
+        assert_eq!(
+            enumerate_source_textures_with_inventory(&source, Some(&inventory)),
+            enumerate_source_textures(&source),
+        );
+        assert_eq!(
+            enumerate_source_textures_with_inventory(&source, Some(&inventory)),
+            enumerate_source_textures(&source),
+        );
+    }
+
+    #[test]
     fn panic_payload_to_string_extracts_message() {
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| panic!("bad texture")));
@@ -1373,3 +1728,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
+
+#[cfg(test)]
+mod optimization_tests;

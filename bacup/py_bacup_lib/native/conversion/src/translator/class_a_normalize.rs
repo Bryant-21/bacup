@@ -1,11 +1,10 @@
-//! Class A normalizer — schema-driven flag/enum domain pass (FO76 → FO4).
+//! Class A normalizer: schema-driven flag/enum domain pass (FO76 → FO4).
 //!
 //! Catch-all floor that guarantees every flag/enum value position in a
-//! translated record is valid in the FO4 target domain. It is the systemic
-//! replacement for the scattered per-record literals in
-//! `translator::target_hooks::fo4` and the per-field YAML `remap_enum`
-//! invocations — neither schema-driven, which is why ~15k FO76-only flag/enum
-//! values reached the FO4 output (xEdit Class A errors).
+//! translated record is valid in the FO4 target domain (xEdit Class A
+//! errors). The per-record literals in `translator::target_hooks::fo4` and
+//! per-field YAML `remap_enum` calls aren't schema-driven, so they can't
+//! cover every FO76-only value.
 //!
 //! # Pipeline placement
 //!
@@ -27,6 +26,11 @@
 //! for a record (`record_flags()` is `None`), header flags are left untouched —
 //! a valid-but-unmodeled FO4 bit must never be silently dropped.
 //!
+//! Subrecord flag fields carry the same risk, but the fix belongs in the schema:
+//! an enum whose named bit set under-reports the FO4 domain makes
+//! `valid_flag_mask()` clear valid bits. See the `RACE.VNAM` / `equip_type` tests
+//! below — that gap is why `schema_forge` declares the reserved upper bits.
+//!
 //! Every clear/clamp is recorded in `ClassANormalizeReport` so the Class A error
 //! count is auditable.
 
@@ -38,9 +42,23 @@ use esp_authoring_core::plugin_runtime::{
 };
 
 const RECORD_FLAG_DENY_MASKS: &[(&str, u32)] = &[("FLOR", 0x0000_8000)];
-// QUST.FNAM is scope-overloaded; the compiled schema resolves its first FNAM
-// definition (objective flags), so alias rows need the runtime alias mask.
-const FO4_QUST_ALIAS_FLAG_MASK: u32 = 0x017F_FFFF;
+// QUST.FNAM is scope-overloaded (objective flags vs the 25-bit alias flag set),
+// and the scope-blind schema lookup resolves the objective table. The alias mask
+// is read from the schema's `scope_id="aliases"` FNAM enum; this literal is only
+// the fallback for schemas generated before that scoped enum existed. It is
+// deliberately NOT the authority — it omits `is_companion` (0x80_0000), which
+// Fallout4.esm itself sets on real aliases.
+const FO4_QUST_ALIAS_FLAG_MASK_FALLBACK: u32 = 0x017F_FFFF;
+
+/// FO4 valid-bit mask for an `scope_id="aliases"` QUST.FNAM row.
+fn qust_alias_flag_mask(schema: &AuthoringSchema) -> u32 {
+    schema
+        .enum_def_at_in_scope("QUST", "FNAM", Some("aliases"))
+        .filter(|edef| edef.is_flags())
+        .map(|edef| edef.valid_flag_mask() as u32)
+        .filter(|mask| *mask != 0)
+        .unwrap_or(FO4_QUST_ALIAS_FLAG_MASK_FALLBACK)
+}
 
 /// Outcome of a Class A normalization pass over one record.
 ///
@@ -114,14 +132,47 @@ fn normalize_record_against_def(
     report: &mut ClassANormalizeReport,
 ) {
     let mut in_qust_aliases = false;
+    let mut in_scen_phases = false;
+    let mut in_scen_actions = false;
     for entry in record.fields.iter_mut() {
         let sub_sig = entry.sig.as_str();
         if rec_sig == "QUST" && sub_sig == "ANAM" {
             in_qust_aliases = true;
         }
         if in_qust_aliases && sub_sig == "FNAM" {
-            normalize_qust_alias_flags(&mut entry.value, rec_sig, report);
+            normalize_qust_alias_flags(&mut entry.value, schema, rec_sig, report);
             continue;
+        }
+        if rec_sig == "SCEN" {
+            if sub_sig == "HNAM" && !in_scen_actions {
+                in_scen_phases = true;
+            } else if sub_sig == "ANAM" {
+                in_scen_phases = false;
+                in_scen_actions = true;
+            }
+            if sub_sig == "FNAM" {
+                if in_scen_actions {
+                    normalize_scen_scoped_flags(
+                        &mut entry.value,
+                        schema,
+                        rec_sig,
+                        "actions",
+                        4,
+                        report,
+                    );
+                    continue;
+                } else if in_scen_phases {
+                    normalize_scen_scoped_flags(
+                        &mut entry.value,
+                        schema,
+                        rec_sig,
+                        "phases",
+                        2,
+                        report,
+                    );
+                    continue;
+                }
+            }
         }
         let Some(sub_def) = rec_def.subrecords.iter().find(|s| s.id == sub_sig) else {
             continue;
@@ -140,6 +191,7 @@ fn normalize_record_against_def(
 
 fn normalize_qust_alias_flags(
     value: &mut FieldValue,
+    schema: &AuthoringSchema,
     rec_sig: &str,
     report: &mut ClassANormalizeReport,
 ) {
@@ -151,7 +203,7 @@ fn normalize_qust_alias_flags(
         FieldValue::Int(value) => *value as u32,
         _ => return,
     };
-    let masked = raw & FO4_QUST_ALIAS_FLAG_MASK;
+    let masked = raw & qust_alias_flag_mask(schema);
     if masked == raw {
         return;
     }
@@ -167,6 +219,52 @@ fn normalize_qust_alias_flags(
     ));
 }
 
+fn normalize_scen_scoped_flags(
+    value: &mut FieldValue,
+    schema: &AuthoringSchema,
+    rec_sig: &str,
+    scope: &str,
+    byte_width: usize,
+    report: &mut ClassANormalizeReport,
+) {
+    let Some(mask) = schema
+        .enum_def_at_in_scope("SCEN", "FNAM", Some(scope))
+        .filter(|edef| edef.is_flags())
+        .map(|edef| edef.valid_flag_mask() as u32)
+        .filter(|mask| *mask != 0)
+    else {
+        return;
+    };
+    let raw = match value {
+        FieldValue::Bytes(bytes) if byte_width == 2 && bytes.len() >= 2 => {
+            u16::from_le_bytes(bytes[..2].try_into().expect("two-byte FNAM prefix")) as u32
+        }
+        FieldValue::Bytes(bytes) if byte_width == 4 && bytes.len() >= 4 => {
+            u32::from_le_bytes(bytes[..4].try_into().expect("four-byte FNAM prefix"))
+        }
+        FieldValue::Uint(value) => *value as u32,
+        FieldValue::Int(value) => *value as u32,
+        _ => return,
+    };
+    let masked = raw & mask;
+    if masked == raw {
+        return;
+    }
+
+    match value {
+        FieldValue::Bytes(bytes) if byte_width == 2 => {
+            bytes[..2].copy_from_slice(&(masked as u16).to_le_bytes())
+        }
+        FieldValue::Bytes(bytes) => bytes[..4].copy_from_slice(&masked.to_le_bytes()),
+        FieldValue::Uint(value) => *value = masked as u64,
+        FieldValue::Int(value) => *value = masked as i64,
+        _ => unreachable!("matched SCEN scoped FNAM representation"),
+    }
+    report.decisions.push(format!(
+        "class_a:{rec_sig}.FNAM:{scope}_flags {raw:#x}->{masked:#x}"
+    ));
+}
+
 /// Normalize one decoded subrecord value against its schema def.
 fn normalize_subrecord(
     value: &mut FieldValue,
@@ -178,9 +276,9 @@ fn normalize_subrecord(
     report: &mut ClassANormalizeReport,
 ) {
     // Raw-bytes subrecords (struct: / union codecs decode to FieldValue::Bytes
-    // in source_read — "full struct decode" never landed). The enum/flag fields
-    // live INSIDE the blob at byte offsets the schema layout util provides; mask
-    // them in place. This is the high-volume path (BOOK.DNAM, LIGH.DATA, DSTD,
+    // in source_read). The enum/flag fields live INSIDE the blob at byte
+    // offsets the schema layout util provides; mask them in place. This is the
+    // high-volume path (BOOK.DNAM, LIGH.DATA, DSTD,
     // RACE.DATA, EXPL.DATA, SNDR.LNAM, NPC_.AIDT, PROJ/HAZD.DNAM, REFR.XRDO,
     // LVLN/LVLI.LVLF, ...).
     if let FieldValue::Bytes(buf) = value {
@@ -212,17 +310,14 @@ fn normalize_subrecord(
 /// Mask/clamp every flag/enum field that lives inside a raw subrecord byte blob,
 /// using the schema's struct-field layout for offsets/widths.
 ///
-/// The layout is resolved at the FO4 TARGET form_version (131) — the version the
-/// output records are written at. This matters for `record_form_version` union
-/// subrecords (e.g. EFSH.DNAM): the version-less layout defaults to form_version
-/// 0, which selects the OLD-format variant (a leading byte ⇒ enum fields shifted
-/// to the wrong offsets) and masks the carried NEW-format bytes at the wrong
-/// slots, zeroing valid enums (the EFSH `<Unknown:0>` blend-op/z-test bug).
-/// Selecting the fv131 variant matches the real byte layout. For
-/// non-`record_form_version` (width-selector) unions (LVLN.LVLF 1 vs 2;
-/// IPCT/TXST.DODT 36 vs 28) variant selection is unaffected by form_version, and
-/// every field is bounds-checked against `buf.len()` so a width mismatch skips
-/// safely rather than corrupting.
+/// The layout is resolved at the FO4 TARGET form_version (131), the version the
+/// output records are written at. For `record_form_version` unions (e.g.
+/// EFSH.DNAM) the version-less layout defaults to form_version 0, the OLD-format
+/// variant with a leading byte, which masks the carried NEW-format bytes at the
+/// wrong offsets and zeroes valid enums (EFSH blend-op/z-test read `<Unknown:0>`).
+/// Width-selector unions (LVLN.LVLF 1 vs 2; IPCT/TXST.DODT 36 vs 28) don't depend
+/// on form_version, and every field is bounds-checked against `buf.len()`, so a
+/// width mismatch skips rather than corrupting.
 fn mask_struct_bytes(
     buf: &mut [u8],
     schema: &AuthoringSchema,
@@ -528,13 +623,204 @@ mod tests {
         assert_eq!(fnam_values, vec![3, 0x0008_8000]);
     }
 
+    /// The alias mask must come from the schema's `scope_id="aliases"` FNAM
+    /// enum, not the legacy literal. The literal omits `is_companion`
+    /// (0x80_0000) — a bit Fallout4.esm itself sets on real aliases — so a
+    /// carried-in companion alias would have been silently de-companioned.
+    #[test]
+    fn qust_alias_mask_comes_from_scoped_schema_enum_and_keeps_is_companion() {
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        let mask = qust_alias_flag_mask(&schema);
+        assert_eq!(mask, 0x01FF_FFFF, "must be the 25-bit alias flag set");
+        assert_ne!(mask, FO4_QUST_ALIAS_FLAG_MASK_FALLBACK);
+        assert_eq!(mask & 0x0080_0000, 0x0080_0000, "is_companion must survive");
+        // The scope-blind lookup still resolves the 2-bit objective table —
+        // masking an alias row with it would be catastrophic.
+        let blind = schema.enum_def_at("QUST", "FNAM").expect("QUST.FNAM");
+        assert_eq!(blind.valid_flag_mask(), 0x3);
+    }
+
+    /// Every alias FNAM bit observed in Fallout4.esm and in the converted
+    /// SeventySix.esm output must pass the mask unchanged.
+    #[test]
+    fn qust_alias_mask_preserves_every_shipped_alias_flag_bit() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        // Union of all alias-FNAM bits measured in Fallout4.esm (0x1FF_FFFF).
+        for bit in 0..25_u32 {
+            let raw = 1_u32 << bit;
+            let mut record = Record {
+                sig: SigCode::from_str("QUST").unwrap(),
+                form_key: FormKey::parse("05A243@SeventySix.esm", &interner).unwrap(),
+                eid: None,
+                flags: RecordFlags::empty(),
+                fields: SmallVec::from_vec(vec![
+                    FieldEntry {
+                        sig: SubrecordSig::from_str("ANAM").unwrap(),
+                        value: FieldValue::Uint(1),
+                    },
+                    FieldEntry {
+                        sig: SubrecordSig::from_str("ALST").unwrap(),
+                        value: FieldValue::Uint(0),
+                    },
+                    FieldEntry {
+                        sig: SubrecordSig::from_str("FNAM").unwrap(),
+                        value: FieldValue::Uint(u64::from(raw)),
+                    },
+                ]),
+                warnings: SmallVec::new(),
+            };
+            normalize_flags_and_enums(&mut record, &schema, &interner);
+            let out = record
+                .fields
+                .iter()
+                .find(|e| e.sig.as_str() == "FNAM")
+                .map(|e| match &e.value {
+                    FieldValue::Uint(v) => *v as u32,
+                    other => panic!("unexpected {other:?}"),
+                })
+                .expect("FNAM");
+            assert_eq!(out, raw, "alias flag bit {raw:#x} was destroyed");
+        }
+        // FO76-only bits above the FO4 domain are still cleared.
+        assert_eq!(qust_alias_flag_mask(&schema) & 0x8000_0000, 0);
+    }
+
+    #[test]
+    fn scen_fnam_uses_phase_and_action_scopes() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        let mut record = Record {
+            sig: SigCode::from_str("SCEN").unwrap(),
+            form_key: FormKey::parse("40BD47@SeventySix.esm", &interner).unwrap(),
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: SmallVec::from_vec(vec![
+                FieldEntry {
+                    sig: SubrecordSig::from_str("FNAM").unwrap(),
+                    value: FieldValue::Uint(0x0020_0020),
+                },
+                FieldEntry {
+                    sig: SubrecordSig::from_str("HNAM").unwrap(),
+                    value: FieldValue::Bytes(SmallVec::new()),
+                },
+                FieldEntry {
+                    sig: SubrecordSig::from_str("FNAM").unwrap(),
+                    value: FieldValue::Bytes(SmallVec::from_slice(&1_u16.to_le_bytes())),
+                },
+                FieldEntry {
+                    sig: SubrecordSig::from_str("HNAM").unwrap(),
+                    value: FieldValue::Bytes(SmallVec::new()),
+                },
+                FieldEntry {
+                    sig: SubrecordSig::from_str("ANAM").unwrap(),
+                    value: FieldValue::Uint(0),
+                },
+                FieldEntry {
+                    sig: SubrecordSig::from_str("FNAM").unwrap(),
+                    value: FieldValue::Uint(0x0002_9000),
+                },
+                FieldEntry {
+                    sig: SubrecordSig::from_str("ANAM").unwrap(),
+                    value: FieldValue::Uint(3),
+                },
+                FieldEntry {
+                    sig: SubrecordSig::from_str("FNAM").unwrap(),
+                    value: FieldValue::Uint(0x8020_0000),
+                },
+            ]),
+            warnings: SmallVec::new(),
+        };
+
+        normalize_flags_and_enums(&mut record, &schema, &interner);
+
+        let flags = record
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.as_str() == "FNAM")
+            .map(|entry| match &entry.value {
+                FieldValue::Uint(value) => *value as u32,
+                FieldValue::Bytes(bytes) if bytes.len() == 2 => {
+                    u16::from_le_bytes(bytes[..2].try_into().unwrap()) as u32
+                }
+                other => panic!("FNAM must stay Uint, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(flags, vec![0x20, 1, 0x0002_9000, 0x0020_0000]);
+    }
+
+    /// `RACE.VNAM` carries the race's equipment-type mask. The `equip_type`
+    /// enum names bits 0-14 only, but Fallout4.esm sets the upper block on its
+    /// own races (`HumanRace`/`ProtectronRace` = `0xFFFF_8000`), so masking
+    /// against the named set drops valid FO4 bits: the FO76 Liberator source
+    /// VNAM `0xF8FF_E201` would become `0x6201`.
+    ///
+    /// Asserts the VALUE survives, not the schema mask, so it keeps passing if
+    /// `equip_type` is widened in schema_forge.
+    #[test]
+    fn race_vnam_equipment_flags_survive_class_a() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        // FO76 LiberatorRace 002ECF source value.
+        let raw: u32 = 0xF8FF_E201;
+        let mut record = Record {
+            sig: SigCode::from_str("RACE").unwrap(),
+            form_key: FormKey::parse("002ECF@SeventySix.esm", &interner).unwrap(),
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: SmallVec::from_vec(vec![FieldEntry {
+                sig: SubrecordSig::from_str("VNAM").unwrap(),
+                value: FieldValue::Uint(u64::from(raw)),
+            }]),
+            warnings: SmallVec::new(),
+        };
+        normalize_flags_and_enums(&mut record, &schema, &interner);
+        let out = match &record.fields[0].value {
+            FieldValue::Uint(v) => *v as u32,
+            other => panic!("VNAM must stay Uint, got {other:?}"),
+        };
+        assert_eq!(
+            out, raw,
+            "RACE.VNAM must survive Class A intact; upper equipment bits were stripped"
+        );
+    }
+
+    /// The same value must survive when VNAM decoded to raw bytes rather than a
+    /// scalar — the exemption is keyed at the dispatch point so representation
+    /// cannot reintroduce the strip.
+    #[test]
+    fn race_vnam_survives_class_a_as_raw_bytes() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        let raw: u32 = 0xF8FF_E201;
+        let mut record = Record {
+            sig: SigCode::from_str("RACE").unwrap(),
+            form_key: FormKey::parse("002ECF@SeventySix.esm", &interner).unwrap(),
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: SmallVec::from_vec(vec![FieldEntry {
+                sig: SubrecordSig::from_str("VNAM").unwrap(),
+                value: FieldValue::Bytes(raw.to_le_bytes().to_vec().into()),
+            }]),
+            warnings: SmallVec::new(),
+        };
+        normalize_flags_and_enums(&mut record, &schema, &interner);
+        match &record.fields[0].value {
+            FieldValue::Bytes(b) => assert_eq!(
+                u32::from_le_bytes(b[..4].try_into().unwrap()),
+                raw,
+                "RACE.VNAM bytes must survive Class A intact"
+            ),
+            other => panic!("VNAM must stay Bytes, got {other:?}"),
+        }
+    }
+
     /// EFSH.DNAM is a `record_form_version` union. The carried bytes are the FO4
     /// NEW format (fv>=106, no leading byte): source_blend@0, blend_op@4,
-    /// z_test@8 — all valid FO4 enum values. Class A must mask them against the
-    /// fv131 layout (the version the output is written at) so the valid values
-    /// survive. The pre-fix version-less layout picked the OLD-format variant
-    /// (leading byte ⇒ fields at offsets 1/5/9) and zeroed blend_op@4 + z_test@8,
-    /// the `<Unknown:0>` bug. Ground-truthed against output EFSH 863000.
+    /// z_test@8, all valid FO4 enum values. Masking against the fv131 layout
+    /// (the version the output is written at) keeps them. The version-less
+    /// OLD-format layout (leading byte ⇒ fields at offsets 1/5/9) would zero
+    /// blend_op@4 + z_test@8 (`<Unknown:0>`). Values from output EFSH 863000.
     #[test]
     fn efsh_dnam_membrane_enums_survive_at_fv131_layout() {
         let interner = StringInterner::new();
@@ -542,11 +828,9 @@ mod tests {
 
         // Real FO76 EFSH 863000 DNAM head: 05 (SourceAlpha) 01 (Add) 07 (GTE),
         // then color-key bytes. 157 bytes total. The Ambient Sound formlink lives
-        // at offset 108 (an `I`); seed a recognizable SNDR-ish formid there to
-        // prove the version-less (old-format, leading-byte) layout — which shifted
-        // an enum field onto byte 108 and zeroed the formid's low byte
-        // (0x2491AB -> 0x249100, the "Ambient Sound wrong type" errors) — no
-        // longer corrupts it under the fv131 layout.
+        // at offset 108 (an `I`). The old-format (leading-byte) layout puts an
+        // enum field on byte 108 and zeroes the formid's low byte
+        // (0x2491AB -> 0x249100, "Ambient Sound wrong type").
         let mut dnam = vec![0u8; 157];
         dnam[0..4].copy_from_slice(&5u32.to_le_bytes()); // membrane source blend mode
         dnam[4..8].copy_from_slice(&1u32.to_le_bytes()); // blend operation = Add
@@ -583,9 +867,8 @@ mod tests {
         );
     }
 
-    /// An out-of-domain enum value still clamps — the fix only changed WHICH
-    /// offsets are read, not the clamp policy. A blend_operation of 99 (invalid
-    /// in FO4's 1..=5 set) at the correct fv131 offset must clamp to fallback.
+    /// An out-of-domain enum value still clamps under the fv131 layout: a
+    /// blend_operation of 99 (invalid in FO4's 1..=5 set) clamps to fallback.
     #[test]
     fn efsh_dnam_invalid_enum_still_clamps_at_correct_offset() {
         let interner = StringInterner::new();
@@ -651,6 +934,56 @@ mod tests {
             &[0xab, 0xab, 0xab],
             "non-enum unknowns untouched"
         );
+    }
+
+    #[test]
+    fn wayward_duchess_sit_package_preserves_preferred_speed_flag() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        let source = hex::decode("0020000012000000D0FE0000").unwrap();
+        let mut record = Record {
+            sig: SigCode::from_str("PACK").unwrap(),
+            form_key: FormKey::parse("405EA8@SeventySix.esm", &interner).unwrap(),
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: SmallVec::from_vec(vec![FieldEntry {
+                sig: SubrecordSig::from_str("PKDT").unwrap(),
+                value: FieldValue::Bytes(SmallVec::from_vec(source.clone())),
+            }]),
+            warnings: SmallVec::new(),
+        };
+
+        normalize_flags_and_enums(&mut record, &schema, &interner);
+
+        let FieldValue::Bytes(output) = &record.fields[0].value else {
+            panic!("PKDT must stay Bytes");
+        };
+        assert_eq!(output.as_slice(), source);
+    }
+
+    #[test]
+    fn boomer_disabled_package_preserves_ignore_combat_flags() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        let source = hex::decode("00001008120002B0FFFE0000").unwrap();
+        let mut record = Record {
+            sig: SigCode::from_str("PACK").unwrap(),
+            form_key: FormKey::parse("15C695@SeventySix.esm", &interner).unwrap(),
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: SmallVec::from_vec(vec![FieldEntry {
+                sig: SubrecordSig::from_str("PKDT").unwrap(),
+                value: FieldValue::Bytes(SmallVec::from_vec(source.clone())),
+            }]),
+            warnings: SmallVec::new(),
+        };
+
+        normalize_flags_and_enums(&mut record, &schema, &interner);
+
+        let FieldValue::Bytes(output) = &record.fields[0].value else {
+            panic!("PKDT must stay Bytes");
+        };
+        assert_eq!(output.as_slice(), source);
     }
 
     /// FURN.FNAM is required by the FO4 schema and present on every vanilla FO4

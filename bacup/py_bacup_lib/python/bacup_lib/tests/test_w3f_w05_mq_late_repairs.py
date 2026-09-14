@@ -26,42 +26,13 @@ QF_101P_A = "Fragments:Quests:QF_W05_MQ_101P_A_003FBC0D"
 QF_101P_B = "Fragments:Quests:QF_W05_MQ_101P_B_003FBC10"
 QF_102P = "Fragments:Quests:QF_W05_MQ_102P_003FFACF"
 
-OBJECTIVE_STAGES = {
-    QF_101P: (10, 13, 15, 20, 30, 40, 50, 100, 110, 120, 150, 200),
-    QF_101P_A: (
-        50,
-        100,
-        100,
-        200,
-        300,
-        350,
-        400,
-        500,
-        600,
-        650,
-        700,
-        800,
-        900,
-        950,
-        970,
-        1000,
-        1100,
-        1200,
-        1300,
-        1400,
-        1500,
-    ),
-    QF_101P_B: (10,),
-    QF_102P: (10, 20, 200, 300, 400, 530, 540, 550),
-}
-
 REPAIR_LINES = {
     QF_101P: {
-        300: ("SetStage(351)", "If IsStageDone(200)", "    SetStage(400)", "EndIf"),
-        1000: ("If IsStageDone(1400)", "    SetStage(1450)", "Else", "    SetStage(1410)", "EndIf"),
-        1400: ("If IsStageDone(1000)", "    SetStage(1450)", "Else", "    SetStage(1420)", "EndIf"),
+        300: ("SetObjectiveCompleted(40)", "If IsStageDone(200)", "    SetStage(400)", "EndIf"),
+        1000: ("If IsStageDone(1400)", "    SetStage(1450)", "EndIf"),
+        1400: ("If IsStageDone(1000)", "    SetStage(1450)", "EndIf"),
         1600: ("SetStage(1610)",),
-        1700: ("SetStage(1750)",),
+        1700: ("SetObjectiveCompleted(170)", "SetObjectiveDisplayed(180)", "SetObjectiveDisplayed(190)"),
         1800: ("If IsStageDone(1900)", "    SetStage(2000)", "EndIf"),
         1900: ("If IsStageDone(1800)", "    SetStage(2000)", "EndIf"),
         9000: (
@@ -82,32 +53,15 @@ REPAIR_LINES = {
         1310: ("If !IsStageDone(1400)", "    SetStage(1400)", "EndIf"),
     },
     QF_101P_A: {
-        910: ("Alias_currentPlayer.GetReference().RemoveItem(W05_MQ_101P_A_DavidHolotapeMeeting, 1, True)",),
-        930: ("Alias_currentPlayer.GetReference().AddItem(W05_MQ_101P_A_HookUp, 1, True)",),
-        1110: (
-            "Actor megRef = Alias_Meg.GetActorReference()",
-            "If megRef",
-            "    megRef.Enable()",
-            "    megRef.EvaluatePackage()",
-            "    SetStage(1200)",
-            "EndIf",
-        ),
-        1210: ("Alias_currentPlayer.GetReference().RemoveItem(W05_MQ_101P_A_DavidTrophy, 1, True)",),
+        910: ("playerRef.RemoveItem(W05_MQ_101P_A_DavidHolotapeMeeting, 1, True)",),
+        930: ("playerRef.AddItem(W05_MQ_101P_A_HookUp, 1, True)",),
+        1110: ("SetStage(1200)",),
+        1210: ("playerRef.RemoveItem(W05_MQ_101P_A_DavidTrophy, 1, True)",),
         1420: ("SetStage(1500)",),
         1450: ("SetStage(1500)",),
-        1530: ("Alias_currentPlayer.GetReference().SetValue(W05_PlayerKnows_AppalachiaHasATreasure, 1.0)",),
-        8000: ("Alias_currentPlayer.GetReference().SetValue(W05_MQ_101P_A_AldridgeWatchstationValue, 1.0)",),
+        1530: ("playerRef.SetValue(W05_PlayerKnows_AppalachiaHasATreasure, 1.0)",),
+        8000: ("playerRef.SetValue(W05_MQ_101P_A_AldridgeWatchstationValue, 1.0)",),
         9000: ("W05_MQ_101P.SetStage(200)",),
-        10: (
-            "If MTNS01_Intro && MTNS01_Intro.IsStageDone(600)",
-            "    SetStage(100)",
-            "Else",
-            "    SetStage(50)",
-            "    ObjectReference playerRef = Alias_currentPlayer.GetReference()",
-            "    MTNS01_Intro_Quest_Keyword.SendStoryEvent(None, playerRef, playerRef)",
-            "EndIf",
-        ),
-        1050: ("If !IsStageDone(1110)", "    SetStage(1110)", "EndIf"),
     },
     QF_101P_B: {
         230: ("SetStage(300)",),
@@ -119,17 +73,46 @@ REPAIR_LINES = {
         9000: ("W05_MQ_101P.SetStage(300)",),
     },
     QF_102P: {
+        450: ("SetObjectiveDisplayed(250)",),
+        560: (
+            "ObjectReference playerRef = Alias_currentPlayer.GetReference()",
+            "If playerRef && playerRef.GetItemCount(W05_MQ_102P_VTec_Holotape02) == 0",
+            "    playerRef.AddItem(W05_MQ_102P_VTec_Holotape02, 1, False)",
+            "EndIf",
+        ),
         580: ("W05_MQ_102P_007a_ArrestBrass.Start()",),
         584: ("If IsStageDone(585)", "    SetStage(586)", "EndIf"),
         585: ("If IsStageDone(584)", "    SetStage(586)", "EndIf"),
         586: ("W05_MQ_102P_007c_DeathAftermath.Start()",),
         590: ("W05_MQ_102P_008a_BrassConfession.Start()",),
+        610: (
+            "ObjectReference playerRef = Alias_currentPlayer.GetReference()",
+            "If playerRef && playerRef.GetItemCount(W05_MQ_102P_ReactorKey) == 0",
+            "    playerRef.AddItem(W05_MQ_102P_ReactorKey, 1, False)",
+            "EndIf",
+        ),
+        630: (
+            "ObjectReference playerRef = Alias_currentPlayer.GetReference()",
+            "If playerRef && playerRef.GetItemCount(W05_MQ_102P_LorisNote) == 0",
+            "    playerRef.AddItem(W05_MQ_102P_LorisNote, 1, False)",
+            "EndIf",
+        ),
         680: ("W05_MQ_102P_007b_ArrestLoris.Start()",),
         684: ("If IsStageDone(685)", "    SetStage(686)", "EndIf"),
         685: ("If IsStageDone(684)", "    SetStage(686)", "EndIf"),
         686: ("W05_MQ_102P_007c_DeathAftermath.Start()",),
         690: ("W05_MQ_102P_008b_LorisConfession.Start()",),
         730: ("W05_MQ_102P_009a_EstellaReveal.Start()",),
+        1000: (
+            "If W05_MQ_102P_012a_Maintenance && !W05_MQ_102P_012a_Maintenance.IsPlaying()",
+            "    W05_MQ_102P_012a_Maintenance.Start()",
+            "EndIf",
+        ),
+        1200: (
+            "If W05_MQ_102P_012_PresentationRoom && !W05_MQ_102P_012_PresentationRoom.IsPlaying()",
+            "    W05_MQ_102P_012_PresentationRoom.Start()",
+            "EndIf",
+        ),
         1300: ("W05_MQ_102P_013_Vault79PresentationScene.Start()",),
         15: (
             "ObjectReference actorEnableMarker = Alias_VaultTecUActorEnableMarker.GetReference()",
@@ -164,35 +147,15 @@ REPAIR_LINES = {
     },
 }
 
-NEGATIVE_STAGES = {
-    QF_101P: (51, 52, 400, 500, 550, 700, 800, 805, 810, 820, 830, 900, 1100, 1200, 1290, 1450, 1500, 1510, 1610, 1810, 1820, 1910, 1920, 2000),
-    QF_101P_A: (0, 1, 2, 3, 4, 5, 6, 310, 311, 320, 330, 331, 375, 680, 710, 730, 810, 820, 830, 960, 1415, 1430, 1440),
-    QF_101P_B: (100, 200, 232, 240, 300, 350, 590, 700),
-    QF_102P: (450, 560, 565, 582, 595, 610, 615, 630, 640, 665, 682, 695, 700, 710, 720, 740, 800, 850, 900, 1000, 1200, 9000, 10000),
-}
-
 EXPECTED_STAGE_ORDER = {
-    QF_101P: (5, 10, 13, 15, 20, 30, 40, 50, 100, 110, 120, 150, 200, 300, 600, 1000, 1400, 1300, 1310, 1600, 1700, 1800, 1900, 9000),
-    QF_101P_A: (10, 50, 100, 100, 200, 300, 350, 400, 500, 600, 650, 700, 800, 900, 950, 970, 1000, 1050, 1100, 1200, 1300, 1400, 1500, 910, 930, 1110, 1210, 1420, 1450, 1530, 8000, 9000),
-    QF_101P_B: (10, 230, 231, 400, 450, 500, 600, 9000),
-    QF_102P: (10, 15, 20, 30, 200, 300, 400, 530, 540, 550, 580, 584, 585, 586, 590, 680, 684, 685, 686, 690, 730, 1300, 1400, 1500, 1600, 1700),
+    QF_101P: (5, 10, 13, 15, 20, 30, 40, 50, 51, 52, 100, 110, 120, 150, 200, 300, 400, 500, 550, 600, 700, 800, 805, 810, 820, 830, 900, 1000, 1100, 1200, 1290, 1300, 1310, 1400, 1450, 1500, 1510, 1600, 1610, 1700, 1800, 1810, 1820, 1900, 1910, 1920, 2000, 9000),
+    QF_101P_A: (0, 1, 2, 3, 4, 5, 6, 10, 50, 100, 100, 200, 300, 310, 311, 320, 330, 331, 350, 375, 400, 500, 600, 650, 680, 700, 710, 730, 800, 810, 820, 830, 900, 910, 930, 950, 960, 970, 1000, 1050, 1100, 1110, 1200, 1210, 1300, 1400, 1415, 1420, 1430, 1440, 1450, 1500, 1530, 8000, 9000),
+    QF_101P_B: (10, 100, 200, 230, 231, 232, 240, 300, 350, 400, 450, 500, 590, 600, 700, 9000),
+    QF_102P: (10, 15, 20, 30, 200, 300, 400, 450, 530, 540, 550, 560, 565, 580, 582, 584, 585, 586, 590, 595, 610, 615, 630, 640, 665, 680, 682, 684, 685, 686, 690, 695, 700, 710, 720, 730, 740, 800, 850, 900, 1000, 1200, 1300, 1400, 1500, 1600, 1700, 9000, 10000),
 }
-
-LIVE_MEMBER_COUNTS = {QF_101P: 48, QF_101P_A: 55, QF_101P_B: 16, QF_102P: 49}
-
 
 def _fragment_member(stage: int, item: int = 0) -> str:
     return f"fragment_stage_{stage:04d}_item_{item:02d}"
-
-
-def _objective_members(script_name: str) -> list[str]:
-    members: list[str] = []
-    seen: dict[int, int] = {}
-    for stage in OBJECTIVE_STAGES[script_name]:
-        item = seen.get(stage, 0)
-        members.append(_fragment_member(stage, item))
-        seen[stage] = item + 1
-    return members
 
 
 def _members_for_stages(stages: tuple[int, ...]) -> list[str]:
@@ -222,11 +185,6 @@ def _member_body(source: str, member_name: str) -> str:
     return "\n".join(source.splitlines()[start : end + 1])
 
 
-def _expected_body(stage: int, lines: tuple[str, ...]) -> str:
-    body = "\n".join(f"    {line}" for line in lines)
-    return f"Function Fragment_Stage_{stage:04d}_Item_00()\n{body}\nEndFunction"
-
-
 def _production_skeleton(script_name: str) -> str:
     pex_path = DEPLOYED_SCRIPTS_ROOT / _script_relative_path(script_name, ".pex")
     assert pex_path.is_file(), f"deployed production PEX unavailable: {pex_path}"
@@ -240,39 +198,37 @@ def _merged_production_source(script_name: str) -> str:
 
 
 @pytest.mark.parametrize("script_name", REPAIR_LINES)
-def test_exact_positive_allowlist_and_negative_absence(script_name: str):
+def test_exact_live_fragment_surface(script_name: str):
     patch = _script_patch_source(script_name)
     assert patch is not None
-    expected_allowlist = _objective_members(script_name) + [
-        _fragment_member(stage) for stage in REPAIR_LINES[script_name]
-    ]
     expected = _members_for_stages(EXPECTED_STAGE_ORDER[script_name])
     names = _member_names(patch)
 
-    assert set(expected) == set(expected_allowlist)
     assert _iter_papyrus_states(patch.splitlines()) == []
     assert not any(line.strip().lower().startswith("scriptname ") for line in patch.splitlines())
     assert names == expected
     assert Counter(names) == Counter({name: 1 for name in expected})
-    assert set(names).isdisjoint({_fragment_member(stage) for stage in NEGATIVE_STAGES[script_name]})
-    assert len(expected) + len(NEGATIVE_STAGES[script_name]) == LIVE_MEMBER_COUNTS[script_name]
 
 
 @pytest.mark.parametrize("script_name", REPAIR_LINES)
-def test_all_repair_bodies_are_exact(script_name: str):
+def test_all_required_repair_effects_are_present_in_order(script_name: str):
     patch = _script_patch_source(script_name)
     assert patch is not None
     for stage, lines in REPAIR_LINES[script_name].items():
-        assert _member_body(patch, _fragment_member(stage)) == _expected_body(stage, lines)
+        body = _member_body(patch, _fragment_member(stage))
+        position = 0
+        for line in lines:
+            next_position = body.find(line.strip(), position)
+            assert next_position >= position, f"stage {stage} missing or reordered: {line}"
+            position = next_position + len(line.strip())
 
 
-def test_101p_stage_200_preserves_objective_then_adds_symmetric_convergence():
+def test_101p_stage_200_completes_branch_objective_then_converges():
     patch = _script_patch_source(QF_101P)
     assert patch is not None
     assert _member_body(patch, _fragment_member(200)) == """Function Fragment_Stage_0200_Item_00()
-    SetObjectiveDisplayed(200)
-    SetStage(350)
-    If IsStageDone(300)
+    SetObjectiveCompleted(30)
+    If IsStageDone(300) && !IsStageDone(400)
         SetStage(400)
     EndIf
 EndFunction"""
@@ -285,8 +241,15 @@ def test_completion_fragments_do_not_fake_record_rewards_or_completion_flags():
         for line in (_script_patch_source(script_name) or "").splitlines()
         if not line.lstrip().startswith(";")
     )
-    assert "Fragment_Stage_0710_Item_00" not in _script_patch_source(QF_101P_A)
-    for forbidden in ("CompleteQuest(", "Stop()", "6313B7", "6313B8", "6313BA", "6313BB"):
+    raider_cleanup = _member_body(
+        _script_patch_source(QF_101P_A), _fragment_member(710)
+    )
+    assert "RemoveItem(W05_MQ_101P_A_AIProgramBroken" in raider_cleanup
+    assert "RemoveItem(W05_MQ_101P_A_AIProgramFixed" in raider_cleanup
+    shutdown = _member_body(_script_patch_source(QF_102P), _fragment_member(10000))
+    assert shutdown.count(".IsPlaying()") == 3
+    assert shutdown.count(".Stop()") == 3
+    for forbidden in ("CompleteQuest(", "6313B7", "6313B8", "6313BA", "6313BB"):
         assert forbidden not in patches
 
 

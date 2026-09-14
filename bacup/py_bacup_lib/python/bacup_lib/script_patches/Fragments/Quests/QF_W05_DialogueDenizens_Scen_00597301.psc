@@ -1,5 +1,5 @@
 Function Fragment_Stage_9000_Item_00()
-    DenizenDialogueScript ownerQuest = Self as DenizenDialogueScript
+    DenizenDialogueScript ownerQuest = (Self as Quest) as DenizenDialogueScript
     If ownerQuest
         ownerQuest.RepConvoOutcomeDV = 0
     EndIf

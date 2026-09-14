@@ -1,12 +1,38 @@
 Event OnQuestInit()
-    Int i = 3
+    Int i = 0
     While i < CodeData.Length
         CodeDatum launchData = CodeData[i]
-        launchData.bIsInCooldown = False
+        If i < 3
+            ObjectReference exteriorKeypad = launchData.Keypad.GetReference()
+            If exteriorKeypad != None
+                launchData.KeypadActive.ForceRefTo(exteriorKeypad)
+                exteriorKeypad.BlockActivation(False, False)
+            EndIf
+        Else
+            launchData.bIsInCooldown = False
+        EndIf
         CodeData[i] = launchData
         i += 1
     EndWhile
 EndEvent
+
+Bool Function PrepareLocalSiloEntry(ActorValue akLaunchCardValue, ObjectReference akEntryRef = None)
+    ActorValue bravoLaunchCard = Game.GetFormFromFile(0x003E58A1, "SeventySix.esm") as ActorValue
+    ActorValue charlieLaunchCard = Game.GetFormFromFile(0x003E58A2, "SeventySix.esm") as ActorValue
+    Int siloID = 0
+    If akLaunchCardValue == bravoLaunchCard
+        siloID = 1
+    ElseIf akLaunchCardValue == charlieLaunchCard
+        siloID = 2
+    EndIf
+    If siloID < 0 || siloID >= CodeData.Length || CodeData[siloID].SiloLocation == None
+        Return False
+    EndIf
+
+    Quest startupQuest = Game.GetFormFromFile(0x0050FDEE, "SeventySix.esm") as Quest
+    MSiloStartupQuestScript startup = startupQuest as MSiloStartupQuestScript
+    Return startup != None && startup.StartPreparedSilo(CodeData[siloID].SiloLocation, akEntryRef)
+EndFunction
 
 Function HandleLocalLaunchCard(ObjectReference akConsoleRef)
     Int i = 3
@@ -91,8 +117,6 @@ Bool Function BeginLocalLaunch(Int aiSiloID, Int aiLaunchID, Actor akLaunchingPl
         launchData.SiloState.SetValue(iSiloStateLaunching as Float)
     EndIf
     CodeData[aiLaunchID] = launchData
-    iDebugNukeRegionIndex = aiSiloID
-
     Quest fleeSiloQuest = Game.GetFormFromFile(0x002D0F68, "SeventySix.esm") as Quest
     EN07_FleeSiloScript fleeSilo = fleeSiloQuest as EN07_FleeSiloScript
     If fleeSilo != None
@@ -103,10 +127,24 @@ Bool Function BeginLocalLaunch(Int aiSiloID, Int aiLaunchID, Actor akLaunchingPl
     EN07_FleeBlastQuestScript fleeBlast = fleeBlastQuest as EN07_FleeBlastQuestScript
     Bool blastStarted = False
     If fleeBlast != None
+        ReferenceAlias blastAlias = fleeBlastQuest.GetAlias(0) as ReferenceAlias
+        ReferenceAlias launchingPlayerAlias = fleeBlastQuest.GetAlias(14) as ReferenceAlias
+        LocationAlias triggerLocationAlias = fleeBlastQuest.GetAlias(8) as LocationAlias
+        If blastAlias != None
+            blastAlias.ForceRefTo(blastMarker)
+        EndIf
+        If launchingPlayerAlias != None
+            launchingPlayerAlias.ForceRefTo(akLaunchingPlayer)
+        EndIf
+        Location blastLocation = blastMarker.GetCurrentLocation()
+        If triggerLocationAlias != None && blastLocation != None
+            triggerLocationAlias.ForceLocationTo(blastLocation)
+        EndIf
+        EN07_FleeBlastQuestStartKeyword.SendStoryEventAndWait(blastLocation, blastMarker, akLaunchingPlayer, aiSiloID, aiLaunchID)
         blastStarted = fleeBlast.BeginLocalBlast(blastMarker, akLaunchingPlayer, aiSiloID, aiLaunchID, blastData.SmokeEffectSpell, blastData.BlastEffectSpell)
     EndIf
     If !blastStarted
-        StartTimer(180.0, 7001)
+        StartTimer(180.0, 7001 + aiSiloID)
     EndIf
     Return True
 EndFunction
@@ -147,12 +185,16 @@ Function CompleteLocalLaunch(Int aiSiloID, Int aiLaunchID)
         fleeSilo.FinishLocalLaunch()
     EndIf
 
+    Quest personalQuest = Game.GetFormFromFile(0x003E03AA, "SeventySix.esm") as Quest
+    If personalQuest != None && personalQuest.IsRunning() && !personalQuest.IsStageDone(1000)
+        personalQuest.SetStage(1000)
+    EndIf
+
     Float cooldownSeconds = EN07_SiloResetCooldown.GetValue()
     If cooldownSeconds <= 0.0
         cooldownSeconds = 900.0
     EndIf
-    iDebugNukeRegionIndex = aiSiloID
-    StartTimer(cooldownSeconds, 7002)
+    StartTimer(cooldownSeconds, 7011 + aiSiloID)
 EndFunction
 
 Function ResetLocalSilo(Int aiSiloID, Int aiLaunchID)
@@ -191,9 +233,10 @@ Function ResetLocalSilo(Int aiSiloID, Int aiLaunchID)
 EndFunction
 
 Event OnTimer(Int aiTimerID)
-    If aiTimerID == 7001
-        DetonateLocalBlastFallback(iDebugNukeRegionIndex)
-    ElseIf aiTimerID == 7002
-        ResetLocalSilo(iDebugNukeRegionIndex, iDebugNukeRegionIndex + 3)
+    If aiTimerID >= 7001 && aiTimerID <= 7003
+        DetonateLocalBlastFallback(aiTimerID - 7001)
+    ElseIf aiTimerID >= 7011 && aiTimerID <= 7013
+        Int siloID = aiTimerID - 7011
+        ResetLocalSilo(siloID, siloID + 3)
     EndIf
 EndEvent

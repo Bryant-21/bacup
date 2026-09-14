@@ -101,6 +101,9 @@ pub enum CreatureRacePolicy {
         architecture: CreatureArchitecture,
         race: FormKey,
     },
+    TemplateProxy {
+        template: FormKey,
+    },
     Unsupported {
         architecture: CreatureArchitecture,
         reason: UnsupportedCreatureReason,
@@ -122,6 +125,7 @@ impl CreatureRaceDecision {
     pub fn audited_race(&self) -> Result<Option<FormKey>, UnsupportedCreatureReason> {
         match self.policy {
             CreatureRacePolicy::AuditedDonor { race, .. } => Ok(Some(race)),
+            CreatureRacePolicy::TemplateProxy { .. } => Ok(None),
             CreatureRacePolicy::Unsupported { reason, .. } => Err(reason),
         }
     }
@@ -130,6 +134,7 @@ impl CreatureRaceDecision {
         match self.policy {
             CreatureRacePolicy::AuditedDonor { architecture, .. }
             | CreatureRacePolicy::Unsupported { architecture, .. } => architecture,
+            CreatureRacePolicy::TemplateProxy { .. } => CreatureArchitecture::Unknown,
         }
     }
 }
@@ -300,7 +305,12 @@ pub(crate) fn apply_legacy_creature_race_policy(
         behavior_path: behavior_path.as_deref(),
         legacy_rnam: legacy_rnam.as_deref(),
     };
-    let decision = classify_legacy_creature_race(&evidence, interner);
+    let mut decision = classify_legacy_creature_race(&evidence, interner);
+    if model_path.is_none() && skeleton_path.is_none() && behavior_path.is_none() {
+        if let Some(template) = exact_non_null_form_key(record, "TPLT") {
+            decision.policy = CreatureRacePolicy::TemplateProxy { template };
+        }
+    }
     let event = CreatureRaceGateEvent {
         decision: decision.clone(),
         source_form_id: record.form_key.local,
@@ -315,6 +325,7 @@ pub(crate) fn apply_legacy_creature_race_policy(
             });
             Ok(Some(event))
         }
+        CreatureRacePolicy::TemplateProxy { .. } => Ok(Some(event)),
         CreatureRacePolicy::Unsupported {
             architecture,
             reason,
@@ -366,6 +377,34 @@ pub(crate) fn validate_crea_derived_npc_race(
         )));
     }
 
+    if let CreatureRacePolicy::TemplateProxy { .. } = &event.decision.policy {
+        let tplt = record
+            .fields
+            .iter()
+            .filter(|field| field.sig.0 == *b"TPLT")
+            .collect::<Vec<_>>();
+        if tplt.len() != 1 {
+            return Err(error(format!(
+                "CREA-derived template NPC_ has {} TPLT fields, expected exactly one",
+                tplt.len()
+            )));
+        }
+        let FieldValue::FormKey(target_template) = tplt[0].value else {
+            return Err(error(
+                "CREA-derived template NPC_.TPLT is not a typed FormKey".to_owned(),
+            ));
+        };
+        if target_template.local == 0 {
+            return Err(error("CREA-derived template NPC_.TPLT is null".to_owned()));
+        }
+        if record.fields.iter().any(|field| field.sig.0 == *b"RNAM") {
+            return Err(error(
+                "CREA-derived template NPC_ unexpectedly has a concrete RNAM".to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+
     let rnam = record
         .fields
         .iter()
@@ -393,6 +432,22 @@ pub(crate) fn validate_crea_derived_npc_race(
         )));
     }
     Ok(())
+}
+
+fn exact_non_null_form_key(record: &Record, signature: &str) -> Option<FormKey> {
+    let values = record
+        .fields
+        .iter()
+        .filter(|field| field.sig.as_str() == signature)
+        .filter_map(|field| match field.value {
+            FieldValue::FormKey(form_key) if form_key.local != 0 => Some(form_key),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [value] = values.as_slice() else {
+        return None;
+    };
+    Some(*value)
 }
 
 fn legacy_rnam_bytes(value: &FieldValue) -> Vec<u8> {
@@ -545,6 +600,7 @@ pub struct CreatureRaceCoverageReport {
     pub expected_candidates: usize,
     pub candidates: usize,
     pub audited_donors: usize,
+    pub template_proxies: usize,
     pub humanoid_no_ops: usize,
     pub explicit_unsupported: usize,
     pub unresolved_architecture: usize,
@@ -594,6 +650,9 @@ impl CreatureRaceCoverageReport {
                     self.donor_on_wrong_record_type += 1;
                 }
             }
+            CreatureRacePolicy::TemplateProxy { .. } => {
+                self.template_proxies += 1;
+            }
             CreatureRacePolicy::Unsupported { reason, .. } => {
                 self.explicit_unsupported += 1;
                 match reason {
@@ -623,13 +682,6 @@ pub fn build_creature_race_coverage(
         report.observe_decision(&decision, candidate.source_record_type);
     }
     report
-}
-
-pub fn build_full_creature_race_coverage(
-    evidence: &[CreatureRaceEvidence<'_>],
-    interner: &StringInterner,
-) -> CreatureRaceCoverageReport {
-    build_creature_race_coverage(evidence, EXPECTED_FULL_MERGED_CREA_CANDIDATES, interner)
 }
 
 #[cfg(test)]
@@ -810,7 +862,7 @@ mod tests {
         let mut record = creature_record(
             &interner,
             "CREA",
-            "FNV_FO3_Merged.esm",
+            "FalloutNV.esm",
             "LegionCreature",
             "characters/_male/skeleton.nif",
         );
@@ -946,18 +998,13 @@ mod tests {
             "Creatures/Cazador/cazador.nif",
             "Creatures/Securitron/securitron.nif",
         ] {
-            let mut record = creature_record(
-                &interner,
-                "CREA",
-                "FNV_FO3_Merged.esm",
-                "BadCreature",
-                model,
-            );
+            let mut record =
+                creature_record(&interner, "CREA", "FalloutNV.esm", "BadCreature", model);
             let error =
                 apply_legacy_creature_race_policy(Game::Fnv, Game::Fo4, &mut record, &interner)
                     .unwrap_err();
             let diagnostic = error.to_string();
-            assert!(diagnostic.contains("FNV_FO3_Merged.esm"));
+            assert!(diagnostic.contains("FalloutNV.esm"));
             assert!(diagnostic.contains("123456"));
             assert!(diagnostic.contains("BadCreature"));
             assert!(diagnostic.contains("coverage_reason"));
@@ -997,6 +1044,40 @@ mod tests {
                 .is_none()
         );
         assert_eq!(fo76.fields, fo76_before);
+    }
+
+    #[test]
+    fn template_backed_creature_preserves_leveled_npc_projection_without_a_concrete_race() {
+        let interner = StringInterner::new();
+        let mut source = creature_record(
+            &interner,
+            "CREA",
+            "FalloutNV.esm",
+            "LeveledCreatureProxy",
+            "unused.nif",
+        );
+        source.fields.retain(|field| field.sig.0 != *b"MODL");
+        source.fields.push(FieldEntry {
+            sig: SubrecordSig(*b"TPLT"),
+            value: FieldValue::FormKey(FormKey {
+                local: 0x900,
+                plugin: interner.intern("FalloutNV.esm"),
+            }),
+        });
+
+        let event = apply_legacy_creature_race_policy(Game::Fnv, Game::Fo4, &mut source, &interner)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event.decision.policy,
+            CreatureRacePolicy::TemplateProxy { .. }
+        ));
+        assert!(!source.fields.iter().any(|field| field.sig.0 == *b"RNAM"));
+
+        source.sig = SigCode(*b"NPC_");
+        assert!(
+            validate_crea_derived_npc_race(&source, Some(&event), &interner, |_| false).is_ok()
+        );
     }
 
     #[test]
@@ -1107,7 +1188,7 @@ mod tests {
         let decision = classify_legacy_creature_race(
             &evidence(
                 LegacyCreatureFamily::Fnv,
-                "FNV_FO3_Merged.esm",
+                "FalloutNV.esm",
                 "CREA",
                 Some("Creatures/Dog/dog.nif"),
             ),

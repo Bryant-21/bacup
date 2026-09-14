@@ -1,23 +1,18 @@
 //! Derive PowerArmor subgraph blocks from parsed Human additive blocks.
 //!
-
-//! # What this does
-//! Substitutes Character animation paths with their PowerArmor equivalents:
+//! Character animation paths map to PowerArmor equivalents:
 //! - `Actors\Character\animations\weapon\<name>`
 //!   → `Actors\powerarmor\animations\Weapons\<name>`
 //! - Heavy weapon roots like `Weapon\M2` / `Weapon\GripHeavy`
 //!   → FO4 PA heavy roots (`Weapons\M2`, `Grips\Minigun`)
 //! - `Actors\Character\_1stPerson\animations\<name>`
-//!   → `Actors\powerarmor\_1stperson\animations\<name>`
+//!   → `Actors\powerarmor\_1stperson\animations\<name>`, with the Character
+//!     path chain as a fallback
 //!
-//! Only blocks that contain at least one PA-relevant path (i.e., a Character
-//! weapon-specific or first-person path that maps to a PA path) are included
-//! in the output. Generic shared paths (e.g. `Actors\Character\Animations\Paired`)
-//! alone don't warrant a PA subgraph entry.
-//!
-//! Path matching is case-insensitive on the prefix segments (Python regex
-//! uses `(?i)` and accepts both `/` and `\` as separators); the rewritten
-//! output always uses backslashes to match the FO4 file-system convention.
+//! Only blocks with at least one such path are emitted; generic shared paths
+//! (`Actors\Character\Animations\Paired`) alone don't warrant one. Prefix
+//! matching is case-insensitive and accepts `/` or `\`; output always uses
+//! backslashes.
 
 use crate::fixups::face::build_additive_race_record::SubgraphBlock;
 use crate::sym::{StringInterner, Sym};
@@ -26,10 +21,6 @@ use crate::sym::{StringInterner, Sym};
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Derive PowerArmor subgraph blocks from Human additive blocks by
-/// substituting Character animation paths with PA equivalents.
-///
-/// Only blocks containing at least one PA-relevant path are emitted.
 /// `RACE.SRAF.role` value for furniture blocks (SRAF = role u16, perspective
 /// u16). Furniture subgraphs have no PowerArmor equivalent — the engine exits
 /// PA for furniture — so they must not be derived onto the PA carrier.
@@ -43,6 +34,8 @@ fn is_furniture_role(block: &SubgraphBlock) -> bool {
         .is_some_and(|role| u16::from_le_bytes([role[0], role[1]]) == SRAF_ROLE_FURNITURE)
 }
 
+/// Derive PowerArmor subgraph blocks from Human additive blocks; only blocks
+/// with a PA-relevant path are emitted.
 pub fn derive_pa_subgraph_blocks(
     human_blocks: &[SubgraphBlock],
     interner: &StringInterner,
@@ -53,6 +46,7 @@ pub fn derive_pa_subgraph_blocks(
             continue;
         }
         let mut new_paths: Vec<Sym> = Vec::with_capacity(block.paths.len());
+        let mut pa_first_person_paths: Vec<Sym> = Vec::new();
         let mut has_specific = false;
         let heavy_weapon_block = block
             .paths
@@ -74,9 +68,12 @@ pub fn derive_pa_subgraph_blocks(
                 push_interned_path(&mut new_paths, &pa, interner);
                 has_specific = true;
             } else if let Some(rest) = strip_character_1stperson_prefix(&resolved) {
-                let pa = format!("Actors\\powerarmor\\_1stperson\\animations\\{rest}");
-                new_paths.push(interner.intern(&pa));
-                has_specific = true;
+                if !is_generic_first_person_path(&rest) {
+                    let pa = format!("Actors\\powerarmor\\_1stperson\\animations\\{rest}");
+                    push_interned_path(&mut pa_first_person_paths, &pa, interner);
+                    has_specific = true;
+                }
+                new_paths.push(*s);
             } else if heavy_weapon_block
                 && path_eq_ci(&resolved, "Actors\\Character\\Animations\\Paired")
             {
@@ -91,6 +88,10 @@ pub fn derive_pa_subgraph_blocks(
         }
         if !has_specific {
             continue;
+        }
+        if !pa_first_person_paths.is_empty() {
+            pa_first_person_paths.extend(new_paths);
+            new_paths = pa_first_person_paths;
         }
         let mut new_block = block.clone();
         new_block.behaviour_graph =
@@ -128,6 +129,10 @@ fn strip_character_1stperson_prefix(s: &str) -> Option<String> {
     let r2 = strip_one_segment_ci(&r1, "Character")?;
     let r3 = strip_one_segment_ci(&r2, "_1stPerson")?;
     strip_one_segment_ci(&r3, "animations")
+}
+
+fn is_generic_first_person_path(rest: &str) -> bool {
+    rest_eq_or_under_ci(rest, "Common") || rest_eq_or_under_ci(rest, "Paired")
 }
 
 /// Strip one case-insensitive segment followed by `/` or `\`. Returns the
@@ -255,27 +260,49 @@ mod tests {
         );
     }
 
-    /// character-1stperson path is rewritten.
+    /// PA first-person paths supplement the complete Character fallback chain.
     #[test]
-    fn rewrites_first_person() {
+    fn preserves_first_person_character_fallbacks() {
         let mut interner = StringInterner::new();
         let block = SubgraphBlock {
             behaviour_graph: sym(
                 "Actors\\Character\\_1stPerson\\Behaviors\\Pistol_GunWrappingBehavior.hkx",
                 &mut interner,
             ),
-            paths: vec![sym(
-                "Actors\\Character\\_1stPerson\\animations\\MyAnim",
-                &mut interner,
-            )],
+            paths: vec![
+                sym(
+                    "Actors\\Character\\_1stPerson\\animations\\Paired",
+                    &mut interner,
+                ),
+                sym(
+                    "Actors\\Character\\_1stPerson\\animations\\MyAnim",
+                    &mut interner,
+                ),
+                sym(
+                    "Actors\\Character\\_1stPerson\\animations\\Common",
+                    &mut interner,
+                ),
+            ],
             subgraph_keywords: vec![],
             target_keywords: vec![],
             flags_bytes: None,
         };
         let out = derive_pa_subgraph_blocks(&[block], &mut interner);
         assert_eq!(out.len(), 1);
-        let p = interner.resolve(out[0].paths[0]).unwrap();
-        assert_eq!(p, "Actors\\powerarmor\\_1stperson\\animations\\MyAnim");
+        let paths: Vec<_> = out[0]
+            .paths
+            .iter()
+            .map(|path| interner.resolve(*path).unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "Actors\\powerarmor\\_1stperson\\animations\\MyAnim",
+                "Actors\\Character\\_1stPerson\\animations\\Paired",
+                "Actors\\Character\\_1stPerson\\animations\\MyAnim",
+                "Actors\\Character\\_1stPerson\\animations\\Common",
+            ]
+        );
         assert_eq!(
             interner.resolve(out[0].behaviour_graph).unwrap(),
             "Actors\\Character\\_1stPerson\\Behaviors\\GunBehavior.hkx"

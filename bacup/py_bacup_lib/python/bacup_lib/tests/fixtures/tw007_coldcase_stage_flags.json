@@ -1,0 +1,32 @@
+{
+  "source": {
+    "command": "modkit.exe --game fo76 --format compact data record 2C460C:SeventySix.esm --content",
+    "record": "2C460C:SeventySix.esm",
+    "editor_id": "TW007_ColdCase",
+    "stages": {
+      "1700": {
+        "index_flags": [],
+        "stage_flags": ["CompleteQuest"]
+      },
+      "2000": {
+        "index_flags": ["RunOnStop"],
+        "stage_flags": []
+      }
+    }
+  },
+  "live": {
+    "command": "modkit.exe esp get-record --authoring mods/SeventySix/SeventySix.esm 002C460C",
+    "record": "002C460C",
+    "editor_id": "TW007_ColdCase",
+    "stages": {
+      "1700": {
+        "index_flags": [],
+        "stage_flags": ["CompleteQuest"]
+      },
+      "2000": {
+        "index_flags": ["RunOnStop"],
+        "stage_flags": []
+      }
+    }
+  }
+}

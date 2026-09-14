@@ -1,39 +1,25 @@
 //! Fixup: resolve post-copy placed-reference targets.
 //!
-//! # Why
-//! A teleport door's `XTEL` (Teleport-Destination) carries the destination door
-//! FormID at byte offset 0 and the transition-interior CELL FormID at offset 32.
-//! In FO76 the source plugin has NO masters, so its own refs use master byte
-//! `0x00`. The cell-slice copy path (`cell_slice::rewrite_placed_child_local_refs`,
-//! offsets `[0,32]`) remaps that own byte `0x00` → the FO4 output own index for
-//! EXTERIOR / worldspace placed children. The interior-cell emit path
-//! (`run::emit_interior_cells`) uses a separate translate/insert path, and `XTEL`
-//! has an IDENTICAL FO76/FO4 layout (`struct:I,f×6,I,I`) so relayout keeps it as
-//! RAW bytes — `FormKeyMapper::rewrite_record` only touches decoded FormKey leaves,
-//! never these raw bytes. So interior teleport doors reach the output with the
-//! FO76 byte `0x00` intact, which in the FO4 load order resolves to the FIRST
-//! master (`Fallout4.esm`) instead of the converted own door → dead teleport
-//! (e.g. `coc WhitespringMall01` exit doors do nothing).
+//! `XTEL` (Teleport-Destination, `struct:I,f×6,I,I`) holds the destination door at
+//! offset 0 and the transition-interior CELL at offset 32. The masterless FO76
+//! source uses own master byte `0x00`. The cell-slice copy
+//! (`cell_slice::rewrite_placed_child_local_refs`, offsets `[0,32]`) remaps it for
+//! exterior children, but interior cells go through `run::emit_interior_cells`, and
+//! XTEL's identical FO76/FO4 layout stays raw bytes that
+//! `FormKeyMapper::rewrite_record` never touches. `0x00` then resolves to
+//! `Fallout4.esm` and the teleport is dead (e.g. `coc WhitespringMall01` exit doors).
 //!
-//! # How
-//! Runs in the POST-COPY hook (`ConversionRun::repair_placed_child_refs`) where
-//! ALL placed children — interior and exterior — are present. Path-independent
-//! like `resolve_placed_leveled_bases`: a future copy path can't bypass it.
-//!
-//! For each REFR carrying an `XTEL`, the door FormID (offset 0) is rewritten to the
-//! own plugin when it currently names a target MASTER but an own REFR exists at the
-//! same object-id (the preserved partner door); the transition CELL (offset 32) is
-//! rewritten the same way against own CELLs. FO76 is masterless, so the own record
-//! wins even when a FO4 master happens to contain the same object-id. Doors already
-//! pointing at the own
-//! plugin (correct exterior/worldspace doors, or interior doors that happened to be
-//! emitted via the cell-slice path) are a no-op (idempotent). Object-ids are
-//! preserved across this conversion, so the own record at the door's object-id IS
-//! the intended target.
+//! Runs in the post-copy hook (`ConversionRun::repair_placed_child_refs`) with all
+//! placed children present, so no copy path bypasses it. A door (offset 0) naming a
+//! target master is rewritten to the own plugin when an own REFR exists at that
+//! object-id; the transition CELL (offset 32) likewise against own CELLs. Object-ids
+//! are preserved and FO76 is masterless, so the own record wins even when a FO4
+//! master has the same id. Doors already pointing at the own plugin are left alone.
 //!
 //! Optional `XASP`, `XCZR`, and `XOWN` payloads use the same final resolver and
 //! are omitted when their targets are still absent. An `XTEL` whose destination
-//! door or non-null transition cell is absent is omitted as a complete payload.
+//! door is absent/nonpersistent, or whose non-null transition cell is absent, is
+//! omitted as a complete payload.
 
 use rustc_hash::FxHashSet;
 
@@ -54,6 +40,7 @@ const XTEL_DOOR_OFFSET: usize = 0;
 /// `XTEL` byte offset of the transition-interior CELL FormID (offset 28 is a u32
 /// flags word, not a FormID). Matches `cell_slice`'s `XTEL => &[0, 32]`.
 const XTEL_TRANSITION_OFFSET: usize = 32;
+const RECORD_FLAG_PERSISTENT: u32 = 0x0000_0400;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RefResolution {
@@ -115,26 +102,137 @@ fn read_formid(buf: &[u8], offset: usize) -> Option<u32> {
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
+/// Stage-local REFR view built after workshop structural writes and discarded
+/// before actor specialization can invalidate record identity indexes again.
+#[derive(Default)]
+pub(crate) struct PlacedRefrDiscovery {
+    repair_applicable: bool,
+    pub(crate) shared_candidates_available: bool,
+    pub(crate) all_refr_fks: Vec<FormKey>,
+    pub(crate) teleport_candidates: Vec<FormKey>,
+    pub(crate) light_radius_candidates: Vec<FormKey>,
+    pub(crate) xezn_candidates: Vec<FormKey>,
+    pub(crate) records_seen: usize,
+    pub(crate) records_inspected: usize,
+}
+
+pub(crate) fn discover_placed_refr_candidates(
+    session: &mut PluginSession,
+    interner: &crate::sym::StringInterner,
+) -> Result<PlacedRefrDiscovery, FixupError> {
+    let present = session
+        .target_signatures()
+        .map_err(|e| FixupError::HandleError(e.to_string()))?;
+    if !present.iter().any(|s| s.as_str() == "REFR") {
+        return Ok(PlacedRefrDiscovery {
+            shared_candidates_available: true,
+            ..Default::default()
+        });
+    }
+    if session.target_masters().len() > 0xFF {
+        return Ok(PlacedRefrDiscovery::default());
+    }
+
+    let refr_sig = SigCode::from_str("REFR").map_err(|e| FixupError::SchemaError(e.to_string()))?;
+    let all_refr_fks = session
+        .form_keys_of_sig(refr_sig, interner)
+        .map_err(|e| FixupError::HandleError(e.to_string()))?;
+    let mut discovery = PlacedRefrDiscovery {
+        repair_applicable: true,
+        shared_candidates_available: true,
+        records_seen: all_refr_fks.len(),
+        all_refr_fks,
+        ..Default::default()
+    };
+
+    for fk in &discovery.all_refr_fks {
+        let Ok(raw_form_id) = session.raw_form_id_for_form_key(fk) else {
+            discovery.light_radius_candidates.push(*fk);
+            continue;
+        };
+        let Ok(record) = session.record(raw_form_id) else {
+            discovery.light_radius_candidates.push(*fk);
+            continue;
+        };
+        discovery.records_inspected += 1;
+        let mut teleport = false;
+        let mut light_radius = false;
+        let mut xezn = false;
+        for subrecord in &record.subrecords {
+            match subrecord.signature.as_str() {
+                "XTEL" | "XASP" | "XCZR" | "XOWN" => teleport = true,
+                "XRDS" => light_radius = true,
+                "XEZN" => xezn = true,
+                _ => {}
+            }
+        }
+        if teleport {
+            discovery.teleport_candidates.push(*fk);
+        }
+        if light_radius {
+            discovery.light_radius_candidates.push(*fk);
+        }
+        if xezn {
+            discovery.xezn_candidates.push(*fk);
+        }
+    }
+
+    Ok(discovery)
+}
+
 /// Repair interior placed-door teleport targets in the finished output plugin.
 /// Mirrors `resolve_placed_leveled_bases`: called from the post-copy hook so it
 /// sees every placed child (interior + exterior), and operates on raw `XTEL` bytes
-/// (no schema decode of the millions of placed refs). Scoped to FO76→FO4 by the
-/// caller (`ConversionRun::repair_placed_child_refs`).
+/// (no schema decode of the millions of placed refs). Scoped to FO76/Starfield→FO4
+/// by the caller (`ConversionRun::repair_placed_child_refs`).
 pub fn repair_placed_references(
     session: &mut PluginSession,
     mapper: &mut FormKeyMapper,
     config: &FixupConfig,
 ) -> Result<FixupReport, FixupError> {
-    let mut report = FixupReport::empty();
-    let interner = mapper.interner;
-
-    // REFR is the only placed type that carries an XTEL teleport destination.
     let present = session
         .target_signatures()
         .map_err(|e| FixupError::HandleError(e.to_string()))?;
     if !present.iter().any(|s| s.as_str() == "REFR") {
-        return Ok(report);
+        return Ok(FixupReport::empty());
     }
+    if session.target_masters().len() > 0xFF {
+        return Ok(FixupReport::empty());
+    }
+    let refr_sig = SigCode::from_str("REFR").map_err(|e| FixupError::SchemaError(e.to_string()))?;
+    let refr_fks = session
+        .form_keys_of_sig(refr_sig, mapper.interner)
+        .map_err(|e| FixupError::HandleError(e.to_string()))?;
+    repair_placed_references_with_refr_inputs(session, mapper, config, &refr_fks, None)
+}
+
+pub(crate) fn repair_placed_references_with_candidates(
+    session: &mut PluginSession,
+    mapper: &mut FormKeyMapper,
+    config: &FixupConfig,
+    discovery: &PlacedRefrDiscovery,
+) -> Result<FixupReport, FixupError> {
+    if !discovery.repair_applicable {
+        return Ok(FixupReport::empty());
+    }
+    repair_placed_references_with_refr_inputs(
+        session,
+        mapper,
+        config,
+        &discovery.all_refr_fks,
+        Some(&discovery.teleport_candidates),
+    )
+}
+
+fn repair_placed_references_with_refr_inputs(
+    session: &mut PluginSession,
+    mapper: &mut FormKeyMapper,
+    config: &FixupConfig,
+    all_refr_fks: &[FormKey],
+    teleport_candidates: Option<&[FormKey]>,
+) -> Result<FixupReport, FixupError> {
+    let mut report = FixupReport::empty();
+    let interner = mapper.interner;
 
     let output_master_index = session.target_masters().len() as u32;
     if output_master_index > 0xFF {
@@ -145,14 +243,14 @@ pub fn repair_placed_references(
     let refr_sig = SigCode::from_str("REFR").map_err(|e| FixupError::SchemaError(e.to_string()))?;
     let cell_sig = SigCode::from_str("CELL").map_err(|e| FixupError::SchemaError(e.to_string()))?;
 
-    let refr_fks = session
-        .form_keys_of_sig(refr_sig, interner)
-        .map_err(|e| FixupError::HandleError(e.to_string()))?;
-    let own_refr_objids: FxHashSet<u32> = refr_fks
+    let own_refr_objids: FxHashSet<u32> = all_refr_fks
         .iter()
         .filter(|fk| fk.plugin == own_sym)
         .map(|fk| fk.local & 0x00FF_FFFF)
         .collect();
+    let target_handle_id = session.target_id();
+    let own_persistent_refr_objids =
+        collect_persistent_objids_for_sig_in_handle(session, target_handle_id, refr_sig)?;
     let own_cell_objids: FxHashSet<u32> = session
         .form_keys_of_sig(cell_sig, interner)
         .map_err(|e| FixupError::HandleError(e.to_string()))?
@@ -162,6 +260,8 @@ pub fn repair_placed_references(
         .collect();
 
     let mut master_refr_objids = Vec::with_capacity(config.target_master_handle_ids.len());
+    let mut master_persistent_refr_objids =
+        Vec::with_capacity(config.target_master_handle_ids.len());
     let mut master_cell_objids = Vec::with_capacity(config.target_master_handle_ids.len());
     let mut master_xczr_objids = Vec::with_capacity(config.target_master_handle_ids.len());
     let mut master_xown_objids = Vec::with_capacity(config.target_master_handle_ids.len());
@@ -186,6 +286,9 @@ pub fn repair_placed_references(
                 .map(|fk| fk.local & 0x00FF_FFFF)
                 .collect(),
         );
+        master_persistent_refr_objids.push(collect_persistent_objids_for_sig_in_handle(
+            session, handle_id, refr_sig,
+        )?);
         master_cell_objids.push(
             session
                 .form_keys_of_sig_in_handle(handle_id, cell_sig, interner)
@@ -213,6 +316,11 @@ pub fn repair_placed_references(
         master_objids: master_refr_objids,
         output_master_index,
     };
+    let door_resolver = FinalRefResolver {
+        output_objids: own_persistent_refr_objids,
+        master_objids: master_persistent_refr_objids,
+        output_master_index,
+    };
     let cell_resolver = FinalRefResolver {
         output_objids: own_cell_objids,
         master_objids: master_cell_objids,
@@ -229,20 +337,23 @@ pub fn repair_placed_references(
         output_master_index,
     };
 
-    for fk in refr_fks {
+    let candidate_fks = teleport_candidates.unwrap_or(all_refr_fks);
+    for fk in candidate_fks {
         if fk.plugin != own_sym {
             continue;
         }
-        if !session
-            .record_has_any_subrecord(&fk, &["XTEL", "XASP", "XCZR", "XOWN"])
-            .unwrap_or(false)
+        if teleport_candidates.is_none()
+            && !session
+                .record_has_any_subrecord(fk, &["XTEL", "XASP", "XCZR", "XOWN"])
+                .unwrap_or(false)
         {
             continue;
         }
         if repair_refr_subrecords(
             session,
-            &fk,
+            fk,
             &refr_resolver,
+            &door_resolver,
             &cell_resolver,
             &xczr_resolver,
             &xown_resolver,
@@ -252,6 +363,25 @@ pub fn repair_placed_references(
     }
 
     Ok(report)
+}
+
+fn collect_persistent_objids_for_sig_in_handle(
+    session: &mut PluginSession,
+    handle_id: u64,
+    sig: SigCode,
+) -> Result<FxHashSet<u32>, FixupError> {
+    let scan = session
+        .handle_raw_scan(handle_id)
+        .map_err(|e| FixupError::HandleError(e.to_string()))?;
+    Ok(scan
+        .raw_form_ids_of_sig(sig)
+        .into_iter()
+        .filter(|raw| {
+            scan.with_record(*raw, |record| record.flags & RECORD_FLAG_PERSISTENT != 0)
+                .unwrap_or(false)
+        })
+        .map(|raw| raw & 0x00FF_FFFF)
+        .collect())
 }
 
 fn collect_objids_for_sigs_in_handle(
@@ -285,6 +415,7 @@ fn repair_refr_subrecords(
     session: &mut PluginSession,
     fk: &FormKey,
     refr_resolver: &FinalRefResolver,
+    door_resolver: &FinalRefResolver,
     cell_resolver: &FinalRefResolver,
     xczr_resolver: &FinalRefResolver,
     xown_resolver: &FinalRefResolver,
@@ -324,7 +455,7 @@ fn repair_refr_subrecords(
 
             if sig == "XTEL" {
                 let door = read_formid(&subrecord.data, XTEL_DOOR_OFFSET)
-                    .map(|raw| refr_resolver.resolve_source_own(raw))
+                    .map(|raw| door_resolver.resolve_source_own(raw))
                     .unwrap_or(RefResolution::Dangling);
                 let transition = read_formid(&subrecord.data, XTEL_TRANSITION_OFFSET)
                     .filter(|raw| *raw != 0)
@@ -392,10 +523,13 @@ mod tests {
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
     use crate::session::open_session;
     use crate::sym::StringInterner;
+    use bytes::Bytes;
     use esp_authoring_core::plugin_runtime::{
-        plugin_handle_add_master_native, plugin_handle_new_native,
+        ParsedSubrecord, plugin_handle_add_master_native, plugin_handle_close_native,
+        plugin_handle_load_no_py, plugin_handle_new_native, plugin_handle_save_no_py,
     };
     use smallvec::SmallVec;
+    use smol_str::SmolStr;
 
     fn resolver(output: &[u32], masters: &[&[u32]]) -> FinalRefResolver {
         FinalRefResolver {
@@ -499,6 +633,150 @@ mod tests {
         field(sig, bytes)
     }
 
+    fn persistent_record(
+        plugin: &str,
+        sig: &str,
+        local: u32,
+        fields: Vec<FieldEntry>,
+        interner: &StringInterner,
+    ) -> Record {
+        let mut record = record(plugin, sig, local, fields, interner);
+        record.flags = RecordFlags::PERSISTENT;
+        record
+    }
+
+    #[test]
+    fn starfield_to_fo4_drops_unresolved_and_wrong_type_refr_xown() {
+        let interner = StringInterner::new();
+        let master = plugin_handle_new_native("Fallout4.esm", Some("fo4")).unwrap();
+        {
+            let mut session = open_session(master, None).unwrap();
+            let schema = session.schema().unwrap();
+            session
+                .add_record(
+                    record("Fallout4.esm", "REFR", 0x01961D, vec![], &interner),
+                    schema.as_ref(),
+                    &interner,
+                )
+                .unwrap();
+        }
+
+        let target = plugin_handle_new_native("Starfield.esm", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target, "Fallout4.esm", None).unwrap();
+        {
+            let mut session = open_session(target, None).unwrap();
+            let schema = session.schema().unwrap();
+            for placed in [
+                record(
+                    "Starfield.esm",
+                    "REFR",
+                    0x1FDD1A,
+                    vec![formid_field("XOWN", 0x0001_961D)],
+                    &interner,
+                ),
+                record(
+                    "Starfield.esm",
+                    "REFR",
+                    0x1FDD1C,
+                    vec![formid_field("XOWN", 0x0026_FDEA)],
+                    &interner,
+                ),
+            ] {
+                session
+                    .add_record(placed, schema.as_ref(), &interner)
+                    .unwrap();
+            }
+        }
+
+        let mut state = MapperState::new(std::iter::empty(), MapperOptions::default());
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let mut config = FixupConfig::default();
+        config.target_master_handle_ids = vec![master];
+        let mut session = open_session(target, None).unwrap();
+
+        let report = repair_placed_references(&mut session, &mut mapper, &config).unwrap();
+
+        assert_eq!(report.records_changed, 2);
+        for local in [0x1FDD1A, 0x1FDD1C] {
+            let fk = FormKey {
+                local,
+                plugin: interner.intern("Starfield.esm"),
+            };
+            assert!(
+                session
+                    .first_subrecord_bytes(&fk, "XOWN")
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn starfield_to_fo4_repairs_persistent_xtel_partner_and_drops_nonpersistent_target() {
+        let interner = StringInterner::new();
+        let master = plugin_handle_new_native("Fallout4.esm", Some("fo4")).unwrap();
+        let target = plugin_handle_new_native("Starfield.esm", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target, "Fallout4.esm", None).unwrap();
+        {
+            let mut session = open_session(target, None).unwrap();
+            let schema = session.schema().unwrap();
+            for placed in [
+                persistent_record("Starfield.esm", "REFR", 0x23BED9, vec![], &interner),
+                record("Starfield.esm", "REFR", 0x0DD2A5, vec![], &interner),
+                record(
+                    "Starfield.esm",
+                    "REFR",
+                    0x22920F,
+                    vec![xtel(0x0023_BED9, 0)],
+                    &interner,
+                ),
+                record(
+                    "Starfield.esm",
+                    "REFR",
+                    0x0DD2AB,
+                    vec![xtel(0x000D_D2A5, 0)],
+                    &interner,
+                ),
+            ] {
+                session
+                    .add_record(placed, schema.as_ref(), &interner)
+                    .unwrap();
+            }
+        }
+
+        let mut state = MapperState::new(std::iter::empty(), MapperOptions::default());
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let mut config = FixupConfig::default();
+        config.target_master_handle_ids = vec![master];
+        let mut session = open_session(target, None).unwrap();
+
+        let report = repair_placed_references(&mut session, &mut mapper, &config).unwrap();
+
+        assert_eq!(report.records_changed, 2);
+        let persistent_fk = FormKey {
+            local: 0x22920F,
+            plugin: interner.intern("Starfield.esm"),
+        };
+        let persistent_xtel = session
+            .first_subrecord_bytes(&persistent_fk, "XTEL")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            read_formid(&persistent_xtel, XTEL_DOOR_OFFSET),
+            Some(0x0123_BED9)
+        );
+        let nonpersistent_fk = FormKey {
+            local: 0x0DD2AB,
+            plugin: interner.intern("Starfield.esm"),
+        };
+        assert!(
+            session
+                .first_subrecord_bytes(&nonpersistent_fk, "XTEL")
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[test]
     fn post_copy_repairs_and_drops_placed_reference_payloads_idempotently() {
         let interner = StringInterner::new();
@@ -526,9 +804,9 @@ mod tests {
             let mut session = open_session(target, None).unwrap();
             let schema = session.schema().unwrap();
             let records = [
-                record("Out.esm", "REFR", 0x800, vec![], &interner),
+                persistent_record("Out.esm", "REFR", 0x800, vec![], &interner),
                 record("Out.esm", "CELL", 0x802, vec![], &interner),
-                record("Out.esm", "REFR", 0x900, vec![], &interner),
+                persistent_record("Out.esm", "REFR", 0x900, vec![], &interner),
                 record("Out.esm", "CELL", 0x901, vec![], &interner),
                 record("Out.esm", "FACT", 0x902, vec![], &interner),
                 record(
@@ -735,5 +1013,232 @@ mod tests {
 
         let second = repair_placed_references(&mut session, &mut mapper, &config).unwrap();
         assert_eq!(second.records_changed, 0);
+    }
+
+    #[test]
+    fn discovery_scans_each_refr_once_and_observes_structural_changes() {
+        let interner = StringInterner::new();
+        let target = plugin_handle_new_native("Out.esm", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target, "MasterA.esm", None).unwrap();
+        let own_plugin = interner.intern("Out.esm");
+        {
+            let mut session = open_session(target, None).unwrap();
+            let schema = session.schema().unwrap();
+            for placed in [
+                record(
+                    "Out.esm",
+                    "REFR",
+                    0x100,
+                    vec![xtel(0x0100_0200, 0), field("XRDS", vec![0; 4])],
+                    &interner,
+                ),
+                record(
+                    "Out.esm",
+                    "REFR",
+                    0x101,
+                    vec![field("XEZN", vec![1, 2])],
+                    &interner,
+                ),
+                record("Out.esm", "REFR", 0x102, vec![], &interner),
+            ] {
+                session
+                    .add_record(placed, schema.as_ref(), &interner)
+                    .unwrap();
+            }
+            let compressed_fk = FormKey {
+                local: 0x101,
+                plugin: own_plugin,
+            };
+            let compressed_raw = session.raw_form_id_for_form_key(&compressed_fk).unwrap();
+            let compressed = session.record_mut(compressed_raw).unwrap();
+            compressed.raw_payload = Some(Bytes::from_static(b"retained compressed payload"));
+            compressed.parse_error = Some("fixture decode warning".to_string());
+
+            let first = discover_placed_refr_candidates(&mut session, &interner).unwrap();
+            assert_eq!(first.records_seen, 3);
+            assert_eq!(first.records_inspected, 3);
+            assert_eq!(
+                first
+                    .teleport_candidates
+                    .iter()
+                    .map(|fk| fk.local)
+                    .collect::<Vec<_>>(),
+                vec![0x100]
+            );
+            assert_eq!(
+                first
+                    .light_radius_candidates
+                    .iter()
+                    .map(|fk| fk.local)
+                    .collect::<Vec<_>>(),
+                vec![0x100]
+            );
+            assert_eq!(
+                first
+                    .xezn_candidates
+                    .iter()
+                    .map(|fk| fk.local)
+                    .collect::<Vec<_>>(),
+                vec![0x101]
+            );
+
+            let altered_fk = FormKey {
+                local: 0x102,
+                plugin: own_plugin,
+            };
+            let altered_raw = session.raw_form_id_for_form_key(&altered_fk).unwrap();
+            session
+                .record_mut(altered_raw)
+                .unwrap()
+                .subrecords
+                .push(ParsedSubrecord {
+                    signature: SmolStr::new("XTEL"),
+                    data: Bytes::from(vec![0; 36]),
+                    semantic_type: None,
+                });
+            session.record_effect(WriteEffect::RecordContents {
+                form_ids: smallvec::smallvec![altered_raw],
+            });
+            let after_earlier_pass =
+                discover_placed_refr_candidates(&mut session, &interner).unwrap();
+            assert_eq!(after_earlier_pass.records_seen, 3);
+            assert_eq!(after_earlier_pass.records_inspected, 3);
+            assert!(after_earlier_pass.teleport_candidates.contains(&altered_fk));
+
+            let added_fk = FormKey {
+                local: 0x103,
+                plugin: own_plugin,
+            };
+            session
+                .add_record(
+                    record(
+                        "Out.esm",
+                        "REFR",
+                        added_fk.local,
+                        vec![formid_field("XASP", 0x0100_0100)],
+                        &interner,
+                    ),
+                    schema.as_ref(),
+                    &interner,
+                )
+                .unwrap();
+            let after_add = discover_placed_refr_candidates(&mut session, &interner).unwrap();
+            assert_eq!(after_add.records_seen, 4);
+            assert_eq!(after_add.records_inspected, 4);
+            assert!(after_add.teleport_candidates.contains(&added_fk));
+
+            assert!(session.remove_record(&added_fk).unwrap());
+            let after_remove = discover_placed_refr_candidates(&mut session, &interner).unwrap();
+            assert_eq!(after_remove.records_seen, 3);
+            assert_eq!(after_remove.records_inspected, 3);
+            assert!(!after_remove.teleport_candidates.contains(&added_fk));
+        }
+        assert!(plugin_handle_close_native(target));
+    }
+
+    #[test]
+    fn shared_candidates_match_legacy_scan_for_compressed_and_malformed_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture_path = temp.path().join("Out.esm");
+        let legacy_path = temp.path().join("legacy.esm");
+        let shared_path = temp.path().join("shared.esm");
+        let interner = StringInterner::new();
+        let master = plugin_handle_new_native("MasterA.esm", Some("fo4")).unwrap();
+        let fixture = plugin_handle_new_native("Out.esm", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(fixture, "MasterA.esm", None).unwrap();
+        {
+            let mut session = open_session(fixture, None).unwrap();
+            let schema = session.schema().unwrap();
+            for placed in [
+                persistent_record("Out.esm", "REFR", 0x900, vec![], &interner),
+                record("Out.esm", "CELL", 0x901, vec![], &interner),
+                record(
+                    "Out.esm",
+                    "REFR",
+                    0xA00,
+                    vec![xtel(0x0000_0900, 0x0000_0901)],
+                    &interner,
+                ),
+                record(
+                    "Out.esm",
+                    "REFR",
+                    0xA01,
+                    vec![field("XTEL", vec![1, 2]), field("XRDS", vec![3, 4])],
+                    &interner,
+                ),
+                record(
+                    "Out.esm",
+                    "REFR",
+                    0xA02,
+                    vec![field("XEZN", vec![5, 6])],
+                    &interner,
+                ),
+            ] {
+                let mut placed = placed;
+                if placed.form_key.local == 0xA00 {
+                    placed.flags |= RecordFlags::COMPRESSED;
+                }
+                session
+                    .add_record(placed, schema.as_ref(), &interner)
+                    .unwrap();
+            }
+        }
+        plugin_handle_save_no_py(fixture, fixture_path.to_str().unwrap()).unwrap();
+        assert!(plugin_handle_close_native(fixture));
+
+        let run = |shared: bool, output: &std::path::Path| {
+            let handle = plugin_handle_load_no_py(
+                fixture_path.to_str().unwrap(),
+                Some("fo4"),
+                None,
+                None,
+                true,
+            )
+            .unwrap();
+            let mut state = MapperState::new(std::iter::empty(), MapperOptions::default());
+            let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+            let mut config = FixupConfig::default();
+            config.target_master_handle_ids = vec![master];
+            let report = {
+                let mut session = open_session(handle, None).unwrap();
+                let compressed_fk = FormKey {
+                    local: 0xA00,
+                    plugin: interner.intern("Out.esm"),
+                };
+                let compressed_raw = session.raw_form_id_for_form_key(&compressed_fk).unwrap();
+                assert!(
+                    session
+                        .record(compressed_raw)
+                        .unwrap()
+                        .raw_payload
+                        .is_some()
+                );
+                if shared {
+                    let discovery =
+                        discover_placed_refr_candidates(&mut session, &interner).unwrap();
+                    repair_placed_references_with_candidates(
+                        &mut session,
+                        &mut mapper,
+                        &config,
+                        &discovery,
+                    )
+                    .unwrap()
+                } else {
+                    repair_placed_references(&mut session, &mut mapper, &config).unwrap()
+                }
+            };
+            plugin_handle_save_no_py(handle, output.to_str().unwrap()).unwrap();
+            assert!(plugin_handle_close_native(handle));
+            (report, std::fs::read(output).unwrap())
+        };
+
+        let (legacy_report, legacy_bytes) = run(false, &legacy_path);
+        let (shared_report, shared_bytes) = run(true, &shared_path);
+        assert_eq!(legacy_report.records_changed, shared_report.records_changed);
+        assert_eq!(legacy_report.records_dropped, shared_report.records_dropped);
+        assert_eq!(legacy_report.warnings, shared_report.warnings);
+        assert_eq!(legacy_report.diagnostics, shared_report.diagnostics);
+        assert_eq!(legacy_bytes, shared_bytes);
+        assert!(plugin_handle_close_native(master));
     }
 }

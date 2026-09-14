@@ -1,25 +1,8 @@
 //! Fixup: remap BPTD `ModelFileName` to the owning Race's `MaleSkeletalModel`.
 //!
-
-//!
-//! # What this does
-//! After translation, `BodyPartData` (BPTD) records keep the stale FO76 source
-//! `MODL` (skeleton NIF path). The owning Race's `MaleSkeletalModel` carries
-//! the correct FO4 path. This fixup walks every RACE in the target plugin,
-//! builds `BPTD FormKey → Male Skeletal Model path`, then rewrites each BPTD's
-//! `MODL` zstring when it differs from the mapped path.
-//!
-//! # RACE field locations
-//! - `GNAM` — Body Part Data formid → BPTD FK (single, after the body-data
-//!   block).
-//! - `Male Skeletal Model` — first `ANAM` zstring after the first `MNAM`
-//!   marker (the male skeleton model block).
-//!
-//! # BPTD field location
-//! - `MODL` — Model FileName zstring (single, near the top of the record).
-//!
-//! `applies_to` returns `true` unconditionally — this fixup runs for every
-//! conversion.
+//! Translated BPTD records keep the FO76 skeleton `MODL`. The RACE's `GNAM`
+//! names its BPTD, and its male skeleton path is the first `ANAM` zstring after
+//! the first `MNAM` marker.
 
 use crate::fixups::{Fixup, FixupConfig, FixupContext, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;

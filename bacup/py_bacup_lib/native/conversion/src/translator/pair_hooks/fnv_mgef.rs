@@ -6,8 +6,8 @@
 use smallvec::SmallVec;
 
 use crate::formkey_mapper::FormKeyMapper;
-use crate::ids::{FormKey, SigCode};
-use crate::record::{FieldValue, Record};
+use crate::ids::{FormKey, SigCode, SubrecordSig};
+use crate::record::{FieldEntry, FieldValue, Record};
 
 pub const LEGACY_MGEF_DATA_LEN: usize = 72;
 pub const FO4_MGEF_DATA_LEN: usize = 152;
@@ -16,6 +16,10 @@ const NORMAL_CASTING_SOUND_LEVEL: u32 = 1;
 const SOURCE_SELF: u32 = 1 << 4;
 const SOURCE_TOUCH: u32 = 1 << 5;
 const SOURCE_TARGET: u32 = 1 << 6;
+
+const SOUND_RELEASE: u32 = 3;
+const SOUND_CONCENTRATION_CAST_LOOP: u32 = 4;
+const SOUND_ON_HIT: u32 = 5;
 
 const SOURCE_FLAG_MAP: &[(u32, u32)] = &[
     (1 << 0, 1 << 0),   // Hostile
@@ -195,6 +199,7 @@ pub fn normalize_legacy_mgef_data(
     mapper: &mut FormKeyMapper<'_>,
 ) -> MgefNormalizeReport {
     let mut report = MgefNormalizeReport::default();
+    let mut sound_rows = Vec::new();
     if record.sig.0 != *b"MGEF" {
         return report;
     }
@@ -216,8 +221,27 @@ pub fn normalize_legacy_mgef_data(
             }
         };
 
-        record.fields[index].value = convert_legacy_data(&source, family, mapper, &mut report);
+        record.fields[index].value =
+            convert_legacy_data(&source, family, mapper, &mut report, &mut sound_rows);
         report.converted_rows += 1;
+    }
+
+    if report.converted_rows != 0 {
+        record.fields.retain(|field| field.sig.0 != *b"SNDD");
+        if !sound_rows.is_empty() {
+            let insert_at = record
+                .fields
+                .iter()
+                .rposition(|field| field.sig.0 == *b"DATA")
+                .map_or(record.fields.len(), |index| index + 1);
+            record.fields.insert(
+                insert_at,
+                FieldEntry {
+                    sig: SubrecordSig(*b"SNDD"),
+                    value: FieldValue::Bytes(SmallVec::from_vec(sound_rows)),
+                },
+            );
+        }
     }
 
     report
@@ -228,6 +252,7 @@ fn convert_legacy_data(
     family: LegacyMgefFamily,
     mapper: &mut FormKeyMapper<'_>,
     report: &mut MgefNormalizeReport,
+    sound_rows: &mut Vec<u8>,
 ) -> FieldValue {
     let source_flags = read_u32(source, 0);
     let target_flags = translate_flags(source_flags);
@@ -276,23 +301,20 @@ fn convert_legacy_data(
         outcome: actor_value_1_outcome,
     });
 
-    for (field, offset) in [
-        ("effect_sound", 40),
-        ("bolt_sound", 44),
-        ("hit_sound", 48),
-        ("area_sound", 52),
+    for (field, offset, sound_type) in [
+        ("effect_sound", 40, SOUND_CONCENTRATION_CAST_LOOP),
+        ("bolt_sound", 44, SOUND_RELEASE),
+        ("hit_sound", 48, SOUND_ON_HIT),
+        ("area_sound", 52, SOUND_CONCENTRATION_CAST_LOOP),
     ] {
-        let source_raw = read_u32(source, offset);
-        report.references.push(MgefReferenceDecision {
+        append_mapped_sound_row(
             field,
-            outcome: if source_raw == 0 {
-                MgefReferenceOutcome::SourceNull
-            } else {
-                // Legacy SOUN slots do not identify an equivalent FO4 SNDD sound type,
-                // and this pair has no proven SOUN→SNDR record mapping.
-                MgefReferenceOutcome::DroppedIncompatible { source_raw }
-            },
-        });
+            read_u32(source, offset),
+            sound_type,
+            mapper,
+            report,
+            sound_rows,
+        );
     }
     for &field in TARGET_ONLY_REFERENCE_FIELDS {
         report.references.push(MgefReferenceDecision {
@@ -419,7 +441,26 @@ fn convert_legacy_data(
     FieldValue::Struct(fields)
 }
 
-fn mapped_raw_reference(
+fn append_mapped_sound_row(
+    field: &'static str,
+    source_raw: u32,
+    sound_type: u32,
+    mapper: &mut FormKeyMapper<'_>,
+    report: &mut MgefNormalizeReport,
+    sound_rows: &mut Vec<u8>,
+) {
+    let mapped = mapped_raw_reference(field, source_raw, mapper, report);
+    let FieldValue::Bytes(bytes) = mapped else {
+        return;
+    };
+    if source_raw == 0 || bytes.len() != 4 || bytes.iter().all(|byte| *byte == 0) {
+        return;
+    }
+    sound_rows.extend_from_slice(&sound_type.to_le_bytes());
+    sound_rows.extend_from_slice(&bytes);
+}
+
+pub(crate) fn mapped_raw_reference(
     field: &'static str,
     source_raw: u32,
     mapper: &mut FormKeyMapper<'_>,
@@ -591,7 +632,7 @@ fn legacy_archetype_has_target(source: u32) -> bool {
     )
 }
 
-fn push_field(
+pub(crate) fn push_field(
     fields: &mut Vec<(crate::sym::Sym, FieldValue)>,
     interner: &crate::sym::StringInterner,
     name: &str,
@@ -600,23 +641,23 @@ fn push_field(
     fields.push((interner.intern(name), value));
 }
 
-fn byte_value(value: u8) -> FieldValue {
+pub(crate) fn byte_value(value: u8) -> FieldValue {
     FieldValue::Bytes(SmallVec::from_slice(&[value]))
 }
 
-fn u16_value(value: u16) -> FieldValue {
+pub(crate) fn u16_value(value: u16) -> FieldValue {
     FieldValue::Bytes(SmallVec::from_slice(&value.to_le_bytes()))
 }
 
-fn u32_value(value: u32) -> FieldValue {
+pub(crate) fn u32_value(value: u32) -> FieldValue {
     FieldValue::Uint(u64::from(value))
 }
 
-fn null_reference() -> FieldValue {
+pub(crate) fn null_reference() -> FieldValue {
     u32_value(0)
 }
 
-fn finite_or_zero(value: f32) -> f32 {
+pub(crate) fn finite_or_zero(value: f32) -> f32 {
     if value.is_finite() { value } else { 0.0 }
 }
 
@@ -624,7 +665,7 @@ fn read_u16(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
 }
 
-fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+pub(crate) fn read_u32(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
 }
 
@@ -632,7 +673,7 @@ fn read_i32(bytes: &[u8], offset: usize) -> i32 {
     i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
 }
 
-fn read_f32(bytes: &[u8], offset: usize) -> f32 {
+pub(crate) fn read_f32(bytes: &[u8], offset: usize) -> f32 {
     f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
 }
 
@@ -744,6 +785,10 @@ mod tests {
             form_key(&interner, "FalloutNV.esm", 0x3456),
             form_key(&interner, "Converted.esm", 0x6789),
         );
+        mapper.add_mapping(
+            form_key(&interner, "FalloutNV.esm", 0x4444),
+            form_key(&interner, "Converted.esm", 0x7777),
+        );
 
         let source_flags =
             (1 << 0) | (1 << 1) | SOURCE_SELF | (1 << 7) | (1 << 12) | (1 << 24) | (1 << 27);
@@ -781,6 +826,15 @@ mod tests {
 
         assert_eq!(actual, expected);
         assert_eq!(actual.len(), FO4_MGEF_DATA_LEN);
+        let sound_data = record
+            .fields
+            .iter()
+            .find(|field| field.sig.0 == *b"SNDD")
+            .expect("SNDD");
+        assert_eq!(
+            sound_data.value,
+            FieldValue::Bytes(SmallVec::from_slice(&[5, 0, 0, 0, 0x77, 0x77, 0x00, 0x01]))
+        );
         assert_eq!(report.converted_rows, 1);
         assert!(matches!(
             decision(&report, "assoc_item"),
@@ -797,10 +851,39 @@ mod tests {
             decision(&report, "hit_shader"),
             &MgefReferenceOutcome::SourceNull
         );
-        assert_eq!(
+        assert!(matches!(
             decision(&report, "hit_sound"),
-            &MgefReferenceOutcome::DroppedIncompatible { source_raw: 0x4444 }
-        );
+            MgefReferenceOutcome::MappedRaw {
+                source_raw: 0x4444,
+                target_raw: 0x0100_7777
+            }
+        ));
+    }
+
+    #[test]
+    fn restore_all_limbs_0cb05d_accounts_for_its_incompatible_legacy_script() {
+        let interner = StringInterner::new();
+        let mut mapper = mapper(&interner, &[]);
+        let source = hex::decode(
+            "30200000000000007FB00C00FFFFFFFFFFFFFFFF00003A20000000000000803F000000000000000000000000000000000000000000000000000000000000000001000000FFFFFFFF",
+        )
+        .unwrap();
+        assert_eq!(source.len(), LEGACY_MGEF_DATA_LEN);
+        let mut record = record_with_data(&interner, source);
+
+        let report = normalize_legacy_mgef_data(&mut record, LegacyMgefFamily::Fnv, &mut mapper);
+        let data = encoded_data(&record);
+
+        assert_eq!(data.len(), FO4_MGEF_DATA_LEN);
+        assert_eq!(read_u32(&data, 8), 0);
+        assert_eq!(report.converted_rows, 1);
+        assert_eq!(report.unsupported_rows, 0);
+        assert!(matches!(
+            decision(&report, "assoc_item"),
+            MgefReferenceOutcome::DroppedIncompatible {
+                source_raw: 0x0CB07F
+            }
+        ));
     }
 
     #[test]

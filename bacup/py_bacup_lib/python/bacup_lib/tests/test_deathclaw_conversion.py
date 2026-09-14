@@ -1,16 +1,13 @@
 """End-to-end Deathclaw conversion test: FO76 → FO4.
 
-Converts the FULL Deathclaw creature from FO76 to FO4, then compares every
-converted HKX against FO4 vanilla to verify class names, skeleton structure,
-animation data integrity, and behavior graph conversion.
-
-This is a creature test case (vs GaussRifle's weapon test):
- - Full 86-bone skeleton + 28-bone ragdoll skeleton
+Converts the full Deathclaw and compares every converted HKX against FO4 vanilla:
+class names, skeleton structure, animation data, and behavior graphs. Creature
+coverage the GaussRifle weapon test lacks:
+ - 86-bone skeleton + 28-bone ragdoll skeleton
  - hkaSplineCompressedAnimation with 84 transform tracks
- - Complex creature behavior graphs (9 FO76 vs 2 FO4 behavior files)
- - Multiple behavior sub-files (ambush, dialogue, furniture, etc.)
+ - 9 FO76 vs 2 FO4 behavior files (ambush, dialogue, furniture, ...)
 
-Requires extracted FO76 + FO4 game data (skipped if missing).
+Skipped without extracted FO76 + FO4 game data.
 """
 from __future__ import annotations
 

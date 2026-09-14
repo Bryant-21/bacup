@@ -1,24 +1,17 @@
 //! Fixup: re-apply the cell-slice-only NPC template-inheritance strips.
 //!
-//! # Why this exists
-//! The full-plugin path carries an NPC's inherited inventory (TPTA slot 8) and
-//! its Object Template block (`OBTE`..`STOP`) so converted robots (Mr Handy,
-//! etc.) render with their modular body parts and inherited gear. Stripping
-//! them unconditionally leaves placed NPCs invisible in the shipped master.
+//! The full-plugin path keeps an NPC's inherited inventory (TPTA slot 8) and Object
+//! Template block (`OBTE`..`STOP`) so converted robots (Mr Handy, etc.) render with
+//! their modular parts; stripping them leaves placed NPCs invisible. Bounded
+//! conversions still strip them, because an isolated record graph can't always
+//! expand inherited FO4 object-template items without the CK choking. `GraphOnly`,
+//! so whole-plugin runs skip it.
 //!
-//! Cell-slice / bounded conversions still want the conservative behaviour: an
-//! isolated record graph can't always expand inherited FO4 object-template
-//! items without CK choking. This fixup restores that strip for the bounded
-//! path only — it is `GraphOnly`, so the whole-plugin run skips it.
-//!
-//! For each `NPC_` it:
-//! 1. Zeroes the `TPTA` inventory slot (slot 8, offset 32) and clears the
-//!    matching `Inventory` (`0x0100`) bit in `ACBS.template_flags`.
-//! 2. Drops the Object Template block — the contiguous `OBTE`..`STOP` run.
-//!
-//! `ACBS` codec `struct:I,h,H,H,H,h,H,H,B,B` — template_flags is the u16 at
-//! offset 14. `TPTA` codec `struct:I×13` — 13 FormID slots, inventory is slot 8
-//! (offset 32). Both decode to `FieldValue::Bytes` on the native path.
+//! For each `NPC_`: zero the `TPTA` inventory slot and clear the `Inventory`
+//! (`0x0100`) bit in `ACBS.template_flags`, then drop the contiguous `OBTE`..`STOP`
+//! run. `ACBS` (`struct:I,h,H,H,H,h,H,H,B,B`) has template_flags as the u16 at offset
+//! 14; `TPTA` (`struct:I×13`) has inventory at slot 8 (offset 32). Both decode to
+//! `FieldValue::Bytes`.
 
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;

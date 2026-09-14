@@ -1,34 +1,11 @@
 //! Fixup: remove records that became orphaned after translation.
 //!
-
-//!
-//! # What this does
-//! After the DeathItem nullification pass, certain loot-chain records (LVLI,
-//! AMMO, ALCH) may have no remaining incoming references from any other record
-//! in the output plugin.  This fixup removes those orphans to keep the ESP clean.
-//!
-//! # Algorithm (two-pass)
-//! 1. **Index pass** — for every record in the target plugin, collect all
-//!    `FieldValue::FormKey` references via a recursive walk.  Build a map from
-//!    FormKey → record index, and a set of all referenced FormKeys.
-//! 2. **Reachability pass** — BFS from every non-prunable root record.  Any
-//!    prunable-type record not reached by this traversal is an orphan.
-//! 3. **Remove pass** — call `plugin_handle_remove_record_native` on each orphan.
-//!
-//! # Prunable types
-//! Only records whose record signature is in `PRUNABLE_SIGS` are ever removed.
-//! All other record types are treated as roots.
-//!
-//! # Guards
-//! - `is_whole_plugin = true` → no-op (whole-plugin conversions have no loot
-//!   chain to prune).
-//! - Non-creature root type → no-op (only NPC_ / LVLN conversions produce the
-//!   death-loot orphan pattern).
-//!
-//! # Root-sig set
-//! BFS seeds from every record type present in the target plugin, not just the
-//! prunable types. This prevents false-positive pruning of records reachable
-//! via CELL, REFR, ACHR, etc.
+//! After DeathItem nullification, loot-chain records (LVLI, AMMO, ALCH; see
+//! `is_prunable_sig`) may have no incoming references left. A BFS seeded from every
+//! non-prunable record (all present types, so CELL/REFR/ACHR reachability counts)
+//! marks the live set; unreached prunable records are removed. Runs only for
+//! creature-root (NPC_/LVLN) graph conversions, the only ones that produce the
+//! death-loot orphan pattern.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 

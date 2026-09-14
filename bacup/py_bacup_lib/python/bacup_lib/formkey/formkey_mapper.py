@@ -24,18 +24,12 @@ _FK_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,6}:.+\.(esm|esp|esl)$")
 
 _FIRST_ALLOCATION_ID = 0x000800
 
-# Record types that should ALWAYS auto-vanilla-remap when an EditorID
-# match exists in the target game, regardless of ``use_base_game_assets``.
-# These are game-system / leaf-ish records (animation keywords, material
-# types, sound categories, impact tables, etc.) that mod authors never
-# legitimately clone — the mod just references the existing vanilla copy.
-# Cloning them produces bloated output and creates broken references
-# whenever a sub-field points at source-game-only data with no target
-# equivalent (xEdit reports these as "Found a NULL reference" errors).
-#
-# Records NOT in this set (Weapons, Armors, NPCs, ObjectModifications,
-# etc.) still respect ``use_base_game_assets`` so creature conversions
-# can ship full clones of their support records.
+# Record types that always vanilla-remap on an EditorID match, regardless of
+# ``use_base_game_assets``. Mods never clone these game-system records; clones
+# bloat output and break whenever a sub-field points at source-only data
+# (xEdit: "Found a NULL reference"). Other types (Weapons, Armors, NPCs,
+# ObjectModifications, ...) still respect the flag so creature conversions can
+# ship full clones of their support records.
 _ALWAYS_VANILLA_REMAP_TYPES: frozenset[str] = frozenset({
     "Keywords",
     "ImpactDataSets",
@@ -364,15 +358,12 @@ class FormKeyMapper:
             cached = self._mappings[source_formkey]
             if cached.get("strategy") in {"new_allocation", "source_id_preserved"}:
                 self._refresh_cached_local_plugin(cached)
-            # Self-heal stale new_allocation mappings: if a previous run
-            # allocated a fresh FormKey (because use_base_game_assets was
-            # off or the target DB lacked the record), but this run has
-            # vanilla remap available AND a match now exists, upgrade the
-            # cached entry to vanilla_remap. This is safe because the mod
-            # hasn't shipped yet when we reconvert. We NEVER downgrade a
-            # vanilla_remap back to new_allocation, and stable
-            # source_id_preserved mappings are only revalidated for
-            # always-remapped system records.
+            # Upgrade a stale new_allocation (made when use_base_game_assets was
+            # off or the target DB lacked the record) to vanilla_remap when a
+            # match now exists. Safe because the mod hasn't shipped when
+            # reconverting. vanilla_remap is never downgraded, and
+            # source_id_preserved is only revalidated for always-remapped
+            # system records.
             cached_strategy = cached.get("strategy")
             can_upgrade_cached_local = cached_strategy == "new_allocation" or (
                 cached_strategy == "source_id_preserved"
@@ -496,17 +487,10 @@ class FormKeyMapper:
 
     @staticmethod
     def rewrite_formkeys(data: Any, mapping: dict[str, dict]) -> Any:
-        """Recursively rewrite FormKey references in a YAML data structure.
+        """Recursively rewrite mapped FormKey references in YAML data; unmapped refs are unchanged.
 
-        Handles two reference shapes:
-        1. Bare ``"OBJID:Plugin.esm"`` strings (legacy/shorthand).
-        2. Canonical ``{reference: {plugin, object_id}}`` dicts emitted by
-           the canonical extractor — present in records under
-           ``data/<game>_esm_yaml/.../records/``.
-
-        Any string or canonical-ref whose source FormKey appears in
-        ``mapping`` is rewritten to the corresponding ``new_formkey``.
-        Unmapped references are left unchanged.
+        Handles bare ``"OBJID:Plugin.esm"`` strings and the canonical extractor's
+        ``{reference: {plugin, object_id}}`` dicts (``data/<game>_esm_yaml/.../records/``).
         """
         # Local imports to avoid cycles with yaml_helpers.
         from bacup_lib.yaml_helpers import from_ref, to_ref

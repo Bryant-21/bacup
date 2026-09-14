@@ -9,7 +9,7 @@ import struct
 from imgui_bundle import imgui
 
 from ui.tools.base import BaseTool
-from ui.tools.imgui_helpers import begin_form, end_form, draw_path_row, pick_file
+from creation_lib.ui.widgets.forms import begin_form, end_form, draw_path_row, pick_file
 
 _log = logging.getLogger("tools.dds_inspector")
 

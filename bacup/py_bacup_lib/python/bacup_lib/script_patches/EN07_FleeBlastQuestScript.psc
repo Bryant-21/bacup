@@ -21,7 +21,7 @@ Bool Function BeginLocalBlast(ObjectReference akBlastMarker, Actor akLaunchingPl
     Quest fleeQuest = Self as Quest
     Bool questWasRunning = fleeQuest.IsRunning()
     If !questWasRunning
-        fleeQuest.Start()
+        Return False
     EndIf
     NukeBlastMarker.ForceRefTo(akBlastMarker)
     LaunchingPlayer.ForceRefTo(akLaunchingPlayer)
@@ -113,7 +113,7 @@ Function DetonateLocalBlast()
     If player == None
         player = Game.GetPlayer()
     EndIf
-    Float playerDistance = player.GetDistance(blastMarker)
+    Float playerDistance = blastMarker.GetDistance(player)
     Float blastDistance = EN07_NukeBlastDistance.GetValue()
     If blastDistance <= 0.0
         blastDistance = 20460.0

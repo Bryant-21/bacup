@@ -1,9 +1,9 @@
-# MODT compute calibration — derived rules (Plan B, Task 1)
+# MODT compute calibration: derived rules
 
-**Goal of this fixture set:** pin, to byte-exactness, the rules the FO4 Creation
-Kit uses to build a record's `MODT` (Model-Info) subrecord from a mesh's
-material/texture graph, so Plan B can *compute* a correct `MODT` for novel
-converted meshes that have no vanilla `MODT` to harvest.
+These fixtures pin, byte-exact, the rules the FO4 Creation Kit uses to build a
+record's `MODT` (Model-Info) subrecord from a mesh's material/texture graph, so
+`modt_compute.rs` can compute a correct `MODT` for converted meshes that have no
+vanilla `MODT` to harvest.
 
 The oracle is 7 diverse vanilla Fallout4.esm records + their meshes/materials on
 disk (`extracted/fo4/`). `tools/modt_calibrate.py` replays the derived rules
@@ -49,7 +49,7 @@ reflected `0xEDB88320` table, **init 0, no final xor**.
 - **Materials** hash the full path **with a leading `materials\`** (BGSM/BGEM
   material file paths already carry it in the NIF shader `Name`).
 
-## Texture source (RULE 2 — pinned; this is the key finding)
+## Texture source (RULE 2 — pinned)
 
 The `MODT` texture list is built from the **resolved materials**, NOT from the
 NIF's baked inline texture sets:
@@ -86,11 +86,9 @@ template chain:
   `Sedan02_Postwar.BGSM`, `Sedan_Postwar_Cheap01.bgsm`, and the shared root
   `Template\VehicleTemplate_Wet.bgsm`).
 
-> **Plan B implication:** MODT cannot be computed from the mesh alone for
-> material-swapped records. The manifest/compute path should either resolve the
-> record's `MODS`/`MSWP` (Mode B) or restrict computed MODT to non-swapped
-> records (Mode A) and let swapped ones fall through. Most novel converted
-> static meshes are Mode A.
+> MODT cannot be computed from the mesh alone for material-swapped records.
+> `compute_modt` does not resolve swaps: it returns `None` for a record with
+> `MODS`/`MSWP` and the caller falls back. Most converted static meshes are Mode A.
 
 ## sRGB count (RULE 4 — pinned by slot role, NOT by filename or DDS format)
 
@@ -132,12 +130,10 @@ bucketing). It is the CK's internal `BSTScatterTable` iteration order (chained,
 so collided entries move to overflow slots and bucket order is not preserved on
 iteration). Reproducing it byte-for-byte would require emulating that container.
 
-**This is functionally irrelevant:** `MODT` is a load-time preload manifest; the
-runtime consumes the *set* of hashes, not their order. For novel meshes there is
-no vanilla order to match anyway. Plan B should emit entries in a deterministic
-order of its own choosing (e.g. gather order) and treat the SET + counters +
-srgb_count as the correctness contract — which is exactly what this calibration
-proves byte-exact.
+Order does not matter functionally: `MODT` is a load-time preload manifest and the
+runtime consumes the *set* of hashes. Converted meshes have no vanilla order to
+match. `modt_compute.rs` emits gather order; the correctness contract is the SET +
+counters + srgb_count, which this calibration reproduces byte-exact.
 
 ## Addon nodes (UNDER-SAMPLED — flagged)
 
@@ -145,10 +141,9 @@ proves byte-exact.
 weapon base models carry an empty 20-byte MODT). No mesh with a nonzero
 addon-node count was found in `extracted/fo4/` (no `BSValueNode` blocks in the
 weapon/effect trees scanned). The array holds `u32` `BGSAddonNode` indices
-referenced by the mesh's addon-node blocks. For Plan B's static-mesh targets,
-`addon_nodes = []` is the expected and correct value; the non-empty case is the
-one dimension **not** calibrated against real data and should be revisited if a
-converted mesh ever needs it.
+referenced by the mesh's addon-node blocks. For converted static meshes,
+`addon_nodes = []` is the expected value; the non-empty case is the one dimension
+**not** calibrated against real data. Revisit it if a converted mesh needs it.
 
 ## Fixtures
 

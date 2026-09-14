@@ -1,17 +1,13 @@
-//! `rewrite_creature_anam` transform — rewrites FNV creature ANAM paths to
+//! `rewrite_creature_anam` transform: rewrites FNV creature ANAM paths to
 //! FO4-style project `.hkx` paths.
 //!
-//! Python source: `translator.py` lines 456-474.
-//!
 //! The ANAM field on RACE records contains a path like
-//! `Creatures\Bloatfly\...` or `Actors\Character\...`. When the source dir
-//! resolves to a known creature catalog entry the path is rewritten to
-//! `Actors\<target_name>\<target_name>Project.hkx`.
-//!
-//! The Rust port implements the path-rewrite logic directly (without a
-//! creature catalog, which is a Python-side data structure). It normalises
-//! backslashes, splits on `actors` or `creatures` path components, and
-//! produces the FO4 project path when the source dir can be extracted.
+//! `Creatures\Bloatfly\...` or `Actors\Character\...`. The transform normalises
+//! backslashes, splits on the `actors` or `creatures` component, and uses the
+//! creature directory name as `target_name`, producing
+//! `Actors\<target_name>\<target_name>Project.hkx`. When the target name must
+//! differ from the directory name, the orchestrator pre-populates the value
+//! before dispatching the transform.
 //!
 //! YAML usage (fnv_to_fo4.yaml):
 //! ```yaml
@@ -20,16 +16,6 @@
 //!     ANAM:
 //!       type: rewrite_creature_anam
 //! ```
-//!
-//! # Design note
-//!
-//! The Python implementation relies on a `CreatureCatalog` to look up
-//! `target_name` from `source_dir`. The Rust port omits the catalog lookup —
-//! instead it extracts the creature directory name from the path and uses that
-//! as the FO4 `target_name`. This mirrors what the catalog does for the vast
-//! majority of entries (where `target_name == dir_name`). When a catalog
-//! override is needed, the orchestrator should pre-populate the value before
-//! dispatching the transform.
 
 use super::{Transform, TransformCtx, TransformError};
 use crate::record::FieldValue;

@@ -107,16 +107,12 @@ fn pre_translate_relayouts_84_byte_proj_and_preserves_compatible_refs() {
         (16, 0x0011_1111),
         (20, 0x0022_2222),
         (32, 0x0033_3333),
+        (36, 0x0044_4444),
+        (52, 0x0055_5555),
+        (56, 0x0066_6666),
         (60, 0x0077_7777),
     ] {
         assert_eq!(u32_at(dnam, offset), expected);
-    }
-    for offset in [36, 52, 56] {
-        assert_eq!(
-            u32_at(dnam, offset),
-            0,
-            "legacy SOUN ref at target offset {offset}"
-        );
     }
     assert_eq!(&dnam[64..93], &[0; 29]);
 }

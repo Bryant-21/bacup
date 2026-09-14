@@ -1,31 +1,20 @@
 //! FormKey rewriting for FNV legacy scripting payloads.
 //!
-//! # What this does
-//! Walks a `serde_json::Value` payload produced by one of the FNV synthesizers
-//! (`quest::translate_qust_record`, `dialogue::translate_info_record`,
-//! `scene::translate_scen_record`, or DIAL re-emission) and rewrites every
-//! embedded FormKey reference using the active `FormKeyMapper`.
-//!
-//! Mirrors Python `FormKeyMapper.rewrite_formkeys` exactly:
-//! - Bare `"OBJID:Plugin.esm"` strings matching the `_FK_PATTERN` regex are
-//!   looked up; if mapped, the string is replaced with the rendered target FK.
+//! Rewrites every FormKey in an FNV synthesizer payload (QUST, INFO, SCEN, or
+//! re-emitted DIAL) through the active `FormKeyMapper`, matching Python
+//! `FormKeyMapper.rewrite_formkeys`:
+//! - Bare `"OBJID:Plugin.esm"` strings are replaced with the mapped target FK.
 //! - Canonical-ref dicts (`{"reference": {"plugin": ..., "object_id": ...}}`)
-//!   are looked up the same way; the `reference` inner dict is replaced
-//!   in-place while sibling keys are preserved.
+//!   get `reference` replaced in place; sibling keys are kept.
 //! - Unmapped references pass through unchanged.
 //!
-//! Plus the Python `_drop_unmapped_scene_parent` special-case: after generic
-//! rewrite, walk SCEN payload `fields` and drop any `PNAM` entry whose value
-//! is a source-side FormKey string that did not survive remap into a
-//! valid target plugin.
+//! SCEN payloads also drop any `PNAM` whose FormKey did not remap into a
+//! target plugin.
 //!
-//! # Why pre-mutation
-//! `insert_authoring_record_value` resolves cross-plugin FormKey
-//! refs against the target plugin's master table. That handles refs into
-//! *master plugins* (`FNV.esm`) but NOT refs into *other records translated
-//! during the same conversion run* (which live in the output plugin and have
-//! freshly-allocated local IDs that don't exist on any master). The mapper
-//! tracks those allocations; pre-mutating the payload threads them through.
+//! `insert_authoring_record_value` resolves refs into master plugins but not
+//! into records translated earlier in the same run, which get fresh local ids
+//! in the output plugin. The mapper tracks those, so payloads are rewritten
+//! before insertion.
 
 use serde_json::{Map, Value};
 
@@ -36,13 +25,11 @@ use crate::ids::FormKey;
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Recursively rewrite every FormKey reference in `payload` via the mapper.
-/// Mutates `payload` in place. Returns the number of refs rewritten.
+/// Recursively rewrite every FormKey reference in `payload` in place. Returns
+/// the number of refs rewritten.
 ///
-/// Bare-string refs (`"OBJID:Plugin.esm"`) are recognized by a simple
-/// hex-prefix + plugin-extension check rather than a heavy regex — matches
-/// the Python `_FK_PATTERN` `^[0-9A-Fa-f]{2,6}:.+\.(esm|esp|esl)$` in
-/// practice on the payload shapes produced by the FNV synthesizers.
+/// Bare-string refs are detected by `looks_like_fk`, a cheap stand-in for the
+/// Python `_FK_PATTERN` regex.
 pub fn rewrite_payload_formkeys(payload: &mut Value, mapper: &FormKeyMapper) -> u32 {
     let mut counter = 0u32;
     rewrite_value(payload, mapper, &mut counter);
@@ -51,8 +38,7 @@ pub fn rewrite_payload_formkeys(payload: &mut Value, mapper: &FormKeyMapper) -> 
 
 /// SCEN-specific cleanup: drop any `PNAM` (parent-scene) reference that
 /// could not be remapped to a target plugin after generic FK rewrite.
-/// Mirrors Python `_drop_unmapped_scene_parent`. No-op when `payload` is
-/// not a dict with a `fields` array, or when no PNAM entries are present.
+/// No-op when `payload` has no `fields` array or no PNAM entries.
 pub fn drop_unmapped_scene_parent(payload: &mut Value, mapper: &FormKeyMapper) -> u32 {
     let fields = match payload
         .as_object_mut()
@@ -178,12 +164,9 @@ fn remap_canonical_ref(
     Some(new_inner)
 }
 
-/// Lightweight pre-check: does `s` look like "OBJID:Plugin.esm"?
-/// Matches Python `_FK_PATTERN` `^[0-9A-Fa-f]{2,6}:.+\.(esm|esp|esl)$` for the
-/// shapes that appear in our payloads. We accept hex up to 8 chars (the
-/// authoring layer sometimes renders full 8-char IDs); this is a superset of
-/// Python's 2-6 range, which is harmless — a non-FK-prefixed string never
-/// reaches `mapper.lookup`.
+/// Cheap check for `"OBJID:Plugin.esm"`. Accepts 1-8 hex digits (the authoring
+/// layer sometimes renders full 8-digit ids), wider than Python `_FK_PATTERN`'s
+/// 2-6; a false positive just finds no mapping.
 fn looks_like_fk(s: &str) -> bool {
     let (hex, plugin) = match s.split_once(':') {
         Some(pair) => pair,

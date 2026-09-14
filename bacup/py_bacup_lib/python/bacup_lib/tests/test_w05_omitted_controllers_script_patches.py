@@ -19,13 +19,6 @@ GENERATED_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "Use
 SOURCE_PEX_ROOT = REPO_ROOT / "extracted" / "fo76" / "scripts" / "client"
 SELF_DESTRUCT = "W05_RE_ObjectAF01_SelfDestruct_Script"
 UNPATCHED_CLIENT_CONTROLLERS = {
-    "W05_WaywardStateSwapRefScript": [
-        "clientenablearray",
-        "updateclientenablestate",
-        "checkplayerwaywardvalue",
-        "oncellload",
-        "ontimer",
-    ],
     "WL005_DeathBoxMachineScript": [
         "startdoublevision",
         "clientstopspikedropmachinesound",
@@ -69,7 +62,7 @@ def _merged_self_destruct() -> str:
     return _merge_script_method_patches(_generated_source(SELF_DESTRUCT), patch)
 
 
-def test_source_pex_confirms_the_three_unpatched_controllers_are_client_surfaces():
+def test_source_pex_confirms_unpatched_controllers_are_client_surfaces():
     for script_name, expected_members in UNPATCHED_CLIENT_CONTROLLERS.items():
         assert _script_patch_source(script_name) is None
         assert _member_names(_source_pex(script_name)) == expected_members

@@ -1,11 +1,7 @@
 """Byte-exact regression test for the native handle save path.
 
-A.10 shipped handle save as a materialize-and-delegate wrapper around
-``save_plugin_native_impl`` (tracked by task #28). The existing
-byte-exact roundtrip gate (``tests/test_esp_official_byte_exact.py``)
-exercises ``Plugin.load``/``Plugin.save`` but does not touch the
-handle load/save pair end-to-end. This test gives that path its own
-tripwire.
+``tests/test_esp_official_byte_exact.py`` covers ``Plugin.load``/``Plugin.save``
+but not the handle load/save pair end-to-end; this test does.
 
 Runs one small plugin per supported game. Skips at fixture level when the
 game data dir is not configured or the target plugin isn't present.

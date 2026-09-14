@@ -1,13 +1,14 @@
-//! Phase: `regenerate_modt` — post-asset MODT (re)population (Plan B).
+//! Phase: `regenerate_modt`, post-asset MODT (re)population.
 //!
 //! Runs after the asset waves and before `build_esp`, against the open target
 //! handle. For every model-bearing record it resolves the record's `MODT` by
 //! this precedence and inserts the bytes after the model-path subrecord:
 //!
-//! 1. **Compute** (Plan B) — the record's mesh is in the fresh manifest AND the
-//!    record is NOT material-swapped: compute `MODT` from the resolved graph and
-//!    replace any source-carried value.
-//! 2. **Already harvested** (Plan A) — otherwise, a structurally valid FO4
+//! 1. **Compute**: the record's mesh is in the fresh manifest: compute
+//!    `MODT` from the resolved graph and replace any source-carried value.
+//!    Material-swapped slots resolve their `MSWP` against the converted
+//!    materials on disk before hashing.
+//! 2. **Already harvested**: otherwise, a structurally valid FO4
 //!    hash subrecord belongs to a vanilla/reused mesh; leave it untouched.
 //! 3. **Reuse from the deployed ESM** (upgrade only) — the mesh is NOT in the
 //!    manifest (its asset family was reused this upgrade): re-inject the `MODT`
@@ -15,9 +16,8 @@
 //! 4. **Drop** — nothing available; remove an empty hash subrecord and leave the
 //!    slot without `MODT`.
 //!
-//! v1 restrictions: material-swapped records (`MODS`/`MSWP`) are NOT computed —
-//! they fall through to reuse (upgrade) / drop. The deployed-ESM reuse reads an
-//! eagerly-loaded handle (lazy/index-only handles have an empty tree).
+//! The deployed-ESM reuse reads an eagerly-loaded handle (lazy/index-only
+//! handles have an empty tree).
 //!
 //! ## Params (JSON)
 //! ```text
@@ -35,17 +35,20 @@ use bytes::Bytes;
 use rustc_hash::FxHashMap;
 use serde_json::Value as JsonValue;
 use smol_str::SmolStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use esp_authoring_core::plugin_runtime::{
     ParsedItem, ParsedRecord, ParsedSubrecord, plugin_handle_store_ref,
 };
 
 use crate::fixups::harvest_modt::{decode_debr_model_path, fo4_model_slots, normalize_model_path};
-use crate::modt_compute::{compute_modt, decode_modt};
-use crate::modt_manifest::MeshModtManifest;
+use crate::modt_compute::{compute_modt, decode_modt, encode_modt};
+use crate::modt_manifest::{MeshModtEntry, MeshModtManifest};
+use crate::phase::emit_modt_manifest::MaterialTextureCache;
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseReport};
 use crate::run::OwnedPluginHandle;
+
+mod shelter_scenery;
 
 fn model_path_string(path_sig: &str, data: &Bytes) -> Option<String> {
     if path_sig == "DATA" {
@@ -71,6 +74,128 @@ fn material_swap_sig(path_sig: &str) -> Option<&'static str> {
         "MOD5" => Some("MO5S"),
         _ => None,
     }
+}
+
+type MaterialSwap = FxHashMap<String, String>;
+
+#[derive(Clone, Copy)]
+enum MaterialSwapRef {
+    Absent,
+    Invalid,
+    FormId(u32),
+}
+
+fn zstring(data: &[u8]) -> Option<String> {
+    let end = data
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(data.len());
+    (end > 0).then(|| String::from_utf8_lossy(&data[..end]).into_owned())
+}
+
+fn normalize_material_path(path: &str) -> String {
+    let normalized = path
+        .trim_matches('\0')
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches('/')
+        .to_ascii_lowercase();
+    normalized
+        .strip_prefix("materials/")
+        .unwrap_or(&normalized)
+        .to_string()
+}
+
+fn material_disk_path(data_dir: &Path, material_path: &str) -> PathBuf {
+    let normalized = material_path.trim_matches('\0').trim().replace('\\', "/");
+    let relative = normalized
+        .get(..10)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("materials/"))
+        .map(|_| &normalized[10..])
+        .unwrap_or(&normalized);
+    data_dir.join("Materials").join(relative)
+}
+
+fn material_swap_from_record(rec: &ParsedRecord) -> Option<MaterialSwap> {
+    if rec.signature.as_str() != "MSWP" {
+        return None;
+    }
+    let mut original = None;
+    let mut replacements = MaterialSwap::default();
+    for subrecord in &rec.subrecords {
+        match subrecord.signature.as_str() {
+            "BNAM" => original = zstring(&subrecord.data),
+            "SNAM" => {
+                if let (Some(original), Some(replacement)) =
+                    (original.take(), zstring(&subrecord.data))
+                {
+                    replacements.insert(normalize_material_path(&original), replacement);
+                }
+            }
+            _ => {}
+        }
+    }
+    (!replacements.is_empty()).then_some(replacements)
+}
+
+fn material_swap_index(items: &[ParsedItem]) -> FxHashMap<u32, MaterialSwap> {
+    let mut index = FxHashMap::default();
+    walk_records(items, &mut |rec| {
+        if let Some(material_swap) = material_swap_from_record(rec) {
+            index.insert(rec.form_id, material_swap);
+        }
+    });
+    index
+}
+
+fn material_swap_for_form_id<'a>(
+    index: &'a FxHashMap<u32, MaterialSwap>,
+    form_id: u32,
+) -> Option<&'a MaterialSwap> {
+    if let Some(material_swap) = index.get(&form_id) {
+        return Some(material_swap);
+    }
+    let local_form_id = form_id & 0x00ff_ffff;
+    let mut matches = index
+        .iter()
+        .filter(|(candidate, _)| (**candidate & 0x00ff_ffff) == local_form_id)
+        .map(|(_, material_swap)| material_swap);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn form_id(data: &[u8]) -> Option<u32> {
+    let bytes: [u8; 4] = data.try_into().ok()?;
+    let value = u32::from_le_bytes(bytes);
+    (value != 0).then_some(value)
+}
+
+fn resolve_material_swap_entry(
+    entry: &MeshModtEntry,
+    material_swap: &MaterialSwap,
+    data_dir: &Path,
+    cache: &MaterialTextureCache,
+) -> Option<MeshModtEntry> {
+    let mut materials = Vec::with_capacity(entry.materials.len() * 2);
+    let mut textures = Vec::new();
+    for original in &entry.materials {
+        let effective = material_swap
+            .get(&normalize_material_path(original))
+            .map(String::as_str)
+            .unwrap_or(original);
+        let cached = cache.get(&material_disk_path(data_dir, effective), effective);
+        let parsed = cached.get()?.as_ref()?;
+        textures.extend(parsed.textures.iter().cloned());
+        materials.push(effective.to_string());
+        if let Some(root) = &parsed.root {
+            materials.push(root.clone());
+        }
+    }
+    Some(MeshModtEntry {
+        materials,
+        textures,
+        addon_nodes: entry.addon_nodes.clone(),
+    })
 }
 
 /// Walk every record under `items` (recursing through groups), immutably.
@@ -145,8 +270,11 @@ fn harvest_deployed_index(handle_id: u64) -> Result<FxHashMap<String, Vec<u8>>, 
 fn apply_record(
     rec: &mut ParsedRecord,
     manifest: &MeshModtManifest,
+    material_swap_index: &FxHashMap<u32, MaterialSwap>,
+    data_dir: &Path,
     deployed_index: &FxHashMap<String, Vec<u8>>,
     is_upgrade: bool,
+    materials: &MaterialTextureCache,
 ) -> u32 {
     let Some(slots) = fo4_model_slots().get(rec.signature.as_str()) else {
         return 0;
@@ -157,11 +285,17 @@ fn apply_record(
             material_swap_sig(&slot.path_sig).map(|swap| (slot.path_sig.clone(), swap))
         })
         .map(|(path, swap)| {
-            let present = rec
+            let material_swap = rec
                 .subrecords
                 .iter()
-                .any(|subrecord| subrecord.signature.as_str() == swap);
-            (path, present)
+                .find(|subrecord| subrecord.signature.as_str() == swap)
+                .map(|subrecord| {
+                    form_id(&subrecord.data)
+                        .map(MaterialSwapRef::FormId)
+                        .unwrap_or(MaterialSwapRef::Invalid)
+                })
+                .unwrap_or(MaterialSwapRef::Absent);
+            (path, material_swap)
         })
         .collect::<FxHashMap<_, _>>();
 
@@ -194,14 +328,24 @@ fn apply_record(
             .is_some_and(|next| next.signature.as_str() == model_slot.hash_sig)
             .then(|| source.next().expect("peeked model-info subrecord"));
         let existing_bytes = existing.as_ref().map(|model_info| model_info.data.to_vec());
-        let has_swap = material_swaps
+        let material_swap = material_swaps
             .get(&model_slot.path_sig)
             .copied()
-            .unwrap_or(false);
+            .unwrap_or(MaterialSwapRef::Absent);
         let replacement = key
             .as_deref()
             .and_then(|path| manifest.get(path))
-            .and_then(|entry| compute_modt(entry, has_swap))
+            .and_then(|entry| match material_swap {
+                MaterialSwapRef::FormId(form_id) => {
+                    material_swap_for_form_id(material_swap_index, form_id)
+                        .and_then(|material_swap| {
+                            resolve_material_swap_entry(entry, material_swap, data_dir, materials)
+                        })
+                        .map(|resolved| encode_modt(&resolved))
+                }
+                MaterialSwapRef::Absent => compute_modt(entry, false),
+                MaterialSwapRef::Invalid => None,
+            })
             .or_else(|| {
                 existing_bytes
                     .as_ref()
@@ -233,6 +377,7 @@ fn apply_record(
 fn apply_to_handle(
     handle_id: u64,
     manifest: &MeshModtManifest,
+    data_dir: &Path,
     deployed_index: &FxHashMap<String, Vec<u8>>,
     is_upgrade: bool,
 ) -> Result<u32, PhaseError> {
@@ -243,9 +388,19 @@ fn apply_to_handle(
         .get_mut(&handle_id)
         .ok_or_else(|| PhaseError::BadParams(format!("unknown output_handle_id: {handle_id}")))?;
 
+    let material_swap_index = material_swap_index(&slot.parsed.root_items);
     let mut changed = 0u32;
+    let materials = MaterialTextureCache::default();
     walk_records_mut(&mut slot.parsed.root_items, &mut |rec| {
-        changed += apply_record(rec, manifest, deployed_index, is_upgrade);
+        changed += apply_record(
+            rec,
+            manifest,
+            &material_swap_index,
+            data_dir,
+            deployed_index,
+            is_upgrade,
+            &materials,
+        );
     });
     if changed > 0 {
         slot.invalidate_sections();
@@ -312,13 +467,19 @@ impl Phase for RegenerateModtPhase {
         let changed = apply_to_handle(
             ctx.run.target_handle_id,
             &manifest,
+            &ctx.mod_path.join("data"),
             &deployed_index,
             is_upgrade,
         )?;
-        Ok(PhaseReport {
-            records_changed: changed,
-            ..Default::default()
-        })
+        let mut report = if ctx.run.source == crate::translator::Game::Fo76
+            && ctx.run.target == crate::translator::Game::Fo4
+        {
+            shelter_scenery::repair(ctx)?
+        } else {
+            PhaseReport::default()
+        };
+        report.records_changed += changed;
+        Ok(report)
     }
 }
 
@@ -336,11 +497,77 @@ mod tests {
         insert_parsed_record_in_slot, plugin_handle_close_native, plugin_handle_new_native,
         plugin_handle_save_no_py,
     };
+    use materials_native::bgsm::{self, BgsmData};
 
-    use crate::modt_compute::encode_modt;
     use crate::modt_manifest::{ManifestTexture, MeshModtEntry, MeshModtManifest};
     use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
     use crate::translator::Game;
+
+    #[test]
+    #[ignore = "requires MODT_PLUGIN_CORPUS, MODT_CORPUS_MANIFEST and MODT_CORPUS_ROOT"]
+    fn shared_materials_preserve_every_corpus_modt_record() {
+        let plugin = PathBuf::from(std::env::var_os("MODT_PLUGIN_CORPUS").unwrap());
+        let manifest_path = PathBuf::from(std::env::var_os("MODT_CORPUS_MANIFEST").unwrap());
+        let data = PathBuf::from(std::env::var_os("MODT_CORPUS_ROOT").unwrap()).join("data");
+        let manifest: MeshModtManifest =
+            serde_json::from_slice(&std::fs::read(manifest_path).unwrap()).unwrap();
+        let handle = OwnedPluginHandle::load(&plugin, "fo4", None).unwrap();
+        let store = plugin_handle_store_ref().lock().unwrap();
+        let slot = store.get(&handle.id()).unwrap();
+        let swaps = material_swap_index(&slot.parsed.root_items);
+        let shared = MaterialTextureCache::default();
+        let deployed = FxHashMap::default();
+        let mut records_seen = 0usize;
+        let mut records_compared = 0usize;
+        let mut changes = 0u64;
+        let mut digest = blake3::Hasher::new();
+        walk_records(&slot.parsed.root_items, &mut |record| {
+            records_seen += 1;
+            if !fo4_model_slots().contains_key(record.signature.as_str()) {
+                return;
+            }
+            let mut expected = record.clone();
+            let mut actual = record.clone();
+            let expected_changes = apply_record(
+                &mut expected,
+                &manifest,
+                &swaps,
+                &data,
+                &deployed,
+                false,
+                &MaterialTextureCache::default(),
+            );
+            let actual_changes = apply_record(
+                &mut actual,
+                &manifest,
+                &swaps,
+                &data,
+                &deployed,
+                false,
+                &shared,
+            );
+            assert_eq!(actual_changes, expected_changes);
+            assert_eq!(actual.subrecords.len(), expected.subrecords.len());
+            digest.update(record.signature.as_bytes());
+            digest.update(&record.form_id.to_le_bytes());
+            for (actual, expected) in actual.subrecords.iter().zip(&expected.subrecords) {
+                assert_eq!(actual.signature, expected.signature);
+                assert_eq!(actual.semantic_type, expected.semantic_type);
+                assert_eq!(actual.data, expected.data);
+                digest.update(actual.signature.as_bytes());
+                digest.update(&(actual.data.len() as u64).to_le_bytes());
+                digest.update(&actual.data);
+            }
+            records_compared += 1;
+            changes += actual_changes as u64;
+        });
+        let report = serde_json::json!({"records_seen": records_seen, "records_compared": records_compared,
+            "changes": changes, "identical_subrecords": true, "blake3": digest.finalize().to_hex().to_string()});
+        if let Some(path) = std::env::var_os("MODT_RECORD_CORPUS_REPORT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        }
+        eprintln!("{report}");
+    }
 
     fn sr(sig: &str, data: &[u8]) -> ParsedSubrecord {
         ParsedSubrecord {
@@ -432,16 +659,14 @@ mod tests {
         .unwrap()
     }
 
-    fn run_phase(output_handle: u64, params: JsonValue) -> PhaseReport {
+    fn run_phase_at(output_handle: u64, params: JsonValue, mod_path: &Path) -> PhaseReport {
         let run_id = make_run(output_handle);
-        let tmp = tempfile::tempdir().unwrap();
-        let mod_path = tmp.path().to_path_buf();
         let report = with_run(run_id, |run| -> Result<PhaseReport, RunError> {
             let cancel = Arc::new(AtomicBool::new(false));
-            let source_dir = mod_path.clone();
+            let source_dir = mod_path.to_path_buf();
             let mut ctx = PhaseCtx {
                 run,
-                mod_path: &mod_path,
+                mod_path,
                 source_extracted_dir: &source_dir,
                 target_extracted_dir: None,
                 target_data_dir: None,
@@ -457,8 +682,13 @@ mod tests {
         report
     }
 
+    fn run_phase(output_handle: u64, params: JsonValue) -> PhaseReport {
+        let tmp = tempfile::tempdir().unwrap();
+        run_phase_at(output_handle, params, tmp.path())
+    }
+
     #[test]
-    fn full_build_computes_novel_leaves_swap_and_harvested() {
+    fn full_build_computes_novel_leaves_unresolved_swap_and_harvested() {
         let out = plugin_handle_new_native("Out.esp", Some("fo4")).unwrap();
 
         // 1. Novel non-swapped record → gets computed MODT.
@@ -470,7 +700,7 @@ mod tests {
                 .unwrap(),
             stat(0x0100_0001, vec![sr("MODL", b"novel\\mesh.nif\0")]),
         );
-        // 2. Swapped record (MODS present), mesh in manifest → dropped (no compute).
+        // 2. Swapped record with no resolvable MSWP → dropped (no compute).
         insert_parsed_record_in_slot(
             &mut *plugin_handle_store_ref()
                 .lock()
@@ -503,7 +733,7 @@ mod tests {
         manifest
             .meshes
             .insert("novel/mesh.nif".to_string(), sample_entry());
-        // Swapped record's mesh is ALSO in the manifest — but must not compute.
+        // Swapped record's mesh is also in the manifest, but its MSWP is absent.
         manifest
             .meshes
             .insert("swap/mesh.nif".to_string(), sample_entry());
@@ -532,6 +762,113 @@ mod tests {
             Some(valid_harvested),
             "harvested record untouched"
         );
+
+        plugin_handle_close_native(out);
+    }
+
+    #[test]
+    fn material_swapped_arma_rebuilds_mo2t_and_mo3t_from_effective_bgsm() {
+        let out = plugin_handle_new_native("Out.esp", Some("fo4")).unwrap();
+        let material_swap_record_id = 0x013e_56a6_u32;
+        let material_swap_reference = 0x003e_56a6_u32;
+
+        insert_parsed_record_in_slot(
+            &mut *plugin_handle_store_ref()
+                .lock()
+                .unwrap()
+                .get_mut(&out)
+                .unwrap(),
+            record(
+                "MSWP",
+                material_swap_record_id,
+                vec![
+                    sr("BNAM", b"actors\\Wendigo\\Wendigo.BGSM\0"),
+                    sr("SNAM", b"actors\\wendigo\\WendigoGlow.bgsm\0"),
+                ],
+            ),
+        );
+        insert_parsed_record_in_slot(
+            &mut *plugin_handle_store_ref()
+                .lock()
+                .unwrap()
+                .get_mut(&out)
+                .unwrap(),
+            record(
+                "ARMA",
+                0x013e_56a7,
+                vec![
+                    sr("MOD2", b"Actors\\Wendigo\\CharacterAssets\\Wendigo.nif\0"),
+                    sr("MO2S", &material_swap_reference.to_le_bytes()),
+                    sr("MOD3", b"Actors\\Wendigo\\CharacterAssets\\Wendigo.nif\0"),
+                    sr("MO3S", &material_swap_reference.to_le_bytes()),
+                ],
+            ),
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let material_dir = temp
+            .path()
+            .join("data")
+            .join("Materials")
+            .join("actors")
+            .join("wendigo");
+        std::fs::create_dir_all(&material_dir).unwrap();
+        let mut material = BgsmData::default();
+        material.header.signature = bgsm::BGSM_SIGNATURE;
+        material.header.version = 2;
+        material.DiffuseTexture = "Actors\\Wendigo\\wendigo_glow_d.dds".into();
+        material.GlowTexture = Some("Actors\\Wendigo\\wendigo_glow_g.dds".into());
+        material.RootMaterialPath = "Actors\\Shared\\CreatureTemplate_Wet.bgsm".into();
+        std::fs::write(
+            material_dir.join("WendigoGlow.bgsm"),
+            bgsm::write(&material),
+        )
+        .unwrap();
+
+        let mut manifest = MeshModtManifest::default();
+        manifest.meshes.insert(
+            "actors/wendigo/characterassets/wendigo.nif".to_string(),
+            MeshModtEntry {
+                materials: vec!["actors\\Wendigo\\Wendigo.BGSM".to_string()],
+                textures: vec![diffuse("Actors\\Wendigo\\wendigo_d.dds")],
+                addon_nodes: vec![],
+            },
+        );
+        let report = run_phase_at(
+            out,
+            serde_json::json!({
+                "manifest": serde_json::to_value(&manifest).unwrap(),
+                "is_upgrade": false,
+            }),
+            temp.path(),
+        );
+
+        assert_eq!(report.records_changed, 2);
+        let expected = encode_modt(&MeshModtEntry {
+            materials: vec![
+                "actors\\wendigo\\WendigoGlow.bgsm".to_string(),
+                "Actors\\Shared\\CreatureTemplate_Wet.bgsm".to_string(),
+            ],
+            textures: vec![
+                diffuse("Actors\\Wendigo\\wendigo_glow_d.dds"),
+                ManifestTexture {
+                    path: "Actors\\Wendigo\\wendigo_glow_g.dds".to_string(),
+                    role: "glow".to_string(),
+                },
+            ],
+            addon_nodes: vec![],
+        });
+        let arma = read_record(out, 0x013e_56a7);
+        for signature in ["MO2T", "MO3T"] {
+            assert_eq!(
+                arma.subrecords
+                    .iter()
+                    .find(|subrecord| subrecord.signature.as_str() == signature)
+                    .map(|subrecord| subrecord.data.to_vec()),
+                Some(expected.clone()),
+                "{signature} should preload the swapped diffuse and glow"
+            );
+        }
 
         plugin_handle_close_native(out);
     }

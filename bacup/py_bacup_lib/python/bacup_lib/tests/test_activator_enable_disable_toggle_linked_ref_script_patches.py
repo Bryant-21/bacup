@@ -18,13 +18,10 @@ REPO_ROOT = Path(__file__).resolve().parents[5]
 SOURCE_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 
 # DotMatrixPrinterScript, POI287OnReadAddToMap, EnableDisableOnActivationScript,
-# ACDuctEnterFXScript, and UnlockOnLoadScript are deterministic guarded one-shot
-# handlers (no named states/timers) — a full compile of the merged patch is
-# sufficient coverage for them; see repair-papyrus-stubs SKILL.md's
-# dedicated-test-file criteria. MoMSecretDoorTriggerScript,
-# UD004_NukashineAutoCloseDoorScript, and FSDoorScript are genuinely stateful
-# (explicit timer IDs / reentry locks) and keep their detailed regression tests
-# below.
+# ACDuctEnterFXScript, and UnlockOnLoadScript are guarded one-shot handlers (no
+# named states or timers), covered by a full compile of the merged patch.
+# MoMSecretDoorTriggerScript, UD004_NukashineAutoCloseDoorScript, and FSDoorScript
+# are stateful (explicit timer IDs / reentry locks) and have dedicated tests below.
 PATCH_CASES = {
     "DotMatrixPrinterScript": {"onactivate"},
     "MoMSecretDoorTriggerScript": {"onactivate", "ontimer", "opensecretdoor"},

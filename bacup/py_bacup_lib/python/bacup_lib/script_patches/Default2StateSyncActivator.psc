@@ -153,7 +153,9 @@ State startsopen
         Else
             DisableLinkChain(TwoStateCollisionKeyword)
         EndIf
-        If SyncOpenAnim != ""
+        ; Reachable from OnInit(), where 3D is not yet loaded and FO4 rejects
+        ; PlayAnimation. OnLoad() re-runs ReconcileSyncState once 3D exists.
+        If SyncOpenAnim != "" && Is3DLoaded()
             PlayAnimation(SyncOpenAnim)
         EndIf
         OpenState = 0
@@ -168,7 +170,9 @@ State startsclosed
         Else
             EnableLinkChain(TwoStateCollisionKeyword)
         EndIf
-        If SyncCloseAnim != ""
+        ; Reachable from OnInit(), where 3D is not yet loaded and FO4 rejects
+        ; PlayAnimation. OnLoad() re-runs ReconcileSyncState once 3D exists.
+        If SyncCloseAnim != "" && Is3DLoaded()
             PlayAnimation(SyncCloseAnim)
         EndIf
         OpenState = 1

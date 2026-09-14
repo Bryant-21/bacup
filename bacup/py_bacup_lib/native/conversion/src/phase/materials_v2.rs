@@ -74,6 +74,7 @@ impl Phase for ConvertMaterialsV2Phase {
         let engine_params = MaterialsEngineParams {
             mod_path: ctx.mod_path.to_path_buf(),
             source_extracted: ctx.source_extracted_dir.to_path_buf(),
+            source_inventory: ctx.run.source_asset_inventory.clone(),
             target_extracted: ctx
                 .run
                 .target_assets
@@ -101,6 +102,7 @@ impl Phase for ConvertMaterialsV2Phase {
                 .as_ref()
                 .map(|store| store.list_assets("materials/", "").into_iter().collect())
                 .unwrap_or_default(),
+            base_overwrite_prefixes: crate::run::base_overwrite_prefixes_for_run(ctx.run),
         };
         let report = run_materials_engine(engine_params);
         let sink_failures = register_material_outputs_with_sink(ctx);

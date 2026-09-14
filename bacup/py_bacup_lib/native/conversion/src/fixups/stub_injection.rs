@@ -50,25 +50,15 @@ impl std::error::Error for StubInjectError {}
 /// Allocate a target FormKey for `source_fk` and insert a minimal stub record
 /// into the target plugin handle.
 ///
-/// The stub carries a single `EDID` subrecord set to `editor_id`. The
-/// allocator picks the next free target object-id via
-/// `FormKeyMapper::allocate_or_resolve`, which respects the mapper's
-/// `preserve_source_ids` option (Python's `source_id_preserved` strategy when
-/// the source id is still free, `new_allocation` otherwise). The
-/// (source → target) mapping is registered on the mapper so subsequent
-/// references resolve to the same target FK.
+/// The stub carries only an `EDID` set to `editor_id` (none when it is empty). The
+/// id comes from `FormKeyMapper::allocate_or_resolve`, which honours
+/// `preserve_source_ids` (`source_id_preserved` when the source id is free,
+/// `new_allocation` otherwise), and the source → target mapping is registered so
+/// later references resolve to the same FK. Callers overwrite references to
+/// `source_fk` with the result or rely on a later rewrite pass.
 ///
-/// An empty `editor_id` produces a stub with no EDID subrecord.
-///
-/// # Returns
-/// The newly-allocated target FormKey. The caller should overwrite any
-/// references that pointed at `source_fk` with this value (or rely on a
-/// subsequent rewrite pass to do so via the registered mapping).
-///
-/// # Errors
-/// Returns `StubInjectError::Write` when `add_record_native` fails (e.g. the
-/// target handle is no longer loaded). `StubInjectError::EdidSigError` is a
-/// defensive case that should not happen in practice.
+/// Fails with `StubInjectError::Write` when `add_record_native` fails (e.g. the
+/// target handle is no longer loaded).
 pub fn inject_minimal_stub(
     target_handle_id: u64,
     source_fk: FormKey,

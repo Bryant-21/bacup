@@ -1,5 +1,14 @@
-; Fire each bound weapon in sequence. Weapon.Fire is the FO4-native projectile
-; path; no ammo or projectile is invented when the VMAD does not bind one.
+; OnObjectDestroyed is a FO76 event Fallout 4 never raises. TrapMain already handles
+; FO4's OnDestructionStageChanged, so the timer cancel is re-homed there (calling the
+; parent so TrapMain's own disarm path still runs).
+; @drop-member OnObjectDestroyed
+
+Event OnDestructionStageChanged(Int aiOldStage, Int aiCurrentStage)
+	parent.OnDestructionStageChanged(aiOldStage, aiCurrentStage)
+	If Self.IsDestroyed()
+		Self.CancelTimer(firingTimerID)
+	EndIf
+EndEvent
 
 Function ClientFireTrap()
     firingCount = 0
@@ -13,7 +22,10 @@ Function FireNextWeapon()
 
     Int weaponIndex = firingCount % myWeapons.Length
     If myWeapons[weaponIndex].weaponToFire != None
-        myWeapons[weaponIndex].weaponToFire.Fire(Self)
+        Ammo trapGunAmmo = myWeapons[weaponIndex].weaponToFire.GetAmmo()
+        If trapGunAmmo != None
+            myWeapons[weaponIndex].weaponToFire.Fire(Self, trapGunAmmo)
+        EndIf
     EndIf
     If myWeapons[weaponIndex].weaponSound != None
         myWeapons[weaponIndex].weaponSound.Play(Self)

@@ -1,5 +1,6 @@
 //! Creature-specific fixups for the FO76→FO4 conversion pipeline.
 pub mod augment_creature_factions;
+pub mod bind_creature_scripts;
 pub mod clean_creature_esp_check_fields;
 pub mod cleanup_bodypart_data;
 pub mod creature_predicate;
@@ -8,9 +9,11 @@ pub mod fix_creature_race_records;
 pub mod fix_creature_weapon_fire_seconds;
 pub mod fix_creature_weapons_and_records;
 pub mod normalize_creature_lvln_template_chains;
+pub mod normalize_movement_type_names;
 pub mod nullify_creature_death_items;
+pub(crate) mod player_fear;
+pub mod retarget_moleminer_movement_speeds;
 pub mod strip_creature_subgraph_additive_race;
-pub mod synthesize_weapon_innr;
 
 use crate::ids::{FormKey, SubrecordSig};
 use crate::record::{FieldValue, Record};
@@ -28,20 +31,10 @@ const LVLO_REFERENCE_OFFSET: usize = 4;
 /// (`fix_creature_npc_records`, `augment_creature_factions`,
 /// `nullify_creature_death_items`).
 ///
-/// These run unconditionally per-NPC on a creature-rooted bounded graph
-/// (where every record is a creature by construction). On the whole-plugin path
-/// they must touch only actual creatures, or they would stamp creature
-/// keywords / perks / factions / death-item strips onto every HUMAN NPC. This
-/// resolves the NPC's race through the template chain (UseTraits) so a
-/// Traits-template creature whose literal `RNAM` is irrelevant still classifies
-/// correctly.
-///
-/// Resolution is conservative: an NPC we cannot confidently classify as a
-/// creature returns `false` (Unknown / NotCreature both skip). Resolution reads
-/// only the TARGET plugin via `view.record_decoded`; a creature whose race was
-/// dropped (no FO4 equivalent) therefore reads `Unknown` and is skipped — that
-/// is SAFE (never mis-flags a human). Once its race resolves, its RNAM/TPLT
-/// classify it as a creature here.
+/// Whole-plugin runs must touch only creatures, or every human NPC gets creature
+/// keywords, perks, factions and death-item strips. Classification follows the
+/// template chain (UseTraits) and reads only the target plugin, so a creature
+/// whose race was dropped reads `Unknown` and is skipped.
 pub fn npc_internal_fixup_applies_to_record(
     npc: &Record,
     view: &ReadView,
@@ -150,19 +143,12 @@ fn scalar_form_key(value: &FieldValue, plugin: crate::sym::Sym) -> Option<FormKe
 /// Per-RACE gate for the RACE-internal creature fixups
 /// (`fix_creature_race_records`, `strip_creature_subgraph_additive_race`).
 ///
-/// On a creature-rooted graph walk (`is_whole_plugin == false`) every RACE in
-/// scope is creature-relevant by construction, so the fixup runs unconditionally
-/// — gating there would REGRESS the bounded graph path (which fixed every race in
-/// the graph). On whole-plugin we must avoid touching humanoid races
-/// (HumanRace-family, ghoul/fisherman/armor-rack player-races, …).
-///
-/// The gate is "run unless the race is a confirmed HUMANOID" (carries
-/// `ActorTypeNPC`), rather than "run only if it carries `ActorTypeCreature`":
-/// ground-truth on the output ESM shows several creature-class races — robots
-/// (Protectron/Turret/Liberator/Vertibot…) and segmented creatures
-/// (Scorchtongue body/head/tail) — that legitimately lack `ActorTypeCreature`.
-/// Those still need the FO76 ATKD/skeletal/behavior/subgraph fixes; only the
-/// `ActorTypeNPC` humanoids must be protected.
+/// A creature-rooted graph walk runs them on every RACE in scope. Whole-plugin
+/// skips `ActorTypeNPC` humanoids (HumanRace family, ghoul/fisherman/armor-rack
+/// player races) and generated additive races. The gate is not "has
+/// `ActorTypeCreature`": robots (Protectron, Turret, Liberator, Vertibot) and
+/// segmented creatures (Scorchtongue body/head/tail) lack it but still need the
+/// ATKD/skeletal/behavior/subgraph fixes.
 pub fn race_internal_fixup_applies_to_record(
     record: &Record,
     config: &crate::fixups::FixupConfig,

@@ -25,6 +25,7 @@ SOURCE_ROOT = REPO_ROOT / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
 PATCHED_SCRIPTS = {
     "W05_RE_BlacklightActivatorScript": {"onactivate"},
     "W05_RE_ClueBoardActivatorScript": {"onactivate", "enablecluemarker"},
+    "W05_RE_MapBoardActivatorScript": {"onactivate", "placereadyfragment"},
     "W05_RE_V79KeypadActivatorScript": {"onactivate"},
     "W05_Vault79ElevatorDoorTriggerScript": {"ontriggerenter"},
     "W05_Wayward_IntTriggerRCScript": {"ontriggerenter"},
@@ -33,11 +34,9 @@ PATCHED_SCRIPTS = {
 # Confirmed to carry no patch (bodyless skeletons / evidence-blocked).
 UNPATCHED_SCRIPTS = (
     "W05_RE_FakeKeypadActivatorScript",
-    "W05_RE_MapBoardActivatorScript",
     "W05_RE_GraftonPawnShopLoadDoorScript",
     "W05_RE_SceneZW01_TriggerScript",
     "W05_Vault79EntranceDoorTriggerScript",
-    "W05_Vaut79EntranceKeypadScript",
 )
 
 
@@ -122,6 +121,10 @@ def test_w05_re_v79_keypad_patch_keeps_the_bound_access_gate_and_targets():
     assert "thisDoorToOpen.SetOpen(True)" in merged
 
 
+def test_vault79_entrance_keypad_fallback_is_retired():
+    assert _script_patch_source("W05_Vaut79EntranceKeypadScript") is None
+
+
 def test_elevator_trigger_only_controls_its_two_evidenced_door_links():
     patch = _script_patch_source("W05_Vault79ElevatorDoorTriggerScript")
     assert patch is not None
@@ -158,14 +161,26 @@ def test_bodyless_re_scripts_have_no_marker_only_patch(script_name: str):
 
 
 @pytest.mark.parametrize("script_name", PATCHED_SCRIPTS)
-def test_re_activator_patches_native_compile_for_fo4(script_name: str):
+def test_re_activator_patches_native_compile_for_fo4(
+    script_name: str, tmp_path: Path
+):
     base_source = _fo4_base_source()
     if base_source is None:
         pytest.skip("FO4 base Papyrus sources unavailable")
 
+    import_root = tmp_path / "imports"
+    import_root.mkdir()
+    for dependency_name in (
+        "W05_RE_MapMasterDummyScript",
+        "W05_RE_MapSegmentDummyScript",
+    ):
+        dependency_path = import_root / _script_relative_path(dependency_name, ".psc")
+        dependency_path.parent.mkdir(parents=True, exist_ok=True)
+        dependency_path.write_text(_merged_source(dependency_name), encoding="utf-8")
+
     result = compile_psc(
         _merged_source(script_name),
-        imports=[str(SOURCE_ROOT), str(base_source)],
+        imports=[str(import_root), str(SOURCE_ROOT), str(base_source)],
         game="fo4",
         flags=str(base_source / "Institute_Papyrus_Flags.flg"),
         source_path=str(_script_relative_path(script_name, ".psc")),

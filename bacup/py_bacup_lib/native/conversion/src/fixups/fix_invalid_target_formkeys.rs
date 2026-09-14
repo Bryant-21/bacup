@@ -1,33 +1,15 @@
 //! Fixup: null out FormKey references that point to a target master ESM at a
 //! FormKey that does not exist in that master.
 //!
-
+//! The blind `SeventySix.esm` → `Fallout4.esm` rename leaves many references
+//! to FormIDs Fallout4.esm lacks. Each is rewritten to the converted local record
+//! with the same object ID when one exists, else nulled (`local=0`); vanilla
+//! remap and stub allocation happen upstream. Raw `array_struct` formid slots
+//! such as COBJ.FVPA are rewritten too.
 //!
-//! # What this does
-//! After `remap_formkey` blindly renames `SeventySix.esm` → `Fallout4.esm`,
-//! many target-ESM FormKey references may point at FormIDs that do not exist
-//! in Fallout4.esm.  This fixup finds every such "dangling" reference in the
-//! target plugin and either rewrites it to a converted local record with the
-//! same object ID or nulls it to `local=0`.
-//!
-//! This fixup implements a local-output rewrite when the converted record
-//! already exists, else the nullification fallback (set `local=0`). Vanilla
-//! remap and stub-allocation of unidentifiable refs are handled upstream.
-//!
-//! # Convergence
-//! `convergent()` returns `true`.  Nullifying a FK leaf may expose a
-//! previously-hidden dangling reference (e.g. after a struct collapses to a
-//! simpler form), so the fixup re-runs until no more changes are needed.
-//! In practice convergence occurs in at most 2 iterations.
-//!
-//! # Design
-//! `apply_to_record` accepts an `is_invalid_fk: &dyn Fn(&FormKey) -> bool`
-//! closure so unit tests can inject validation logic without real plugin handles.
-//! The session path uses a resolver that performs the full null-check +
-//! master-existence check against real handles (same pattern as
-//! `clean_leveled_item_entries.rs`), and rewrites raw `array_struct` formid
-//! slots such as COBJ.FVPA when those slots still decode as bytes.
-//!
+//! Convergent: nulling a leaf can expose another dangling reference (e.g. a
+//! struct collapsing), so the fixup re-runs until stable, usually within 2
+//! passes.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -540,12 +522,11 @@ fn apply_to_record_with_resolution(
     let record_sig = record.sig.as_str().to_string();
     let mut any_changed = false;
     record.fields.retain_mut(|entry| {
-        // Whole-plugin FO76→FO4: leave the placed-ref-target class (LCTN
-        // LCEP/ACEP/LCUN) untouched. Their targets — exterior placed children —
-        // are re-inserted by the phase-6 cell-slice copy AFTER all fixups, so
-        // nulling them here (they look "invalid" pre-copy) is wrong. The post-copy
-        // `null_dangling_own_plugin_refs::repair_placed_child_refs` resolves them
-        // authoritatively once the targets exist.
+        // Whole-plugin FO76→FO4: skip the placed-ref-target class (e.g. LCTN
+        // LCEP/ACEP/LCUN). Their exterior placed-child targets arrive with the
+        // cell-slice copy after all fixups, so they look invalid here;
+        // `null_dangling_own_plugin_refs::repair_placed_child_refs` resolves
+        // them post-copy.
         if defer_placed_child
             && crate::fixups::null_dangling_own_plugin_refs::is_deferred_placed_child(
                 &record_sig,
@@ -617,17 +598,8 @@ fn invalid_target_worklist_owners(
     owners
 }
 
-/// Walk every `FieldValue::FormKey` leaf in `record` and null out any leaf for
-/// which `is_invalid_fk` returns `true`.
-///
-/// "Null out" means setting `fk.local = 0` and keeping the plugin sym — matching
-/// Python's `null_replacements = {fk: None for fk in null_fks}` semantics which
-/// replaces the FK value with `None` / zero in the serialised record.
-///
-/// Returns `true` when at least one leaf was nullified.
-///
-/// # Parameters
-/// - `is_invalid_fk` — predicate; returns `true` when the FK should be zeroed.
+/// Null (`local = 0`, plugin kept) every `FieldValue::FormKey` leaf in `record`
+/// that `is_invalid_fk` rejects. Returns `true` when any leaf changed.
 pub fn apply_to_record(
     record: &mut Record,
     record_def: Option<&RecordDef>,
@@ -1333,10 +1305,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    //
-    // This test verifies that after apply_to_record nullifies invalid FKs,
-    // a second pass returns false (is_no_op equivalent).  It mirrors the
-    // convergent() guarantee in the fixup trait.
+    // A second pass after nulling is a no-op (the convergent() guarantee).
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1401,11 +1370,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // fix_invalid_target_formkeys runs BEFORE null_dangling and walks struct/list
-    // FK leaves generically, so a placed-child target that is "invalid" pre-copy
-    // (the exterior child is not copied until phase 6) would be nulled here. With
-    // `defer_placed_child=true` this class must be LEFT UNTOUCHED; the post-copy
-    // repair resolves it. Models a real-shaped LCTN LCEP row (List<Struct>{ref}).
+    // Placed-child targets look invalid pre-copy (exterior children arrive with
+    // the cell-slice copy). With `defer_placed_child=true` they stay untouched
+    // for the post-copy repair. Models a real LCTN LCEP row (List<Struct>{ref}).
     // -----------------------------------------------------------------------
 
     fn lctn_lcep_record(leaf: FormKey, interner: &StringInterner) -> Record {
@@ -1450,7 +1417,7 @@ mod tests {
 
     #[test]
     fn lctn_lcep_placed_child_nulled_when_not_deferred() {
-        // defer=false reproduces the OLD (buggy) behavior: the LCEP ref is nulled.
+        // defer=false: the LCEP ref is nulled.
         let interner = StringInterner::new();
         let leaf = make_fk("7ACB4D", "Output.esm", &interner);
         let mut rec = lctn_lcep_record(leaf, &interner);
@@ -1462,9 +1429,8 @@ mod tests {
 
     #[test]
     fn lctn_lcep_placed_child_deferred_left_intact() {
-        // defer=true is the FIX: the placed-ref-target class is skipped entirely,
-        // so the LCEP ref survives for the post-copy repair. This FAILS on the
-        // pre-fix code (the class was always walked + nulled).
+        // defer=true: the placed-ref-target class is skipped, so the LCEP ref
+        // survives for the post-copy repair.
         let interner = StringInterner::new();
         let leaf = make_fk("7ACB4D", "Output.esm", &interner);
         let mut rec = lctn_lcep_record(leaf, &interner);
@@ -1478,10 +1444,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // FACT VENC merchant container — the same placed-child deferral. The
-    // container is a REFR re-inserted post-copy; pre-copy it looks dangling, so
-    // without the deferral this pass nulls it and the type-validator then strips
-    // the present-but-null VENC (every converted vendor loses its container).
+    // FACT VENC merchant container: same deferral. The container REFR arrives
+    // post-copy; nulled here, the type validator strips the null VENC and every
+    // converted vendor loses its container.
     // -----------------------------------------------------------------------
 
     fn fact_venc_record(leaf: FormKey, interner: &StringInterner) -> Record {
@@ -1510,8 +1475,7 @@ mod tests {
 
     #[test]
     fn fact_venc_merchant_container_nulled_when_not_deferred() {
-        // defer=false reproduces the OBSERVED bug (drop_trace: typecheck.strip
-        // present-but-null VENC): this pass nulls the merchant-container FK.
+        // defer=false: this pass nulls the merchant-container FK.
         let interner = StringInterner::new();
         let leaf = make_fk("629E0C", "Output.esm", &interner);
         let mut rec = fact_venc_record(leaf, &interner);
@@ -1526,9 +1490,8 @@ mod tests {
 
     #[test]
     fn fact_venc_merchant_container_deferred_left_intact() {
-        // defer=true is the FIX: VENC is in the placed-child-target class, so it's
-        // skipped pre-copy and survives for the post-copy repair (where the
-        // container REFR is present). FAILS on the pre-fix code (always nulled).
+        // defer=true: VENC is in the placed-child-target class, so it survives
+        // for the post-copy repair, where the container REFR is present.
         let interner = StringInterner::new();
         let leaf = make_fk("629E0C", "Output.esm", &interner);
         let mut rec = fact_venc_record(leaf, &interner);

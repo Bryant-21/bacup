@@ -221,10 +221,12 @@ fn resolve_raw_form_id(
     })
 }
 
-/// Classify an FO76 Location from its `location_type` and keyword object-ids.
-pub fn classify(location_type: u8, keyword_locals: &[u32]) -> WorkshopClass {
+/// Classify an FO76 Location from its `location_type`, keyword object-ids, and
+/// EditorID. Live shelter locations use the `SheltersLocation_` naming contract
+/// but do not carry the otherwise-purpose-built `LocTypeWorkshopShelter`.
+pub fn classify(location_type: u8, keyword_locals: &[u32], editor_id: &str) -> WorkshopClass {
     let has = |k: u32| keyword_locals.contains(&k);
-    if has(KW_WORKSHOP_SHELTER) {
+    if has(KW_WORKSHOP_SHELTER) || editor_id.to_ascii_lowercase().contains("shelterslocation_") {
         return WorkshopClass::Shelter;
     }
     if location_type == LOCATION_TYPE_WORKSHOP || has(KW_WORKSHOP_PUBLIC) || has(KW_WORKSHOP) {
@@ -259,7 +261,7 @@ pub fn resolve_band(
 pub fn eczn_flags(c: WorkshopClass) -> u8 {
     match c {
         WorkshopClass::Settlement => ECZN_FLAG_WORKSHOP | ECZN_FLAG_NEVER_RESETS,
-        WorkshopClass::Shelter => ECZN_FLAG_NEVER_RESETS,
+        WorkshopClass::Shelter => ECZN_FLAG_WORKSHOP | ECZN_FLAG_NEVER_RESETS,
         WorkshopClass::NonWorkshop => 0,
     }
 }
@@ -518,19 +520,27 @@ mod tests {
     #[test]
     fn classify_rules() {
         assert_eq!(
-            classify(9, &[KW_WORKSHOP, KW_WORKSHOP_SHELTER]),
+            classify(9, &[KW_WORKSHOP, KW_WORKSHOP_SHELTER], ""),
             WorkshopClass::Shelter
         );
         assert_eq!(
-            classify(9, &[KW_WORKSHOP, KW_WORKSHOP_PUBLIC]),
+            classify(9, &[KW_WORKSHOP, KW_WORKSHOP_PUBLIC], ""),
             WorkshopClass::Settlement
         );
-        assert_eq!(classify(0, &[KW_WORKSHOP]), WorkshopClass::Settlement);
         assert_eq!(
-            classify(LOCATION_TYPE_WORKSHOP, &[]),
+            classify(0, &[], "SheltersLocation_RestrictedArea"),
+            WorkshopClass::Shelter
+        );
+        assert_eq!(
+            classify(0, &[], "SCORE_S13_SheltersLocation_SoundStage"),
+            WorkshopClass::Shelter
+        );
+        assert_eq!(classify(0, &[KW_WORKSHOP], ""), WorkshopClass::Settlement);
+        assert_eq!(
+            classify(LOCATION_TYPE_WORKSHOP, &[], ""),
             WorkshopClass::Settlement
         );
-        assert_eq!(classify(0, &[KW_CLEARABLE]), WorkshopClass::NonWorkshop);
+        assert_eq!(classify(0, &[KW_CLEARABLE], ""), WorkshopClass::NonWorkshop);
     }
 
     #[test]
@@ -555,7 +565,7 @@ mod tests {
     #[test]
     fn flags_and_eid() {
         assert_eq!(eczn_flags(WorkshopClass::Settlement), 9);
-        assert_eq!(eczn_flags(WorkshopClass::Shelter), 1);
+        assert_eq!(eczn_flags(WorkshopClass::Shelter), 9);
         assert_eq!(eczn_flags(WorkshopClass::NonWorkshop), 0);
         assert_eq!(
             eczn_editor_id("LocWhitespring"),

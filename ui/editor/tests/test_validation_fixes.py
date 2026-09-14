@@ -70,6 +70,18 @@ def test_fix_issues_sanitizes_broken_refs_and_records_undo():
     nif = _FakeNif([block], _FakeSchema({"NiNode": [ref_field]}))
     app = _FakeApp(nif)
     panel = ValidationPanel(app)
+    panel._native_validation_report = lambda nif: {
+        "game": "fo4",
+        "findings": [
+            {
+                "severity": "error",
+                "rule": "invalid-array-link",
+                "block_id": 0,
+                "message": "Invalid target",
+            }
+        ],
+        "warnings": [],
+    }
 
     panel.validate()
     assert panel._issues

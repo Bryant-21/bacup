@@ -1,38 +1,23 @@
 """HKX creature parity comparator.
 
-Two comparison strategies, chosen per creature:
+Two strategies, chosen per creature:
 
-1. **identical_pair** (Deathclaw, Ghoul, etc. — creatures present in both FO76
-   and vanilla FO4 with the same skeleton and behavior topology). Run the
-   full FO76→FO4 conversion on the source, then diff the converted HKXFile
-   against the vanilla FO4 HKXFile field-by-field. Classes, class counts,
-   and scalar/vector member values must all match (floats compared within
-   `tolerance`). Catches any regression that changes the class list or
-   corrupts individual member values.
+1. **identical_pair** (Deathclaw, Ghoul, ...: same skeleton and behavior topology
+   in FO76 and vanilla FO4). Convert the FO76 source and diff it field by field
+   against the vanilla FO4 HKXFile: classes, class counts, and member values must
+   match (floats within `tolerance`). A `ParityAllowlist` can waive legitimate
+   FO76-source divergences, each with a reason; applied waivers are listed at the
+   end of the report.
 
-   Identical-pair tests may supply a `ParityAllowlist` to document fields
-   that are legitimate FO76-source divergences (e.g. FO76 retuned the
-   Deathclaw foot IK heights, or carries a runtime property-sheet array
-   vanilla doesn't have). Allowlist entries require a human-readable
-   reason — the check output lists applied allowances at the end of the
-   report so the waiver is visible.
+2. **schema** (Snallygaster, Sheepsquatch, Scorchbeast, Floater: FO76-only).
+   Validate the converted output against a `CreatureSchema`: required classes and
+   files exist, hkbCharacterData fields pass their predicates, and no stray
+   directories exist. This catches `character.hkx` written with scale=0,
+   zero-vector model axes, or an empty animation bundle, where no FO4 file exists
+   to diff against.
 
-2. **schema** (Snallygaster, Sheepsquatch, Scorchbeast, Floater — creatures
-   that only exist in FO76, with no vanilla FO4 equivalent). Run the
-   conversion, then validate the converted output against a
-   `CreatureSchema`: required classes exist, required files exist, key
-   fields inside hkbCharacterData pass their predicate checks (scale
-   non-zero, model axis vectors non-zero, animation bundle non-empty,
-   etc.), and no stray directories exist in the output. Catches the
-   corruption class where `character.hkx` writes scale=0, zero-vector
-   model axes, and empty animation bundles — none of which an
-   identical-pair test can catch since there's no FO4 Snallygaster to
-   diff against.
-
-Both strategies return a `ComparisonResult` with per-check pass/fail and
-actionable failure messages. The comparator does not raise on check
-failures; it is the caller's (the pytest test) responsibility to assert
-on `result.passed`.
+Both return a `ComparisonResult` and never raise on check failures; the test
+asserts on `result.passed`.
 """
 from __future__ import annotations
 
@@ -110,37 +95,19 @@ class ComparisonResult:
 class ParityAllowlist:
     """Per-test waivers for legitimate FO76-source divergences from vanilla FO4.
 
-    Identical-pair tests (e.g. Deathclaw) occasionally diff on fields that
-    are not conversion bugs: FO76 retuned some values (Deathclaw foot IK
-    heights), added a runtime property system vanilla doesn't have, uses a
-    different bone ordering in its skeleton, etc. Rather than silently
-    lower the test bar, each test passes an explicit allowlist naming the
-    divergences, with a human-readable reason for each.
+    Identical-pair diffs that aren't conversion bugs (retuned Deathclaw foot IK
+    heights, FO76's runtime property system, a different skeleton bone order) are
+    named explicitly, each with a reason, instead of lowering the test bar:
 
-    Entry kinds:
+    - ``extra_classes``: class -> reason, for classes only the converted file has
+      (e.g. stray `hkbBoneWeightArray` property-system payloads).
+    - ``extra_class_counts``: class -> (max extra count, reason), for classes
+      vanilla also has but FO76 has more of.
+    - ``field_patterns``: pattern -> reason, matched against `_diff_by_class` issue
+      labels. Patterns with ``*`` use fnmatch; others match as a prefix
+      (``hkbFootIkDriverInfo[0].legs``), so nested diff text needn't be spelled out.
 
-    - ``extra_classes`` — class names the converted file may have that the
-      expected file doesn't. Keyed by class, value is the reason.
-      Used for `hkbBoneWeightArray` stray entries that FO76 carries as
-      property-system payloads with no vanilla equivalent.
-
-    - ``extra_class_counts`` — mapping of class name to max allowed extra
-      count (converted - expected). Used alongside `extra_classes` for
-      classes that also appear in vanilla but FO76 has more of.
-
-    - ``field_patterns`` — glob-style (``fnmatch``) dotted field paths as
-      reported by `_diff_by_class`, e.g.
-      ``hkbFootIkDriverInfo[0].legs.array[*]: nested struct diff: .ankleIndex*``.
-      Matched fields are reported as allowances, not failures. Use
-      simplified patterns that match only the *prefix* of the issue label
-      (e.g. ``hkbFootIkDriverInfo[0].legs``) — every field issue is
-      matched against each pattern using substring-prefix rules, not
-      full fnmatch, so you don't need to spell out the nested diff text.
-
-    Each entry carries a reason string that is surfaced in the report as
-    an "Applied allowance" line. If an allowlisted entry doesn't
-    actually match anything in the diff, that's a warning — the field
-    may already be fixed and the waiver can be dropped.
+    Each applied waiver appears in the report as an "Applied allowance" line.
     """
     extra_classes: dict[str, str] = field(default_factory=dict)
     extra_class_counts: dict[str, tuple[int, str]] = field(default_factory=dict)
@@ -402,19 +369,11 @@ class InRange(Check):
 
 @dataclass
 class CreatureSchema:
-    """A 'valid output' schema for an FO76-only creature conversion.
+    """'Valid output' schema for an FO76-only creature conversion; checks only character.hkx.
 
-    Since there is no vanilla FO4 equivalent to diff against, we instead
-    assert that the converted output (directory of .hkx files) has the
-    required shape. Start simple: flat dict of field name -> Check, plus
-    file-set and stray-dir lists. The schema operates only on the
-    creature's character.hkx; behavior/animation validation is left to
-    other tests that don't know the expected FO4 schema.
-
-    `forbidden_fields_per_class` asserts that specific member names DO NOT
-    appear on any object of that class — used to catch FO76-only fields
-    (memSizeAndFlags, refCount, numHands, propertySheets) that leak through
-    the tagfile reader when it picks the wrong class schema.
+    `forbidden_fields_per_class` names members that must not appear on any object
+    of a class, catching FO76-only fields (memSizeAndFlags, refCount, numHands,
+    propertySheets) that leak when the tagfile reader picks the wrong class schema.
     """
     name: str
     required_classes: list[str] = field(default_factory=list)
@@ -438,22 +397,10 @@ def compare_hkx_files(
 ) -> ComparisonResult:
     """Diff a converted HKX against a vanilla FO4 HKX, field by field.
 
-    Used for identical-creature pairs (Deathclaw etc.) where both games
-    share the same creature and the converted output should be
-    functionally indistinguishable from the vanilla file.
-
-    Checks:
-        - Class list equality (no missing, no extra)
-        - Per-class object count
-        - For each paired object (by class, in order): each member's
-          canonical value, with numeric tolerance applied to floats
-
-    `allowlist` (optional) suppresses specific known FO76-source
-    divergences — see `ParityAllowlist`. Every allowlisted entry that
-    actually matches a diff is recorded in `result.allowances` so the
-    waivers are always visible in the pytest failure output.
-
-    Returns a ComparisonResult with one CheckResult per top-level check.
+    Checks class list equality, per-class object counts, and each paired object's
+    member values (paired by class, in order; floats within `tolerance`).
+    `allowlist` waives known FO76-source divergences; each applied waiver is
+    recorded in `result.allowances`. One CheckResult per top-level check.
     """
     result = ComparisonResult(
         subject=subject or str(converted),
@@ -736,9 +683,7 @@ def validate_hkx_schema(
         "variable_value_set",
     )
 
-    # 5. Forbidden fields per class — fields that must NOT appear on any
-    # object of the given class. Used to catch FO76-only fields that the
-    # tagfile reader leaks when it picks the wrong class schema.
+    # 5. Forbidden fields per class (see CreatureSchema).
     for class_name, forbidden_names in schema.forbidden_fields_per_class.items():
         objs = find_objects(hkx, class_name)
         offenders: list[str] = []
@@ -897,34 +842,28 @@ def _run_object_checks(
 
 # ── Skeleton.nif ragdoll collision inspection ──────────────────────────────
 
-# FO76 skeletons embed Havok collision as hk_2015 TAG0 tagfile blobs inside
-# two NIF block types: `bhkPhysicsSystem` (loose collision, one rigid body)
-# and `bhkRagdollSystem` (full ragdoll, many bodies + constraint chain). The
-# conversion pipeline (`py_creation_lib/python/creation_lib/nif/convert_physics.py`) routes each blob through
-# `HavokConverter.convert_bytes` which runs the same tagfile reader + 2015→
-# 2014 migration + packfile writer as character.hkx conversion.
+# FO76 skeletons embed Havok collision as hk_2015 TAG0 tagfile blobs in two NIF
+# block types: `bhkPhysicsSystem` (loose collision, one rigid body) and
+# `bhkRagdollSystem` (full ragdoll, many bodies + constraint chain). Each blob is
+# converted with the same tagfile reader, 2015->2014 migration, and packfile
+# writer as character.hkx.
 #
-# The checks below validate the Havok contents of those blobs after
-# conversion:
+# Post-conversion checks on each blob:
 #   - `hknpRagdollData` exists
 #   - `bodyCinfos` / `motionCinfos` / `constraintCinfos` arrays non-empty
-#   - every `motionCinfos[i].inverseMass > 0` (mass=infinity → static body;
-#     the FO76 ragdoll encodes dynamic bodies so all inverseMass must be >0)
-#   - every `hknpCapsuleShape.convexRadius > 0` (zero radius = no collision
-#     volume, the same class of bug we catch on character.hkx)
+#   - every `motionCinfos[i].inverseMass > 0` (0 means a static body; FO76
+#     ragdoll bodies are dynamic)
+#   - every `hknpCapsuleShape.convexRadius > 0` (zero radius = no collision volume)
 #   - capsule endpoint distance > epsilon (degenerate capsules collapse to
 #     points and crash the runtime ragdoll solver)
-#   - `boneToBodyMap` length ≥ `bodyCinfos` length (every body has at least
-#     one bone — orphan bodies get detached from the skeleton animation)
-#   - `constraintCinfos` count ≥ `bodyCinfos.length - 1` (constraint graph
-#     must form a tree connecting every body back to the root)
+#   - `boneToBodyMap` length ≥ `bodyCinfos` length (orphan bodies detach from
+#     the skeleton animation)
+#   - `constraintCinfos` count ≥ `bodyCinfos.length - 1` (constraints must form
+#     a tree connecting every body to the root)
 #
-# For identical-creature pairs (Deathclaw) we additionally diff the class
-# counts between converted and vanilla FO4 blob — no stray classes, no
-# missing classes. We do NOT diff scalar values because FO4 changes a few
-# conventions (e.g. `hknpCapsuleShape.a/b` fourth component is always 1.0
-# in FO4 but holds the radius in FO76; the migration correctly normalizes
-# this but scalar byte-equality isn't a useful invariant here).
+# Identical pairs (Deathclaw) also diff class counts against the vanilla FO4
+# blob, but not scalar values: FO4 changes some conventions (e.g. the
+# `hknpCapsuleShape.a/b` fourth component is 1.0 in FO4 but the radius in FO76).
 
 
 @dataclass

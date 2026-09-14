@@ -111,6 +111,49 @@ def test_runtime_ini_override_replaces_previous_archive_names(
     assert timing.records[0][1]["registered_runtime_ini_entries"] == 3
 
 
+def test_standard_ba2_removes_existing_entries_without_registering_archives(
+    monkeypatch, tmp_path: Path
+):
+    mo2_dir = tmp_path / "ModOrganizer" / "mods" / "SeventySix"
+    override_ini = tmp_path / "profiles" / "MyProfile" / "fallout4custom.ini"
+    override_ini.parent.mkdir(parents=True)
+    override_ini.write_text(
+        "[Archive]\n"
+        "sResourceArchiveList=OtherMod - Main.ba2, SeventySix - Sounds1.ba2\n"
+        "sResourceIndexFileList=SeventySix - Textures1.ba2\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(regen_pipeline, "_deploy_output_mods", _fake_deploy_output_mods)
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_deployed_archive_names",
+        lambda *a, **k: [
+            "SeventySix - Main.ba2",
+            "SeventySix - Textures.ba2",
+        ],
+    )
+
+    paths = _paths(tmp_path, deploy_data_dir=mo2_dir)
+    paths.runtime_ini_path = override_ini
+    timing = _Timing()
+
+    regen_pipeline._deploy_post_steps(
+        paths,
+        ["SeventySix.esm"],
+        timing,
+        update_runtime_ini=True,
+        register_runtime_archives=False,
+    )
+
+    content = override_ini.read_text(encoding="utf-8")
+    assert "SeventySix -" not in content
+    assert "OtherMod - Main.ba2" in content
+    assert timing.records[0][1]["removed_runtime_archive_ini_entries"] == 2
+    assert timing.records[0][1]["registered_runtime_ini_entries"] == 0
+    assert timing.records[0][1]["ini_updates_skipped"] is False
+
+
 def test_no_runtime_ini_override_still_skips_ini_for_virtual_deploy_target(monkeypatch, tmp_path):
     mo2_dir = tmp_path / "ModOrganizer" / "mods" / "SeventySix"
 

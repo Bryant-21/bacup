@@ -128,6 +128,42 @@ fn pre_translate_relayouts_fo3_arma_actor_models() {
 }
 
 #[test]
+fn pre_translate_drops_fnv_armor_sound_template_instead_of_authoring_fo4_template_armor() {
+    let interner = StringInterner::new();
+    let mut record = make_record("ARMO", &interner);
+    push_field(&mut record, "EDID", FieldValue::None);
+    push_field(
+        &mut record,
+        "TNAM",
+        FieldValue::FormKey(crate::ids::FormKey {
+            plugin: interner.intern("FalloutNV.esm"),
+            local: 0x13D3B5,
+        }),
+    );
+    push_field(
+        &mut record,
+        "BOD2",
+        FieldValue::Bytes(smallvec::smallvec![0xC8, 0x07, 0x00, 0x00]),
+    );
+
+    FnvFo4Hook
+        .pre_translate(&mut make_ctx(&interner), &mut record)
+        .unwrap();
+
+    assert_eq!(
+        record
+            .fields
+            .iter()
+            .map(|field| field.sig.as_str())
+            .collect::<Vec<_>>(),
+        vec!["EDID", "BOD2"]
+    );
+    assert!(record.warnings.iter().any(|warning| {
+        interner.resolve(*warning) == Some("fnv_armor_animation_sound_template_dropped_for_fo4")
+    }));
+}
+
+#[test]
 fn pre_translate_drops_raw_and_structured_same_4cc_semantic_collisions() {
     let interner = StringInterner::new();
     for (record_sig, field_sig) in [

@@ -1,4 +1,4 @@
-"""Upgrade-plan resolution + run_full_regen upgrade wiring (Task 7).
+"""Upgrade-plan resolution + run_full_regen upgrade wiring.
 
 Two seams are pinned here:
 
@@ -7,9 +7,9 @@ Two seams are pinned here:
   the manifest is a real on-disk YAML (pure ``upgrade_manifest`` parsing).
 * ``run_full_regen`` in upgrade mode -- the derived wiring that the resolver does
   NOT itself carry: ``re_use_land`` / terrain-graft source, the forced
-  ``lod_mode="none"`` when LOD isn't regenerated, the selective ``swap_labels``
-  passed to deploy, ``archive_output_dir`` forced off so the swap source is
-  populated, and the SNAM stamp threaded onto the request.
+  ``lod_mode="none"`` when LOD isn't regenerated, UI workspace hydration,
+  complete archive packing/deployment, and the SNAM stamp threaded onto the
+  request.
 """
 from pathlib import Path
 from types import SimpleNamespace
@@ -257,7 +257,9 @@ def test_forced_regen_refuses_output_inside_deploy_dir(tmp_path):
     assert paths.output_root.is_dir()
 
 
-def test_upgrade_without_meshes_disables_anim_text_data(tmp_path, monkeypatch):
+def test_explicit_anim_text_data_overrides_upgrade_phase_selection(
+    tmp_path, monkeypatch
+):
     manifest = _write_manifest(
         tmp_path,
         """\
@@ -289,7 +291,7 @@ versions:
         phases=plan.phases,
         generate_anim_text_data=True,
     )
-    assert not options.generate_anim_text_data
+    assert options.generate_anim_text_data
 
 
 def test_no_deployed_esm_is_full_build(tmp_path, monkeypatch):
@@ -468,7 +470,7 @@ def test_target_override_multi_step_union(tmp_path):
     assert isinstance(plan, UpgradePlan) and not plan.full_build
     assert plan.regen_terrain  # Terrain entered the union via alpha3
     assert set(plan.swap_labels) == {
-        "Meshes", "MeshesExtra", "Materials", "Terrain", "TerrainTextures",
+        "Meshes", "MeshesExtra", "Materials", "Textures",
     }
 
 
@@ -482,8 +484,6 @@ def _stub_pipeline(monkeypatch):
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
     monkeypatch.setattr(regen_pipeline, "_snapshot_land_cache", lambda *_a, **_k: True)
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_payloads_for_outputs", lambda *_a, **_k: None)
-    monkeypatch.setattr(regen_pipeline, "_sanitize_fo4_ck_materials_for_outputs", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_check_run_invariants", lambda *_a, **_k: ([], []))
     monkeypatch.setattr(
         "bacup_lib.target_assets.ensure_target_asset_catalog",
@@ -495,7 +495,76 @@ def _stub_pipeline(monkeypatch):
     monkeypatch.setattr(models, "write_coverage_report", lambda *_a, **_k: None)
 
 
-def test_run_full_regen_upgrade_wires_phases_graft_swap_and_stamp(monkeypatch, tmp_path):
+def test_run_full_regen_honors_explicit_anim_text_data_for_unrelated_upgrade_family(
+    monkeypatch, tmp_path
+):
+    paths = _paths(tmp_path)
+    paths.source_data_dir.mkdir(parents=True)
+    (paths.source_data_dir / "SeventySix.esm").write_bytes(b"TES4-source")
+    paths.target_data_dir.mkdir(parents=True)
+    (paths.target_data_dir / "SeventySix.esm").write_bytes(b"TES4-deployed")
+    manifest = _write_manifest(
+        tmp_path,
+        """\
+current: alpha2
+versions:
+  - id: alpha1
+    families_by_conversion:
+      'fo76:fo4': [ALL]
+  - id: alpha2
+    families_by_conversion:
+      'fo76:fo4': [Materials]
+""",
+    )
+    _stub_pipeline(monkeypatch)
+
+    captures = {}
+
+    def fake_run_unified(request, _runner, **kwargs):
+        captures["generate_anim_text_data"] = request.options.generate_anim_text_data
+        captures["anim_text_data_native"] = request.options.anim_text_data_native
+        captures["archive_labels"] = kwargs.get("archive_labels")
+        paths.output_root.mkdir(parents=True, exist_ok=True)
+        (paths.output_root / "SeventySix.esm").write_bytes(b"TES4-built")
+        return SimpleNamespace(
+            run_result=SimpleNamespace(
+                decisions=[],
+                translated_counts={},
+                skipped_counts={},
+                failed_nifs=[],
+                failed_textures=[],
+                failed_bgsms=[],
+                btos_failed=0,
+                btos_total=0,
+            )
+        )
+
+    import bacup_lib.workflows.unified as unified
+
+    monkeypatch.setattr(unified, "run_unified", fake_run_unified)
+
+    result = regen_pipeline.run_full_regen(
+        paths,
+        RegenOptions(
+            upgrade=True,
+            upgrade_from="alpha1",
+            upgrade_manifest_path=manifest,
+            generate_anim_text_data=True,
+            anim_text_data_native=True,
+        ),
+        phases=PhaseSelection(),
+        runner=SimpleNamespace(emit_log=lambda *_a, **_k: None),
+    )
+
+    assert result.exit_code == 0
+    assert captures["generate_anim_text_data"] is True
+    assert captures["anim_text_data_native"] is True
+    assert set(captures["archive_labels"]) == {"Materials", "Meshes", "MeshesExtra"}
+
+
+def test_run_full_regen_hydrated_upgrade_repacks_and_deploys_the_complete_mod(
+    monkeypatch, tmp_path
+):
     paths = _paths(tmp_path)
     # FO76 source (resolved by _resolve_source_plugins).
     paths.source_data_dir.mkdir(parents=True)
@@ -510,8 +579,16 @@ def test_run_full_regen_upgrade_wires_phases_graft_swap_and_stamp(monkeypatch, t
 
     captures: dict[str, object] = {}
     deploy_kwargs: list[dict] = []
+    calls: list[str] = []
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_hydrate_upgrade_workspace_from_deployed",
+        lambda *_a, **_k: calls.append("hydrate"),
+        raising=False,
+    )
 
     def fake_run_unified(request, _runner, **kwargs):
+        calls.append("convert")
         opts = request.options
         captures["convert_nifs"] = opts.convert_nifs
         captures["convert_materials"] = opts.convert_materials
@@ -548,7 +625,10 @@ def test_run_full_regen_upgrade_wires_phases_graft_swap_and_stamp(monkeypatch, t
     monkeypatch.setattr(
         regen_pipeline,
         "_deploy_post_steps",
-        lambda *a, **kwargs: deploy_kwargs.append(kwargs),
+        lambda *a, **kwargs: (
+            calls.append("deploy"),
+            deploy_kwargs.append(kwargs),
+        ),
     )
 
     result = regen_pipeline.run_full_regen(
@@ -556,10 +636,11 @@ def test_run_full_regen_upgrade_wires_phases_graft_swap_and_stamp(monkeypatch, t
         RegenOptions(
             deploy=True,
             upgrade=True,
+            hydrate_upgrade_from_deployed=True,
             upgrade_from="alpha1",
             upgrade_manifest_path=manifest,
             lod_mode="generate",           # explicit mode -> must still be forced off
-            direct_deploy_archives=True,   # must be forced to pack into output_root
+            direct_deploy_archives=True,   # hydration must still pack into output_root
         ),
         phases=PhaseSelection(),           # replaced by the plan's phases
         runner=SimpleNamespace(emit_log=lambda *_a, **_k: None),
@@ -582,14 +663,16 @@ def test_run_full_regen_upgrade_wires_phases_graft_swap_and_stamp(monkeypatch, t
     assert captures["terrain_lod_mode"] == "none"
     # SNAM stamp target threaded onto the request.
     assert captures["mod_version"] == "alpha2"
-    # Selective swap must pack into output_root, not direct-deploy.
+    # The deployed archives seed the local workspace before conversion. The
+    # complete inventory is then packed locally and fully deployed.
+    assert calls == ["hydrate", "convert", "deploy"]
     assert captures["archive_output_dir"] is None
-    assert captures["archive_labels"] == ("Materials", "Meshes", "MeshesExtra")
+    assert captures["archive_labels"] is None
     assert deploy_kwargs == [
         {
             "archives_already_deployed": False,
             "update_runtime_ini": True,
-            "swap_labels": ("Materials", "Meshes", "MeshesExtra"),
+            "register_runtime_archives": False,
         }
     ]
 

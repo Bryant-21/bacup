@@ -47,13 +47,8 @@ Function ApplyLocalPresentation(Bool openState)
         IsBlockingActivations = False
     EndIf
 
-    If EnableOverrideDisplayName
-        If openState
-            SetOverrideName(OverrideDisplayNameOpen)
-        Else
-            SetOverrideName(OverrideDisplayNameClosed)
-        EndIf
-    EndIf
+    ; EnableOverrideDisplayName/OverrideDisplayName{Open,Closed} have no Fallout 4
+    ; equivalent (FO76 ObjectReference.SetOverrideName); the name override is lost.
     If EnableOverrideActivateText
         If openState
             SetActivateTextOverride(OverrideActivateTextOpen)
@@ -161,9 +156,9 @@ Event OnInit()
     SetLocalOpen(IsOpen, False)
 EndEvent
 
-Event OnSimpleNetworkStateSet()
-    UpdateNetworkState(False)
-EndEvent
+; OnSimpleNetworkStateSet was the FO76 server->client replicated-state callback.
+; SetLocalOpen/UpdateNetworkState are already driven locally by OnInit/OnLoad/OnActivate.
+; @drop-member OnSimpleNetworkStateSet
 
 Event OnLoad()
     UpdateNetworkState(True)

@@ -1,7 +1,7 @@
 #[test]
 fn drops_skyrim_debr_legacy_72_byte_modt() {
     let interner = StringInterner::new();
-    let form_key = FormKey::parse("000800@Skyrim_Merged.esm", &interner).unwrap();
+    let form_key = FormKey::parse("000800@Skyrim.esm", &interner).unwrap();
     let mut record = Record::new(SigCode::from_str("DEBR").unwrap(), form_key);
     record.fields.push(FieldEntry {
         sig: SubrecordSig::from_str("DATA").unwrap(),
@@ -23,9 +23,7 @@ fn drops_skyrim_debr_legacy_72_byte_modt() {
 
     SkyrimSeFo4Hook
         .pre_translate(
-            &mut PairCtx {
-                interner: &interner,
-            },
+            &mut PairCtx::new(&interner),
             &mut record,
         )
         .unwrap();
@@ -35,9 +33,9 @@ fn drops_skyrim_debr_legacy_72_byte_modt() {
 }
 
 #[test]
-fn drops_all_skyrim_vmad_before_fo4_translation() {
+fn strips_quest_vmad_but_preserves_standalone_script_bindings() {
     let interner = StringInterner::new();
-    let form_key = FormKey::parse("03ACDB@Skyrim_Merged.esm", &interner).unwrap();
+    let form_key = FormKey::parse("03ACDB@Skyrim.esm", &interner).unwrap();
     let mut quest = Record::new(SigCode::from_str("QUST").unwrap(), form_key);
     quest.fields.push(FieldEntry {
         sig: SubrecordSig::from_str("EDID").unwrap(),
@@ -50,9 +48,7 @@ fn drops_all_skyrim_vmad_before_fo4_translation() {
 
     SkyrimSeFo4Hook
         .pre_translate(
-            &mut PairCtx {
-                interner: &interner,
-            },
+            &mut PairCtx::new(&interner),
             &mut quest,
         )
         .unwrap();
@@ -62,7 +58,7 @@ fn drops_all_skyrim_vmad_before_fo4_translation() {
 
     let mut activator = Record::new(
         SigCode::from_str("ACTI").unwrap(),
-        FormKey::parse("000800@Skyrim_Merged.esm", &interner).unwrap(),
+        FormKey::parse("000800@Skyrim.esm", &interner).unwrap(),
     );
     activator.fields.push(FieldEntry {
         sig: SubrecordSig::from_str("VMAD").unwrap(),
@@ -71,12 +67,55 @@ fn drops_all_skyrim_vmad_before_fo4_translation() {
 
     SkyrimSeFo4Hook
         .pre_translate(
-            &mut PairCtx {
-                interner: &interner,
-            },
+            &mut PairCtx::new(&interner),
             &mut activator,
         )
         .unwrap();
 
-    assert!(activator.fields.is_empty());
+    let FieldValue::Bytes(vmad) = &activator.fields[0].value else {
+        panic!("standalone VMAD must remain bytes")
+    };
+    assert_eq!(&vmad[..4], &[6, 0, 2, 0]);
+}
+
+#[test]
+fn rebuilds_skyrim_packages_as_fo4_safe_travel_packages() {
+    let interner = StringInterner::new();
+    let mut package = Record::new(
+        SigCode::from_str("PACK").unwrap(),
+        FormKey::parse("000801@Skyrim.esm", &interner).unwrap(),
+    );
+    package.eid = Some(interner.intern("ComplexSkyrimPackage"));
+    package.fields.push(FieldEntry {
+        sig: SubrecordSig::from_str("EDID").unwrap(),
+        value: FieldValue::String(interner.intern("ComplexSkyrimPackage")),
+    });
+    package.fields.push(FieldEntry {
+        sig: SubrecordSig::from_str("VMAD").unwrap(),
+        value: FieldValue::Bytes(smallvec::smallvec![5, 0, 2, 0, 0, 0]),
+    });
+
+    SkyrimSeFo4Hook
+        .pre_translate(&mut PairCtx::new(&interner), &mut package)
+        .unwrap();
+
+    for signature in ["PKDT", "PSDT", "PKCU", "PLDT", "POBA", "POEA", "POCA"] {
+        assert!(
+            package
+                .fields
+                .iter()
+                .any(|field| field.sig.as_str() == signature),
+            "missing {signature}"
+        );
+    }
+    let FieldValue::Bytes(vmad) = package
+        .fields
+        .iter()
+        .find(|field| field.sig.as_str() == "VMAD")
+        .map(|field| &field.value)
+        .unwrap()
+    else {
+        panic!("package VMAD must remain bytes")
+    };
+    assert_eq!(&vmad[..4], &[6, 0, 2, 0]);
 }

@@ -1,14 +1,12 @@
 //! Fixup: collapse recursive creature LVLN template chains.
 //!
-//! FO4 supports LVLN template actors in some vanilla humanoid records, so the
-//! converter must not blindly clear every LVLN template slot. FO76 creatures can
-//! emit a different pattern that is unsafe for FO4 runtime animation init:
-//!
-//! `LVLN -> NPC_ entry -> TPLT/TPTA -> LVLN`
-//!
-//! For creature LVLNs, replace that NPC entry with the concrete entries from the
-//! delegated LVLN. Also flatten direct nested creature LVLN entries. This keeps
-//! normal template NPCs intact while removing recursive creature list selection.
+//! FO4 allows LVLN template actors on some vanilla humanoids, so LVLN template
+//! slots can't be cleared wholesale. FO76 creatures emit
+//! `LVLN -> NPC_ entry -> TPLT/TPTA -> LVLN`, which breaks FO4 runtime animation
+//! init. In creature LVLNs that NPC entry is replaced with the delegated LVLN's
+//! concrete entries, and directly nested creature LVLN entries are flattened.
+//! When every parent entry expands, smaller replacement groups repeat so each
+//! original branch stays equally likely instead of weighted by leaf count.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -381,20 +379,16 @@ fn normalize_lvln_record(
         return false;
     };
 
-    let mut changed = false;
-    let mut retained = smallvec::SmallVec::with_capacity(record.fields.len());
-    let mut seen_replacements: FxHashSet<(u16, FormKey, u16)> = FxHashSet::default();
-
-    for entry in record.fields.drain(..) {
+    let mut replacement_groups = Vec::new();
+    for entry in &record.fields {
         if entry.sig != lvlo_sig {
-            retained.push(entry);
             continue;
         }
 
         let Some(reference) =
             lvlo_reference(&entry.value, target_masters, target_plugin_name, interner)
         else {
-            retained.push(entry);
+            replacement_groups.push(None);
             continue;
         };
 
@@ -413,13 +407,14 @@ fn normalize_lvln_record(
         };
 
         if replacement_lvlns.is_empty() {
-            retained.push(entry);
+            replacement_groups.push(None);
             continue;
         }
 
         let parent_level = lvlo_level(&entry.value, interner).unwrap_or(1);
         let parent_count = lvlo_count(&entry.value, interner).unwrap_or(1);
         let mut replacement_entries = Vec::new();
+        let mut seen_replacements: FxHashSet<(u16, FormKey, u16)> = FxHashSet::default();
         for replacement_fk in replacement_lvlns {
             if replacement_fk == record.form_key {
                 continue;
@@ -439,11 +434,33 @@ fn normalize_lvln_record(
         }
 
         if replacement_entries.is_empty() {
+            replacement_groups.push(None);
+            continue;
+        }
+        replacement_groups.push(Some(replacement_entries));
+    }
+
+    let balanced_group_len = balanced_replacement_group_len(&replacement_groups);
+    let mut changed = false;
+    let mut retained = smallvec::SmallVec::with_capacity(record.fields.len());
+    let mut replacement_groups = replacement_groups.into_iter();
+    for entry in record.fields.drain(..) {
+        if entry.sig != lvlo_sig {
             retained.push(entry);
             continue;
         }
 
-        retained.extend(replacement_entries);
+        let Some(mut replacements) = replacement_groups.next().flatten() else {
+            retained.push(entry);
+            continue;
+        };
+        if let Some(target_len) = balanced_group_len {
+            let originals = replacements.clone();
+            for _ in 1..(target_len / originals.len()) {
+                replacements.extend(originals.iter().cloned());
+            }
+        }
+        retained.extend(replacements);
         changed = true;
     }
 
@@ -453,6 +470,36 @@ fn normalize_lvln_record(
     }
     record.fields = retained;
     changed
+}
+
+fn balanced_replacement_group_len(groups: &[Option<Vec<FieldEntry>>]) -> Option<usize> {
+    if groups.len() < 2
+        || groups
+            .iter()
+            .any(|group| group.as_ref().is_none_or(Vec::is_empty))
+    {
+        return None;
+    }
+
+    let max_group_len = MAX_LVLO_ENTRIES / groups.len();
+    let mut common_len = 1usize;
+    for group in groups.iter().flatten() {
+        let divisor = greatest_common_divisor(common_len, group.len());
+        common_len = common_len.checked_div(divisor)?.checked_mul(group.len())?;
+        if common_len > max_group_len {
+            return None;
+        }
+    }
+    Some(common_len)
+}
+
+fn greatest_common_divisor(mut left: usize, mut right: usize) -> usize {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
 }
 
 fn clone_lvlo_entries_from(
@@ -989,6 +1036,60 @@ mod tests {
             .find(|entry| entry.sig.as_str() == "LLCT")
             .map(|entry| &entry.value);
         assert_eq!(llct, Some(&FieldValue::Uint(3)));
+    }
+
+    #[test]
+    fn preserves_equal_weight_for_fully_nested_creature_branches() {
+        let interner = StringInterner::new();
+        let parent_fk = fk(0x0100, "Out.esm", &interner);
+        let mothman_branch_fk = fk(0x0200, "Out.esm", &interner);
+        let flatwoods_branch_fk = fk(0x0300, "Out.esm", &interner);
+        let mothman_a_fk = fk(0x0400, "Out.esm", &interner);
+        let mothman_b_fk = fk(0x0401, "Out.esm", &interner);
+        let flatwoods_fk = fk(0x0500, "Out.esm", &interner);
+
+        let mut parent = record("LVLN", parent_fk.local, &interner);
+        push_llct(&mut parent, 2);
+        push_lvlo(&mut parent, 1, 0x0100_0200, 1);
+        push_lvlo(&mut parent, 1, 0x0100_0300, 1);
+
+        let mut mothman_branch = record("LVLN", mothman_branch_fk.local, &interner);
+        push_llct(&mut mothman_branch, 2);
+        push_lvlo(&mut mothman_branch, 1, 0x0100_0400, 1);
+        push_lvlo(&mut mothman_branch, 1, 0x0100_0401, 1);
+
+        let mut flatwoods_branch = record("LVLN", flatwoods_branch_fk.local, &interner);
+        push_llct(&mut flatwoods_branch, 1);
+        push_lvlo(&mut flatwoods_branch, 1, 0x0100_0500, 1);
+
+        let lvln_records = FxHashMap::from_iter([
+            (parent_fk, parent.clone()),
+            (mothman_branch_fk, mothman_branch),
+            (flatwoods_branch_fk, flatwoods_branch),
+        ]);
+        let creature_lvlns =
+            FxHashSet::from_iter([parent_fk, mothman_branch_fk, flatwoods_branch_fk]);
+
+        assert!(normalize_lvln_record(
+            &mut parent,
+            &lvln_records,
+            &FxHashMap::default(),
+            &creature_lvlns,
+            &[],
+            "Out.esm",
+            &interner,
+        ));
+
+        assert_eq!(
+            lvln_entry_refs(&parent, &[], "Out.esm", &interner),
+            vec![mothman_a_fk, mothman_b_fk, flatwoods_fk, flatwoods_fk]
+        );
+        let llct = parent
+            .fields
+            .iter()
+            .find(|entry| entry.sig.as_str() == "LLCT")
+            .map(|entry| &entry.value);
+        assert_eq!(llct, Some(&FieldValue::Uint(4)));
     }
 
     #[test]

@@ -43,8 +43,21 @@ fn normalize_model_path_value(interner: &crate::sym::StringInterner, value: &mut
 }
 
 fn normalized_model_path(path: &str) -> Option<String> {
+    let output = canonical_model_path(path)?;
+    if output == path.trim().trim_matches('\0') {
+        return None;
+    }
+    Some(output)
+}
+
+pub(super) fn canonical_model_path(path: &str) -> Option<String> {
     let mut normalized = path.trim().trim_matches('\0').replace('\\', "/");
     normalized = normalized.trim_start_matches('/').to_string();
+    normalized = normalized
+        .split('/')
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("/");
     if normalized.is_empty()
         || normalized.eq_ignore_ascii_case("none")
         || normalized.contains(':')
@@ -77,11 +90,7 @@ fn normalized_model_path(path: &str) -> Option<String> {
             .unwrap_or_default();
     }
 
-    let output = normalized.replace('/', "\\");
-    if output == path.trim().trim_matches('\0') {
-        return None;
-    }
-    Some(output)
+    Some(normalized.replace('/', "\\"))
 }
 
 #[cfg(test)]
@@ -93,7 +102,7 @@ mod tests {
     use crate::translator::pair_hook::{PairCtx, PairHook};
 
     fn make_ctx(interner: &StringInterner) -> PairCtx<'_> {
-        PairCtx { interner }
+        PairCtx::new(interner)
     }
 
     fn make_record(sig: &str, interner: &StringInterner) -> Record {
@@ -230,6 +239,29 @@ mod tests {
                 Some("Landscape\\Grass\\WastelandGrass01.nif")
             );
         }
+
+        #[test]
+        fn post_translate_trims_model_path_component_whitespace() {
+            let interner = StringInterner::new();
+            let mut record = make_record("ACTI", &interner);
+            push_field(
+                &mut record,
+                "MODL",
+                FieldValue::String(interner.intern("DLC05/Effects/ DLC05MZRmGenerator01_d.NIF")),
+            );
+
+            FnvFo4Hook
+                .post_translate(&mut make_ctx(&interner), &mut record)
+                .unwrap();
+
+            let FieldValue::String(sym) = record.fields[0].value else {
+                panic!("expected model path string");
+            };
+            assert_eq!(
+                interner.resolve(sym),
+                Some("DLC05\\Effects\\DLC05MZRmGenerator01_d.NIF")
+            );
+        }
     }
 
     mod skyrimse {
@@ -239,7 +271,7 @@ mod tests {
         #[test]
         fn normalizes_skyrim_prefixed_model_paths() {
             let interner = StringInterner::new();
-            let form_key = FormKey::parse("000800@Skyrim_Merged.esm", &interner).unwrap();
+            let form_key = FormKey::parse("000800@Skyrim.esm", &interner).unwrap();
             let mut record = Record::new(SigCode::from_str("STAT").unwrap(), form_key);
             let model = interner.intern("Meshes/SkyrimSE/Architecture/Whiterun/Test.nif");
             record.fields.push(FieldEntry {
@@ -248,9 +280,7 @@ mod tests {
             });
 
             let hook = SkyrimSeFo4Hook;
-            let mut ctx = PairCtx {
-                interner: &interner,
-            };
+            let mut ctx = PairCtx::new(&interner);
             hook.post_translate(&mut ctx, &mut record).unwrap();
 
             let FieldValue::String(model) = &record.fields[0].value else {

@@ -1,24 +1,15 @@
 //! Fixup: synthesize FO4 DNAM (weapon stats) and FNAM (animation) subrecords for
 //! translated WEAP records that lack them.
 //!
-
+//! FO76 WEAP DNAM has a different layout from FO4's, so after translation it is
+//! absent or undecodable. It is rebuilt from FO4 defaults plus the compatible FO76
+//! fields (including base min/max range), and a default FNAM is injected when
+//! missing. FNV/FO3 keep inventory stats in DATA, ammo and sound level in separate
+//! subrecords, and animation data in DNAM, so they are rebuilt field by field.
 //!
-//! # What this does
-//! FO76 WEAP records store weapon stats in a DNAM binary blob whose layout
-//! differs from FO4's.  After FO76→FO4 translation the DNAM is either absent
-//! or contains FO76 bytes that don't decode under the FO4 codec.  This fixup
-//! replaces the DNAM with a DNAM containing sensible FO4 default values,
-//! preserving compatible FO76 fields (including base min/max range), and
-//! injects an FNAM with FO4 animation defaults when FNAM is missing.
-//! FNV/FO3 use a different legacy layout: inventory stats live in DATA,
-//! ammo/sound level are separate subrecords, and animation data lives in
-//! DNAM. Those sources are rebuilt field-by-field instead of being interpreted
-//! with FO76 offsets.
-//!
-//! Creature weapons (root record type NPC_ or LVLN) receive specialised
-//! defaults; melee/unarmed creature weapons additionally translate the source
-//! melee geometry (speed, reach, min/max range) and combat fields so the AI
-//! closes to attack instead of holding the stamped default engage range.
+//! Creature weapons (root NPC_ or LVLN) get creature defaults; melee/unarmed ones
+//! also carry the source melee geometry (speed, reach, min/max range) and combat
+//! fields, so the AI closes to attack instead of holding the default engage range.
 //!
 //! # FO4 DNAM struct layout (codec `I,f,f,f,f,f,f,f,f,I,I,I,I,H,B,f,f,I,H,I,I,I,I,I,I,I,I,I,B,f,B,B,f,f,f,I,B,B,B,B`)
 //!
@@ -136,7 +127,15 @@ const FO76_DNAM_SOUND_OFFSETS: [usize; WEAP_SOUND_FIELD_COUNT] =
     [83, 87, 91, 95, 99, 103, 107, 111, 115];
 const FO4_DNAM_SOUND_OFFSETS: [usize; WEAP_SOUND_FIELD_COUNT] =
     [69, 73, 77, 81, 85, 89, 93, 97, 101];
+const FO4_SOUND_ATTACK: usize = 1;
+const FO4_SOUND_ATTACK_2D: usize = 2;
+const FO4_SOUND_ATTACK_LOOP: usize = 3;
+const FO4_SOUND_ATTACK_FAIL: usize = 4;
+const FO4_SOUND_IDLE: usize = 5;
+const FO4_SOUND_EQUIP: usize = 6;
+const FO4_SOUND_UNEQUIP: usize = 7;
 const FO76_DNAM_ATTACK_DELAY_OFFSET: usize = 36;
+const FO76_DNAM_NPC_RELOAD_DELAY_OFFSET: usize = 12;
 const FO76_DNAM_DAMAGE_SECONDARY_OFFSET: usize = 69;
 const FO76_DNAM_FULL_POWER_SECONDS_OFFSET: usize = 130;
 const FO76_DNAM_MIN_POWER_PER_SHOT_OFFSET: usize = 134;
@@ -147,16 +146,46 @@ const FO4_DNAM_FULL_POWER_SECONDS_OFFSET: usize = 116;
 const FO4_DNAM_MIN_POWER_PER_SHOT_OFFSET: usize = 120;
 const FO4_DNAM_STAGGER_OFFSET: usize = 124;
 const FO76_TO_FO4_MIN_POWER_PER_SHOT_SCALE: f32 = 0.1;
-const FO76_DNAM_SPEED_OFFSET: usize = 4;
-const FO76_DNAM_RELOAD_SPEED_OFFSET: usize = 8;
-const FO76_DNAM_REACH_OFFSET: usize = 16;
-const FO76_DNAM_MIN_RANGE_OFFSET: usize = 24;
-const FO76_DNAM_MAX_RANGE_OFFSET: usize = 28;
 const FO4_DNAM_SPEED_OFFSET: usize = 4;
-const FO4_DNAM_RELOAD_SPEED_OFFSET: usize = 8;
 const FO4_DNAM_REACH_OFFSET: usize = 12;
 const FO4_DNAM_MIN_RANGE_OFFSET: usize = 16;
 const FO4_DNAM_MAX_RANGE_OFFSET: usize = 20;
+
+/// Faithful FO76 -> FO4 `DNAM` field map, as `(fo4_offset, fo76_offset, len)`.
+///
+/// The two layouts are the same fields in the same order; FO76's 170 bytes are
+/// FO4's 132 plus four fields FO4 does not have — `npc_reload_delay` (12),
+/// `reach_engagement_mult` (20), an unknown float (32) and `ammo_per_shot` (66).
+/// The raw map drops those slots; positive creature `npc_reload_delay` is
+/// carried semantically into FO4 FNAM below. The remaining difference is a
+/// handful of contiguous runs rather than a field-by-field table.
+///
+/// **FormID-bearing fields are deliberately absent:** `ammo` (0), `skill` (40),
+/// `resist` (44) and the nine sound slots (69..105). A raw copy would plant
+/// unmapped FO76 FormIDs in the target plugin — worse than a null. Those come
+/// from `SourceWeapFields`, which holds mapper-resolved target ids; `skill` and
+/// `resist` are not carried there, so they stay at the profile default (null)
+/// rather than dangling.
+const DNAM_COPY_RUNS: &[(usize, usize, usize)] = &[
+    (4, 4, 8),    // speed, reload_speed
+    (12, 16, 4),  // reach
+    (16, 24, 8),  // min_range, max_range
+    (24, 36, 16), // attack_delay, unused, damage_outofrange_mult, on_hit
+    (48, 60, 6),  // flags, capacity
+    (54, 68, 15), // animation_type, damage_secondary, weight, value, damage_base
+    (105, 119, 27), // accuracy_bonus, animation_attack_seconds, unknown u8 x2,
+                  // action_point_cost, full_power_seconds, min_power_per_shot,
+                  // stagger, trailing unknown u8 x4
+];
+
+/// Copy `len` bytes between the two layouts, skipping the run when either side
+/// is short (FO76 ships some truncated DNAM blobs).
+fn copy_run(dst: &mut [u8; 132], dst_offset: usize, src: &[u8], src_offset: usize, len: usize) {
+    if dst_offset + len > dst.len() || src_offset + len > src.len() {
+        return;
+    }
+    dst[dst_offset..dst_offset + len].copy_from_slice(&src[src_offset..src_offset + len]);
+}
 
 const FO76_RGW3_RUMBLE_LEFT_MOTOR_STRENGTH_OFFSET: usize = 8;
 const FO76_RGW3_RUMBLE_RIGHT_MOTOR_STRENGTH_OFFSET: usize = 12;
@@ -212,13 +241,7 @@ impl SourceWeapFamily {
 // Default DNAM/FNAM byte arrays
 // ---------------------------------------------------------------------------
 
-/// Default DNAM bytes for standard FO4 weapons.
-///
-/// Python `_FO4_DATA_DEFAULTS`: Speed=1.0, ReloadSpeed=1.0, Reach=1.0,
-/// MinRange=256.0, MaxRange=3072.0, AttackDelay=0.0, DamageOutOfRangeMult=0.5,
-/// Flags=[], Capacity=1, AnimationType=9, DamageSecondary=0.0, Weight=1.0,
-/// Value=1, DamageBase=1, AnimationAttackSeconds=0.0, ActionPointCost=30.0,
-/// Stagger=None(0).  Fields absent from the dict default to zero.
+/// Default DNAM bytes for standard FO4 weapons. Unlisted fields are zero.
 pub fn fo4_default_dnam() -> [u8; 132] {
     let mut buf = [0u8; 132];
     write_f32(&mut buf, 4, 1.0); // speed
@@ -242,12 +265,7 @@ pub fn fo4_default_dnam() -> [u8; 132] {
     buf
 }
 
-/// Default DNAM bytes for creature unarmed weapons.
-///
-/// Python `_CREATURE_UNARMED_DATA_DEFAULTS`: Speed=1.0, ReloadSpeed=1.0,
-/// Reach=1.0, MinRange=500.0, MaxRange=2000.0, DamageOutOfRangeMult=0.5,
-/// Flags=[CritEffectOnDeath, CantDrop, NotPlayable], SoundLevel=Normal(1),
-/// AnimationAttackSeconds≈1.5417, ActionPointCost=20.0, Stagger=Small(1).
+/// Default DNAM bytes for creature unarmed weapons. Unlisted fields are zero.
 pub fn creature_unarmed_dnam() -> [u8; 132] {
     let mut buf = [0u8; 132];
     write_f32(&mut buf, 4, 1.0); // speed
@@ -273,13 +291,7 @@ pub fn creature_unarmed_dnam() -> [u8; 132] {
     buf
 }
 
-/// Default DNAM bytes for creature ranged weapons.
-///
-/// Python `_CREATURE_RANGED_DATA_DEFAULTS`: Speed=1.0, ReloadSpeed=1.0,
-/// Reach=1.0, MinRange=500.0, MaxRange=1500.0, AttackDelay=3.5,
-/// Flags=[CantDrop, NotPlayable], AnimationType=9, Weight=3.0, DamageBase=10,
-/// SoundLevel=Normal(1), AccuracyBonus=100, AnimationAttackSeconds≈1.8333,
-/// ActionPointCost=20.0.
+/// Default DNAM bytes for creature ranged weapons. Unlisted fields are zero.
 pub fn creature_ranged_dnam() -> [u8; 132] {
     let mut buf = [0u8; 132];
     write_f32(&mut buf, 4, 1.0); // speed
@@ -305,12 +317,7 @@ pub fn creature_ranged_dnam() -> [u8; 132] {
     buf
 }
 
-/// Default FNAM bytes.
-///
-/// Python `_FNAM_DEFAULTS`: AnimationFireSeconds=1e-5,
-/// RumbleLeftMotorStrength=0.5, RumbleRightMotorStrength=0.5,
-/// RumbleDuration=0.2, AnimationReloadSeconds=2.0,
-/// SightedTransitionSeconds=0.15, Projectiles=1.
+/// Default FNAM bytes. Unlisted fields are zero.
 pub fn default_fnam() -> [u8; 41] {
     let mut buf = [0u8; 41];
     write_f32_41(&mut buf, 0, 1e-5_f32); // animation_fire_seconds
@@ -365,6 +372,7 @@ pub struct SourceWeapFields {
     pub min_range: Option<f32>,
     pub max_range: Option<f32>,
     pub attack_delay_seconds: Option<f32>,
+    pub npc_reload_delay_seconds: Option<f32>,
     pub on_hit: Option<u32>,
     pub flags: Option<u32>,
     pub capacity: Option<u16>,
@@ -375,6 +383,7 @@ pub struct SourceWeapFields {
     pub damage_base: Option<u16>,
     pub sound_level: Option<u32>,
     pub accuracy_bonus: Option<u8>,
+    pub animation_attack_seconds: Option<f32>,
     pub action_point_cost: Option<f32>,
     pub full_power_seconds: Option<f32>,
     pub min_power_per_shot: Option<f32>,
@@ -424,86 +433,34 @@ fn fo4_dnam_from_fo76_raw(
     if let Some(ammo_raw) = source_fields.and_then(|fields| fields.ammo_raw) {
         write_u32(&mut buf, 0, ammo_raw);
     }
-    if matches!(default, DnamDefault::CreatureUnarmed) {
-        // FO76 melee/unarmed DNAM geometry is byte-identical to FO4 vanilla
-        // (unarmed 500/2000 reach 1.06, melee 0/10 reach 0.8), so copying it
-        // reproduces vanilla exactly. The critical companion is the common
-        // animation_type copy below: the RACE behavior-graph table selects
-        // the animation branch by weapon anim type, and a melee weapon
-        // stamped H2H leaves the creature with no usable attack (AI flees).
-        copy_raw::<4>(&mut buf, FO4_DNAM_SPEED_OFFSET, raw, FO76_DNAM_SPEED_OFFSET);
-        copy_raw::<4>(
-            &mut buf,
-            FO4_DNAM_RELOAD_SPEED_OFFSET,
-            raw,
-            FO76_DNAM_RELOAD_SPEED_OFFSET,
-        );
-        copy_raw::<4>(&mut buf, FO4_DNAM_REACH_OFFSET, raw, FO76_DNAM_REACH_OFFSET);
+
+    // Translate the whole struct for every profile; the `DnamDefault` blob only
+    // supplies the FormID fields this map skips. A per-profile subset would give
+    // creature ranged weapons default flags (no ChargingAttack|Automatic, so the
+    // engine never requests charged/automatic fire and the creature closes on its
+    // target and hovers) and standard weapons default speed/reload/reach.
+    for &(fo4_offset, fo76_offset, len) in DNAM_COPY_RUNS {
+        copy_run(&mut buf, fo4_offset, raw, fo76_offset, len);
     }
-    if matches!(default, DnamDefault::Fo4 | DnamDefault::CreatureUnarmed) {
-        copy_raw::<4>(
+    // The one field that is a unit change rather than a copy.
+    if let Some(min_power_per_shot) = read_f32(raw, FO76_DNAM_MIN_POWER_PER_SHOT_OFFSET) {
+        write_f32(
             &mut buf,
-            FO4_DNAM_MIN_RANGE_OFFSET,
-            raw,
-            FO76_DNAM_MIN_RANGE_OFFSET,
+            FO4_DNAM_MIN_POWER_PER_SHOT_OFFSET,
+            min_power_per_shot * FO76_TO_FO4_MIN_POWER_PER_SHOT_SCALE,
         );
-        copy_raw::<4>(
-            &mut buf,
-            FO4_DNAM_MAX_RANGE_OFFSET,
-            raw,
-            FO76_DNAM_MAX_RANGE_OFFSET,
-        );
-        copy_raw::<4>(
-            &mut buf,
-            FO4_DNAM_ATTACK_DELAY_OFFSET,
-            raw,
-            FO76_DNAM_ATTACK_DELAY_OFFSET,
-        );
-        copy_raw::<4>(&mut buf, 48, raw, 60);
-        copy_raw::<4>(
-            &mut buf,
-            FO4_DNAM_DAMAGE_SECONDARY_OFFSET,
-            raw,
-            FO76_DNAM_DAMAGE_SECONDARY_OFFSET,
-        );
-        if let Some(full_power_seconds) = read_f32(raw, FO76_DNAM_FULL_POWER_SECONDS_OFFSET) {
-            write_f32(
-                &mut buf,
-                FO4_DNAM_FULL_POWER_SECONDS_OFFSET,
-                full_power_seconds,
-            );
-        }
-        if let Some(min_power_per_shot) = read_f32(raw, FO76_DNAM_MIN_POWER_PER_SHOT_OFFSET) {
-            write_f32(
-                &mut buf,
-                FO4_DNAM_MIN_POWER_PER_SHOT_OFFSET,
-                min_power_per_shot * FO76_TO_FO4_MIN_POWER_PER_SHOT_SCALE,
-            );
-        }
-        copy_raw::<4>(
-            &mut buf,
-            FO4_DNAM_STAGGER_OFFSET,
-            raw,
-            FO76_DNAM_STAGGER_OFFSET,
-        );
-        if let Some(fields) = source_fields {
-            apply_source_dnam_fields(&mut buf, fields);
-        }
     }
-    copy_raw::<2>(&mut buf, 52, raw, 64);
-    copy_raw::<1>(&mut buf, 54, raw, 68);
-    copy_raw::<4>(&mut buf, 59, raw, 73);
-    copy_raw::<4>(&mut buf, 63, raw, 77);
-    copy_raw::<2>(&mut buf, 67, raw, 81);
-    copy_raw::<4>(&mut buf, 106, raw, 120);
+    // Structured fields last: they carry mapper-resolved FormIDs and decoded
+    // values, so they win over the raw bytes where both exist.
     if let Some(fields) = source_fields {
-        for (raw, target_offset) in fields
+        apply_source_dnam_fields(&mut buf, fields);
+        for (sound_raw, target_offset) in fields
             .sound_data_raw
             .into_iter()
             .zip(FO4_DNAM_SOUND_OFFSETS)
         {
-            if let Some(raw) = raw {
-                write_u32(&mut buf, target_offset, raw);
+            if let Some(sound_raw) = sound_raw {
+                write_u32(&mut buf, target_offset, sound_raw);
             }
         }
     }
@@ -517,6 +474,15 @@ fn fo4_dnam_from_legacy_fields(
     let mut buf = dnam_default_bytes(default);
     if let Some(fields) = source_fields {
         apply_source_dnam_fields(&mut buf, fields);
+        for (sound_raw, target_offset) in fields
+            .sound_data_raw
+            .into_iter()
+            .zip(FO4_DNAM_SOUND_OFFSETS)
+        {
+            if let Some(sound_raw) = sound_raw {
+                write_u32(&mut buf, target_offset, sound_raw);
+            }
+        }
     }
     buf
 }
@@ -570,6 +536,9 @@ fn apply_source_dnam_fields(dnam: &mut [u8; 132], fields: SourceWeapFields) {
     if let Some(value) = fields.accuracy_bonus {
         dnam[105] = value;
     }
+    if let Some(value) = fields.animation_attack_seconds {
+        write_f32(dnam, 106, value);
+    }
     if let Some(value) = fields.action_point_cost {
         write_f32(dnam, 112, value);
     }
@@ -585,18 +554,6 @@ fn apply_source_dnam_fields(dnam: &mut [u8; 132], fields: SourceWeapFields) {
     }
     if let Some(value) = fields.stagger {
         write_u32(dnam, FO4_DNAM_STAGGER_OFFSET, value);
-    }
-}
-
-#[inline]
-fn copy_raw<const N: usize>(
-    target: &mut [u8; 132],
-    target_offset: usize,
-    source: &[u8],
-    source_offset: usize,
-) {
-    if let Some(bytes) = source.get(source_offset..source_offset + N) {
-        target[target_offset..target_offset + N].copy_from_slice(bytes);
     }
 }
 
@@ -743,11 +700,12 @@ impl Fixup for SynthesizeWeapDataBlocksFixup {
                 source_fields = Some(fields);
             }
 
-            let mut changed = apply_to_record_with_source_family(
+            let mut changed = apply_to_record_with_source_family_and_interner(
                 &mut record,
                 dnam_default,
                 source_fields,
                 source_family,
+                Some(mapper.interner),
             );
             changed |= apply_resolved_damage_types(&mut record, &resolved_damage_types);
 
@@ -826,7 +784,7 @@ pub enum DnamDefault {
 /// - FNV/FO3 DNAM → rebuild from the decoded source DATA/DNAM fields.
 /// - Other target-shaped DNAM → preserve.
 /// - FNAM absent → inject default.
-/// - FNAM present (any variant) → leave as-is.
+/// - FNAM present → preserve it while carrying source reload and projectile overrides.
 pub fn apply_to_record(record: &mut Record, dnam_default: DnamDefault) -> bool {
     apply_to_record_with_source_family(record, dnam_default, None, SourceWeapFamily::Fo76)
 }
@@ -845,6 +803,32 @@ pub(crate) fn apply_to_record_with_source_family(
     source_fields: Option<SourceWeapFields>,
     source_family: SourceWeapFamily,
 ) -> bool {
+    apply_to_record_with_source_family_and_interner(
+        record,
+        dnam_default,
+        source_fields,
+        source_family,
+        None,
+    )
+}
+
+fn apply_to_record_with_source_family_and_interner(
+    record: &mut Record,
+    dnam_default: DnamDefault,
+    mut source_fields: Option<SourceWeapFields>,
+    source_family: SourceWeapFamily,
+    interner: Option<&StringInterner>,
+) -> bool {
+    if source_family == SourceWeapFamily::Fo76
+        && dnam_default == DnamDefault::CreatureRanged
+        && let Some(fields) = source_fields.as_mut()
+        && !fields
+            .animation_reload_seconds
+            .is_some_and(|value| value.is_finite() && value > 0.0)
+    {
+        fields.animation_reload_seconds = sane_positive_f32(fields.npc_reload_delay_seconds);
+    }
+
     let dnam_sig = match SubrecordSig::from_str("DNAM") {
         Ok(s) => s,
         Err(_) => return false,
@@ -929,8 +913,13 @@ pub(crate) fn apply_to_record_with_source_family(
             value: FieldValue::Bytes(sv),
         });
         mutated = true;
-    } else if let Some(raw) = source_fields.and_then(|fields| fields.override_projectile_raw) {
-        mutated |= patch_existing_fnam_override(record, fnam_sig, raw);
+    } else if let Some(fields) = source_fields {
+        if let Some(reload_seconds) = fields.animation_reload_seconds {
+            mutated |= patch_existing_fnam_reload(record, fnam_sig, reload_seconds, interner);
+        }
+        if let Some(raw) = fields.override_projectile_raw {
+            mutated |= patch_existing_fnam_override(record, fnam_sig, raw);
+        }
     }
 
     mutated
@@ -995,6 +984,60 @@ fn patch_existing_fnam_override(record: &mut Record, fnam_sig: SubrecordSig, raw
             }
         }
         break;
+    }
+    false
+}
+
+fn patch_existing_fnam_reload(
+    record: &mut Record,
+    fnam_sig: SubrecordSig,
+    reload_seconds: f32,
+    interner: Option<&StringInterner>,
+) -> bool {
+    for entry in record.fields.iter_mut() {
+        if entry.sig != fnam_sig {
+            continue;
+        }
+        match &mut entry.value {
+            FieldValue::Bytes(data) if data.len() >= 20 => {
+                let current = f32::from_le_bytes(
+                    data[FO4_FNAM_ANIMATION_RELOAD_SECONDS_OFFSET
+                        ..FO4_FNAM_ANIMATION_RELOAD_SECONDS_OFFSET + 4]
+                        .try_into()
+                        .unwrap(),
+                );
+                if current.to_bits() == reload_seconds.to_bits() {
+                    return false;
+                }
+                data[FO4_FNAM_ANIMATION_RELOAD_SECONDS_OFFSET
+                    ..FO4_FNAM_ANIMATION_RELOAD_SECONDS_OFFSET + 4]
+                    .copy_from_slice(&reload_seconds.to_le_bytes());
+                return true;
+            }
+            FieldValue::Struct(fields) => {
+                let Some(interner) = interner else {
+                    return false;
+                };
+                if let Some((_, current)) = fields.iter_mut().find(|(name, _)| {
+                    interner
+                        .resolve(*name)
+                        .is_some_and(|name| name.eq_ignore_ascii_case("animation_reload_seconds"))
+                }) {
+                    if matches!(current, FieldValue::Float(value) if value.to_bits() == reload_seconds.to_bits())
+                    {
+                        return false;
+                    }
+                    *current = FieldValue::Float(reload_seconds);
+                    return true;
+                }
+                fields.push((
+                    interner.intern("animation_reload_seconds"),
+                    FieldValue::Float(reload_seconds),
+                ));
+                return true;
+            }
+            _ => return false,
+        }
     }
     false
 }
@@ -1143,7 +1186,94 @@ fn extract_source_weap_fields(
         }
     }
 
+    if source_family == SourceWeapFamily::Fo76
+        && matches!(source_record.form_key.local, 0x013CE9 | 0x55C152)
+        && mapper
+            .interner
+            .resolve(source_record.form_key.plugin)
+            .is_some_and(|name| name.eq_ignore_ascii_case("SeventySix.esm"))
+    {
+        // The bow adapter follows graph draw completion; FO4's ordinary reload timer drops taps.
+        fields.animation_reload_seconds = Some(0.0);
+    }
+
+    if source_family == SourceWeapFamily::LegacyFallout {
+        extract_legacy_sound_fields(
+            source_record,
+            &mut fields,
+            source_masters,
+            source_plugin_name,
+            mapper,
+            target_masters,
+            &mut warnings,
+        );
+    }
+
     (fields, warnings)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extract_legacy_sound_fields(
+    source_record: &Record,
+    fields: &mut SourceWeapFields,
+    source_masters: &[String],
+    source_plugin_name: &str,
+    mapper: &FormKeyMapper,
+    target_masters: &[String],
+    warnings: &mut Vec<String>,
+) {
+    let is_melee = legacy_weapon_is_melee(source_record, mapper.interner);
+    let mut snam_index = 0usize;
+    for entry in &source_record.fields {
+        let (slot, field_name) = match entry.sig.as_str() {
+            "SNAM" => {
+                let index = snam_index;
+                snam_index += 1;
+                if index != 0 || is_melee != Some(false) {
+                    continue;
+                }
+                (FO4_SOUND_ATTACK, "shoot_3d")
+            }
+            "XNAM" if is_melee == Some(false) => (FO4_SOUND_ATTACK_2D, "sound_gun_shoot_2d"),
+            "NAM7" if is_melee == Some(false) => {
+                (FO4_SOUND_ATTACK_LOOP, "sound_gun_shoot_3d_looping")
+            }
+            "TNAM" if is_melee == Some(true) => (FO4_SOUND_ATTACK, "sound_melee_swing_gun_no_ammo"),
+            "TNAM" if is_melee == Some(false) => {
+                (FO4_SOUND_ATTACK_FAIL, "sound_melee_swing_gun_no_ammo")
+            }
+            "UNAM" => (FO4_SOUND_IDLE, "sound_idle"),
+            "NAM9" => (FO4_SOUND_EQUIP, "sound_equip"),
+            "NAM8" => (FO4_SOUND_UNEQUIP, "sound_unequip"),
+            _ => continue,
+        };
+        apply_legacy_reference_resolution(
+            &mut fields.sound_data_raw[slot],
+            resolve_legacy_reference_from_value(
+                &entry.value,
+                field_name,
+                source_masters,
+                source_plugin_name,
+                mapper,
+                target_masters,
+            ),
+            field_name,
+            warnings,
+            mapper.interner,
+        );
+    }
+}
+
+fn legacy_weapon_is_melee(record: &Record, interner: &StringInterner) -> Option<bool> {
+    let dnam = record
+        .fields
+        .iter()
+        .find(|entry| entry.sig.as_str() == "DNAM")?;
+    let animation_type = match &dnam.value {
+        FieldValue::Bytes(bytes) => read_u32(bytes, 0),
+        value => find_named_u32(value, "animation_type", interner),
+    }?;
+    Some(animation_type <= 2)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1360,7 +1490,9 @@ fn apply_resolved_damage_types(record: &mut Record, resolved: &[ResolvedDamageTy
 
 fn extract_raw_dnam_fields(fields: &mut SourceWeapFields, data: &[u8]) {
     fields.attack_delay_seconds = read_f32(data, FO76_DNAM_ATTACK_DELAY_OFFSET);
+    fields.npc_reload_delay_seconds = read_f32(data, FO76_DNAM_NPC_RELOAD_DELAY_OFFSET);
     fields.damage_secondary = read_f32(data, FO76_DNAM_DAMAGE_SECONDARY_OFFSET);
+    fields.animation_attack_seconds = sane_positive_f32(read_f32(data, 120));
     fields.full_power_seconds = read_f32(data, FO76_DNAM_FULL_POWER_SECONDS_OFFSET);
     fields.min_power_per_shot = read_f32(data, FO76_DNAM_MIN_POWER_PER_SHOT_OFFSET);
     fields.stagger = read_u32(data, FO76_DNAM_STAGGER_OFFSET);
@@ -1529,8 +1661,11 @@ fn extract_structured_dnam_fields(
 ) {
     fields.attack_delay_seconds = find_named_f32(value, "attack_delay_seconds", interner)
         .or_else(|| find_named_f32(value, "attack_delay", interner));
+    fields.npc_reload_delay_seconds = find_named_f32(value, "npc_reload_delay", interner);
     fields.damage_secondary = find_named_f32(value, "secondary_damage", interner)
         .or_else(|| find_named_f32(value, "damage_secondary", interner));
+    fields.animation_attack_seconds =
+        sane_positive_f32(find_named_f32(value, "animation_attack_seconds", interner));
     fields.full_power_seconds = find_named_f32(value, "full_power_seconds", interner);
     fields.min_power_per_shot = find_named_f32(value, "min_power_per_shot", interner);
     fields.stagger = find_named_u32(value, "stagger", interner);
@@ -2043,6 +2178,120 @@ mod tests {
         );
         assert_eq!(u32::from_le_bytes(fnam[33..37].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(fnam[37..41].try_into().unwrap()), 150);
+    }
+
+    #[test]
+    fn legacy_ranged_sound_subrecords_fill_exact_fo4_dnam_slots() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("FalloutNV.esm");
+        let target_plugin = interner.intern("Converted.esp");
+        let mut source_weap = make_weap(&interner);
+        let mut dnam = vec![0u8; LEGACY_DNAM_MIN_LEN];
+        dnam[..4].copy_from_slice(&3u32.to_le_bytes());
+        push_raw_dnam(&mut source_weap, &dnam);
+
+        let sounds = [
+            ("SNAM", 0x101, 0x201),
+            ("XNAM", 0x102, 0x202),
+            ("NAM7", 0x103, 0x203),
+            ("TNAM", 0x104, 0x204),
+            ("UNAM", 0x105, 0x205),
+            ("NAM9", 0x106, 0x206),
+            ("NAM8", 0x107, 0x207),
+        ];
+        let mut state = legacy_mapper_state();
+        for (signature, source_local, target_local) in sounds {
+            let source = FormKey {
+                local: source_local,
+                plugin: source_plugin,
+            };
+            state.source_to_target.insert(
+                source,
+                FormKey {
+                    local: target_local,
+                    plugin: target_plugin,
+                },
+            );
+            source_weap.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str(signature).unwrap(),
+                value: FieldValue::FormKey(source),
+            });
+        }
+        let mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let target_masters = ["Fallout4.esm".to_string()];
+        let (fields, warnings) = extract_source_weap_fields(
+            &source_weap,
+            SourceWeapFamily::LegacyFallout,
+            &[],
+            "FalloutNV.esm",
+            source_plugin,
+            &mapper,
+            &target_masters,
+        );
+        assert!(warnings.is_empty());
+
+        let lowered = fo4_dnam_from_legacy_fields(DnamDefault::Fo4, Some(fields));
+        for (offset, target_local) in [
+            (73, 0x201),
+            (77, 0x202),
+            (81, 0x203),
+            (85, 0x204),
+            (89, 0x205),
+            (93, 0x206),
+            (97, 0x207),
+        ] {
+            assert_eq!(
+                u32::from_le_bytes(lowered[offset..offset + 4].try_into().unwrap()),
+                0x0100_0000 | target_local
+            );
+        }
+        assert_eq!(u32::from_le_bytes(lowered[101..105].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn legacy_melee_tnam_is_attack_sound_without_inventing_a_gun_fail_sound() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("Fallout3.esm");
+        let target_plugin = interner.intern("Converted.esp");
+        let source_sound = FormKey {
+            local: 0x301,
+            plugin: source_plugin,
+        };
+        let mut source_weap = make_weap(&interner);
+        let mut dnam = vec![0u8; LEGACY_DNAM_MIN_LEN];
+        dnam[..4].copy_from_slice(&1u32.to_le_bytes());
+        push_raw_dnam(&mut source_weap, &dnam);
+        source_weap.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("TNAM").unwrap(),
+            value: FieldValue::FormKey(source_sound),
+        });
+        let mut state = legacy_mapper_state();
+        state.source_to_target.insert(
+            source_sound,
+            FormKey {
+                local: 0x401,
+                plugin: target_plugin,
+            },
+        );
+        let mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let target_masters = ["Fallout4.esm".to_string()];
+        let (fields, warnings) = extract_source_weap_fields(
+            &source_weap,
+            SourceWeapFamily::LegacyFallout,
+            &[],
+            "Fallout3.esm",
+            source_plugin,
+            &mapper,
+            &target_masters,
+        );
+        assert!(warnings.is_empty());
+
+        let lowered = fo4_dnam_from_legacy_fields(DnamDefault::Fo4, Some(fields));
+        assert_eq!(
+            u32::from_le_bytes(lowered[73..77].try_into().unwrap()),
+            0x0100_0401
+        );
+        assert_eq!(u32::from_le_bytes(lowered[85..89].try_into().unwrap()), 0);
     }
 
     #[test]
@@ -2627,6 +2876,34 @@ mod tests {
     }
 
     #[test]
+    fn creature_weapon_stagger_preserves_source_tiers() {
+        let fo76_raw = |stagger: u32| {
+            let mut raw = vec![0u8; 170];
+            raw[FO76_DNAM_STAGGER_OFFSET..FO76_DNAM_STAGGER_OFFSET + 4]
+                .copy_from_slice(&stagger.to_le_bytes());
+            raw
+        };
+        let stagger_of = |stagger, default, fields| {
+            let dnam = fo4_dnam_from_fo76_raw(&fo76_raw(stagger), default, fields);
+            u32::from_le_bytes(
+                dnam[FO4_DNAM_STAGGER_OFFSET..FO4_DNAM_STAGGER_OFFSET + 4]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        for tier in 0..=4 {
+            let structured = Some(SourceWeapFields {
+                stagger: Some(tier),
+                ..SourceWeapFields::default()
+            });
+            for default in [DnamDefault::CreatureRanged, DnamDefault::CreatureUnarmed, DnamDefault::Fo4] {
+                assert_eq!(stagger_of(tier, default, None), tier);
+                assert_eq!(stagger_of(0, default, structured), tier);
+            }
+        }
+    }
+
+    #[test]
     fn source_dnam_fields_patch_target_shaped_raw_dnam() {
         let mut interner = StringInterner::new();
         let mut record = make_weap(&mut interner);
@@ -2638,6 +2915,7 @@ mod tests {
             Some(SourceWeapFields {
                 attack_delay_seconds: Some(0.15),
                 damage_secondary: Some(17.0),
+                animation_attack_seconds: Some(2.2),
                 full_power_seconds: Some(1.0),
                 min_power_per_shot: Some(2.0),
                 stagger: Some(1),
@@ -2651,6 +2929,7 @@ mod tests {
         assert!((attack_delay - 0.15).abs() < 1e-6);
         let damage_secondary = f32::from_le_bytes(dnam[55..59].try_into().unwrap());
         assert!((damage_secondary - 17.0).abs() < 1e-6);
+        assert_eq!(f32::from_le_bytes(dnam[106..110].try_into().unwrap()), 2.2);
         let full_power_seconds = f32::from_le_bytes(dnam[116..120].try_into().unwrap());
         assert!((full_power_seconds - 1.0).abs() < 1e-6);
         let min_power_per_shot = f32::from_le_bytes(dnam[120..124].try_into().unwrap());
@@ -2664,6 +2943,7 @@ mod tests {
         let mut raw = vec![0u8; 170];
         raw[36..40].copy_from_slice(&0.15f32.to_le_bytes());
         raw[69..73].copy_from_slice(&17.0f32.to_le_bytes());
+        raw[120..124].copy_from_slice(&2.2f32.to_le_bytes());
         raw[130..134].copy_from_slice(&1.0f32.to_le_bytes());
         raw[134..138].copy_from_slice(&2.0f32.to_le_bytes());
         raw[138..142].copy_from_slice(&1u32.to_le_bytes());
@@ -2672,9 +2952,93 @@ mod tests {
 
         assert_eq!(fields.attack_delay_seconds, Some(0.15));
         assert_eq!(fields.damage_secondary, Some(17.0));
+        assert_eq!(fields.animation_attack_seconds, Some(2.2));
         assert_eq!(fields.full_power_seconds, Some(1.0));
         assert_eq!(fields.min_power_per_shot, Some(2.0));
         assert_eq!(fields.stagger, Some(1));
+    }
+
+    #[test]
+    fn missing_source_attack_duration_preserves_creature_fallback() {
+        for duration in [0.0_f32, -1.0, f32::NAN] {
+            let mut raw = vec![0; 170];
+            raw[120..124].copy_from_slice(&duration.to_le_bytes());
+            let mut fields = SourceWeapFields::default();
+            extract_raw_dnam_fields(&mut fields, &raw);
+            let mut dnam = creature_unarmed_dnam();
+            let expected = dnam[106..110].to_vec();
+            apply_source_dnam_fields(&mut dnam, fields);
+            assert_eq!(dnam[106..110], expected);
+        }
+    }
+
+    #[test]
+    fn both_bows_instant_reload_preserves_other_weapons_and_fnam_fields() {
+        let interner = StringInterner::new();
+        let mut state = legacy_mapper_state();
+        let mapper = FormKeyMapper::from_state(&mut state, &interner);
+        for (plugin, local, family, expected) in [
+            (
+                "SeventySix.esm",
+                0x013CE9,
+                SourceWeapFamily::Fo76,
+                Some(0.0),
+            ),
+            (
+                "SeventySix.esm",
+                0x55C152,
+                SourceWeapFamily::Fo76,
+                Some(0.0),
+            ),
+            (
+                "SeventySix.esm",
+                0x123456,
+                SourceWeapFamily::Fo76,
+                Some(2.6667),
+            ),
+            (
+                "Fallout4.esm",
+                0x013CE9,
+                SourceWeapFamily::Fo76,
+                Some(2.6667),
+            ),
+            ("SeventySix.esm", 0x013CE9, SourceWeapFamily::Other, None),
+        ] {
+            let mut source = make_weap(&interner);
+            source.form_key = FormKey {
+                local,
+                plugin: interner.intern(plugin),
+            };
+            source.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("RGW3").unwrap(),
+                value: FieldValue::Struct(vec![
+                    (
+                        interner.intern("animation_reload_seconds"),
+                        FieldValue::Float(2.6667),
+                    ),
+                    (interner.intern("projectiles"), FieldValue::Uint(1)),
+                ]),
+            });
+            let (fields, warnings) = extract_source_weap_fields(
+                &source,
+                family,
+                &[],
+                plugin,
+                source.form_key.plugin,
+                &mapper,
+                &[],
+            );
+            assert!(warnings.is_empty());
+            assert_eq!(fields.animation_reload_seconds, expected);
+            if family == SourceWeapFamily::Fo76 {
+                let mut fnam = default_fnam();
+                let original = fnam;
+                apply_source_fnam_fields(&mut fnam, fields);
+                assert_eq!(&fnam[..16], &original[..16]);
+                assert_eq!(&fnam[20..], &original[20..]);
+                assert_eq!(read_f32(&fnam, 16), expected);
+            }
+        }
     }
 
     #[test]
@@ -2748,6 +3112,143 @@ mod tests {
     }
 
     #[test]
+    fn creature_ranged_raw_dnam_translates_fo76_firing_flags_and_cadence() {
+        // Real FO76 crFloaterFlamerBreath DNAM. The flags at offset 60 carry
+        // ChargingAttack | Automatic | RepeatableSingleFire; without them the
+        // engine never requests charged/automatic fire, so the ChargeUpStart /
+        // RangedAttackAutoStart events never fire and the creature closes on
+        // its target and then hovers without attacking.
+        let mut interner = StringInterner::new();
+        let mut record = make_weap(&mut interner);
+        let mut raw = vec![0u8; 170];
+        raw[0..4].copy_from_slice(&0x0055_DA75u32.to_le_bytes()); // ammo
+        raw[4..8].copy_from_slice(&1.0f32.to_le_bytes()); // speed
+        raw[8..12].copy_from_slice(&8.0f32.to_le_bytes()); // reload speed
+        raw[16..20].copy_from_slice(&1.0f32.to_le_bytes()); // reach
+        raw[24..28].copy_from_slice(&500.0f32.to_le_bytes()); // min_range
+        raw[28..32].copy_from_slice(&1000.0f32.to_le_bytes()); // max_range
+        raw[36..40].copy_from_slice(&8.0f32.to_le_bytes()); // attack_delay
+        raw[60..64].copy_from_slice(&0x0013_8300u32.to_le_bytes()); // firing flags
+        push_raw_dnam(&mut record, &raw);
+
+        let changed = apply_to_record(&mut record, DnamDefault::CreatureRanged);
+        assert!(changed);
+
+        let dnam = field_bytes(&record, "DNAM");
+        let f = |o: usize| f32::from_le_bytes(dnam[o..o + 4].try_into().unwrap());
+        assert_eq!(
+            u32::from_le_bytes(dnam[48..52].try_into().unwrap()),
+            0x0013_8300,
+            "firing-mode flags must come from source, not the CantDrop|NotPlayable default"
+        );
+        assert!(
+            (f(8) - 8.0).abs() < 1e-6,
+            "reload speed is the charge cadence"
+        );
+        assert_eq!(f(20), 1000.0, "max_range from source, not the 1500 default");
+        assert!((f(24) - 8.0).abs() < 1e-6, "attack_delay from source");
+    }
+
+    #[test]
+    fn creature_ranged_carries_fo76_npc_reload_delay_into_fnam() {
+        // Real crLiberatorLaserGun timing: three shots at a one-second attack
+        // cadence, followed by the FO76-only five-second NPC reload delay.
+        // Dropping the latter makes the converted Liberator fire continuously.
+        let mut interner = StringInterner::new();
+        let mut record = make_weap(&mut interner);
+        let mut raw = vec![0u8; 170];
+        raw[12..16].copy_from_slice(&5.0f32.to_le_bytes());
+        raw[36..40].copy_from_slice(&1.0f32.to_le_bytes());
+        raw[64..66].copy_from_slice(&3u16.to_le_bytes());
+        push_raw_dnam(&mut record, &raw);
+
+        let changed = apply_to_record_with_source(
+            &mut record,
+            DnamDefault::CreatureRanged,
+            Some(SourceWeapFields {
+                npc_reload_delay_seconds: Some(5.0),
+                animation_reload_seconds: Some(0.0),
+                ..SourceWeapFields::default()
+            }),
+        );
+        assert!(changed);
+
+        let dnam = field_bytes(&record, "DNAM");
+        assert_eq!(
+            f32::from_le_bytes(dnam[24..28].try_into().unwrap()),
+            1.0,
+            "per-shot attack delay remains source-authored"
+        );
+        assert_eq!(
+            u16::from_le_bytes(dnam[52..54].try_into().unwrap()),
+            3,
+            "source magazine capacity remains intact"
+        );
+        let fnam = field_bytes(&record, "FNAM");
+        assert_eq!(
+            f32::from_le_bytes(fnam[16..20].try_into().unwrap()),
+            5.0,
+            "FO4 reload animation time carries the FO76 NPC reload pause"
+        );
+    }
+
+    #[test]
+    fn creature_ranged_patches_existing_structured_fnam_with_npc_reload_delay() {
+        let interner = StringInterner::new();
+        let mut record = make_weap(&interner);
+        let mut raw = vec![0u8; 170];
+        raw[12..16].copy_from_slice(&5.0f32.to_le_bytes());
+        raw[36..40].copy_from_slice(&1.0f32.to_le_bytes());
+        raw[64..66].copy_from_slice(&3u16.to_le_bytes());
+        push_raw_dnam(&mut record, &raw);
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("FNAM").unwrap(),
+            value: FieldValue::Struct(vec![
+                (
+                    interner.intern("animation_fire_seconds"),
+                    FieldValue::Float(0.770_833),
+                ),
+                (
+                    interner.intern("rumble_left_motor_strength"),
+                    FieldValue::Float(0.1),
+                ),
+                (
+                    interner.intern("animation_reload_seconds"),
+                    FieldValue::Float(0.0),
+                ),
+            ]),
+        });
+
+        let changed = apply_to_record_with_source_family_and_interner(
+            &mut record,
+            DnamDefault::CreatureRanged,
+            Some(SourceWeapFields {
+                npc_reload_delay_seconds: Some(5.0),
+                animation_reload_seconds: Some(0.0),
+                ..SourceWeapFields::default()
+            }),
+            SourceWeapFamily::Fo76,
+            Some(&interner),
+        );
+
+        assert!(changed);
+        let fnam = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig == SubrecordSig::from_str("FNAM").unwrap())
+            .unwrap();
+        assert_eq!(
+            find_named_f32(&fnam.value, "animation_reload_seconds", &interner),
+            Some(5.0)
+        );
+        assert_eq!(
+            find_named_f32(&fnam.value, "animation_fire_seconds", &interner),
+            Some(0.770_833),
+            "existing FNAM fields must be preserved"
+        );
+    }
+
+    #[test]
     fn creature_unarmed_raw_dnam_translates_fo76_melee_fields() {
         // Field values mirror the real FO76 crGrognakAxe DNAM (melee creature
         // weapon): weapon_type 5, reach 0.8, min/max range 0/10.
@@ -2766,6 +3267,7 @@ mod tests {
         raw[77..81].copy_from_slice(&606_983u32.to_le_bytes()); // value
         raw[81..83].copy_from_slice(&48u16.to_le_bytes()); // base_damage
         raw[120..124].copy_from_slice(&9.5f32.to_le_bytes()); // animation_attack_seconds
+        raw[126..130].copy_from_slice(&20.0f32.to_le_bytes()); // action_point_cost
         push_raw_dnam(&mut record, &raw);
 
         let changed = apply_to_record(&mut record, DnamDefault::CreatureUnarmed);
@@ -2794,7 +3296,14 @@ mod tests {
             u32::from_le_bytes(dnam[48..52].try_into().unwrap()),
             FLAG_CRIT_EFFECT_ON_DEATH | FLAG_CANT_DROP | FLAG_NOT_PLAYABLE
         );
-        assert_eq!(f(112), 20.0, "action_point_cost keeps the creature default");
+        // Translated from source, not stamped: real FO76 creature weapons carry
+        // 20.0 here (verified on crUnarmedFloater / crFloaterFlamerBreath), which
+        // is why the stamped default matched for so long.
+        assert_eq!(f(112), 20.0, "action_point_cost translated from source");
+        assert!(
+            (f(32) - 0.0).abs() < 1e-6,
+            "damage_outofrange_mult now translated rather than left at the default"
+        );
     }
 
     // -----------------------------------------------------------------------

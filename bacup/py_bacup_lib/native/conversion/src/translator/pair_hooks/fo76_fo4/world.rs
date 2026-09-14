@@ -4,6 +4,28 @@ pub(super) const EMPTY_SCOL_STAT_FIELD_SIGS: &[[u8; 4]] = &[
     *b"EDID", *b"VMAD", *b"OBND", *b"PTRN", *b"MODL", *b"MODT", *b"MODC", *b"MODS", *b"MODF",
     *b"FULL",
 ];
+pub(super) const FO4_DEFAULT_FLORA_INGREDIENT_PRODUCTION: [u8; 4] = [100; 4];
+pub(super) const CELL_INTERIOR_FLAG: u32 = 0x0001;
+pub(super) const FO4_CELL_FOG_INHERIT_MASK: u32 = 0x031C;
+/// `CELL.XCLL.inherits` bit 0, Ambient Color — the bit that also pulls the
+/// template's `DALC` directional-ambient colours.
+pub(super) const FO4_CELL_AMBIENT_COLOR_INHERIT_BIT: u32 = 0x0001;
+/// Bits 0-1: Ambient Color | Directional Color.
+pub(super) const FO4_CELL_AMBIENT_INHERIT_MASK: u32 = 0x0003;
+
+// `CELL.XCLL` byte offsets. FO76 and FO4 share this whole prefix — FO76 only
+// appends 24 bytes of skybox bounds — so these hold both before and after the
+// source→FO4 struct relayout.
+pub(super) const XCLL_INHERITS_OFFSET: usize = 88;
+pub(super) const XCLL_MIN_LEN: usize = XCLL_INHERITS_OFFSET + 4;
+/// Ambient RGB (+0) and Directional RGB (+4); byte 3 of each quad is padding.
+pub(super) const XCLL_LIGHT_COLOR_OFFSETS: [usize; 6] = [0, 1, 2, 4, 5, 6];
+/// The six directional-ambient colours (X±/Y±/Z±), one padded RGB quad each.
+pub(super) const XCLL_DIRECTIONAL_AMBIENT_RANGE: std::ops::Range<usize> = 40..64;
+/// A cell whose brightest own light byte is below this is unlit for FO4's
+/// purposes. Chosen to cover the FO76 cells that render only via Enlighten GI
+/// (brightest byte 0-47) while leaving normally-authored dim interiors alone.
+pub(super) const FO76_UNLIT_CELL_MAX_LIGHT_BYTE: u8 = 48;
 
 // Stripped because their values are keyed to the FO76 source-file layout.
 // MHDT is carried back by the worldspace-header carry; FO4-native OFST/CLSZ are
@@ -63,17 +85,23 @@ pub(super) fn fo76_map_marker_type_to_fo4(source_type: u16) -> u8 {
     }
 }
 
-pub(super) fn scol_onam_is_usable(value: &FieldValue) -> bool {
+pub(super) fn form_id_field_value_is_usable(value: &FieldValue) -> bool {
     match value {
         FieldValue::FormKey(form_key) => form_key.local & 0x00FF_FFFF != 0,
         FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
-            u32::from_le_bytes(bytes[..4].try_into().expect("four-byte ONAM prefix")) & 0x00FF_FFFF
+            u32::from_le_bytes(
+                bytes[..4]
+                    .try_into()
+                    .expect("four-byte FormID field prefix"),
+            ) & 0x00FF_FFFF
                 != 0
         }
         FieldValue::Uint(value) => *value & 0x00FF_FFFF != 0,
         FieldValue::Int(value) => *value > 0 && (*value as u64) & 0x00FF_FFFF != 0,
-        FieldValue::List(values) => values.iter().any(scol_onam_is_usable),
-        FieldValue::Struct(fields) => fields.iter().any(|(_, value)| scol_onam_is_usable(value)),
+        FieldValue::List(values) => values.iter().any(form_id_field_value_is_usable),
+        FieldValue::Struct(fields) => fields
+            .iter()
+            .any(|(_, value)| form_id_field_value_is_usable(value)),
         _ => false,
     }
 }
@@ -205,6 +233,108 @@ pub(super) fn project_cell_xcri_reference(
     }
 }
 impl Fo76Fo4Hook {
+    /// `CELL.XCLL` reaches a pair hook as raw `FieldValue::Bytes`: the source
+    /// decoder (`source_read::decode_subrecord`) emits bytes for every `struct:`
+    /// codec, never a typed `FieldValue::Struct`. `record::write_u32_field` is
+    /// unusable on these bytes because it writes offset 0, which is the ambient
+    /// colour, not `inherits`.
+    fn cell_xcll_bytes_mut(record: &mut Record) -> Option<&mut [u8]> {
+        record
+            .fields
+            .iter_mut()
+            .find(|entry| entry.sig.0 == *b"XCLL")
+            .and_then(|entry| match &mut entry.value {
+                FieldValue::Bytes(bytes) if bytes.len() >= XCLL_MIN_LEN => Some(&mut bytes[..]),
+                _ => None,
+            })
+    }
+
+    fn is_interior_cell_with_lighting_template(record: &Record) -> bool {
+        record.sig.0 == *b"CELL"
+            && record.fields.iter().any(|entry| {
+                entry.sig.0 == *b"DATA"
+                    && field_value_to_u32(&entry.value)
+                        .is_some_and(|flags| flags & CELL_INTERIOR_FLAG != 0)
+            })
+            && record
+                .fields
+                .iter()
+                .any(|entry| entry.sig.0 == *b"LTMP" && form_id_field_value_is_usable(&entry.value))
+    }
+
+    fn xcll_inherits(xcll: &[u8]) -> u32 {
+        u32::from_le_bytes(
+            xcll[XCLL_INHERITS_OFFSET..XCLL_INHERITS_OFFSET + 4]
+                .try_into()
+                .expect("XCLL_MIN_LEN guarantees four bytes"),
+        )
+    }
+
+    fn or_xcll_inherits(xcll: &mut [u8], mask: u32) {
+        let updated = (Self::xcll_inherits(xcll) | mask).to_le_bytes();
+        xcll[XCLL_INHERITS_OFFSET..XCLL_INHERITS_OFFSET + 4].copy_from_slice(&updated);
+    }
+
+    /// Brightest byte across the cell's own ambient, directional, and
+    /// directional-ambient colours — how lit the cell is without its template.
+    fn xcll_max_light_byte(xcll: &[u8]) -> u8 {
+        XCLL_LIGHT_COLOR_OFFSETS
+            .iter()
+            .copied()
+            .chain(XCLL_DIRECTIONAL_AMBIENT_RANGE.filter(|offset| offset % 4 != 3))
+            .filter_map(|offset| xcll.get(offset).copied())
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub(super) fn inherit_storm_cell_fog_from_fo4_template(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        let is_storm_cell = record
+            .eid
+            .and_then(|eid| interner.resolve(eid))
+            .is_some_and(|editor_id| {
+                editor_id
+                    .get(..5)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("storm"))
+            });
+        if !is_storm_cell || !Self::is_interior_cell_with_lighting_template(record) {
+            return;
+        }
+
+        if let Some(xcll) = Self::cell_xcll_bytes_mut(record) {
+            Self::or_xcll_inherits(xcll, FO4_CELL_FOG_INHERIT_MASK);
+        }
+    }
+
+    /// FO76 lights many interiors with Enlighten global illumination and leaves
+    /// the cell's own ambient/directional colours at or near black — Fort Atlas
+    /// is fully black and lit by 350 placed lights alone. FO4 has no GI, so
+    /// carrying those bytes faithfully yields an unlit cell; vanilla
+    /// `Fallout4.esm` never ships one (0 of its 1,195 lit cells). Where a
+    /// lighting template is attached, inherit its ambient — which also supplies
+    /// the template's `DALC` directional-ambient colours — exactly as vanilla's
+    /// one such cell, `SlocumsJoeHQOffice`, does.
+    ///
+    /// Only the two colour bits are set: fog and light-fade stay on the cell's
+    /// own authored values.
+    pub(super) fn inherit_ambient_light_for_unlit_fo76_cells(record: &mut Record) {
+        if !Self::is_interior_cell_with_lighting_template(record) {
+            return;
+        }
+        let Some(xcll) = Self::cell_xcll_bytes_mut(record) else {
+            return;
+        };
+        if Self::xcll_inherits(xcll) & FO4_CELL_AMBIENT_COLOR_INHERIT_BIT != 0
+            || Self::xcll_max_light_byte(xcll) >= FO76_UNLIT_CELL_MAX_LIGHT_BYTE
+        {
+            return;
+        }
+
+        Self::or_xcll_inherits(xcll, FO4_CELL_AMBIENT_INHERIT_MASK);
+    }
+
     pub(super) fn convert_nif_backed_empty_scol_to_stat(
         interner: &crate::sym::StringInterner,
         record: &mut Record,
@@ -213,7 +343,7 @@ impl Fo76Fo4Hook {
             || record
                 .fields
                 .iter()
-                .any(|entry| entry.sig.0 == *b"ONAM" && scol_onam_is_usable(&entry.value))
+                .any(|entry| entry.sig.0 == *b"ONAM" && form_id_field_value_is_usable(&entry.value))
             || !record.fields.iter().any(|entry| {
                 entry.sig.0 == *b"MODL" && field_value_has_non_empty_text(&entry.value, interner)
             })
@@ -237,6 +367,23 @@ impl Fo76Fo4Hook {
             !WRLD_RUNTIME_TABLE_SIGS
                 .iter()
                 .any(|sig| entry.sig.0 == *sig)
+        });
+    }
+
+    pub(super) fn ensure_flora_ingredient_production(record: &mut Record) {
+        if record.sig.0 != *b"FLOR"
+            || record.fields.iter().any(|entry| entry.sig.0 == *b"PFPC")
+            || !record
+                .fields
+                .iter()
+                .any(|entry| entry.sig.0 == *b"PFIG" && form_id_field_value_is_usable(&entry.value))
+        {
+            return;
+        }
+
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig(*b"PFPC"),
+            value: bytes_value(&FO4_DEFAULT_FLORA_INGREDIENT_PRODUCTION),
         });
     }
 

@@ -18,15 +18,12 @@ from bacup_lib.tests.test_terminal_fragment_script_patches import _fo4_base_sour
 REPO_ROOT = Path(__file__).resolve().parents[5]
 DEPLOYED_SCRIPTS_ROOT = REPO_ROOT / "mods" / "SeventySix" / "data" / "Scripts"
 
-# contracts/w3c-w05-batchC.md -- the 10 rows still owned by this Batch-C test
-# adjudication approved for authoring this wave (consolidated-file Row
-# numbers 3, 5, 7, 8, 9, 10, 13, 15, 19, 20). All 10 are top-level scripts
-# (no Fragments: prefix), so they deploy directly under data/Scripts/. Rows
-# 1, 4, 6, 11, 12, 14, 16, 17, 18 are not patched here (row 6 is non-defect --
-# zero live carriers; row 4 is evidence-blocked; row 12 was already applied
-# via a separate commit; row 18 is HOLD for the 3e design gate; the remainder
-# are conditional/deferred/OPEN -- see the contract). Row 2's superseding
-# OnActivate contract is owned and tested by Batch D.
+# contracts/w3c-w05-batchC.md: the 10 rows this test owns (rows 3, 5, 7, 8, 9, 10,
+# 13, 15, 19, 20). All are top-level scripts (no Fragments: prefix), so they deploy
+# directly under data/Scripts/. Rows 1, 4, 6, 11, 12, 14, 16, 17, 18 are not
+# patched here: 6 is non-defect (zero live carriers), 4 evidence-blocked, 12
+# applied separately, 18 on hold pending a design decision, the rest
+# conditional/deferred/open. Row 2's OnActivate is owned and tested by Batch D.
 PATCH_CASES: dict[str, dict[str, set[str] | tuple[str, ...]]] = {
     "W05_Daily_F01_Script": {
         "members": {"onquestinit", "ondistancelessthan"},
@@ -106,11 +103,14 @@ PATCH_CASES: dict[str, dict[str, set[str] | tuple[str, ...]]] = {
             "getplayedholotape",
             "processholotape",
             "ontimer",
+            "onquestshutdown",
             "showtutorialentry",
         },
         "snippets": (
+            "AddInventoryEventFilter(TargetTape)",
             'RegisterForRemoteEvent(player, "OnItemAdded")',
             "akBaseItem as Holotape",
+            "RemoveAllInventoryEventFilters()",
             "StartTimer(W05_Wayward_MortTapeTutorialCooldown.GetValue(), CooldownTimerID)",
             "aiTimerID != CooldownTimerID",
             "TutorialData[i].bTimerProcessed = False",
@@ -222,12 +222,10 @@ def test_instswapenablestatequeststage_registers_remote_event_before_first_evalu
 
 
 def test_instswapenablestatequeststage_false_branch_uses_equality_not_at_least():
-    # rev-3d required micro-amendment: TargetStageUseGetStageDone=False must compare
-    # GetStage() == TargetStage, not >=. The docstring says "based only on whether the
-    # owning quest is CURRENTLY SET TO the TargetStage" -- equality, matching the
-    # sticky-vs-current distinction the True/False branches exist to express. No live
-    # carrier exercises the False branch, so this is docstring fidelity, not a behavior
-    # change for any currently-bound record.
+    # TargetStageUseGetStageDone=False must compare GetStage() == TargetStage, not >=.
+    # The script's docstring says "based only on whether the owning quest is CURRENTLY
+    # SET TO the TargetStage", the current-vs-sticky split the True/False branches
+    # express. No live carrier exercises the False branch.
     patch = _script_patch_source("W05_InstSwapEnableStateQuestStage")
     assert patch is not None
     assert "GetStage() == EnableStates[i].TargetStage" in patch
@@ -235,10 +233,9 @@ def test_instswapenablestatequeststage_false_branch_uses_equality_not_at_least()
 
 
 def test_morttapequestscript_ontimer_resets_processed_flags_not_replay_state():
-    # Contract row 19, coordinator amendment: the drafted body only set
-    # bTimerProcessed = True per entry with no reset path, which would
-    # permanently suppress the tutorial after one showing. OnTimer must
-    # clear every entry's flag on cooldown expiry, not just cancel the timer.
+    # OnTimer must clear every entry's bTimerProcessed on cooldown expiry, not just
+    # cancel the timer; without a reset path the tutorial is suppressed forever
+    # after one showing.
     patch = _script_patch_source("W05_MortTapeQuestScript")
     assert patch is not None
     members = _member_names(patch)
@@ -255,9 +252,8 @@ def test_morttapequestscript_ontimer_resets_processed_flags_not_replay_state():
 
 
 def test_purchasebullioninfoscript_routes_by_purchaseonbegin_not_inverted():
-    # Contract row 20: the tracer's addendum initially inverted the routing;
-    # SOURCE-PEX docstring confirms PurchaseOnBegin=True routes the purchase
-    # into OnEnd, not OnBegin -- the corrected routing, not the inverted one.
+    # The source PEX docstring confirms PurchaseOnBegin=True routes the purchase
+    # into OnEnd, not OnBegin.
     patch = _script_patch_source("W05_PurchaseBullionInfoScript")
     assert patch is not None
     assert "If !PurchaseOnBegin\n        DoPurchase()" in patch
@@ -265,10 +261,6 @@ def test_purchasebullioninfoscript_routes_by_purchaseonbegin_not_inverted():
 
 
 def test_batchC_patch_count_matches_adjudication():
-    # 10 rows remain owned by this Batch-C test (consolidated-file rows
-    # 3, 5, 7, 8, 9, 10, 13, 15, 19, 20). Row 2's corrected OnActivate
-    # semantics are owned by Batch D. Rows 1, 4, 6, 11, 12, 14, 16, 17
-    # are not patched (non-defect / evidence-blocked / already-applied /
-    # conditional-deferred / OPEN); row 18 is HOLD for the 3e design gate --
-    # none of those nine ship a patch this wave.
+    # Rows 3, 5, 7, 8, 9, 10, 13, 15, 19, 20. Row 2 belongs to Batch D; rows 1, 4,
+    # 6, 11, 12, 14, 16, 17, 18 ship no patch (see PATCH_CASES).
     assert len(PATCH_CASES) == 10

@@ -1,6 +1,4 @@
-//! `wrap_in_list` transform — wraps a scalar field value into a list of dicts.
-//!
-//! Python source: `translator.py` line 945.
+//! `wrap_in_list` transform: wraps a scalar field value into a list of dicts.
 //!
 //! Config keys:
 //! - `target`      — destination field name (defaults to the source field name)
@@ -18,19 +16,8 @@ use super::super::super::record::FieldValue;
 use super::super::maps::YamlValue;
 use super::{Transform, TransformCtx, TransformError};
 
-/// Wraps the current `FieldValue` into `List([Struct([(wrapper_key, value)])])`.
-///
-/// Mirrors the Python:
-/// ```python
-/// target_key = transform.get("target", field_name)
-/// wrapper_key = transform.get("wrapper_key", "Count")
-/// result[target_key] = [{wrapper_key: value}]
-/// ```
-///
-/// In Rust the "result dict" is managed by the caller; this transform mutates
-/// `value` in-place so the caller can move it to the target field name.
-/// The `target` config key is returned via the convenience method
-/// `WrapInListTransform::target_field` so the caller can rename the field.
+/// Wraps the current `FieldValue` into `List([Struct([(wrapper_key, value)])])`,
+/// in place. The caller renames the field using `WrapInListTransform::target_field`.
 pub struct WrapInListTransform;
 
 impl WrapInListTransform {
@@ -89,7 +76,7 @@ mod tests {
         TransformCtx { interner }
     }
 
-    /// YAML usage (fo76_to_fo4.yaml line 1044-1047):
+    /// YAML usage (fo76_to_fo4.yaml):
     ///   NAM1:
     ///     type: wrap_in_list
     ///     target: NAM1

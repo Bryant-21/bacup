@@ -1,8 +1,6 @@
-; TODO
-
 Event OnActivate(ObjectReference akActionRef)
     W05_MQR_205P_QuestScript owningQuestScript = GetOwningQuest() as W05_MQR_205P_QuestScript
-    If owningQuestScript == None || VentButton == None || akActionRef != owningQuestScript.RaRa.GetReference()
+    If owningQuestScript == None || owningQuestScript.RaRa == None || VentButton == None || akActionRef != owningQuestScript.RaRa.GetReference()
         Return
     EndIf
 

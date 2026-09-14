@@ -5,9 +5,9 @@ any dependency on the fo4-data MCP server. Used by the NIF editor
 UI and AI terminal.
 
 Usage:
-    from editor.nif_block_db import NifBlockDB
+    from ui.editor.nif_block_db import NifBlockDB
 
-    db = NifBlockDB()  # auto-finds db/nif_blocks.db
+    db = NifBlockDB()  # defaults to ui/editor/db/fo4_nif_blocks.db
     blocks = db.get_blocks("fo4/Weapons/Laser/LaserGun.nif")
     shaders = db.get_blocks("fo4/Weapons/Laser/LaserGun.nif",
                             block_type="BSLightingShaderProperty")

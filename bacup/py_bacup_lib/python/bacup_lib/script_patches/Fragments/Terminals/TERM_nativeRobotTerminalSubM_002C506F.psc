@@ -1,15 +1,20 @@
 Function SetLinkedRobotsEnabled(ObjectReference akTerminalRef, Bool abEnabled)
-    ObjectReference[] linkedRefs = akTerminalRef.GetLinkedRefArray(LinkTerminalRobot)
+    ObjectReference[] linkedRefs = akTerminalRef.GetLinkedRefArray(LinkTerminalProtectron)
+    Actor player = Game.GetPlayer()
     Int i = 0
     While i < linkedRefs.Length
         Actor robot = linkedRefs[i] as Actor
         If robot != None && (ActorTypeRobot == None || robot.HasKeyword(ActorTypeRobot))
+            Bool wasDisabled = robot.IsUnconscious()
             robot.StopCombat()
             robot.SetUnconscious(!abEnabled)
             If abEnabled
                 robot.SetValue(ProtectronPodStatus, 0.0)
             Else
                 robot.SetValue(ProtectronPodStatus, 1.0)
+                If !wasDisabled && player != None && MiscStatRobotHasBeenDisabled != None
+                    player.ModValue(MiscStatRobotHasBeenDisabled, 1.0)
+                EndIf
             EndIf
             robot.EvaluatePackage(False)
             Default2StateActivator pod = robot.GetLinkedRef(LinkProtectronPod) as Default2StateActivator

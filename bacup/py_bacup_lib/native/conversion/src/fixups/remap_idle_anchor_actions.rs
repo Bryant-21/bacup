@@ -1,21 +1,17 @@
 //! Fixup: re-anchor IDLE tree parents at the vanilla Fallout4.esm actions.
 //!
-//! FO4's animation system attaches per-graph IDLE trees under its OWN action
-//! records (`Fallout4.esm` AACT anchors like ActionInitializeGraphToBaseState).
-//! FO76 renamed several of those inherited actions (ActionInitializeGraph,
-//! ActionDeathAnimation, ActionCriticalHit, ActionSheathe, …), so the
-//! conversion's vanilla dedup keeps LOCAL COPIES of them and IDLE
-//! `ANAM` parent/previous references stay anchored at the copies. Branches
-//! rooted at a copy are unreachable from the engine's default-object anchors —
-//! the creature's InitializeGraph/Sheathe/Death idles are never found and the
-//! actor holds the T-pose (megasloth root cause; proven in-game: loading a
-//! port whose IDLEs anchor at Fallout4.esm fixes ours by presence alone).
+//! FO4 attaches per-graph IDLE trees under its own `Fallout4.esm` AACT anchors
+//! (e.g. ActionInitializeGraphToBaseState). FO76 renamed several inherited actions
+//! (ActionInitializeGraph, ActionDeathAnimation, ActionCriticalHit, ActionSheathe,
+//! ...), so vanilla dedup keeps local copies and IDLE `ANAM` parent/previous refs
+//! anchor at them. Branches rooted at a copy are unreachable from the engine's
+//! default-object anchors: InitializeGraph/Sheathe/Death idles are never found and
+//! the actor holds the T-pose (e.g. megasloth).
 //!
-//! For every IDLE `ANAM` slot (parent at byte 0, previous at byte 4): when the
-//! reference targets the OUTPUT plugin and that object-id exists as AACT in
-//! BOTH the output plugin and Fallout4.esm, rewrite the master byte to the
-//! Fallout4.esm index. FO76-only actions (e.g. 52BF9C
-//! ActionSimulatedGraphEventCollection, absent from FO4) stay local.
+//! Each IDLE `ANAM` slot (parent @0, previous @4) that targets the output plugin,
+//! with an object-id present as AACT in both the output and Fallout4.esm, gets the
+//! Fallout4.esm master byte. FO76-only actions (e.g. 52BF9C
+//! ActionSimulatedGraphEventCollection) stay local.
 
 use rustc_hash::FxHashSet;
 

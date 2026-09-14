@@ -24,7 +24,7 @@
 //!    the output plugin, but whose master byte was truncated to `00`
 //!    (= Fallout4.esm, master index 0). We rewrite only the master byte to the
 //!    output plugin index when the object-id exists in the output plugin and is
-//!    NOT a real Fallout4.esm …20412 tokens truncated…alue at index 1 must drop.
+//!    NOT a real Fallout4.esm record.
 //!
 //! # Plugin-aware
 //! Every decision is made on the *decoded* `(master_index, object_id)` of the raw

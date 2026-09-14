@@ -41,7 +41,7 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
         StartTimer(0.5, iModuleSceneTimeID)
     ElseIf auiStageID == iModuleCompleteStage
         StartTimer(iModuleSceneTimerLength as Float, iModuleSceneTimeID)
-    ElseIf auiStageID == iTriggerDropStage
+    ElseIf auiStageID == 340
         BeginOrbitalDrop()
     ElseIf auiStageID == 350
         iOrbitalDropFailSafeCount = 0

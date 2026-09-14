@@ -2,7 +2,7 @@
 ; the board's bound fire animation and optional self-damage payload.
 
 Function ClientFireTrap()
-    PhysicalTrapHit hitScript = Self as PhysicalTrapHit
+    PhysicalTrapHit hitScript = (Self as TrapBase) as PhysicalTrapHit
     If hitScript != None
         hitScript.SetCanHit(True)
     EndIf

@@ -122,6 +122,15 @@ def load_upgrade_manifest(path: Path) -> UpgradeManifest:
             families_by_conversion.append(
                 (str(conversion_id), tuple(str(family) for family in families))
             )
+        configured_conversions = {
+            conversion_id for conversion_id, _families in families_by_conversion
+        }
+        families_by_conversion.extend(
+            (conversion_id, ("NONE",))
+            for conversion_id in sorted(
+                set(SOURCE_PAIRS).difference(configured_conversions)
+            )
+        )
         raw_force_regen_by_conversion = v.get("force_regen_by_conversion") or {}
         if not isinstance(raw_force_regen_by_conversion, dict):
             raise ValueError(
@@ -163,12 +172,6 @@ def load_upgrade_manifest(path: Path) -> UpgradeManifest:
         configured = {
             conversion_id for conversion_id, _families in v.families_by_conversion
         }
-        missing = set(SOURCE_PAIRS).difference(configured)
-        if missing:
-            raise ValueError(
-                f"version {v.id!r} is missing families_by_conversion entries for: "
-                f"{', '.join(sorted(missing))}; use [NONE] for no changes"
-            )
         unknown = configured.difference(SOURCE_PAIRS)
         if unknown:
             raise ValueError(

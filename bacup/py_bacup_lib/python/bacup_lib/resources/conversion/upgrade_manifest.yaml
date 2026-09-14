@@ -1,4 +1,4 @@
-current: alpha3
+current: alpha6
 versions:
   - id: alpha1
     families_by_conversion:
@@ -47,7 +47,7 @@ versions:
         - Added to ui
   - id: alpha3
     families_by_conversion:
-      "fo76:fo4": [NIFs, Havok, Scripts, Textures, Materials]
+      "fo76:fo4": [NIFs, Havok, Scripts, Textures, Materials, Terrain]
       "fnvfo3:fo4": [NONE]
       "skyrimse:fo4": [NONE]
     notes_by_conversion:
@@ -79,3 +79,138 @@ versions:
         - Quests Enabled
         - StoryManager Enabled, Nodes Converted
         - Tons of other changes I am not gonna even list here. You gotta go talk to people ;)
+  - id: alpha4
+    families_by_conversion:
+      "fo76:fo4": [NIFs, Havok, Scripts, Textures, Materials, Terrain, LOD]
+      "fnvfo3:fo4": [ALL]
+      "skyrimse:fo4": [ALL]
+    notes_by_conversion:
+      "fo76:fo4":
+        - Tons of Pingu-Collision Fixes
+        - Children should not be insible anymore
+        - Infinite Load/Save Fixes
+        - More Quest Stuff, Wayward Souls should be completable
+        - Glowing enemies no longer white
+        - Shelters can be built in now
+        - Shelters can be walked in now
+        - Decals are all now correct
+        - Textuer conversion improvements
+        - Land should look much improved, grass more accurate
+        - Black Spots in land should be gone (may be present between cells still)
+        - Lod moved to BC3 to increase details
+        - Lod trees now correctly draw, giving more color to LOD
+        - Lod is now grouped together, reducing draw calls and increasing fps
+        - Scorched and Mole Miners should shoot guns now, but with some issues still
+        - Fixed some enemies spawning incorrectly, broke some others.
+        - Some armor and weapons are fixed, others still need work
+        - Radios Stations should now work
+        - SNAP POINTS FOR EVERYONE!
+        - Workshop items should now generate/consume power
+      "skyrimse:fo4":
+        - world should render better, but sitll WIP
+      "fnvfo3:fo4":
+        - fixed lots of placement issues, still WIP
+  - id: alpha5
+    families_by_conversion:
+      "fo76:fo4": [ALL]
+      "fnvfo3:fo4": [ALL]
+      "skyrimse:fo4": [ALL]
+      "starfield:fo4" : [ALL]
+    notes_by_conversion:
+      "fo76:fo4":
+        - More of Pingu-Collision Fixes
+        - GOG Support
+        - Fixed Floating Water
+        - scorchbeasts now melee
+        - queen has accurate health, thanks to F4SE
+        - Radios should be working again
+        - Tons of quests fixes
+        - Fixed Wayward Quest Not starting
+        - Fixed Statue not fast traveling
+        - Radhogs working
+        - Rad Turkys now working
+        - Tons of creatures fixes
+        - Tons of weapon fixes
+        - Minor Texture Fixes
+        - Lod Fixes
+        - Lighting pass on all areas, everything should be much more natural
+        - Honestly, I lost track of everything I changed
+        - Dialy Quests now start, working is another story
+        - towers should now add locations
+        - Flags are now correct and no longer minutemen
+        - Shelters should no longer have giant set pieces in them
+        - Liberators have shells, shoot
+        - Now uses the Fo4 dummy/placeholder system to spawn items, making the world more dynamic
+        - Should now be able to use the PTS, go to settings
+        - Tinker workbench now.. works
+        - Power Armor physics
+        - Fully Working Stash Box
+        - Fixed Some sounds not playing
+      "skyrimse:fo4":
+        - Collision fixes
+        - weapon foundation
+        - creature foundation
+        - lod fixes
+      "fnvfo3:fo4":
+        - Collision fixes
+        - lod fixes
+        - npc v1
+        - armor / outfits
+      "starfield:fo4":
+        - It's broken dont do it. Seriously, its still WIP
+  - id: alpha5.1
+    families_by_conversion:
+      "fo76:fo4": [Scripts, NIFs]
+      "fnvfo3:fo4": [ALL]
+      "skyrimse:fo4": [ALL]
+      "starfield:fo4" : [ALL]
+    notes_by_conversion:
+      "fo76:fo4":
+        - More of Pingu-Collision Fixes
+        - Fixed Issues with Scripts Not Compiling
+      "skyrimse:fo4":
+        - Fixed issue with native races not working
+      "fnvfo3:fo4":
+        - fixed issues caused by scripts
+      "starfield:fo4":
+        - It's broken dont do it. Seriously, its still WIP
+  - id: alpha6
+    families_by_conversion:
+      "fo76:fo4": [ALL]
+      "fnvfo3:fo4": [ALL]
+      "skyrimse:fo4": [ALL]
+      "starfield:fo4" : [ALL]
+    notes_by_conversion:
+      "fo76:fo4":
+        - New Look and Feel
+        - Conversion time should be a lot faster (I hope)
+        - Added custom F4SE plugin to support Bows and various weapons that Fo4 has no support FOR
+        - All weapons should now be working
+        - All creatures should now be working
+        - Using Fallout 76 behaivors for creatures and weapons to support custom movements and attack types. This is a huge change.
+        - There should hopefully be less wendigos around the world
+        - Fixed some outfits being invisible/missing hands
+        - Silos should now Load
+        - Fixed more collision issues :<
+        - Fixed more Scripts
+        - Music now plays with instruments (had to make custom papyrus)
+        - C.A.M.P. now functions more like fo76 and should not crash OG
+        - Fixed missing floor in whitespring
+        - Fixed issues with AnimText generation (cannot walk backwards)
+        - Quest workshop items should now be buildable
+        - Plans can now be read / known (used for quests atm)
+        - You should no longer be mis-genered by lacey
+        - Stimpacks and such should work now
+        - Fixed Issue where version number wasnt getting written
+        - Glowing enemies look correct
+        - More camp items added (had bad keywords)
+        - Shelters should now have the ability to travel back and forth
+        - Wendigos no longer push you into the air.
+        - mothman eyes should glow again
+        - Dozens of other bug fixes, thanks for all your reports. 
+      "skyrimse:fo4":
+        - creatures first attempt... they all... explode
+      "fnvfo3:fo4":
+        - first pass on weapons and armor. Messy, but some people thought it was impossible
+      "starfield:fo4":
+        - It's still broken im sorry.

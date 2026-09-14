@@ -9,6 +9,7 @@ from creation_lib.renderer.nif_loader import (
     PreparedNifData,
     PreparedRenderBatch,
     PreparedShape,
+    _extract_modern_shape_data,
     _extract_legacy_shape_data,
     _prepare_lod_render_batches,
     _should_prepare_lod_batches,
@@ -109,6 +110,84 @@ class TestBtoRenderBatching:
 
         assert len(batches) == 2
         assert [batch.source_block_ids for batch in batches] == [(2,), (7,)]
+
+    def test_texture_array_shapes_skip_legacy_bto_batching(self):
+        shapes = {index: _make_shape(index) for index in range(512)}
+        shapes[0].texture_slices = [object()]
+
+        assert not _should_prepare_lod_batches("tile.bto", shapes)
+
+    def test_splits_fo76_texture_array_triangles_and_rebuilds_bitangents(self):
+        arrays = [{"Texture Array": []} for _ in range(11)]
+        for slot, suffix in ((0, "d"), (1, "n"), (9, "r"), (10, "l")):
+            arrays[slot]["Texture Array"] = [
+                f"textures/slice_{index}_{suffix}.dds" for index in range(8)
+            ]
+        vertex_data = []
+        for index in range(6):
+            vertex_data.append(
+                {
+                    "Vertex": {
+                        "x": float(index % 3),
+                        "y": float(index // 3),
+                        "z": 0.0,
+                    },
+                    "Normal": {"x": 0.0, "y": 0.0, "z": 1.0},
+                    "UV": {"u": 0.0, "v": 0.0},
+                    "Tangent": {"x": 1.0, "y": 0.0, "z": 0.0},
+                    "Bitangent X": 3.0 if index < 3 else 7.0,
+                    "Bitangent Y": 1.0,
+                    "Bitangent Z": 0.0,
+                }
+            )
+        nif = NifFile()
+        nif.blocks = [
+            NifBlock(
+                0,
+                "BSSubIndexTriShape",
+                [
+                    ("Name", "GlobalAtlasShape"),
+                    *_transform_fields(),
+                    ("Shader Property", 1),
+                    ("Vertex Data", vertex_data),
+                    (
+                        "Triangles",
+                        [
+                            {"v1": 0, "v2": 1, "v3": 2},
+                            {"v1": 3, "v2": 4, "v3": 5},
+                        ],
+                    ),
+                ],
+            ),
+            NifBlock(
+                1,
+                "BSLightingShaderProperty",
+                [
+                    (
+                        "Shader Property Data",
+                        {
+                            "Has Texture Arrays": 1,
+                            "Texture Arrays": arrays,
+                        },
+                    )
+                ],
+            ),
+        ]
+
+        prepared = _extract_modern_shape_data(nif, nif.blocks[0])
+
+        assert [part.slice_index for part in prepared.texture_slices] == [3, 7]
+        assert all(part.tris.tolist() == [[0, 1, 2]] for part in prepared.texture_slices)
+        assert prepared.texture_slices[0].texture_paths == {
+            "diffuse": "textures/slice_3_d.dds",
+            "normal": "textures/slice_3_n.dds",
+            "reflectivity": "textures/slice_3_r.dds",
+            "lighting": "textures/slice_3_l.dds",
+        }
+        assert np.allclose(
+            prepared.texture_slices[0].bitangents,
+            np.array([[0.0, 1.0, 0.0]] * 3, dtype=np.float32),
+        )
 
 
 class TestCreateBa2Manager:

@@ -1,6 +1,4 @@
-//! `strip_subfields` transform — removes or keeps named subfields in a Struct.
-//!
-//! Python source: `translator.py` line 1117.
+//! `strip_subfields` transform: removes or keeps named subfields in a Struct.
 //!
 //! Config keys (mutually exclusive; `keep` takes precedence if both present):
 //! - `remove` — list of subfield names to drop
@@ -11,14 +9,14 @@
 //!
 //! Example YAML usages:
 //!
-//! Usage 1 — `remove` (fo76_to_fo4.yaml line 48):
+//! Usage 1, `remove` (fo76_to_fo4.yaml):
 //! ```yaml
 //! group_model:
 //!   type: strip_subfields
 //!   remove: [XFLG, ENLT, ENLS, AUUV, MODD]
 //! ```
 //!
-//! Usage 2 — `keep` (fo4_to_skyrimse.yaml line 104):
+//! Usage 2, `keep` (fo4_to_skyrimse.yaml):
 //! ```yaml
 //! DATA:
 //!   type: strip_subfields
@@ -32,23 +30,6 @@ use super::super::maps::YamlValue;
 use super::{Transform, TransformCtx, TransformError};
 
 /// Strips named subfields from a `FieldValue::Struct`.
-///
-/// Mirrors Python:
-/// ```python
-/// if isinstance(value, dict):
-///     remove_set = set(transform.get("remove", []))
-///     keep_set   = set(transform.get("keep", []))
-///     if keep_set:
-///         stripped = {k: v for k, v in value.items() if k in keep_set}
-///     elif remove_set:
-///         stripped = {k: v for k, v in value.items() if k not in remove_set}
-///     else:
-///         stripped = value
-///     if stripped:
-///         result[field_name] = stripped
-///     else:
-///         result.pop(field_name, None)
-/// ```
 pub struct StripSubfieldsTransform;
 
 impl Transform for StripSubfieldsTransform {

@@ -319,16 +319,12 @@ class PoseSession:
         if l1 < 1e-6 or l2 < 1e-6:
             return
 
-        # Per-bone local child direction. The solver used to assume
-        # every bone's local +X axis pointed at its IK child. That
-        # assumption holds for FO4 human arms/legs and PA legs, but PA
-        # UpperArm has a ~1.2° offset between its rest +X and the
-        # direction to ForeArm1 — enough to make the solve
-        # non-idempotent and cause the arm to slowly swing while the
-        # user holds the pole handle stationary. Computing the axis
-        # from the current world pose (inverse of the current world
-        # rotation applied to the world-space child offset) gives the
-        # invariant local direction regardless of rest conventions.
+        # Per-bone local child direction, from the current world pose (inverse
+        # world rotation applied to the world-space child offset). Assuming
+        # local +X points at the IK child holds for FO4 human arms/legs and PA
+        # legs, but PA UpperArm's rest +X is ~1.2° off the direction to
+        # ForeArm1, which makes the solve non-idempotent: the arm slowly swings
+        # while the pole handle is held still.
         root_rot_mat = quat_to_matrix(root_rot_q)
         mid_rot_mat = quat_to_matrix(mid_rot_q)
         root_local_child_dir = root_rot_mat.T @ (mid_pos - root_pos) / l1

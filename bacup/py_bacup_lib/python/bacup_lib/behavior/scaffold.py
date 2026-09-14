@@ -147,13 +147,8 @@ def generate_behavior_xml(
 ) -> None:
     """Generate a minimal Havok behavior graph XML referencing the given clips.
 
-    Creates a simple state machine where each clip is a state with basic transitions.
-    The first clip is the default/idle state.
-
-    Args:
-        clips: List of converted animation clips
-        skeleton_path: Relative path to the skeleton .hkx file
-        output_path: Where to write the behavior XML
+    Each clip becomes a state with basic transitions; the first clip is the default
+    state. ``skeleton_path`` is relative.
     """
     if not clips:
         raise ValueError("At least one animation clip is required")

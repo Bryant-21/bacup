@@ -96,9 +96,7 @@ fn run_convert_btos(
     }
 
     let work_count = work_entries.len();
-    let worker_label = conversion_workers
-        .map(|workers| workers.to_string())
-        .unwrap_or_else(|| "rayon-default".to_string());
+    let worker_label = crate::worker_pool::normalized_worker_count(conversion_workers).to_string();
     let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
             phase: phase_name,
             level: LogLevel::Info,
@@ -127,11 +125,14 @@ fn run_convert_btos(
                     material_namespace_paths: Default::default(),
                     addon_index_map: Default::default(),
                     translation_maps_dir: None,
+                    skin_policy: Default::default(),
+                    target_skeleton: None,
                     auto_skin_reference_body: None,
                     emit_first_person: false,
                     first_person_reference: None,
                     morph_weight_cap: 0.5,
                     weapon_role: None,
+                    strip_cloth: false,
                     source_material_dir: None,
                     material_source_overrides: Default::default(),
                 };
@@ -161,15 +162,8 @@ fn run_convert_btos(
             })
             .collect()
     };
-    let results: Vec<BtoResult> = if let Some(workers) = conversion_workers {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(workers)
-            .build()
-            .map_err(|err| PhaseError::Internal(format!("rayon pool error: {err}")))?;
-        pool.install(convert_work)
-    } else {
-        convert_work()
-    };
+    let results: Vec<BtoResult> = crate::worker_pool::install(conversion_workers, convert_work)
+        .map_err(|err| PhaseError::Internal(format!("rayon pool error: {err}")))?;
     reporter.finish();
 
     let mut assets_written = skipped_existing;

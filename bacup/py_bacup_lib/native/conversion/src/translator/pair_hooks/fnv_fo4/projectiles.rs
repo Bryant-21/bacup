@@ -54,18 +54,16 @@ fn build_fo4_proj_dnam(source: Option<&[u8]>) -> Vec<u8> {
         (28, 24), // explosion alternate-trigger proximity
         (32, 28), // explosion alternate-trigger timer
         (36, 32), // explosion
+        (40, 36), // active sound
         (44, 40), // muzzle flash duration
         (48, 44), // fade duration
         (52, 48), // impact force
+        (56, 52), // countdown sound
+        (60, 56), // deactivate sound
         (64, 60), // default weapon
     ] {
         copy_four_bytes(source, source_offset, &mut target, target_offset);
     }
-
-    // FNV/FO3 sound slots reference legacy SOUN records, but FO4 DNAM requires
-    // SNDR at target offsets 36, 52, and 56. The raw-ID rewrite remaps by object
-    // id without a SOUN→SNDR semantic guarantee, and PROJ is not covered by the
-    // later struct target-type validator, so these unsafe refs remain zero.
 
     // PairCtx exposes only the interner, so embedded raw FormIDs cannot be
     // remapped here. The always-on schema-aware

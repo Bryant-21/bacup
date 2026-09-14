@@ -163,14 +163,12 @@ fn paired_drinking_local(contact: &FormKey, interner: &StringInterner) -> u32 {
 
 /// Repair a WATR record's spell slots for FO4.
 ///
-/// FO76 `WATR.XNAM` (ConsumeSpell) may point at an `ALCH` ingestible (e.g.
-/// `WaterDirty`), which FO4's XNAM — a `SPEL`-only slot — cannot hold, so the
-/// upstream type/dangle passes null or strip it and the converted water silently
-/// loses its drink-on-consume effect. Instead of dropping it, repoint XNAM at the
-/// FO4 drinking spell paired with the record's ContactSpell (YNAM), matching how
-/// Fallout4.esm's own water records pair the two slots. When the earlier passes
-/// already removed XNAM entirely, re-insert it before YNAM. `YNAM` keeps the
-/// strip-if-not-`SPEL` behaviour. Returns the number of slots changed.
+/// FO76 `WATR.XNAM` (ConsumeSpell) may point at an `ALCH` (e.g. `WaterDirty`),
+/// which FO4's `SPEL`-only XNAM can't hold, so upstream passes null or strip it
+/// and the water loses its drink effect. XNAM is repointed (or re-inserted
+/// before YNAM) at the FO4 drinking spell paired with the ContactSpell (YNAM),
+/// as Fallout4.esm's waters pair them. `YNAM` is still stripped if not a `SPEL`.
+/// Returns the number of slots changed.
 pub fn repair_water_spell_refs(
     record: &mut Record,
     interner: &StringInterner,

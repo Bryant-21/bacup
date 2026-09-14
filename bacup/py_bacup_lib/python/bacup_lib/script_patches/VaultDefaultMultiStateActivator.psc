@@ -10,9 +10,8 @@ Function ApplyLocalState(Int stateIndex)
         BlockActivation(False, False)
         IsBlockingActivations = False
     EndIf
-    If AnimationStates[stateIndex].EnableOverrideDisplayName
-        SetOverrideName(AnimationStates[stateIndex].OverrideDisplayName)
-    EndIf
+    ; EnableOverrideDisplayName/OverrideDisplayName have no Fallout 4 equivalent
+    ; (FO76 ObjectReference.SetOverrideName); the per-state name override is lost.
     If AnimationStates[stateIndex].EnableOverrideActivateText
         SetActivateTextOverride(AnimationStates[stateIndex].OverrideActivateText)
     EndIf
@@ -62,9 +61,9 @@ Event OnInit()
     UpdateNetworkState()
 EndEvent
 
-Event OnSimpleNetworkStateSet()
-    SetLocalState(CurrentStateIndex, True)
-EndEvent
+; OnSimpleNetworkStateSet was the FO76 server->client replicated-state callback.
+; SetLocalState is already the authoritative single-player entry point.
+; @drop-member OnSimpleNetworkStateSet
 
 Event OnDestructionStageChanged(Int aiOldStage, Int aiCurrentStage)
     If AnimationStates != None && AnimationStates.Length > 0

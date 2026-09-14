@@ -8,12 +8,9 @@
 //   "target_master_names":    ["Fallout4.esm", "DLCRobot.esm"]
 // }
 //
-// The phase:
-//  1. Reads ctx.run.target_handle_id (populated by the translate phase).
-//  2. Saves the target plugin handle to output_path using the GIL-free
-//     esp_authoring_core API.
-//  3. Optionally exports the authoring YAML directory (yaml/ next to the
-//     plugin) using the GIL-free export API.
+// Saves ctx.run.target_handle_id (set by the translate phase) to output_path
+// and optionally exports the authoring YAML dir (yaml/ next to the plugin),
+// both through the GIL-free esp_authoring_core API.
 //
 // PhaseReport:
 //   assets_written = 1 on success

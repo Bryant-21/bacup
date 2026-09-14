@@ -102,12 +102,18 @@ fn detect_role_for_source(
     source_game: &str,
 ) -> Option<&'static str> {
     detect_role(stem, suffixes).or_else(|| {
-        if source_game.eq_ignore_ascii_case("fo76") {
+        if supports_bare_diffuse(source_game) {
             Some("diffuse")
         } else {
             None
         }
     })
+}
+
+fn supports_bare_diffuse(source_game: &str) -> bool {
+    ["fo76", "fo3", "fnv", "skyrim", "skyrimse"]
+        .iter()
+        .any(|game| source_game.eq_ignore_ascii_case(game))
 }
 
 fn role_stem_base(
@@ -116,7 +122,7 @@ fn role_stem_base(
     suffixes: &'static [(&'static str, &'static str)],
     source_game: &str,
 ) -> String {
-    if source_game.eq_ignore_ascii_case("fo76") && role == "diffuse" {
+    if supports_bare_diffuse(source_game) && role == "diffuse" {
         if !stem
             .to_ascii_lowercase()
             .ends_with(suffix_for_role(suffixes, "diffuse").unwrap_or("_d"))
@@ -396,7 +402,7 @@ fn actual_role_suffix(
     source_game: &str,
 ) -> Option<&'static str> {
     let configured = suffix_for_role(source_suffixes, role)?;
-    if source_game.eq_ignore_ascii_case("fo76") && role == "diffuse" {
+    if supports_bare_diffuse(source_game) && role == "diffuse" {
         let stem = path.file_stem()?.to_str()?.to_ascii_lowercase();
         if !stem.ends_with(configured) {
             return Some("");
@@ -695,7 +701,14 @@ fn rel_to_pathbuf(rel: &str) -> PathBuf {
 // Build one TextureSetPathRequest for a texture group
 // ---------------------------------------------------------------------------
 
-const ROCKCLIFF76_GLOSS_MULTIPLIER: f32 = 0.33;
+pub(crate) const MATTE_FO76_GLOSS_MULTIPLIER: f32 = 0.33;
+const MATTE_FO76_LIGHTING_TEXTURES: &[&str] = &[
+    "architecture/unique/bridge01/bridgeconcrete01details_l.dds",
+    "interiors/vault/vltconduitsvents01_l.dds",
+    "interiors/vault/vltutilpipes01_l.dds",
+    "landscape/roads/roadrailings01_l.dds",
+    "landscape/rocks/rockcliff76_l.dds",
+];
 
 fn texture_group_rel_key(path: &Path) -> String {
     texture_relative_to_textures_root(&path.to_string_lossy(), Path::new(""))
@@ -713,15 +726,16 @@ fn conversion_params_for_group(
         return params;
     }
 
-    let has_rockcliff76_lighting = group.files.iter().any(|(path, role)| {
-        role == "lighting" && texture_group_rel_key(path) == "landscape/rocks/rockcliff76_l.dds"
+    let has_matte_lighting = group.files.iter().any(|(path, role)| {
+        role == "lighting"
+            && MATTE_FO76_LIGHTING_TEXTURES.contains(&texture_group_rel_key(path).as_str())
     });
-    if !has_rockcliff76_lighting {
+    if !has_matte_lighting {
         return params;
     }
 
     let mut adjusted = params;
-    adjusted.gloss_multiplier = adjusted.gloss_multiplier.min(ROCKCLIFF76_GLOSS_MULTIPLIER);
+    adjusted.gloss_multiplier = adjusted.gloss_multiplier.min(MATTE_FO76_GLOSS_MULTIPLIER);
     adjusted
 }
 
@@ -1031,6 +1045,20 @@ pub(crate) fn output_exists_in_target(
     target_dirs.iter().any(|t| t.join(rel).is_file())
 }
 
+pub(crate) fn output_is_base_overwrite_allowed(
+    output_path: &Path,
+    data_root: &Path,
+    prefixes: &[String],
+) -> bool {
+    if prefixes.is_empty() {
+        return false;
+    }
+    let Ok(rel) = output_path.strip_prefix(data_root) else {
+        return false;
+    };
+    materials_native::convert::path_is_base_overwrite_allowed(&rel.to_string_lossy(), prefixes)
+}
+
 pub(crate) fn output_exists_in_target_game(
     output_path: &Path,
     data_root: &Path,
@@ -1054,13 +1082,22 @@ pub(crate) fn output_exists_in_target_game(
 /// per-group `all()` would convert the entire set whenever one synthesized
 /// output was new, clobbering the colliding diffuse/normal/specular. Groups with
 /// no diffuse fall back to "every output already exists in the target".
+///
+/// `base_overwrite_prefixes` opts a kit out of the skip entirely, so the source
+/// game's textures deliberately win at the shared path.
 pub(crate) fn group_is_base_owned(
     outputs: &[TexturePathOutput],
     data_root: &Path,
     target_dirs: &[PathBuf],
     target_assets: Option<&crate::target_assets::TargetAssetStore>,
+    base_overwrite_prefixes: &[String],
 ) -> bool {
     if target_dirs.is_empty() && target_assets.is_none() {
+        return false;
+    }
+    if outputs.iter().any(|output| {
+        output_is_base_overwrite_allowed(&output.path, data_root, base_overwrite_prefixes)
+    }) {
         return false;
     }
     let exists =
@@ -1203,8 +1240,19 @@ mod tests {
         .expect("request built");
 
         let input_roles: HashSet<&str> = request.inputs.iter().map(|i| i.role.as_str()).collect();
+        assert!(input_roles.contains("diffuse"));
         assert!(input_roles.contains("normal"));
         assert!(input_roles.contains("envmask"));
+
+        let diffuse = request
+            .outputs
+            .iter()
+            .find(|o| o.role == "diffuse")
+            .expect("diffuse output declared");
+        assert_eq!(
+            diffuse.path.file_name().unwrap().to_str().unwrap(),
+            "crate01.dds"
+        );
 
         let specular = request
             .outputs
@@ -1220,6 +1268,45 @@ mod tests {
         assert!(
             !request.outputs.iter().any(|o| o.role == "envmask"),
             "env mask has no standalone output"
+        );
+    }
+
+    #[test]
+    fn fnv_bare_grass_diffuse_builds_a_texture_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("GrassWastelandComp01.dds"), b"d").unwrap();
+
+        let paths = vec![
+            dir.join("GrassWastelandComp01.dds")
+                .to_string_lossy()
+                .to_string(),
+        ];
+        let groups = group_textures(&paths, dir, game_texture_suffixes("fnv"), "fnv");
+        let request = build_request(
+            &groups[0],
+            &dir.join("out"),
+            "fnv",
+            "fo4",
+            game_texture_suffixes("fnv"),
+            game_texture_suffixes("fo4"),
+            &HashMap::new(),
+            TextureConversionParamsPayload::default(),
+            false,
+            0,
+        )
+        .expect("bare diffuse request built");
+
+        assert_eq!(request.inputs.len(), 1);
+        assert_eq!(request.inputs[0].role, "diffuse");
+        let diffuse = request
+            .outputs
+            .iter()
+            .find(|output| output.role == "diffuse")
+            .expect("diffuse output declared");
+        assert_eq!(
+            diffuse.path.file_name().unwrap().to_str().unwrap(),
+            "GrassWastelandComp01.dds"
         );
     }
 
@@ -1781,44 +1868,56 @@ mod tests {
     }
 
     #[test]
-    fn build_request_caps_rockcliff76_gloss_multiplier() {
-        let tmp = std::env::temp_dir().join("build_request_rockcliff76_gloss");
-        let textures_dir = tmp.join("Textures").join("Landscape").join("Rocks");
+    fn build_request_caps_reported_matte_fo76_gloss_multipliers() {
+        let tmp = std::env::temp_dir().join("build_request_matte_fo76_gloss");
         let output = tmp.join("out");
         let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&textures_dir).unwrap();
-        std::fs::write(textures_dir.join("RockCliff76_d.dds"), b"dds").unwrap();
-        std::fs::write(textures_dir.join("RockCliff76_r.dds"), b"dds").unwrap();
-        std::fs::write(textures_dir.join("RockCliff76_l.dds"), b"dds").unwrap();
 
         let source_suffixes = game_texture_suffixes("fo76");
         let target_suffixes = game_texture_suffixes("fo4");
-        let groups = group_textures(
-            &[textures_dir
-                .join("RockCliff76_d.dds")
-                .to_string_lossy()
-                .to_string()],
-            &tmp,
-            source_suffixes,
-            "fo76",
-        );
-        let request = build_request(
-            &groups[0],
-            &output,
-            "fo76",
-            "fo4",
-            source_suffixes,
-            target_suffixes,
-            &HashMap::new(),
-            TextureConversionParamsPayload::default(),
-            false,
-            0,
-        )
-        .expect("RockCliff76 bundle should build a conversion request");
+        for lighting_rel in MATTE_FO76_LIGHTING_TEXTURES {
+            let lighting_path = tmp
+                .join("Textures")
+                .join(lighting_rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let stem = lighting_path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap()
+                .strip_suffix("_l")
+                .unwrap();
+            let diffuse_path = lighting_path.with_file_name(format!("{stem}_d.dds"));
+            let reflectivity_path = lighting_path.with_file_name(format!("{stem}_r.dds"));
+            std::fs::create_dir_all(lighting_path.parent().unwrap()).unwrap();
+            std::fs::write(&diffuse_path, b"dds").unwrap();
+            std::fs::write(&reflectivity_path, b"dds").unwrap();
+            std::fs::write(&lighting_path, b"dds").unwrap();
 
-        assert!(
-            (request.params.gloss_multiplier - ROCKCLIFF76_GLOSS_MULTIPLIER).abs() < f32::EPSILON
-        );
+            let groups = group_textures(
+                &[diffuse_path.to_string_lossy().to_string()],
+                &tmp,
+                source_suffixes,
+                "fo76",
+            );
+            let request = build_request(
+                &groups[0],
+                &output,
+                "fo76",
+                "fo4",
+                source_suffixes,
+                target_suffixes,
+                &HashMap::new(),
+                TextureConversionParamsPayload::default(),
+                false,
+                0,
+            )
+            .expect("reported matte bundle should build a conversion request");
+
+            assert!(
+                (request.params.gloss_multiplier - MATTE_FO76_GLOSS_MULTIPLIER).abs()
+                    < f32::EPSILON,
+                "unexpected gloss multiplier for {lighting_rel}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -2288,7 +2387,13 @@ mod tests {
         ];
         let targets = vec![target.clone()];
 
-        assert!(group_is_base_owned(&outputs, &data_root, &targets, None));
+        assert!(group_is_base_owned(
+            &outputs,
+            &data_root,
+            &targets,
+            None,
+            &[]
+        ));
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -2309,7 +2414,81 @@ mod tests {
         ];
         let targets = vec![target.clone()];
 
-        assert!(!group_is_base_owned(&outputs, &data_root, &targets, None));
+        assert!(!group_is_base_owned(
+            &outputs,
+            &data_root,
+            &targets,
+            None,
+            &[]
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn base_overwrite_prefix_lets_a_colliding_group_through() {
+        // The FO76 pipe-weapon (handmade) kit is deliberately allowed to win at
+        // the shared FO4 path, so a colliding diffuse must NOT be skipped.
+        let tmp = std::env::temp_dir().join("group_base_overwrite_allowed");
+        let _ = fs::remove_dir_all(&tmp);
+        let data_root = tmp.join("mod").join("data");
+        let target = tmp.join("target");
+        let kit = target.join("Textures").join("Weapons").join("handmade");
+        fs::create_dir_all(&kit).unwrap();
+        fs::write(kit.join("piperifle_d.dds"), b"x").unwrap();
+
+        let outputs = vec![texture_output(
+            "diffuse",
+            data_root
+                .join("Textures")
+                .join("Weapons")
+                .join("handmade")
+                .join("piperifle_d.dds"),
+        )];
+        let targets = vec![target.clone()];
+        let allow = vec!["textures/weapons/handmade/".to_string()];
+
+        assert!(group_is_base_owned(
+            &outputs,
+            &data_root,
+            &targets,
+            None,
+            &[]
+        ));
+        assert!(!group_is_base_owned(
+            &outputs, &data_root, &targets, None, &allow
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn base_overwrite_prefix_does_not_leak_to_a_sibling_kit() {
+        // `handmade_hotrod` is a different, FO76-only kit — a prefix match that
+        // ignored the trailing slash would wrongly cover it.
+        let tmp = std::env::temp_dir().join("group_base_overwrite_sibling");
+        let _ = fs::remove_dir_all(&tmp);
+        let data_root = tmp.join("mod").join("data");
+        let target = tmp.join("target");
+        let kit = target
+            .join("Textures")
+            .join("Weapons")
+            .join("handmade_hotrod");
+        fs::create_dir_all(&kit).unwrap();
+        fs::write(kit.join("hotrod_d.dds"), b"x").unwrap();
+
+        let outputs = vec![texture_output(
+            "diffuse",
+            data_root
+                .join("Textures")
+                .join("Weapons")
+                .join("handmade_hotrod")
+                .join("hotrod_d.dds"),
+        )];
+        let targets = vec![target.clone()];
+        let allow = vec!["textures/weapons/handmade/".to_string()];
+
+        assert!(group_is_base_owned(
+            &outputs, &data_root, &targets, None, &allow
+        ));
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -2320,7 +2499,7 @@ mod tests {
             "diffuse",
             PathBuf::from("/mod/data/Textures/body_d.dds"),
         )];
-        assert!(!group_is_base_owned(&outputs, data_root, &[], None));
+        assert!(!group_is_base_owned(&outputs, data_root, &[], None, &[]));
     }
 
     #[test]

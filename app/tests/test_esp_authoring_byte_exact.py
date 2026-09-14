@@ -3,8 +3,7 @@
 Guards against changes in `serialize_record_payload_native`,
 `compact_authoring_subrecord_impl`, and related helpers that would silently
 alter the authoring-dir file tree. The fixture was generated from DLCworkshop02.esm
-with the Phase A native exporter; if the comparison fails, regenerate per
-plan section A.15.1 only if the divergence is intentional and approved.
+with the native exporter; regenerate it only if a divergence is intentional.
 """
 
 from __future__ import annotations

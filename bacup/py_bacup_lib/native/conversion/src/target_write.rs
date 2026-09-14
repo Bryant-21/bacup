@@ -17,14 +17,15 @@ use esp_authoring_core::nvnm::{
 use esp_authoring_core::plugin_runtime::authoring::authoring_serialize::codec_accepts_payload_length;
 use esp_authoring_core::plugin_runtime::{
     COMPRESSED_RECORD_FLAG, LocalizedStringsState, NativePluginSlot, ParsedGroup, ParsedItem,
-    ParsedRecord, ParsedSubrecord,
+    ParsedRecord, ParsedSubrecord, QuestChildInsertIndex, TopicChildInsertIndex,
 };
 use esp_authoring_core::plugin_runtime::{NaviRebuildStats, WriteEffect};
 use esp_authoring_core::plugin_runtime::{
-    insert_parsed_record_in_slot, insert_projected_navmesh_record_in_slot,
-    insert_projected_navmeshes_batch_in_slot, insert_quest_child_record_in_slot,
-    insert_topic_child_record_in_slot, plugin_handle_store_ref,
-    rebuild_projected_navi_record_from_source_in_slot,
+    build_quest_child_insert_index, build_topic_child_insert_index, insert_parsed_record_in_slot,
+    insert_projected_navmesh_record_in_slot, insert_projected_navmeshes_batch_in_slot,
+    insert_quest_child_record_in_slot, insert_quest_child_record_indexed_in_slot,
+    insert_topic_child_record_in_slot, insert_topic_child_record_indexed_in_slot,
+    plugin_handle_store_ref, rebuild_projected_navi_record_from_source_in_slot,
     rebuild_projected_navi_record_from_source_in_slot_with_nver,
     rebuild_projected_navi_record_in_slot, replace_parsed_record_contents_in_slot,
     replace_parsed_record_in_slot, replace_parsed_records_contents_in_slot_batch,
@@ -33,11 +34,61 @@ use esp_authoring_core::plugin_runtime::{
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 const NVNM_TRIANGLE_EDGE_EXTRA_INFO_FLAGS: [u16; 3] = [0x0001, 0x0002, 0x0004];
 const NVNM_EDGE_POINT_SCALE: f32 = 1024.0;
 const NVNM_WORLDSPACE_CELL_SIZE: f32 = 4096.0;
 const NVNM_MAX_FO4_EDGE_ROWS: usize = 255;
+
+#[derive(Clone, Copy, Default)]
+pub struct ChildInsertTiming {
+    pub index_build: Duration,
+    pub lock_wait: Duration,
+    pub encode: Duration,
+    pub topology_insert: Duration,
+    pub write_effect: Duration,
+    pub wrong_handle_fallback: Duration,
+    pub records: usize,
+    pub fast_inserts: usize,
+    pub serial_fallbacks: usize,
+}
+
+/// Valid while one phase exclusively performs child-record structural inserts
+/// against `handle_id`; guarded records fall back when the cached shape differs.
+pub struct QuestChildInsertSession {
+    handle_id: u64,
+    index: QuestChildInsertIndex,
+    timing: ChildInsertTiming,
+}
+
+/// Valid while one phase exclusively performs child-record structural inserts
+/// against `handle_id`; guarded records fall back when the cached shape differs.
+pub struct TopicChildInsertSession {
+    handle_id: u64,
+    index: TopicChildInsertIndex,
+    timing: ChildInsertTiming,
+}
+
+impl QuestChildInsertSession {
+    pub fn timing(&self) -> ChildInsertTiming {
+        ChildInsertTiming {
+            fast_inserts: self.index.fast_inserts(),
+            serial_fallbacks: self.timing.serial_fallbacks + self.index.serial_fallbacks(),
+            ..self.timing
+        }
+    }
+}
+
+impl TopicChildInsertSession {
+    pub fn timing(&self) -> ChildInsertTiming {
+        ChildInsertTiming {
+            fast_inserts: self.index.fast_inserts(),
+            serial_fallbacks: self.timing.serial_fallbacks + self.index.serial_fallbacks(),
+            ..self.timing
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -45,11 +96,8 @@ const NVNM_MAX_FO4_EDGE_ROWS: usize = 255;
 
 /// Encode a decoded `Record` and insert it into the target plugin handle.
 ///
-///
-/// # Errors
-/// Returns `WriteError::UnknownSignature` if the record sig is unknown.
-/// Returns `WriteError::EncodeFailure` for subrecord encoding errors.
-/// Returns `WriteError::InsertFailure` if the plugin handle doesn't exist.
+/// Errors: `UnknownSignature` for an unknown record sig, `EncodeFailure` for a
+/// subrecord encoding error, `InsertFailure` for a missing plugin handle.
 pub fn add_record_native(
     handle_id: u64,
     record: Record,
@@ -63,6 +111,52 @@ pub fn add_record_native(
     add_record_in_slot(slot, record, schema, interner)?;
     slot.apply_write_effect(&WriteEffect::RecordsAddedOrRemoved);
     Ok(())
+}
+
+pub(crate) fn reserve_record_localized_strings_native(
+    handle_id: u64,
+    record: Record,
+    schema: &AuthoringSchema,
+    interner: &StringInterner,
+) -> Result<Vec<(String, String, u32)>, WriteError> {
+    let mut store = plugin_handle_store_ref().lock().unwrap();
+    let slot = store
+        .get_mut(&handle_id)
+        .ok_or_else(|| WriteError::InsertFailure(format!("no plugin handle: {handle_id}")))?;
+    if (slot.parsed.header.flags & 0x0000_0080) == 0 {
+        return Err(WriteError::EncodeFailure(
+            "quest runtime localized strings require a localized target plugin".to_string(),
+        ));
+    }
+    let Some(parsed) = encode_record_for_slot(slot, record, schema, interner)? else {
+        return Err(WriteError::EncodeFailure(
+            "quest runtime record was filtered before localized-string reservation".to_string(),
+        ));
+    };
+    let mut rows = Vec::new();
+    for subrecord in &parsed.subrecords {
+        let field = subrecord.signature.as_str();
+        if !matches!(
+            field,
+            "FULL" | "DESC" | "ITXT" | "NAM1" | "RNAM" | "CNAM" | "NNAM"
+        ) {
+            continue;
+        }
+        let Some(table) =
+            localized_table_type_for_signature(Some(parsed.signature.as_str()), field)
+        else {
+            continue;
+        };
+        let Some(string_id) = raw_lstring_id(subrecord.data.as_ref()) else {
+            return Err(WriteError::EncodeFailure(format!(
+                "localized {}.{} did not encode to a string id",
+                parsed.signature.as_str(),
+                field
+            )));
+        };
+        rows.push((field.to_string(), table.to_ascii_uppercase(), string_id));
+    }
+    Ok(rows)
 }
 
 pub(crate) fn encode_form_key_for_handle(
@@ -80,20 +174,187 @@ pub(crate) fn encode_form_key_for_handle(
             form_key.local
         ))
     })?;
-    let master_index = slot
+    let master_index = if plugin_name.eq_ignore_ascii_case(&slot.parsed.plugin_name) {
+        slot.parsed.header.masters.len() as u32
+    } else if let Some(index) = slot
         .parsed
         .header
         .masters
         .iter()
         .position(|master| master.eq_ignore_ascii_case(plugin_name))
-        .map(|index| index as u32)
-        .unwrap_or(slot.parsed.header.masters.len() as u32);
+    {
+        index as u32
+    } else {
+        return Err(WriteError::EncodeFailure(format!(
+            "FormKey plugin {plugin_name} is neither output plugin {} nor a target master",
+            slot.parsed.plugin_name
+        )));
+    };
     if master_index > 0xFF {
         return Err(WriteError::EncodeFailure(format!(
             "master index {master_index} exceeds FormID capacity"
         )));
     }
     Ok((master_index << 24) | (form_key.local & 0x00FF_FFFF))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExistingRecordTopology {
+    pub occurrences: usize,
+    pub top_level: bool,
+    pub persistent: bool,
+}
+
+pub(crate) fn existing_record_topology_native(
+    handle_id: u64,
+    form_key: crate::ids::FormKey,
+    signature: &str,
+    interner: &StringInterner,
+) -> Result<ExistingRecordTopology, WriteError> {
+    let form_id = encode_form_key_for_handle(handle_id, form_key, interner)?;
+    let store = plugin_handle_store_ref().lock().unwrap();
+    let slot = store
+        .get(&handle_id)
+        .ok_or(WriteError::InvalidHandle(handle_id))?;
+    let mut topology = ExistingRecordTopology {
+        occurrences: 0,
+        top_level: false,
+        persistent: false,
+    };
+    count_record_topology(
+        &slot.parsed.root_items,
+        form_id,
+        signature,
+        true,
+        false,
+        &mut topology,
+    );
+    Ok(topology)
+}
+
+pub(crate) fn existing_localized_string_occurrences_native(
+    handle_id: u64,
+    form_key: crate::ids::FormKey,
+    signature: &str,
+    interner: &StringInterner,
+) -> Result<Vec<(String, String, u32)>, WriteError> {
+    let form_id = encode_form_key_for_handle(handle_id, form_key, interner)?;
+    let store = plugin_handle_store_ref().lock().unwrap();
+    let slot = store
+        .get(&handle_id)
+        .ok_or(WriteError::InvalidHandle(handle_id))?;
+    fn walk(
+        items: &[ParsedItem],
+        form_id: u32,
+        signature: &str,
+        rows: &mut Vec<(String, String, u32)>,
+    ) {
+        for item in items {
+            match item {
+                ParsedItem::Record(record)
+                    if record.form_id == form_id && record.signature.as_str() == signature =>
+                {
+                    for subrecord in &record.subrecords {
+                        let field = subrecord.signature.as_str();
+                        if !matches!(
+                            field,
+                            "FULL" | "DESC" | "ITXT" | "NAM1" | "RNAM" | "CNAM" | "NNAM"
+                        ) {
+                            continue;
+                        }
+                        let Some(table) =
+                            localized_table_type_for_signature(Some(signature), field)
+                        else {
+                            continue;
+                        };
+                        let Some(string_id) = raw_lstring_id(subrecord.data.as_ref()) else {
+                            continue;
+                        };
+                        rows.push((field.to_string(), table.to_ascii_uppercase(), string_id));
+                    }
+                }
+                ParsedItem::Group(group) => walk(&group.children, form_id, signature, rows),
+                _ => {}
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    walk(&slot.parsed.root_items, form_id, signature, &mut rows);
+    Ok(rows)
+}
+
+pub(crate) fn count_references_to_base_native(
+    handle_id: u64,
+    base_form_key: crate::ids::FormKey,
+    interner: &StringInterner,
+) -> Result<usize, WriteError> {
+    let base_form_id = encode_form_key_for_handle(handle_id, base_form_key, interner)?;
+    let store = plugin_handle_store_ref().lock().unwrap();
+    let slot = store
+        .get(&handle_id)
+        .ok_or(WriteError::InvalidHandle(handle_id))?;
+    fn walk(items: &[ParsedItem], base_form_id: u32) -> usize {
+        items
+            .iter()
+            .map(|item| match item {
+                ParsedItem::Record(record) if record.signature.as_str() == "REFR" => record
+                    .subrecords
+                    .iter()
+                    .filter(|subrecord| {
+                        subrecord.signature.as_str() == "NAME"
+                            && subrecord.data.len() >= 4
+                            && u32::from_le_bytes([
+                                subrecord.data[0],
+                                subrecord.data[1],
+                                subrecord.data[2],
+                                subrecord.data[3],
+                            ]) == base_form_id
+                    })
+                    .count(),
+                ParsedItem::Group(group) => walk(&group.children, base_form_id),
+                _ => 0,
+            })
+            .sum()
+    }
+    Ok(walk(&slot.parsed.root_items, base_form_id))
+}
+
+fn count_record_topology(
+    items: &[ParsedItem],
+    form_id: u32,
+    signature: &str,
+    at_root: bool,
+    inside_persistent_group: bool,
+    topology: &mut ExistingRecordTopology,
+) {
+    for item in items {
+        match item {
+            ParsedItem::Record(record)
+                if record.form_id == form_id && record.signature.as_str() == signature =>
+            {
+                topology.occurrences += 1;
+                topology.top_level |= at_root;
+                topology.persistent |= inside_persistent_group;
+            }
+            ParsedItem::Group(group) => count_record_topology(
+                &group.children,
+                form_id,
+                signature,
+                false,
+                inside_persistent_group || group.group_type == 8,
+                topology,
+            ),
+            _ => {}
+        }
+    }
+}
+
+pub(crate) fn plugin_header_flags_native(handle_id: u64) -> Result<u32, WriteError> {
+    let store = plugin_handle_store_ref().lock().unwrap();
+    let slot = store
+        .get(&handle_id)
+        .ok_or(WriteError::InvalidHandle(handle_id))?;
+    Ok(slot.parsed.header.flags)
 }
 
 /// Encode a NAVM and insert it into the target CELL child group described by
@@ -121,12 +382,11 @@ pub fn add_projected_navmesh_native(
 }
 
 /// Chunked batch form of `add_projected_navmesh_native`: one store lock per
-/// chunk; encodes serially IN INPUT ORDER (encode may allocate localized-string
-/// ids — order is load-bearing), then batch-inserts. Per-record outcomes match
-/// the single-record fn (`Ok(true)`/`Ok(false)`/`Err`) — including a missing
-/// handle, which legacy surfaced as one `InsertFailure` per record. The single
-/// `apply_write_effect(RecordsAddedOrRemoved)` per chunk is equivalent to one
-/// per record because the effect is a pure idempotent cache invalidation
+/// chunk. Encodes serially in input order (encode may allocate localized-string
+/// ids), then batch-inserts. Per-record outcomes match the single-record fn,
+/// including one `InsertFailure` per record for a missing handle. One
+/// `apply_write_effect(RecordsAddedOrRemoved)` per chunk suffices because the
+/// effect is an idempotent cache invalidation
 /// (`PluginIndexSections::apply_effect` → `invalidate_all`).
 pub fn add_projected_navmeshes_chunk_native(
     handle_id: u64,
@@ -276,6 +536,303 @@ pub fn add_topic_child_record_native(
     Ok(inserted)
 }
 
+pub fn begin_quest_child_insert_session_native(
+    handle_id: u64,
+) -> Result<QuestChildInsertSession, WriteError> {
+    let lock_started = Instant::now();
+    let store = plugin_handle_store_ref().lock().unwrap();
+    let lock_wait = lock_started.elapsed();
+    let slot = store
+        .get(&handle_id)
+        .ok_or_else(|| WriteError::InsertFailure(format!("no plugin handle: {handle_id}")))?;
+    let build_started = Instant::now();
+    let index = build_quest_child_insert_index(slot);
+    let index_build = build_started.elapsed();
+    Ok(QuestChildInsertSession {
+        handle_id,
+        index,
+        timing: ChildInsertTiming {
+            index_build,
+            lock_wait,
+            ..Default::default()
+        },
+    })
+}
+
+pub fn begin_topic_child_insert_session_native(
+    handle_id: u64,
+) -> Result<TopicChildInsertSession, WriteError> {
+    let lock_started = Instant::now();
+    let store = plugin_handle_store_ref().lock().unwrap();
+    let lock_wait = lock_started.elapsed();
+    let slot = store
+        .get(&handle_id)
+        .ok_or_else(|| WriteError::InsertFailure(format!("no plugin handle: {handle_id}")))?;
+    let build_started = Instant::now();
+    let index = build_topic_child_insert_index(slot);
+    let index_build = build_started.elapsed();
+    Ok(TopicChildInsertSession {
+        handle_id,
+        index,
+        timing: ChildInsertTiming {
+            index_build,
+            lock_wait,
+            ..Default::default()
+        },
+    })
+}
+
+pub fn add_quest_child_record_indexed_native(
+    handle_id: u64,
+    record: Record,
+    schema: &AuthoringSchema,
+    interner: &StringInterner,
+    session: &mut QuestChildInsertSession,
+) -> Result<bool, WriteError> {
+    session.timing.records += 1;
+    if session.handle_id != handle_id {
+        session.timing.serial_fallbacks += 1;
+        let fallback_started = Instant::now();
+        let result = add_quest_child_record_native(handle_id, record, schema, interner);
+        session.timing.wrong_handle_fallback += fallback_started.elapsed();
+        return result;
+    }
+    let lock_started = Instant::now();
+    let mut store = plugin_handle_store_ref().lock().unwrap();
+    session.timing.lock_wait += lock_started.elapsed();
+    let slot = store
+        .get_mut(&handle_id)
+        .ok_or_else(|| WriteError::InsertFailure(format!("no plugin handle: {handle_id}")))?;
+    let encode_started = Instant::now();
+    let parsed_record = encode_record_for_slot(slot, record, schema, interner);
+    session.timing.encode += encode_started.elapsed();
+    let parsed_record = parsed_record?;
+    let Some(parsed_record) = parsed_record else {
+        return Ok(false);
+    };
+    let Some(parent_quest_form_id) = quest_parent_form_id_from_record(&parsed_record) else {
+        return Ok(false);
+    };
+    let insert_started = Instant::now();
+    let inserted = insert_quest_child_record_indexed_in_slot(
+        slot,
+        &mut session.index,
+        parent_quest_form_id,
+        parsed_record,
+    )
+    .map_err(WriteError::InsertFailure);
+    session.timing.topology_insert += insert_started.elapsed();
+    let inserted = inserted?;
+    if inserted {
+        let effect_started = Instant::now();
+        slot.apply_write_effect(&WriteEffect::RecordsAddedOrRemoved);
+        session.timing.write_effect += effect_started.elapsed();
+    }
+    Ok(inserted)
+}
+
+pub fn add_topic_child_record_indexed_native(
+    handle_id: u64,
+    record: Record,
+    parent_dialogue_form_id: u32,
+    schema: &AuthoringSchema,
+    interner: &StringInterner,
+    session: &mut TopicChildInsertSession,
+) -> Result<bool, WriteError> {
+    session.timing.records += 1;
+    if session.handle_id != handle_id {
+        session.timing.serial_fallbacks += 1;
+        let fallback_started = Instant::now();
+        let result = add_topic_child_record_native(
+            handle_id,
+            record,
+            parent_dialogue_form_id,
+            schema,
+            interner,
+        );
+        session.timing.wrong_handle_fallback += fallback_started.elapsed();
+        return result;
+    }
+    let lock_started = Instant::now();
+    let mut store = plugin_handle_store_ref().lock().unwrap();
+    session.timing.lock_wait += lock_started.elapsed();
+    let slot = store
+        .get_mut(&handle_id)
+        .ok_or_else(|| WriteError::InsertFailure(format!("no plugin handle: {handle_id}")))?;
+    let encode_started = Instant::now();
+    let parsed_record = encode_record_for_slot(slot, record, schema, interner);
+    session.timing.encode += encode_started.elapsed();
+    let parsed_record = parsed_record?;
+    let Some(parsed_record) = parsed_record else {
+        return Ok(false);
+    };
+    let insert_started = Instant::now();
+    let inserted = insert_topic_child_record_indexed_in_slot(
+        slot,
+        &mut session.index,
+        parent_dialogue_form_id,
+        parsed_record,
+    )
+    .map_err(WriteError::InsertFailure);
+    session.timing.topology_insert += insert_started.elapsed();
+    let inserted = inserted?;
+    if inserted {
+        let effect_started = Instant::now();
+        slot.apply_write_effect(&WriteEffect::RecordsAddedOrRemoved);
+        session.timing.write_effect += effect_started.elapsed();
+    }
+    Ok(inserted)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExistingAuthoringRecordPlacement {
+    TopLevel,
+    QuestChild { parent_quest_form_id: u32 },
+    TopicChild { parent_dialogue_form_id: u32 },
+}
+
+pub fn existing_authoring_record_placement_native(
+    handle_id: u64,
+    record_form_id: u32,
+) -> Result<ExistingAuthoringRecordPlacement, WriteError> {
+    let store = plugin_handle_store_ref().lock().unwrap();
+    let slot = store
+        .get(&handle_id)
+        .ok_or_else(|| WriteError::InsertFailure(format!("no plugin handle: {handle_id}")))?;
+    find_existing_authoring_record_placement(&slot.parsed.root_items, record_form_id, None, None)
+        .ok_or_else(|| {
+            WriteError::InsertFailure(format!(
+                "authoring record {record_form_id:08X} is absent before replacement"
+            ))
+        })
+}
+
+fn find_existing_authoring_record_placement(
+    items: &[ParsedItem],
+    record_form_id: u32,
+    quest_parent: Option<u32>,
+    topic_parent: Option<u32>,
+) -> Option<ExistingAuthoringRecordPlacement> {
+    for item in items {
+        match item {
+            ParsedItem::Record(record) if record.form_id == record_form_id => {
+                return Some(if let Some(parent_dialogue_form_id) = topic_parent {
+                    ExistingAuthoringRecordPlacement::TopicChild {
+                        parent_dialogue_form_id,
+                    }
+                } else if let Some(parent_quest_form_id) = quest_parent {
+                    ExistingAuthoringRecordPlacement::QuestChild {
+                        parent_quest_form_id,
+                    }
+                } else {
+                    ExistingAuthoringRecordPlacement::TopLevel
+                });
+            }
+            ParsedItem::Group(group) => {
+                let (nested_quest_parent, nested_topic_parent) = match group.group_type {
+                    10 => (Some(u32::from_le_bytes(group.label)), None),
+                    7 => (quest_parent, Some(u32::from_le_bytes(group.label))),
+                    _ => (quest_parent, topic_parent),
+                };
+                if let Some(placement) = find_existing_authoring_record_placement(
+                    &group.children,
+                    record_form_id,
+                    nested_quest_parent,
+                    nested_topic_parent,
+                ) {
+                    return Some(placement);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+pub fn relocate_authoring_record_native(
+    handle_id: u64,
+    record_form_id: u32,
+    placement: ExistingAuthoringRecordPlacement,
+) -> Result<bool, WriteError> {
+    if matches!(placement, ExistingAuthoringRecordPlacement::TopLevel) {
+        return Ok(true);
+    }
+    let mut store = plugin_handle_store_ref().lock().unwrap();
+    let slot = store
+        .get_mut(&handle_id)
+        .ok_or_else(|| WriteError::InsertFailure(format!("no plugin handle: {handle_id}")))?;
+    let record = find_parsed_record_by_form_id(&slot.parsed.root_items, record_form_id)
+        .cloned()
+        .ok_or_else(|| {
+            WriteError::InsertFailure(format!(
+                "authoring record {record_form_id:08X} is absent after insertion"
+            ))
+        })?;
+    let inserted = match placement {
+        ExistingAuthoringRecordPlacement::TopLevel => true,
+        ExistingAuthoringRecordPlacement::QuestChild {
+            parent_quest_form_id,
+        } => insert_quest_child_record_in_slot(slot, parent_quest_form_id, record)
+            .map_err(WriteError::InsertFailure)?,
+        ExistingAuthoringRecordPlacement::TopicChild {
+            parent_dialogue_form_id,
+        } => {
+            if !parsed_record_exists_by_form_id(
+                &slot.parsed.root_items,
+                "DIAL",
+                parent_dialogue_form_id,
+            ) {
+                false
+            } else {
+                insert_topic_child_record_in_slot(slot, parent_dialogue_form_id, record)
+                    .map_err(WriteError::InsertFailure)?
+            }
+        }
+    };
+    if inserted {
+        slot.apply_write_effect(&WriteEffect::RecordsAddedOrRemoved);
+    }
+    Ok(inserted)
+}
+
+fn parsed_record_exists_by_form_id(items: &[ParsedItem], signature: &str, form_id: u32) -> bool {
+    items.iter().any(|item| match item {
+        ParsedItem::Record(record) => {
+            record.signature.as_str() == signature && record.form_id == form_id
+        }
+        ParsedItem::Group(group) => {
+            parsed_record_exists_by_form_id(&group.children, signature, form_id)
+        }
+    })
+}
+
+fn find_parsed_record_by_form_id(items: &[ParsedItem], form_id: u32) -> Option<&ParsedRecord> {
+    for item in items {
+        match item {
+            ParsedItem::Record(record) if record.form_id == form_id => return Some(record),
+            ParsedItem::Group(group) => {
+                if let Some(record) = find_parsed_record_by_form_id(&group.children, form_id) {
+                    return Some(record);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parsed_record_exists_by_object_id(items: &[ParsedItem], signature: &str, form_id: u32) -> bool {
+    let object_id = form_id & 0x00FF_FFFF;
+    items.iter().any(|item| match item {
+        ParsedItem::Record(record) => {
+            record.signature.as_str() == signature && (record.form_id & 0x00FF_FFFF) == object_id
+        }
+        ParsedItem::Group(group) => {
+            parsed_record_exists_by_object_id(&group.children, signature, form_id)
+        }
+    })
+}
+
 /// Outcome of a batched interior-cell insert.
 pub struct InteriorInsertOutcome {
     pub cell_inserted: bool,
@@ -283,12 +840,10 @@ pub struct InteriorInsertOutcome {
     pub children_dropped: u32,
 }
 
-/// Encode an interior CELL and its placed children, then build + attach the
-/// whole interior-cell subtree in one esp call. No per-record whole-tree walk:
-/// this replaces the former per-cell cell-insert + per-child placed-insert
-/// pairing that made bulk interior conversion quadratic. The caller must strip
-/// any pre-existing stub for this cell first via
-/// [`remove_interior_cell_stubs_native`].
+/// Encode an interior CELL and its placed children, then build and attach the
+/// whole interior-cell subtree in one esp call, avoiding a per-record tree walk
+/// (quadratic for bulk interior conversion). The caller must first strip any
+/// existing stub for this cell via [`remove_interior_cell_stubs_native`].
 pub fn add_interior_cell_with_children_native(
     handle_id: u64,
     cell: Record,
@@ -410,26 +965,31 @@ pub fn build_source_info_to_dialogue_index(
     Ok(index)
 }
 
-fn quest_parent_form_id_from_record(record: &ParsedRecord) -> Option<u32> {
-    let parent_sig = match record.signature.as_str() {
-        "DIAL" => "QNAM",
-        "SCEN" => "PNAM",
+pub(crate) fn quest_parent_form_id_from_record(record: &ParsedRecord) -> Option<u32> {
+    let parent_sigs: &[&str] = match record.signature.as_str() {
+        "DIAL" => &["QSTI", "QNAM"],
+        "DLBR" => &["QNAM"],
+        "SCEN" => &["PNAM"],
         _ => return None,
     };
-    record
-        .subrecords
-        .iter()
-        .rev()
-        .find(|subrecord| subrecord.signature.as_str() == parent_sig && subrecord.data.len() >= 4)
-        .map(|subrecord| {
-            u32::from_le_bytes([
-                subrecord.data[0],
-                subrecord.data[1],
-                subrecord.data[2],
-                subrecord.data[3],
-            ])
-        })
-        .filter(|form_id| *form_id != 0)
+    parent_sigs.iter().find_map(|parent_sig| {
+        record
+            .subrecords
+            .iter()
+            .rev()
+            .find(|subrecord| {
+                subrecord.signature.as_str() == *parent_sig && subrecord.data.len() >= 4
+            })
+            .map(|subrecord| {
+                u32::from_le_bytes([
+                    subrecord.data[0],
+                    subrecord.data[1],
+                    subrecord.data[2],
+                    subrecord.data[3],
+                ])
+            })
+            .filter(|form_id| *form_id != 0)
+    })
 }
 
 /// Rebuild the target top-level NAVI record from already-emitted target NAVM
@@ -1103,15 +1663,12 @@ fn finalize_local_navmesh_links(
         }
         let left = entries[0];
         let right = entries[1];
-        // Only link a shared edge whose two half-edges run in OPPOSITE 2D
-        // directions — the manifold invariant CK enforces. Two upfacing
-        // triangles that traverse their shared edge in the SAME direction
-        // overlap in projection (FO76 zigzag/sliver fans), and linking them is
-        // exactly what makes CK log "opposite normals but linked / edges should
-        // be linked but are not / vertices do not match". Leave same-direction
-        // edges as unlinked boundaries — the honest representation of degenerate
-        // overlap; CK's own rule forbids linking them. A degenerate triangle
-        // could contribute the same normalized edge twice — never self-link.
+        // Link a shared edge only when its half-edges run in opposite 2D
+        // directions (CK's manifold invariant). Same-direction pairs are
+        // overlapping upfacing triangles (FO76 zigzag/sliver fans); linking them
+        // makes CK log "opposite normals but linked / edges should be linked but
+        // are not / vertices do not match", so they stay unlinked boundaries. A
+        // degenerate triangle can contribute the same edge twice; never self-link.
         if left.triangle == right.triangle {
             continue;
         }
@@ -1215,20 +1772,15 @@ fn solve_global_triangle_winding_flips(
     snapshots: &HashMap<u32, NvnmPortalSnapshot>,
     form_ids: &[u32],
 ) -> Result<NvnmWindingSolution, String> {
-    // Creation Kit's navmesh winding invariant is per-triangle, not adjacency
-    // based: every triangle must have an upward projected normal (+Z). It does
-    // NOT require two triangles sharing an edge to traverse that edge in
-    // opposite 2D-projected directions, and it never flips an already-upfacing
-    // triangle to satisfy such a constraint. On steep/sloped terrain,
-    // 3D-adjacent faces project onto overlapping 2D regions, so their shared
-    // edge reads as "same direction"; an edge-consistency 2-colouring would
-    // flip one of them and turn a correct, upfacing source triangle downfacing
-    // — exactly the "downfacing normal / opposite normals but linked / vertices
-    // do not match" cascade CK logs on the FO76->FO4 output. Decide each
-    // triangle's flip purely from its own projected normal. FO76 source
-    // navmeshes are uniformly upfacing, so this yields zero flips for them and
-    // matches CK. Linking across the (possibly same-direction) shared edge is
-    // handled independently in `finalize_local_navmesh_links`.
+    // CK's winding invariant is per-triangle: every projected normal points up
+    // (+Z). CK doesn't require edge-sharing triangles to traverse the edge in
+    // opposite 2D directions and never flips an upfacing triangle for that. On
+    // steep terrain 3D-adjacent faces overlap in 2D, so an edge-consistency
+    // 2-colouring would flip correct triangles downfacing and cause CK's
+    // "downfacing normal / opposite normals but linked / vertices do not match"
+    // cascade. Decide each flip from the triangle's own normal (FO76 navmeshes
+    // are uniformly upfacing, so zero flips); `finalize_local_navmesh_links`
+    // handles linking.
     let mut by_form = HashMap::with_capacity(form_ids.len());
     let mut conflicts = 0_u32;
     for form_id in form_ids {
@@ -1383,12 +1935,11 @@ struct NvnmRegeneratedTrailing {
 /// keyed by the triangle's vertex set. Winding flips (1↔2 swap) keep the
 /// vertex set unchanged, so finalized triangles are still findable.
 ///
-/// Degenerate triangles (vertex_set contains a duplicate, e.g. [5,5,7]) are
-/// dropped on BOTH sides: a finalized degenerate is never indexed, and a
-/// source degenerate maps to `None`. CK rejects degenerate triangles as
-/// invalid pathing surfaces, so safely skipping them prevents the consume-
-/// cursor multimap from misassigning indices when two source degenerates
-/// share the same vertex set but were swapped during finalize.
+/// Degenerate triangles (duplicate vertex, e.g. [5,5,7]) are dropped on both
+/// sides: finalized ones are never indexed and source ones map to `None`. CK
+/// rejects them as pathing surfaces, and two source degenerates with the same
+/// vertex set could otherwise get each other's indices from the consume-cursor
+/// multimap.
 fn build_finalized_triangle_index_map(
     source_triangles: &[NvnmTriangle],
     finalized_triangles: &[NvnmFinalizedTriangle],
@@ -1428,26 +1979,20 @@ fn build_finalized_triangle_index_map(
     out
 }
 
-/// Rebuild the per-cell `triangle_indices` lists of an NVNM grid using FO4
-/// CK's spatial-bucketing rule: every triangle whose XY-AABB overlaps a cell's
-/// XY-AABB (inclusive on cell boundaries) is indexed into that cell's list.
+/// Rebuild the per-cell `triangle_indices` of an NVNM grid with FO4 CK's
+/// bucketing rule: a triangle goes into every cell whose XY-AABB overlaps its
+/// own, inclusive of boundaries. `divisor`, `grid_size_*` and `bounds_*` are
+/// kept from `source_grid`.
 ///
-/// The grid's `divisor`, `grid_size_*`, and `bounds_*` are preserved verbatim
-/// from `source_grid`. Only `cells[*].triangle_indices` are regenerated.
+/// Arithmetic is f32 so boundary touches round like CK. The inclusive rule
+/// (`floor((aabb_max - bounds_min) / grid_size)` with `..=cell_max`) puts a
+/// triangle whose AABB max sits on a boundary into both touching cells,
+/// matching the +36% "boundary touch" entries seen in CK Finalize. Indices
+/// within a cell are sorted ascending like CK's (0/144 violations across the
+/// 13-NAVM fixture corpus).
 ///
-/// Arithmetic is done in f32 so cell-boundary touches (e.g. `aabb.y_max` lands
-/// exactly on `bounds_min_y + k * grid_size_y`) round identically to CK. The
-/// inclusive rule uses `floor((aabb_max - bounds_min) / grid_size)` and
-/// `..=cell_max`, so a triangle whose AABB max is exactly on a cell boundary
-/// is indexed into both touching cells (the cell whose y_max is that boundary
-/// AND the cell whose y_min is that boundary), matching the +36% "boundary
-/// touch" entries observed in CK Finalize.
-///
-/// Within each cell, indices are sorted ascending (CK keeps them sorted —
-/// verified 0/144 sort violations across the 13-NAVM fixture corpus).
-///
-/// Caller must guarantee `source_grid.divisor > 0`; with a zero divisor the
-/// grid is conceptually "absent" and CK will rebuild it itself on Finalize.
+/// Caller must guarantee `source_grid.divisor > 0`; a zero divisor means no
+/// grid, and CK rebuilds it on Finalize.
 fn rebuild_nvnm_grid_fo4(
     source_grid: &esp_authoring_core::nvnm::NvnmGrid,
     vertices: &[NvnmVertex],
@@ -1460,11 +2005,7 @@ fn rebuild_nvnm_grid_fo4(
     let bmny = source_grid.bounds_min_y;
     let max_cell = div - 1;
     // Spatial extent of the entire grid (max_cell + 1 cells of width gsx/gsy
-    // starting at bmnx/bmny). Triangles whose AABB lies fully outside this
-    // rectangle don't belong in any cell — without this early-skip the
-    // negative `xmin` would clamp to cell 0 and `xmax` past the rightmost
-    // cell would clamp to `max_cell`, indexing the triangle into cells whose
-    // AABB it doesn't actually overlap.
+    // starting at bmnx/bmny).
     let grid_x_max = bmnx + (div as f32) * gsx;
     let grid_y_max = bmny + (div as f32) * gsy;
 
@@ -1495,19 +2036,15 @@ fn rebuild_nvnm_grid_fo4(
         let ymin = a.y.min(b.y).min(c.y);
         let ymax = a.y.max(b.y).max(c.y);
 
-        // Skip triangles whose XY-AABB is entirely outside the grid's
-        // spatial extent. Without this, the clamp(0, max_cell) below would
-        // index out-of-bounds triangles into the boundary cells (cell 0 for
-        // triangles to the left/below, cell max_cell for triangles to the
-        // right/above), even though their AABB doesn't actually overlap
-        // those cells.
+        // Skip triangles whose XY-AABB lies entirely outside the grid; the
+        // clamp(0, max_cell) below would otherwise index them into the
+        // boundary cells.
         if xmax < bmnx || xmin > grid_x_max || ymax < bmny || ymin > grid_y_max {
             continue;
         }
 
-        // `.floor() as i32` truncates toward zero, NOT toward -∞, so for
-        // negative values (vertex left/below the grid origin) we need an
-        // explicit `.floor()` before the cast.
+        // `as i32` truncates toward zero, not toward -∞, so negative values
+        // (vertex left/below the grid origin) need the explicit `.floor()`.
         let cx_min = (((xmin - bmnx) / gsx).floor() as i32).clamp(0, max_cell);
         let cx_max = (((xmax - bmnx) / gsx).floor() as i32).clamp(0, max_cell);
         let cy_min = (((ymin - bmny) / gsy).floor() as i32).clamp(0, max_cell);
@@ -1542,19 +2079,11 @@ fn rebuild_nvnm_grid_fo4(
 /// Regenerate NVNM trailing sections (cover_array, cover_triangle_mappings,
 /// waypoints, navmesh_grid) from finalized topology + the source payload.
 ///
-/// Triangle indices in waypoints, cover_triangle_mappings, and grid cells are
-/// remapped through the source→finalized index map (vertex-set keyed).
-/// Unmappable indices (triangle pruned) are dropped: waypoints anchored to a
-/// dropped triangle vanish, mappings pointing at dropped triangles drop,
-/// covers that lose all their mappings drop, and grid cells filter dropped
-/// indices.
-///
-/// When finalize is identity (every source triangle maps to itself), the
-/// source grid is passed through unchanged — CK's exact cell-intersection
-/// rule is not byte-reproducible from the schema spec alone, so we trust the
-/// source's grid for identity paths and only regenerate when the topology
-/// actually changed. A separate NVNM structural validator catches genuine
-/// connectivity errors.
+/// Waypoint and cover-mapping triangle indices are remapped through the
+/// vertex-set-keyed source→finalized map; anything anchored to a pruned
+/// triangle is dropped, as are covers left with no mappings. When finalize is
+/// identity, covers, mappings and waypoints pass through unchanged. The grid is
+/// rebuilt from the finalized triangles unless the source has none.
 fn regenerate_nvnm_trailing(
     finalized: &NvnmFinalizedPayload,
     source: &NvnmPayload,
@@ -1643,18 +2172,10 @@ fn regenerate_nvnm_trailing(
             .collect()
     };
 
-    // navmesh_grid: rebuild cell triangle_indices from the finalized topology
-    // using FO4 CK's "every triangle's XY-AABB → every cell whose AABB overlaps"
-    // rule. CK's Finalize rebuilds the grid this way regardless of whether
-    // finalize changed anything; passing the FO76 source grid through verbatim
-    // leaves cells under-indexed and triggers PATHFINDING warnings even when
-    // edge_links are byte-correct.
-    //
-    // Bounds/divisor/grid_size are preserved unchanged from source. Only the
-    // per-cell triangle_indices list is regenerated.
-    //
-    // divisor == 0 means "no grid emitted" — pass through; CK builds its own
-    // grid on Finalize for such plugins.
+    // CK's Finalize always rebuilds the grid, even when topology is unchanged;
+    // the FO76 source grid leaves cells under-indexed and triggers PATHFINDING
+    // warnings even with byte-correct edge_links. divisor == 0 means no grid:
+    // pass it through and CK builds its own on Finalize.
     let grid = if source.grid.divisor == 0 {
         source.grid.clone()
     } else {
@@ -1984,7 +2505,7 @@ pub fn rebuild_worldspace_groups_from_source_native(
     Ok(stats)
 }
 
-fn collect_target_records_by_form_id<'a>(
+pub(crate) fn collect_target_records_by_form_id<'a>(
     items: &'a [ParsedItem],
     records_by_form_id: &mut HashMap<u32, &'a ParsedRecord>,
 ) {
@@ -2079,7 +2600,7 @@ fn rewrite_worldspace_group_label(
         .to_le_bytes()
 }
 
-fn remove_nested_records_from_flat_groups(
+pub(crate) fn remove_nested_records_from_flat_groups(
     item: ParsedItem,
     nested_form_ids: &HashSet<u32>,
     stats: &mut WorldspaceGroupRebuildStats,
@@ -2140,6 +2661,78 @@ pub(crate) fn encode_record_for_slot(
         localized_strings: None,
     };
     encode_record_for_target(record, schema, &mut ctx, target_game.as_deref())
+}
+
+pub(crate) struct PreparedRecordBatch {
+    parsed_records: Vec<ParsedRecord>,
+    localized_strings: Option<LocalizedStringsState>,
+}
+
+impl PreparedRecordBatch {
+    pub(crate) fn len(&self) -> usize {
+        self.parsed_records.len()
+    }
+}
+
+pub(crate) struct PrepareRecordBatchError {
+    pub(crate) record_index: usize,
+    pub(crate) source: WriteError,
+}
+
+pub(crate) fn prepare_record_batch_in_slot(
+    slot: &NativePluginSlot,
+    records: Vec<Record>,
+    schema: &AuthoringSchema,
+    interner: &StringInterner,
+) -> Result<PreparedRecordBatch, PrepareRecordBatchError> {
+    let masters = slot.parsed.header.masters.clone();
+    let target_game = slot.parsed.game.clone();
+    let target_is_localized = (slot.parsed.header.flags & 0x0000_0080) != 0;
+    let master_map = build_master_lookup(&masters);
+    let own_index = (masters.len() & 0xFF) as u32;
+    let mut strings = slot.strings_ref().clone();
+    let localized_strings = target_is_localized.then_some(&mut strings);
+    let mut ctx = EncodeContext {
+        interner,
+        master_map: &master_map,
+        own_index,
+        target_is_localized,
+        slot: None,
+        localized_strings,
+    };
+    let mut parsed_records = Vec::with_capacity(records.len());
+    for (record_index, record) in records.into_iter().enumerate() {
+        let parsed = encode_record_for_target(record, schema, &mut ctx, target_game.as_deref())
+            .map_err(|source| PrepareRecordBatchError {
+                record_index,
+                source,
+            })?;
+        let Some(parsed) = parsed else {
+            return Err(PrepareRecordBatchError {
+                record_index,
+                source: WriteError::EncodeFailure(
+                    "normalized batch record is unsupported by the target schema".to_string(),
+                ),
+            });
+        };
+        parsed_records.push(parsed);
+    }
+    drop(ctx);
+
+    Ok(PreparedRecordBatch {
+        parsed_records,
+        localized_strings: target_is_localized.then_some(strings),
+    })
+}
+
+pub(crate) fn commit_prepared_record_batch_in_slot(
+    slot: &mut NativePluginSlot,
+    batch: PreparedRecordBatch,
+) {
+    if let Some(strings) = batch.localized_strings {
+        *slot.strings_mut() = strings;
+    }
+    replace_parsed_records_in_slot_batch(slot, batch.parsed_records);
 }
 
 struct EncodeContext<'a> {
@@ -2391,16 +2984,11 @@ fn is_empty_subrecord_marker(entry: &FieldEntry) -> bool {
         || matches!(&entry.value, FieldValue::Bytes(bytes) if bytes.is_empty())
 }
 
-/// Strict canonical-name FO4 target check.
+/// Strict FO4 target check against `Game::as_str()`'s lowercase `"fo4"`.
 ///
-/// The canonical target-game identifier is the exact lowercase string
-/// `"fo4"` produced by `Game::as_str()`. Any other casing (`"FO4"`,
-/// `"Fallout4"`, etc.) is a caller bug — the conversion run params are
-/// already a `Game` enum, so the canonical string is the only thing that
-/// can reach this function in production. A case-insensitive comparison
-/// here would silently no-op on any typo and hide the misconfig. In debug
-/// builds the assertion below trips on non-canonical input; release
-/// builds fall through to the safe no-op.
+/// Run params are a `Game` enum, so any other casing (`"FO4"`, `"Fallout4"`)
+/// is a caller bug that a case-insensitive match would hide. Debug builds
+/// assert; release builds return false.
 fn is_fo4_target(target_game: Option<&str>) -> bool {
     let Some(game) = target_game else {
         return false;
@@ -2444,7 +3032,6 @@ fn apply_fo4_ck_payload_limits(
             truncate_subrecords(subrecords, "WBDT", 1);
         }
         "MOVT" => truncate_subrecords(subrecords, "SPED", 112),
-        "ARMO" | "WEAP" => project_subrecord_rows(subrecords, "DAMA", 12, 8),
         _ => {}
     }
 }
@@ -2524,32 +3111,6 @@ fn normalize_fo4_projected_furniture_marker_parameters(subrecords: &mut [ParsedS
     }
 }
 
-fn project_subrecord_rows(
-    subrecords: &mut [ParsedSubrecord],
-    sig: &str,
-    source_row_len: usize,
-    target_row_len: usize,
-) {
-    if source_row_len <= target_row_len || target_row_len == 0 {
-        return;
-    }
-
-    for subrecord in subrecords {
-        if subrecord.signature.as_str() != sig
-            || subrecord.data.is_empty()
-            || subrecord.data.len() % source_row_len != 0
-        {
-            continue;
-        }
-        let mut projected =
-            Vec::with_capacity(subrecord.data.len() / source_row_len * target_row_len);
-        for row in subrecord.data.chunks_exact(source_row_len) {
-            projected.extend_from_slice(&row[..target_row_len]);
-        }
-        subrecord.data = Bytes::from(projected);
-    }
-}
-
 fn encode_pack_package_data_cnam(
     entry: &FieldEntry,
     ctx: &mut EncodeContext<'_>,
@@ -2612,31 +3173,26 @@ fn trim_nul_suffix(mut bytes: &[u8]) -> &[u8] {
     bytes
 }
 
-/// Resolve the record-header `form_version` field for the target game.
+/// Record-header `form_version` for the target game: 131 for FO4, 581 for
+/// Starfield, `None` otherwise (the parser default).
 ///
-/// Mirrors Python's `_build_authoring_record_dicts` policy
-/// (fixups.py:7814): FO4 records use 131. Other games are left as `None`
-/// so the parser uses its default (typically zero / not emitted), matching
-/// Python's "else propagate from source" branch which also has no per-game
-/// override.
+/// Per `bacup/docs/starfield_target/R1-esm-wrld-btd.md`, 581 covers 3,829,234
+/// of 3,829,247 sampled `Starfield.esm` records, including every MVP-relevant
+/// signature. Newer CC masters (SFBGS003.esm etc.) use 582, but the record
+/// layouts come from the schema extracted from the 581 master.
 fn default_form_version_for_game(game: Option<&str>) -> Option<u16> {
     match game {
         Some("fo4") => Some(131),
+        Some("starfield") => Some(581),
         _ => None,
     }
 }
 
-/// Delete any existing record with the same form_key from `handle_id`, then
-/// insert the new `record`.
+/// Replace the record with the same form_key in `handle_id` by deleting it and
+/// inserting `record`, which is simpler than mutating in place through the index.
 ///
-/// This is the canonical way to update an existing record in the pipeline:
-/// delete-then-insert is simpler and safer than an in-place mutation through
-/// the index.
-///
-///
-/// # Errors
-/// Returns `WriteError::InsertFailure` when the handle does not exist or the
-/// raw form_id cannot be computed.
+/// Errors with `InsertFailure` when the handle is missing or the raw form_id
+/// can't be computed.
 pub fn replace_record_native(
     handle_id: u64,
     record: Record,
@@ -2747,6 +3303,109 @@ pub(crate) fn replace_records_contents_in_slot(
     ))
 }
 
+pub(crate) struct ContentReplaceBatchOutcome {
+    pub applied_form_ids: SmallVec<[u32; 4]>,
+    pub error: Option<WriteError>,
+}
+
+pub(crate) fn replace_records_contents_in_slot_preserving_prefix(
+    slot: &mut NativePluginSlot,
+    records: Vec<Record>,
+    schema: &AuthoringSchema,
+    interner: &StringInterner,
+) -> ContentReplaceBatchOutcome {
+    replace_records_contents_in_slot_preserving_prefix_with_encoder(
+        slot,
+        records,
+        |slot, record| encode_record_for_slot(slot, record, schema, interner),
+    )
+}
+
+fn replace_records_contents_in_slot_preserving_prefix_with_encoder(
+    slot: &mut NativePluginSlot,
+    records: Vec<Record>,
+    mut encode_record: impl FnMut(
+        &mut NativePluginSlot,
+        Record,
+    ) -> Result<Option<ParsedRecord>, WriteError>,
+) -> ContentReplaceBatchOutcome {
+    let mut parsed_records = Vec::with_capacity(records.len());
+    for record in records {
+        match encode_record(slot, record) {
+            Ok(Some(parsed_record)) => parsed_records.push(parsed_record),
+            Ok(None) => {}
+            Err(error) => {
+                return ContentReplaceBatchOutcome {
+                    applied_form_ids: apply_parsed_content_replacements(slot, parsed_records),
+                    error: Some(error),
+                };
+            }
+        }
+    }
+    ContentReplaceBatchOutcome {
+        applied_form_ids: apply_parsed_content_replacements(slot, parsed_records),
+        error: None,
+    }
+}
+
+fn apply_parsed_content_replacements(
+    slot: &mut NativePluginSlot,
+    parsed_records: Vec<ParsedRecord>,
+) -> SmallVec<[u32; 4]> {
+    if parsed_records.len() <= 1 {
+        return parsed_records
+            .into_iter()
+            .filter_map(|record| {
+                let form_id = record.form_id;
+                replace_parsed_record_contents_in_slot(slot, record).then_some(form_id)
+            })
+            .collect();
+    }
+    let replacement_ids: HashSet<u32> =
+        parsed_records.iter().map(|record| record.form_id).collect();
+    if replacement_ids.len() != parsed_records.len()
+        || selected_target_ids_have_duplicates(&slot.parsed.root_items, &replacement_ids)
+    {
+        return parsed_records
+            .into_iter()
+            .filter_map(|record| {
+                let form_id = record.form_id;
+                replace_parsed_record_contents_in_slot(slot, record).then_some(form_id)
+            })
+            .collect();
+    }
+
+    let input_order: Vec<u32> = parsed_records.iter().map(|record| record.form_id).collect();
+    let applied = replace_parsed_records_contents_in_slot_batch(slot, parsed_records);
+    let mut applied: HashSet<u32> = applied.into_iter().collect();
+    input_order
+        .into_iter()
+        .filter(|form_id| applied.remove(form_id))
+        .collect()
+}
+
+fn selected_target_ids_have_duplicates(items: &[ParsedItem], selected: &HashSet<u32>) -> bool {
+    fn visit(items: &[ParsedItem], selected: &HashSet<u32>, seen: &mut HashSet<u32>) -> bool {
+        for item in items {
+            match item {
+                ParsedItem::Record(record) => {
+                    if selected.contains(&record.form_id) && !seen.insert(record.form_id) {
+                        return true;
+                    }
+                }
+                ParsedItem::Group(group) => {
+                    if visit(&group.children, selected, seen) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    visit(items, selected, &mut HashSet::with_capacity(selected.len()))
+}
+
 pub(crate) fn add_record_in_slot(
     slot: &mut NativePluginSlot,
     record: Record,
@@ -2796,9 +3455,7 @@ pub fn replace_records_native(
     let slot = store
         .get_mut(&handle_id)
         .ok_or_else(|| WriteError::InsertFailure(format!("no plugin handle: {handle_id}")))?;
-    for record in records {
-        replace_record_in_slot(slot, record, schema, interner)?;
-    }
+    replace_records_in_slot_batch(slot, records, schema, interner)?;
     slot.apply_write_effect(&WriteEffect::RecordsAddedOrRemoved);
     Ok(())
 }
@@ -2848,7 +3505,7 @@ fn encode_field(
     let subrecord_def = record_def.and_then(|record_def| {
         if matches!(
             (record_def.id.as_str(), subrec_sig_str),
-            ("TERM", "SNAM") | ("RACE", "BSMS")
+            ("TERM", "SNAM") | ("RACE", "BSMS") | ("WRLD", "CNAM")
         ) {
             duplicate_subrecord_def_for_entry(record_def, entry)
         } else {
@@ -2896,14 +3553,11 @@ fn encode_field_with_selected_subrecord_def(
             return Ok(raw.to_vec());
         }
         // Heterogeneous-size unions (e.g. SNDR.BNAM: 6-byte `values` struct vs
-        // 4-byte `base_descriptor` formid). The source payload is already a
-        // legal variant width; the `subrecord_fixed_size` clamp below would pick
-        // ONE variant's size (it iterates variants .rev(), returning the smaller
-        // formid size for SNDR.BNAM) and truncate a valid 6-byte payload to 4.
-        // If the raw length is within the variants' max width, pass it through
-        // untouched; only clamp when raw exceeds the MAX variant size (the
-        // genuine over-long case). Single-variant version unions (e.g.
-        // EFSH.DNAM) skip this guard and keep the existing clamp below.
+        // 4-byte `base_descriptor` formid). The `subrecord_fixed_size` clamp
+        // below picks one variant's size (the smaller formid for SNDR.BNAM, via
+        // .rev()) and would truncate a valid 6-byte payload, so pass through
+        // anything up to the largest variant and clamp only beyond it.
+        // Single-size version unions (e.g. EFSH.DNAM) keep the clamp.
         if let Some(def) = subrecord_def {
             let sizes = union_variant_sizes(def);
             if sizes.len() > 1 && sizes.iter().any(|&s| s != sizes[0]) {
@@ -3001,25 +3655,55 @@ fn duplicate_subrecord_def_for_entry<'a>(
         .iter()
         .filter(|subrecord| subrecord.id == subrecord_id);
     let first = candidates.next()?;
-    let FieldValue::Bytes(raw) = &entry.value else {
-        return Some(first);
-    };
 
-    let mut accepted = std::iter::once(first)
-        .chain(candidates)
-        .filter(|subrecord| {
-            subrecord
-                .codec
-                .as_deref()
-                .and_then(|codec| codec_accepts_payload_length(codec, raw.len()))
-                != Some(false)
-        });
-    let matching = accepted.next();
-    if matching.is_some() && accepted.next().is_none() {
-        matching
-    } else {
-        Some(first)
+    if let FieldValue::Bytes(raw) = &entry.value {
+        let mut accepted = std::iter::once(first)
+            .chain(candidates)
+            .filter(|subrecord| {
+                subrecord
+                    .codec
+                    .as_deref()
+                    .and_then(|codec| codec_accepts_payload_length(codec, raw.len()))
+                    != Some(false)
+            });
+        let matching = accepted.next();
+        return if matching.is_some() && accepted.next().is_none() {
+            matching
+        } else {
+            Some(first)
+        };
     }
+
+    if entry_value_is_formkey_shaped(&entry.value) {
+        let mut formid_defs = std::iter::once(first)
+            .chain(candidates)
+            .filter(|subrecord| is_formid_codec(subrecord.codec.as_deref()));
+        let matching = formid_defs.next();
+        return if matching.is_some() && formid_defs.next().is_none() {
+            matching
+        } else {
+            Some(first)
+        };
+    }
+
+    Some(first)
+}
+
+/// True for a value that ultimately encodes as a raw FormID: a scalar
+/// `FormKey`, or a `Struct` wrapping one (e.g. a pair-hook installs a formid
+/// leaf under a sig whose schema also has a same-sig string/bytes def).
+fn entry_value_is_formkey_shaped(value: &FieldValue) -> bool {
+    match value {
+        FieldValue::FormKey(_) => true,
+        FieldValue::Struct(members) => members
+            .iter()
+            .any(|(_, member)| entry_value_is_formkey_shaped(member)),
+        _ => false,
+    }
+}
+
+fn is_formid_codec(codec: Option<&str>) -> bool {
+    matches!(codec, Some("formid") | Some("form_id"))
 }
 
 fn is_null_term_looping_sound(
@@ -3500,6 +4184,11 @@ mod tests {
     // Helper: load fo4 schema
     fn fo4_schema() -> std::sync::Arc<AuthoringSchema> {
         AuthoringSchema::for_game("fo4").expect("fo4 schema")
+    }
+
+    // Helper: load starfield schema
+    fn starfield_schema() -> std::sync::Arc<AuthoringSchema> {
+        AuthoringSchema::for_game("starfield").expect("starfield schema")
     }
 
     // Helper: empty master map / zero own_index for non-FK encode tests.
@@ -4256,6 +4945,44 @@ mod tests {
                     .unwrap();
             assert_eq!(&encoded, expected);
         }
+    }
+
+    #[test]
+    fn duplicate_subrecord_def_for_entry_picks_formid_wrld_cnam_for_a_formkey_value() {
+        // Starfield's WRLD schema has two same-sig CNAM defs: an earlier
+        // zstring under the `base_form_components` scope ("Animations
+        // Path") and a later unscoped `formid` def ("Climate"). A FormKey
+        // value must resolve to the formid def, not the first (zstring) one.
+        let schema = starfield_schema();
+        let record_def = schema
+            .record_def("WRLD")
+            .expect("starfield WRLD record_def");
+        let cnam_defs = record_def
+            .subrecords
+            .iter()
+            .filter(|subrecord| subrecord.id == "CNAM")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cnam_defs.len(),
+            2,
+            "expected the schema fixture (two WRLD.CNAM defs) this test relies on"
+        );
+        assert_eq!(cnam_defs[0].codec.as_deref(), Some("zstring"));
+        assert_eq!(cnam_defs[1].codec.as_deref(), Some("formid"));
+
+        let interner = StringInterner::new();
+        let entry = FieldEntry {
+            sig: SubrecordSig::from_str("CNAM").unwrap(),
+            value: FieldValue::FormKey(FormKey::parse("00015F@Starfield.esm", &interner).unwrap()),
+        };
+
+        let selected = duplicate_subrecord_def_for_entry(record_def, &entry)
+            .expect("a CNAM def should be selected");
+        assert_eq!(selected.codec.as_deref(), Some("formid"));
+        assert_eq!(
+            selected.scope_id, None,
+            "the Climate def is unscoped, unlike the base_form_components zstring def"
+        );
     }
 
     #[test]
@@ -5026,6 +5753,95 @@ mod tests {
     }
 
     #[test]
+    fn fo76_idle_anchors_keep_source_ownership_through_decode_map_and_encode() {
+        use crate::formkey_mapper::{FormKeyMapper, MapperOptions};
+        use crate::struct_relayout::StructRelayoutCtx;
+
+        let interner = StringInterner::new();
+        let source_schema = AuthoringSchema::for_game("fo76").unwrap();
+        let target_schema = fo4_schema();
+        let relayout = StructRelayoutCtx {
+            target_schema: &target_schema,
+            target_form_version: 131,
+            legacy_bptd_only: false,
+        };
+        let source = |local| FormKey {
+            local,
+            plugin: interner.intern("SeventySix.esm"),
+        };
+        let mut mapper = FormKeyMapper::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "SeventySix.esm".into(),
+                source_plugin_name: "SeventySix.esm".into(),
+                target_master_names: vec!["Fallout4.esm".into()],
+                ..Default::default()
+            },
+            &interner,
+        );
+        mapper.add_mapping(source(0x09F152), source(0x09F152));
+        mapper.add_mapping(source(0x3A4E3C), source(0x3A4E3C));
+        mapper.add_mapping(
+            source(0x004A5B),
+            FormKey::parse("004A5B@Fallout4.esm", &interner).unwrap(),
+        );
+        let master_map = build_master_lookup(&["Fallout4.esm".to_string()]);
+        let mut ctx = EncodeContext {
+            interner: &interner,
+            master_map: &master_map,
+            own_index: 1,
+            target_is_localized: false,
+            slot: None,
+            localized_strings: None,
+        };
+
+        for (parent, previous, expected_parent, expected_previous) in [
+            (
+                0x0009_F152_u32,
+                0x003A_4E3C_u32,
+                0x0109_F152_u32,
+                0x013A_4E3C_u32,
+            ),
+            (0x0009_F152, 0, 0x0109_F152, 0),
+            (0x0000_4A5B, 0, 0x0000_4A5B, 0),
+        ] {
+            let payload = [parent.to_le_bytes(), previous.to_le_bytes()].concat();
+            let mut raw = parsed_record("IDLE", 0x003A_4E3B);
+            raw.form_version = Some(201);
+            raw.subrecords.push(parsed_subrecord("ANAM", &payload));
+            let mut record = crate::source_read::decode_record_from_parsed_relayout(
+                &raw,
+                &source(0x3A4E3B),
+                &source_schema,
+                &[],
+                "SeventySix.esm",
+                None,
+                false,
+                &interner,
+                Some(&relayout),
+            )
+            .unwrap();
+            mapper.rewrite_record(&mut record).unwrap();
+            let encoded = encode_record_for_target(record, &target_schema, &mut ctx, Some("fo4"))
+                .unwrap()
+                .unwrap();
+            let anam = encoded
+                .subrecords
+                .iter()
+                .find(|sub| sub.signature == "ANAM")
+                .unwrap();
+            assert_eq!(
+                anam.data.as_ref(),
+                [
+                    expected_parent.to_le_bytes(),
+                    expected_previous.to_le_bytes()
+                ]
+                .concat()
+            );
+        }
+    }
+
+    #[test]
     fn record_identity_distinguishes_master_override_from_local_record() {
         let schema = fo4_schema();
         let interner = StringInterner::new();
@@ -5169,15 +5985,8 @@ mod tests {
             return; // skip gracefully if fixture not built
         }
 
-        // Run inside a Python-free mock context: use the internal native fns.
-        // We need a Python runtime for plugin_handle_load_native. Since this
-        // is a unit test without a Python interpreter, we verify the encode
-        // path separately. The full round-trip is covered by the Python
-        // integration test in test_native_record_io.py.
-        //
-        // What we CAN test: construct a Record and call add_record_native on
-        // a fresh plugin handle using plugin_handle_new_native (which does not
-        // need Python).
+        // plugin_handle_load_native needs a Python runtime, so this adds a
+        // Record to a fresh plugin_handle_new_native handle, which doesn't.
         let result = plugin_handle_new_native("Output.esm", Some("fo4"));
         let tgt_handle_id = match result {
             Ok(id) => id,
@@ -5376,7 +6185,7 @@ mod tests {
     #[test]
     fn rebuild_worldspace_groups_uses_source_target_map_for_colliding_object_ids() {
         let source_handle = plugin_handle_new_native("Skyrim.esm", Some("skyrimse")).unwrap();
-        let target_handle = plugin_handle_new_native("Skyrim_Merged.esm", Some("fo4")).unwrap();
+        let target_handle = plugin_handle_new_native("Skyrim.esm", Some("fo4")).unwrap();
 
         {
             let mut store = plugin_handle_store_ref().lock().unwrap();
@@ -5455,14 +6264,16 @@ mod tests {
         const SOURCE_PERSISTENT_REFR: u32 = 0x0002_1001;
         const SOURCE_TEMPORARY_REFR: u32 = 0x0002_1002;
         const SOURCE_ACHR: u32 = 0x0002_1003;
+        const SOURCE_UNMAPPED_ACHR: u32 = 0x0002_1004;
         const SOURCE_NAVM: u32 = 0x000E_537D;
         const TARGET_CELL: u32 = 0x0701_33C6;
         const TARGET_PERSISTENT_REFR: u32 = 0x0702_1001;
         const TARGET_TEMPORARY_REFR: u32 = 0x0702_1002;
         const TARGET_NAVM: u32 = 0x070E_537D;
+        const TARGET_ACHR: u32 = 0x0702_1003;
 
         let source_handle = plugin_handle_new_native("Skyrim.esm", Some("skyrimse")).unwrap();
-        let target_handle = plugin_handle_new_native("Skyrim_Merged.esm", Some("fo4")).unwrap();
+        let target_handle = plugin_handle_new_native("Skyrim.esm", Some("fo4")).unwrap();
 
         {
             let mut store = plugin_handle_store_ref().lock().unwrap();
@@ -5494,6 +6305,10 @@ mod tests {
                                                 SOURCE_PERSISTENT_REFR,
                                             )),
                                             ParsedItem::Record(parsed_record("ACHR", SOURCE_ACHR)),
+                                            ParsedItem::Record(parsed_record(
+                                                "ACHR",
+                                                SOURCE_UNMAPPED_ACHR,
+                                            )),
                                         ],
                                     }),
                                     ParsedItem::Group(ParsedGroup {
@@ -5543,6 +6358,10 @@ mod tests {
                         ParsedItem::Record(parsed_record("REFR", TARGET_TEMPORARY_REFR)),
                     ],
                 ),
+                top_group(
+                    *b"ACHR",
+                    vec![ParsedItem::Record(parsed_record("ACHR", TARGET_ACHR))],
+                ),
             ];
         }
 
@@ -5553,14 +6372,15 @@ mod tests {
                 (SOURCE_CELL, TARGET_CELL),
                 (SOURCE_PERSISTENT_REFR, TARGET_PERSISTENT_REFR),
                 (SOURCE_TEMPORARY_REFR, TARGET_TEMPORARY_REFR),
+                (SOURCE_ACHR, TARGET_ACHR),
                 (SOURCE_NAVM, TARGET_NAVM),
             ],
         )
         .unwrap();
 
         assert_eq!(stats.groups_rebuilt, 1);
-        assert_eq!(stats.records_nested, 4);
-        assert_eq!(stats.flat_records_removed, 3);
+        assert_eq!(stats.records_nested, 5);
+        assert_eq!(stats.flat_records_removed, 4);
 
         let store = plugin_handle_store_ref().lock().unwrap();
         let target = store.get(&target_handle).unwrap();
@@ -5577,16 +6397,21 @@ mod tests {
             TARGET_TEMPORARY_REFR
         ));
         assert!(contains_record(&cells.children, "NAVM", TARGET_NAVM));
+        assert!(contains_record(&cells.children, "ACHR", TARGET_ACHR));
         assert!(contains_group_label(&cells.children, 6, TARGET_CELL));
         assert!(contains_group_label(&cells.children, 8, TARGET_CELL));
         assert!(contains_group_label(&cells.children, 9, TARGET_CELL));
         assert!(
-            !contains_record(&cells.children, "ACHR", SOURCE_ACHR),
-            "an MVP-excluded child without a target mapping must not be copied"
+            !contains_record(&cells.children, "ACHR", SOURCE_UNMAPPED_ACHR),
+            "an ineligible child without a target mapping must not be copied"
         );
         assert!(
             !has_top_group(&target.parsed.root_items, b"REFR"),
             "nested placed references must be removed from their flat group"
+        );
+        assert!(
+            !has_top_group(&target.parsed.root_items, b"ACHR"),
+            "nested actors must be removed from their flat group"
         );
 
         fn find_record<'a>(
@@ -5624,7 +6449,11 @@ mod tests {
         assert_eq!(default_form_version_for_game(Some("fo3")), None);
         assert_eq!(default_form_version_for_game(Some("fnv")), None);
         assert_eq!(default_form_version_for_game(Some("skyrimse")), None);
-        assert_eq!(default_form_version_for_game(Some("starfield")), None);
+    }
+
+    #[test]
+    fn default_form_version_starfield() {
+        assert_eq!(default_form_version_for_game(Some("starfield")), Some(581));
     }
 
     #[test]
@@ -5685,6 +6514,68 @@ mod tests {
             record.form_version,
             Some(131),
             "fo4 records must emit form_version=131; got {:?}",
+            record.form_version
+        );
+    }
+
+    #[test]
+    fn add_record_native_sets_form_version_581_on_starfield_handle() {
+        // Records inserted on a starfield plugin handle must carry
+        // form_version=581 in their ParsedRecord — see
+        // bacup/docs/starfield_target/R1-esm-wrld-btd.md.
+        use esp_authoring_core::plugin_runtime::plugin_handle_store_ref;
+
+        let tgt_handle_id = match plugin_handle_new_native("FormVer.esm", Some("starfield")) {
+            Ok(id) => id,
+            Err(_) => return, // no Python runtime in unit tests
+        };
+
+        let schema = starfield_schema();
+        let mut interner = StringInterner::new();
+        let fk = FormKey::parse("000800@FormVer.esm", &mut interner).unwrap();
+        let sig = SigCode::from_str("STAT").unwrap();
+        let edid_sym = interner.intern("FormVerStat");
+        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
+        let record = Record {
+            sig,
+            form_key: fk,
+            eid: Some(edid_sym),
+            flags: RecordFlags::empty(),
+            fields: smallvec::smallvec![FieldEntry {
+                sig: edid_sig,
+                value: FieldValue::String(edid_sym),
+            }],
+            warnings: smallvec::SmallVec::new(),
+        };
+
+        add_record_native(tgt_handle_id, record, &schema, &interner).unwrap();
+
+        let store = plugin_handle_store_ref().lock().unwrap();
+        let slot = store
+            .get(&tgt_handle_id)
+            .expect("starfield handle present after add_record_native");
+        // Find our inserted record. Walk the tree until we hit the STAT record.
+        fn find_first_record<'a>(
+            items: &'a [esp_authoring_core::plugin_runtime::ParsedItem],
+        ) -> Option<&'a esp_authoring_core::plugin_runtime::ParsedRecord> {
+            for item in items {
+                match item {
+                    esp_authoring_core::plugin_runtime::ParsedItem::Record(r) => return Some(r),
+                    esp_authoring_core::plugin_runtime::ParsedItem::Group(g) => {
+                        if let Some(r) = find_first_record(&g.children) {
+                            return Some(r);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        let record = find_first_record(&slot.parsed.root_items)
+            .expect("inserted record should be reachable from root_items");
+        assert_eq!(
+            record.form_version,
+            Some(581),
+            "starfield records must emit form_version=581; got {:?}",
             record.form_version
         );
     }
@@ -5809,12 +6700,9 @@ mod tests {
 
     #[test]
     fn fo4_target_emit_normalizes_form_version_and_version_control() {
-        // Every record emitted into an FO4 target plugin must carry
-        // form_version=131 and version_control=0, regardless of the values
-        // present on the source side. Source `Record` does not expose
-        // form_version / version_control fields (those live on the
-        // ParsedRecord header), but the encoder must still ensure the
-        // emitted ParsedRecord normalizes both unconditionally.
+        // FO4 output must carry form_version=131 and version_control=0 whatever
+        // the source header had. `Record` has no such fields (they live on the
+        // ParsedRecord header), so the encoder sets both unconditionally.
         let schema = fo4_schema();
         let mut interner = StringInterner::new();
         let edid_sig = SubrecordSig::from_str("EDID").unwrap();
@@ -6073,7 +6961,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_record_projects_fo4_ck_damage_type_rows() {
+    fn encode_record_preserves_fo4_damage_type_rows() {
         let schema = fo4_schema();
         let mut interner = StringInterner::new();
         let fk = FormKey::parse("000800@Test.esm", &mut interner).unwrap();
@@ -6084,9 +6972,7 @@ mod tests {
             flags: RecordFlags::empty(),
             fields: smallvec::smallvec![FieldEntry {
                 sig: SubrecordSig::from_str("DAMA").unwrap(),
-                value: FieldValue::Bytes(SmallVec::from_slice(&[
-                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
-                ])),
+                value: FieldValue::Bytes(SmallVec::new()),
             }],
             warnings: smallvec::SmallVec::new(),
         };
@@ -6100,16 +6986,20 @@ mod tests {
             localized_strings: None,
         };
 
-        let parsed = encode_record_for_target(record, &schema, &mut ctx, Some("fo4"))
-            .unwrap()
-            .expect("WEAP should be encoded");
-        let dama = parsed
-            .subrecords
-            .iter()
-            .find(|subrecord| subrecord.signature.as_str() == "DAMA")
-            .expect("DAMA should be present");
-
-        assert_eq!(dama.data.as_ref(), &[1, 2, 3, 4, 5, 6, 7, 8]);
+        for count in 1..=3 {
+            let expected: Vec<u8> = (0..count * 8).collect();
+            let mut record = record.clone();
+            record.fields[0].value = FieldValue::Bytes(SmallVec::from_vec(expected.clone()));
+            let parsed = encode_record_for_target(record, &schema, &mut ctx, Some("fo4"))
+                .unwrap()
+                .expect("WEAP should be encoded");
+            let dama = parsed
+                .subrecords
+                .iter()
+                .find(|subrecord| subrecord.signature.as_str() == "DAMA")
+                .expect("DAMA should be present");
+            assert_eq!(dama.data.as_ref(), expected, "{count} rows");
+        }
     }
 
     #[test]
@@ -6668,6 +7558,230 @@ mod tests {
     }
 
     #[test]
+    fn legacy_authoring_records_relocate_into_quest_and_topic_topology() {
+        const QUEST: u32 = 0x0013_0100;
+        const DIALOGUE: u32 = 0x0013_015B;
+        const INFO: u32 = 0x0013_0161;
+        const ZERO_INFO_DIALOGUE: u32 = 0x0013_8A74;
+
+        let handle_id = match plugin_handle_new_native("FalloutNV.esm", Some("fo4")) {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle_id).unwrap();
+            slot.parsed.root_items = vec![
+                ParsedItem::Group(ParsedGroup {
+                    label: *b"QUST",
+                    group_type: 0,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(parsed_record("QUST", QUEST))],
+                }),
+                ParsedItem::Group(ParsedGroup {
+                    label: *b"DIAL",
+                    group_type: 0,
+                    tail: Bytes::new(),
+                    children: vec![
+                        ParsedItem::Record(parsed_record("DIAL", DIALOGUE)),
+                        ParsedItem::Record(parsed_record("DIAL", ZERO_INFO_DIALOGUE)),
+                    ],
+                }),
+                ParsedItem::Group(ParsedGroup {
+                    label: *b"INFO",
+                    group_type: 0,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(parsed_record("INFO", INFO))],
+                }),
+            ];
+        }
+
+        assert!(
+            relocate_authoring_record_native(
+                handle_id,
+                DIALOGUE,
+                ExistingAuthoringRecordPlacement::QuestChild {
+                    parent_quest_form_id: QUEST,
+                },
+            )
+            .unwrap()
+        );
+        assert!(
+            relocate_authoring_record_native(
+                handle_id,
+                ZERO_INFO_DIALOGUE,
+                ExistingAuthoringRecordPlacement::QuestChild {
+                    parent_quest_form_id: QUEST,
+                },
+            )
+            .unwrap()
+        );
+        assert!(
+            relocate_authoring_record_native(
+                handle_id,
+                INFO,
+                ExistingAuthoringRecordPlacement::TopicChild {
+                    parent_dialogue_form_id: DIALOGUE,
+                },
+            )
+            .unwrap()
+        );
+
+        let store = plugin_handle_store_ref().lock().unwrap();
+        let slot = store.get(&handle_id).unwrap();
+        let quest_group = slot
+            .parsed
+            .root_items
+            .iter()
+            .find_map(|item| match item {
+                ParsedItem::Group(group) if group.group_type == 0 && group.label == *b"QUST" => {
+                    Some(group)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let quest_children = quest_group
+            .children
+            .iter()
+            .find_map(|item| match item {
+                ParsedItem::Group(group)
+                    if group.group_type == 10 && group.label == QUEST.to_le_bytes() =>
+                {
+                    Some(group)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(parsed_record_exists_by_object_id(
+            &quest_children.children,
+            "DIAL",
+            DIALOGUE,
+        ));
+        assert!(parsed_record_exists_by_object_id(
+            &quest_children.children,
+            "DIAL",
+            ZERO_INFO_DIALOGUE,
+        ));
+        let topic_children = quest_children
+            .children
+            .iter()
+            .find_map(|item| match item {
+                ParsedItem::Group(group)
+                    if group.group_type == 7 && group.label == DIALOGUE.to_le_bytes() =>
+                {
+                    Some(group)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(parsed_record_exists_by_object_id(
+            &topic_children.children,
+            "INFO",
+            INFO,
+        ));
+    }
+
+    #[test]
+    fn dial_quest_parent_comes_from_qsti_not_qnam() {
+        let mut dialogue = parsed_record("DIAL", 0x0013_015B);
+        dialogue
+            .subrecords
+            .push(parsed_subrecord("QNAM", &0x0012_0001_u32.to_le_bytes()));
+        dialogue
+            .subrecords
+            .push(parsed_subrecord("QSTI", &0x0013_0100_u32.to_le_bytes()));
+
+        assert_eq!(
+            quest_parent_form_id_from_record(&dialogue),
+            Some(0x0013_0100)
+        );
+    }
+
+    #[test]
+    fn production_quest_parent_classifier_keeps_dlvw_top_level() {
+        let quest = 0x0013_0100_u32;
+        let mut view = parsed_record("DLVW", 0x0013_0101);
+        view.subrecords
+            .push(parsed_subrecord("QNAM", &quest.to_le_bytes()));
+        let mut branch = parsed_record("DLBR", 0x0013_0102);
+        branch
+            .subrecords
+            .push(parsed_subrecord("QNAM", &quest.to_le_bytes()));
+
+        assert_eq!(quest_parent_form_id_from_record(&view), None);
+        assert_eq!(quest_parent_form_id_from_record(&branch), Some(quest));
+    }
+
+    #[test]
+    fn child_insert_session_falls_back_when_used_with_another_handle() {
+        const QUEST: u32 = 0x0013_0100;
+        const DIALOGUE: u32 = 0x0013_015B;
+        const INFO: u32 = 0x0013_0161;
+        let session_handle = plugin_handle_new_native("SessionA.esm", Some("fo4")).unwrap();
+        let write_handle = plugin_handle_new_native("SessionB.esm", Some("fo4")).unwrap();
+        for handle_id in [session_handle, write_handle] {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle_id).unwrap();
+            slot.parsed.root_items = vec![ParsedItem::Group(ParsedGroup {
+                label: *b"QUST",
+                group_type: 0,
+                tail: Bytes::new(),
+                children: vec![
+                    ParsedItem::Record(parsed_record("QUST", QUEST)),
+                    ParsedItem::Group(ParsedGroup {
+                        label: QUEST.to_le_bytes(),
+                        group_type: 10,
+                        tail: Bytes::new(),
+                        children: vec![ParsedItem::Record(parsed_record("DIAL", DIALOGUE))],
+                    }),
+                ],
+            })];
+        }
+
+        let schema = fo4_schema();
+        let interner = StringInterner::new();
+        let info = Record::new(
+            SigCode::from_str("INFO").unwrap(),
+            FormKey {
+                local: INFO,
+                plugin: interner.intern("SessionB.esm"),
+            },
+        );
+        let mut session = begin_topic_child_insert_session_native(session_handle).unwrap();
+        assert!(
+            add_topic_child_record_indexed_native(
+                write_handle,
+                info,
+                DIALOGUE,
+                &schema,
+                &interner,
+                &mut session,
+            )
+            .unwrap()
+        );
+        let timing = session.timing();
+        assert_eq!(timing.records, 1);
+        assert_eq!(timing.fast_inserts, 0);
+        assert_eq!(timing.serial_fallbacks, 1);
+        assert!(!timing.wrong_handle_fallback.is_zero());
+
+        let store = plugin_handle_store_ref().lock().unwrap();
+        assert!(!parsed_record_exists_by_object_id(
+            &store.get(&session_handle).unwrap().parsed.root_items,
+            "INFO",
+            INFO,
+        ));
+        assert!(parsed_record_exists_by_object_id(
+            &store.get(&write_handle).unwrap().parsed.root_items,
+            "INFO",
+            INFO,
+        ));
+        drop(store);
+        esp_authoring_core::plugin_runtime::plugin_handle_close_native(session_handle);
+        esp_authoring_core::plugin_runtime::plugin_handle_close_native(write_handle);
+    }
+
+    #[test]
     fn replace_records_native_replaces_multiple_without_duplicates() {
         let handle_id = match plugin_handle_new_native("BatchReplaceTest.esm", Some("fo4")) {
             Ok(id) => id,
@@ -6785,9 +7899,9 @@ mod tests {
 
         let replacements = |plugin_name: &str, interner: &mut StringInterner| {
             vec![
-                weap_record(plugin_name, 0x800, "WeapA2", interner),
-                weap_record(plugin_name, 0x801, "WeapB2", interner),
-                weap_record(plugin_name, 0x802, "WeapC2", interner),
+                weap_record(plugin_name, 0x800, "WeapA1", interner),
+                weap_record(plugin_name, 0x801, "WeapB1", interner),
+                weap_record(plugin_name, 0x802, "WeapC1", interner),
             ]
         };
 
@@ -6853,6 +7967,266 @@ mod tests {
         );
     }
 
+    #[test]
+    fn content_batch_error_applies_same_prefix_as_sequential_replaces() {
+        let sequential =
+            plugin_handle_new_native("ContentErrorSequential.esm", Some("fo4")).unwrap();
+        let batched = plugin_handle_new_native("ContentErrorBatched.esm", Some("fo4")).unwrap();
+        let schema = fo4_schema();
+        let mut interner = StringInterner::new();
+
+        fn weap_record(
+            plugin_name: &str,
+            local: u32,
+            edid: &str,
+            interner: &mut StringInterner,
+        ) -> Record {
+            let edid_sym = interner.intern(edid);
+            Record {
+                sig: SigCode::from_str("WEAP").unwrap(),
+                form_key: FormKey::parse(&format!("{local:06X}@{plugin_name}"), interner).unwrap(),
+                eid: Some(edid_sym),
+                flags: RecordFlags::empty(),
+                fields: smallvec::smallvec![FieldEntry {
+                    sig: SubrecordSig::from_str("EDID").unwrap(),
+                    value: FieldValue::String(edid_sym),
+                }],
+                warnings: SmallVec::new(),
+            }
+        }
+
+        for (handle, plugin_name) in [
+            (sequential, "ContentErrorSequential.esm"),
+            (batched, "ContentErrorBatched.esm"),
+        ] {
+            for (local, edid) in [(0x800, "WeapA1"), (0x801, "WeapB1"), (0x802, "WeapC1")] {
+                add_record_native(
+                    handle,
+                    weap_record(plugin_name, local, edid, &mut interner),
+                    &schema,
+                    &interner,
+                )
+                .unwrap();
+            }
+        }
+
+        let replacements = |plugin_name: &str, interner: &mut StringInterner| {
+            vec![
+                weap_record(plugin_name, 0x800, "WeapA1", interner),
+                weap_record(plugin_name, 0x801, "WeapB1", interner),
+                weap_record(plugin_name, 0x802, "WeapC1", interner),
+            ]
+        };
+
+        let mut store = plugin_handle_store_ref().lock().unwrap();
+        let sequential_error = {
+            let slot = store.get_mut(&sequential).unwrap();
+            for (index, record) in replacements("ContentErrorSequential.esm", &mut interner)
+                .into_iter()
+                .enumerate()
+            {
+                if index == 1 {
+                    break;
+                }
+                if let Some(mut parsed_record) =
+                    encode_record_for_slot(slot, record, &schema, &interner).unwrap()
+                {
+                    parsed_record
+                        .subrecords
+                        .push(parsed_subrecord("DATA", &[2]));
+                    assert!(replace_parsed_record_contents_in_slot(slot, parsed_record));
+                }
+            }
+            WriteError::EncodeFailure("injected failure".to_string())
+        };
+        let batched_outcome = {
+            let slot = store.get_mut(&batched).unwrap();
+            let mut index = 0;
+            replace_records_contents_in_slot_preserving_prefix_with_encoder(
+                slot,
+                replacements("ContentErrorBatched.esm", &mut interner),
+                |slot, record| {
+                    let current = index;
+                    index += 1;
+                    if current == 1 {
+                        return Err(WriteError::EncodeFailure("injected failure".to_string()));
+                    }
+                    let mut parsed = encode_record_for_slot(slot, record, &schema, &interner)?;
+                    if let Some(record) = parsed.as_mut() {
+                        record.subrecords.push(parsed_subrecord("DATA", &[2]));
+                    }
+                    Ok(parsed)
+                },
+            )
+        };
+
+        assert_eq!(batched_outcome.applied_form_ids.as_slice(), &[0x800]);
+        assert_eq!(
+            sequential_error.to_string(),
+            batched_outcome.error.unwrap().to_string()
+        );
+        let mut sequential_data = Vec::new();
+        collect_subrecord_payloads(
+            &store.get(&sequential).unwrap().parsed.root_items,
+            "DATA",
+            &mut sequential_data,
+        );
+        let mut batched_data = Vec::new();
+        collect_subrecord_payloads(
+            &store.get(&batched).unwrap().parsed.root_items,
+            "DATA",
+            &mut batched_data,
+        );
+        assert_eq!(sequential_data, batched_data);
+        assert_eq!(batched_data, vec![vec![2]]);
+    }
+
+    #[test]
+    fn content_batch_falls_back_when_target_ids_are_duplicated() {
+        let sequential =
+            plugin_handle_new_native("ContentDuplicateSequential.esm", Some("fo4")).unwrap();
+        let batched = plugin_handle_new_native("ContentDuplicateBatched.esm", Some("fo4")).unwrap();
+        let mut store = plugin_handle_store_ref().lock().unwrap();
+        let initial_items = || {
+            vec![
+                ParsedItem::Record(parsed_record("ARMO", 0x800)),
+                ParsedItem::Record(ParsedRecord {
+                    subrecords: vec![parsed_subrecord("EDID", b"Stable0\0")],
+                    ..parsed_record("WEAP", 0x800)
+                }),
+                ParsedItem::Record(ParsedRecord {
+                    subrecords: vec![parsed_subrecord("EDID", b"Stable1\0")],
+                    ..parsed_record("WEAP", 0x801)
+                }),
+            ]
+        };
+        store.get_mut(&sequential).unwrap().parsed.root_items = initial_items();
+        store.get_mut(&batched).unwrap().parsed.root_items = initial_items();
+        let replacements = || {
+            vec![
+                ParsedRecord {
+                    subrecords: vec![
+                        parsed_subrecord("EDID", b"Stable0\0"),
+                        parsed_subrecord("DATA", &[0]),
+                    ],
+                    ..parsed_record("WEAP", 0x800)
+                },
+                ParsedRecord {
+                    subrecords: vec![
+                        parsed_subrecord("EDID", b"Stable1\0"),
+                        parsed_subrecord("DATA", &[1]),
+                    ],
+                    ..parsed_record("WEAP", 0x801)
+                },
+            ]
+        };
+
+        let sequential_applied: SmallVec<[u32; 4]> = replacements()
+            .into_iter()
+            .filter_map(|record| {
+                let form_id = record.form_id;
+                replace_parsed_record_contents_in_slot(store.get_mut(&sequential).unwrap(), record)
+                    .then_some(form_id)
+            })
+            .collect();
+        let batched_applied =
+            apply_parsed_content_replacements(store.get_mut(&batched).unwrap(), replacements());
+
+        assert_eq!(sequential_applied, batched_applied);
+        assert_eq!(batched_applied.as_slice(), &[0x801]);
+        let mut sequential_data = Vec::new();
+        collect_subrecord_payloads(
+            &store.get(&sequential).unwrap().parsed.root_items,
+            "DATA",
+            &mut sequential_data,
+        );
+        let mut batched_data = Vec::new();
+        collect_subrecord_payloads(
+            &store.get(&batched).unwrap().parsed.root_items,
+            "DATA",
+            &mut batched_data,
+        );
+        assert_eq!(sequential_data, batched_data);
+        assert_eq!(batched_data, vec![vec![1]]);
+    }
+
+    #[test]
+    fn content_batch_first_and_last_encode_errors_apply_exact_prefix() {
+        let schema = fo4_schema();
+        let mut interner = StringInterner::new();
+        for failure_index in [0, 2] {
+            let plugin_name = format!("ContentBoundary{failure_index}.esm");
+            let handle = plugin_handle_new_native(&plugin_name, Some("fo4")).unwrap();
+            let replacements = (0..3)
+                .map(|index| {
+                    let edid = interner.intern(&format!("Stable{index}"));
+                    Record {
+                        sig: SigCode::from_str("WEAP").unwrap(),
+                        form_key: FormKey::parse(
+                            &format!("{:06X}@{plugin_name}", 0x800 + index),
+                            &interner,
+                        )
+                        .unwrap(),
+                        eid: Some(edid),
+                        flags: RecordFlags::empty(),
+                        fields: smallvec::smallvec![FieldEntry {
+                            sig: SubrecordSig::from_str("EDID").unwrap(),
+                            value: FieldValue::String(edid),
+                        }],
+                        warnings: SmallVec::new(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle).unwrap();
+            slot.parsed.root_items = (0..3)
+                .map(|index| {
+                    ParsedItem::Record(ParsedRecord {
+                        subrecords: vec![parsed_subrecord(
+                            "EDID",
+                            format!("Stable{index}\0").as_bytes(),
+                        )],
+                        ..parsed_record("WEAP", 0x800 + index as u32)
+                    })
+                })
+                .collect();
+            let mut index = 0;
+            let outcome = replace_records_contents_in_slot_preserving_prefix_with_encoder(
+                slot,
+                replacements,
+                |slot, record| {
+                    let current = index;
+                    index += 1;
+                    if current == failure_index {
+                        return Err(WriteError::EncodeFailure("injected failure".to_string()));
+                    }
+                    let mut parsed = encode_record_for_slot(slot, record, &schema, &interner)?;
+                    if let Some(record) = parsed.as_mut() {
+                        record
+                            .subrecords
+                            .push(parsed_subrecord("DATA", &[current as u8]));
+                    }
+                    Ok(parsed)
+                },
+            );
+            assert_eq!(
+                outcome.applied_form_ids.as_slice(),
+                &(0..failure_index)
+                    .map(|index| 0x800 + index as u32)
+                    .collect::<Vec<_>>()
+            );
+            assert!(outcome.error.is_some());
+            let mut data = Vec::new();
+            collect_subrecord_payloads(&slot.parsed.root_items, "DATA", &mut data);
+            assert_eq!(
+                data,
+                (0..failure_index)
+                    .map(|index| vec![index as u8])
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
     fn collect_edids(
         items: &[esp_authoring_core::plugin_runtime::ParsedItem],
         out: &mut Vec<String>,
@@ -6876,6 +8250,25 @@ mod tests {
                 }
                 esp_authoring_core::plugin_runtime::ParsedItem::Group(group) => {
                     collect_edids(&group.children, out);
+                }
+            }
+        }
+    }
+
+    fn collect_subrecord_payloads(items: &[ParsedItem], signature: &str, out: &mut Vec<Vec<u8>>) {
+        for item in items {
+            match item {
+                ParsedItem::Record(record) => {
+                    out.extend(
+                        record
+                            .subrecords
+                            .iter()
+                            .filter(|subrecord| subrecord.signature.as_str() == signature)
+                            .map(|subrecord| subrecord.data.to_vec()),
+                    );
+                }
+                ParsedItem::Group(group) => {
+                    collect_subrecord_payloads(&group.children, signature, out);
                 }
             }
         }
@@ -7043,6 +8436,38 @@ mod tests {
         assert_eq!(b.triangles[0].links[0], 0);
         assert_ne!(a.triangles[0].flags & nvnm_edge_extra_info_flag(0), 0);
         assert_ne!(b.triangles[0].flags & nvnm_edge_extra_info_flag(0), 0);
+    }
+
+    #[test]
+    fn navmesh_finalizer_preserves_legacy_exterior_slot_two_to_slot_one_portal() {
+        let a = nvnm_mesh(
+            0x000821,
+            (0, 0),
+            &[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)],
+            &[([0, 1, 2], [-1, -1, 0], nvnm_edge_extra_info_flag(2))],
+            &[portal_row_bytes(0x000922, 0, 1)],
+        );
+        let b = nvnm_mesh(
+            0x000821,
+            (0, 0),
+            &[(-1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 1.0, 0.0)],
+            &[([0, 1, 2], [-1, 0, -1], nvnm_edge_extra_info_flag(1))],
+            &[portal_row_bytes(0x000921, 0, 2)],
+        );
+        let snapshots = HashMap::from([
+            (0x000921, portal_snapshot(&a)),
+            (0x000922, portal_snapshot(&b)),
+        ]);
+
+        let a = finalized_nvnm(0x000921, &a, &snapshots);
+        let b = finalized_nvnm(0x000922, &b, &snapshots);
+
+        assert_eq!(a.edge_links.len(), 1);
+        assert_eq!(b.edge_links.len(), 1);
+        assert_eq!(edge_link_target(&a.edge_links[0]), (0x000922, 0, 1));
+        assert_eq!(edge_link_target(&b.edge_links[0]), (0x000921, 0, 2));
+        assert_eq!(a.triangles[0].links[2], 0);
+        assert_eq!(b.triangles[0].links[1], 0);
     }
 
     #[test]
@@ -7222,14 +8647,12 @@ mod tests {
 
     #[test]
     fn navmesh_finalizer_leaves_same_direction_overlap_edge_unlinked() {
-        // Two already-upfacing triangles that share edge {0,1} traversed in the
-        // SAME 2D-projected direction (both 0->1). In a real navmesh every
-        // walkable face is ~horizontal, so a same-direction shared edge means
-        // the two faces OVERLAP in projection (FO76 zigzag/sliver fans), not a
-        // legitimate steep fold. CK's manifold validator rejects linking such a
-        // pair — it logs "opposite normals but linked / edges should be linked
-        // but are not / vertices do not match". So we keep BOTH upfacing (no
-        // winding flip) but leave the overlap edge UNLINKED.
+        // Two upfacing triangles share edge {0,1} in the same 2D direction (both
+        // 0->1). Walkable faces are ~horizontal, so this is projection overlap
+        // (FO76 zigzag/sliver fans), not a steep fold. CK rejects linking such a
+        // pair ("opposite normals but linked / edges should be linked but are
+        // not / vertices do not match"), so both stay upfacing (no flip) and the
+        // edge stays unlinked.
         let mesh = nvnm_mesh(
             0,
             (0, 0),
@@ -7931,8 +9354,7 @@ mod tests {
         //   cover 0 -> triangle 2 (src 0 -> fin 2)
         //   cover 1 -> triangle 0 (src 1 -> fin 0)
         //   cover 2 -> triangle 1 (src 2 -> fin 1)
-        // Compare as a multiset because we don't guarantee any specific
-        // emission order — see investigation note above.
+        // Compare as a multiset; emission order is not guaranteed.
         let regen_set: std::collections::HashSet<(u16, i16)> = regen
             .cover_triangle_mappings
             .iter()
@@ -8010,12 +9432,10 @@ mod tests {
 
     #[test]
     fn build_finalized_triangle_index_map_drops_degenerate_triangles() {
-        // Two source triangles share the SAME degenerate vertex set [5,5,7].
-        // Finalize "swaps" them (kept in same order, but they're indistinguishable
-        // because both are degenerate). Without the fix, the consume-cursor
-        // approach would happily map src[0]->fin[0] and src[1]->fin[1] — but
-        // degenerate triangles are CK-invalid pathing surfaces, so the *safe*
-        // behaviour is to drop them: every source degenerate maps to None.
+        // Two source triangles share the degenerate vertex set [5,5,7] and are
+        // indistinguishable after finalize. The consume cursor would map them
+        // src[0]->fin[0], src[1]->fin[1], but degenerate triangles are invalid
+        // CK pathing surfaces, so every source degenerate maps to None.
         let source = vec![
             NvnmTriangle {
                 vertices: [5, 5, 7],
@@ -8050,13 +9470,11 @@ mod tests {
 
     #[test]
     fn regenerate_nvnm_trailing_drops_carryover_for_degenerate_source_triangles() {
-        // Source triangles: [normal, degenerate, normal]. Finalize keeps the
-        // same vertices. Cover mapping pointing at the degenerate triangle
-        // (index 1) must be dropped (its anchor is invalid); the cover
-        // mapping pointing at the second normal triangle (index 2) must
-        // survive and remap to finalized index 2. With the bug, two
-        // degenerates sharing a vertex set could shuffle finalized indices
-        // between cover/waypoint/door anchors at random.
+        // Source triangles: [normal, degenerate, normal], unchanged by finalize.
+        // The cover mapping on the degenerate triangle (index 1) is dropped; the
+        // one on index 2 survives and remaps to finalized index 2. Otherwise two
+        // degenerates sharing a vertex set could swap finalized indices between
+        // cover/waypoint/door anchors.
         use esp_authoring_core::nvnm::{NvnmCoverEntry, NvnmCoverTriangleMapping};
         let cover_a = NvnmCoverEntry {
             vertex_1: 0,
@@ -8127,13 +9545,11 @@ mod tests {
 
     #[test]
     fn regenerate_nvnm_trailing_identity_finalize_preserves_non_grid_sections() {
-        // Identity finalize (no triangle pruning, no winding flips) must
-        // preserve waypoints / cover_array / cover_triangle_mappings byte-for-
-        // byte. The navmesh_grid is INTENTIONALLY rebuilt (FO4 CK rebuilds it
-        // at Finalize using a wider spatial-bucketing rule than FO76's
-        // single-cell-per-triangle bucket), so we don't assert grid equality
-        // here — see the `rebuild_nvnm_grid_fo4_matches_ck_*` fixture tests
-        // for the rebuild contract.
+        // Identity finalize (no pruning, no winding flips) must keep waypoints /
+        // cover_array / cover_triangle_mappings byte-for-byte. The grid is
+        // rebuilt (CK's Finalize buckets more widely than FO76's one cell per
+        // triangle), so it isn't compared here; the
+        // `rebuild_nvnm_grid_fo4_covers_ck_*` fixture tests cover the rebuild.
         let source_bytes = include_bytes!(
             "../../../../../py_creation_lib/native/esp/src/nvnm/tests/fixtures/4ea534_fo4.nvnm.bin"
         );
@@ -8451,6 +9867,107 @@ mod tests {
     }
 
     #[test]
+    fn handle_form_key_encoding_rejects_unknown_non_master_plugin() {
+        let interner = StringInterner::new();
+        let handle = plugin_handle_new_native("Output.esm", Some("fo4")).unwrap();
+        let unknown = FormKey {
+            local: 0x123456,
+            plugin: interner.intern("Unknown.esm"),
+        };
+        let error = encode_form_key_for_handle(handle, unknown, &interner).unwrap_err();
+        assert!(error.to_string().contains("neither output plugin"));
+    }
+
+    #[test]
+    fn existing_achr_topology_counts_one_nested_record_without_flat_duplicate() {
+        const ACHR_FORM_ID: u32 = 0x0012_319B;
+        let interner = StringInterner::new();
+        let output_plugin = interner.intern("Output.esm");
+        let handle = plugin_handle_new_native("Output.esm", Some("fo4")).unwrap();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle).unwrap();
+            slot.parsed.root_items = vec![top_group(
+                *b"CELL",
+                vec![ParsedItem::Group(ParsedGroup {
+                    label: 0x0000_0800_u32.to_le_bytes(),
+                    group_type: 9,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Record(parsed_record("ACHR", ACHR_FORM_ID))],
+                })],
+            )];
+        }
+        let topology = existing_record_topology_native(
+            handle,
+            FormKey {
+                local: ACHR_FORM_ID,
+                plugin: output_plugin,
+            },
+            "ACHR",
+            &interner,
+        )
+        .unwrap();
+        assert_eq!(topology.occurrences, 1);
+        assert!(!topology.top_level);
+        assert!(!topology.persistent);
+    }
+
+    #[test]
+    fn existing_refr_topology_reports_persistent_cell_membership() {
+        const REFR_FORM_ID: u32 = 0x0013_3F42;
+        const ACTI_FORM_ID: u32 = 0x0013_3F41;
+        let interner = StringInterner::new();
+        let output_plugin = interner.intern("Output.esm");
+        let handle = plugin_handle_new_native("Output.esm", Some("fo4")).unwrap();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle).unwrap();
+            let mut refr = parsed_record("REFR", REFR_FORM_ID);
+            refr.subrecords
+                .push(parsed_subrecord("NAME", &ACTI_FORM_ID.to_le_bytes()));
+            slot.parsed.root_items = vec![top_group(
+                *b"CELL",
+                vec![ParsedItem::Group(ParsedGroup {
+                    label: 0x0000_0800_u32.to_le_bytes(),
+                    group_type: 6,
+                    tail: Bytes::new(),
+                    children: vec![ParsedItem::Group(ParsedGroup {
+                        label: 0x0000_0800_u32.to_le_bytes(),
+                        group_type: 8,
+                        tail: Bytes::new(),
+                        children: vec![ParsedItem::Record(refr)],
+                    })],
+                })],
+            )];
+        }
+        let topology = existing_record_topology_native(
+            handle,
+            FormKey {
+                local: REFR_FORM_ID,
+                plugin: output_plugin,
+            },
+            "REFR",
+            &interner,
+        )
+        .unwrap();
+        assert_eq!(topology.occurrences, 1);
+        assert!(!topology.top_level);
+        assert!(topology.persistent);
+        assert_eq!(
+            count_references_to_base_native(
+                handle,
+                FormKey {
+                    local: ACTI_FORM_ID,
+                    plugin: output_plugin,
+                },
+                &interner,
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
     fn build_source_info_to_dialogue_index_maps_infos_to_parent_dial() {
         const DIAL_A: u32 = 0x0010_0001;
         const DIAL_B: u32 = 0x0010_0002;
@@ -8493,6 +10010,242 @@ mod tests {
         assert_eq!(index.get(&INFO_A2), Some(&DIAL_A));
         assert_eq!(index.get(&INFO_B1), Some(&DIAL_B));
         assert_eq!(index.len(), 3);
+    }
+
+    #[test]
+    fn projected_minimal_quest_save_reopen_preserves_fo4_localization_receipt() {
+        use crate::quest_runtime::*;
+        use crate::skyrimse_fo4_runtime::quest::{
+            SkyrimQuestFragmentAction, SkyrimQuestFragmentSource, minimal_quest_psc_artifact,
+            project_minimal_quest,
+        };
+        use pyo3::Python;
+        use std::collections::BTreeSet;
+
+        let interner = StringInterner::new();
+        let source = QuestRecordKey::new("QUST", "000123@Skyrim.esm");
+        let source_ref = QuestRecordKey::new("REFR", "000456@Skyrim.esm");
+        let target = QuestRecordKey::new("QUST", "000800@Output.esp");
+        let target_ref = QuestRecordKey::new("REFR", "000801@Output.esp");
+        let fragment = SkyrimQuestFragmentSource {
+            fragment_id: "stage-10-item-0".to_string(),
+            stage_index: 10,
+            stage_item_index: 0,
+            actions: vec![SkyrimQuestFragmentAction::SetObjectiveDisplayed {
+                index: 10,
+                displayed: true,
+            }],
+        };
+        let (_, manifest) = minimal_quest_psc_artifact("Live", 0x800, &fragment).unwrap();
+        let compiler = CompilerEvidenceIntent {
+            manifest_id: manifest.manifest_id.clone(),
+            source_digest: manifest.source_blake3.clone(),
+            require_fresh_output: true,
+        };
+        let plan = QuestRuntimeComponentPlan {
+            component_id: "skyrim:000123".to_string(),
+            root_quest: source.clone(),
+            provenance: SourceProvenance {
+                game: QuestSourceGame::SkyrimSe,
+                source_plugin: "Skyrim.esm".to_string(),
+                graft: None,
+            },
+            owned_records: vec![source.clone()],
+            shared_records: BTreeSet::from([source_ref.clone()]),
+            dependencies: DependencyClosure {
+                direct: BTreeSet::from([source_ref.clone()]),
+                recursive: BTreeSet::from([source_ref.clone()]),
+            },
+            source_topology: BTreeSet::from([TopologyPlacement {
+                record: source.clone(),
+                group_path: vec!["GRUP:QUST".to_string()],
+            }]),
+            target_topology: BTreeSet::from([TopologyPlacement {
+                record: target.clone(),
+                group_path: vec!["GRUP:QUST".to_string()],
+            }]),
+            mappings: vec![
+                SourceTargetFormMapping {
+                    source: source.clone(),
+                    target: target.clone(),
+                },
+                SourceTargetFormMapping {
+                    source: source_ref,
+                    target: target_ref,
+                },
+            ],
+            semantics: QuestSemanticPlan {
+                stages: vec![QuestStageIntent {
+                    index: 10,
+                    log_entries: vec![LocalizedTextIntent {
+                        field: "CNAM".to_string(),
+                        source_text_id: Some(2),
+                        text: "Stage log".to_string(),
+                        target_table: "DLSTRINGS".to_string(),
+                    }],
+                    fragment_ids: BTreeSet::from(["stage-10-item-0".to_string()]),
+                }],
+                objectives: vec![QuestObjectiveIntent {
+                    index: 10,
+                    display_text: LocalizedTextIntent {
+                        field: "NNAM".to_string(),
+                        source_text_id: Some(3),
+                        text: "Reach the marker".to_string(),
+                        target_table: "STRINGS".to_string(),
+                    },
+                    target_aliases: BTreeSet::from([0]),
+                }],
+                aliases: vec![QuestAliasIntent {
+                    id: 0,
+                    name: "Marker".to_string(),
+                    fill: AliasFillKind::ForcedReference("000456@Skyrim.esm".to_string()),
+                    conditions: Vec::new(),
+                }],
+                conditions: Vec::new(),
+                start_flags: BTreeSet::from([
+                    QuestStartFlag::StartGameEnabled,
+                    QuestStartFlag::RunOnce,
+                ]),
+            },
+            scripts: BTreeSet::from([ScriptIntent {
+                owner: source.clone(),
+                source_name: "QF_Source_000123".to_string(),
+                target_class: manifest.class_name.clone(),
+                required: true,
+            }]),
+            fragments: BTreeSet::from([FragmentIntent {
+                owner: source.clone(),
+                fragment_id: fragment.fragment_id.clone(),
+                entrypoint: "Fragment_Stage_0010_Item_00".to_string(),
+                target_class: manifest.class_name.clone(),
+            }]),
+            psc: BTreeSet::from([PscIntent {
+                class_name: manifest.class_name.clone(),
+                source_artifact: manifest.relative_source_path.clone(),
+                compiler_evidence_required: true,
+                compiler_evidence: Some(compiler.clone()),
+            }]),
+            vmad: BTreeSet::from([VmadIntent {
+                owner: target.clone(),
+                script_class: manifest.class_name.clone(),
+                properties: BTreeSet::new(),
+                compiler_evidence_required: true,
+                compiler_evidence: Some(compiler),
+            }]),
+            assets: BTreeSet::new(),
+            inbound_producers: BTreeSet::from([StartProducerIntent {
+                producer_id: "qust-autostart".to_string(),
+                carrier: source.clone(),
+                producer_kind: "qust_start_game_enabled".to_string(),
+                evidence_id: "source-dnam".to_string(),
+                proven: true,
+            }]),
+            start_disposition: Some(StartDisposition::Autostart),
+            admission: QuestRuntimeAdmission::Supported,
+            expected_receipt: QuestRuntimeExpectedReceipt {
+                emitted_records: BTreeSet::from([target.clone()]),
+                placements: BTreeSet::from([TopologyPlacement {
+                    record: target,
+                    group_path: vec!["GRUP:QUST".to_string()],
+                }]),
+                ..QuestRuntimeExpectedReceipt::default()
+            },
+        };
+        let projection = project_minimal_quest(
+            &plan,
+            "Live_TestQuest",
+            50,
+            LocalizedTextIntent {
+                field: "FULL".to_string(),
+                source_text_id: Some(1),
+                text: "A Live Quest".to_string(),
+                target_table: "STRINGS".to_string(),
+            },
+            fragment,
+            "Live",
+            &interner,
+        )
+        .unwrap();
+        let schema = fo4_schema();
+        let handle = plugin_handle_new_native("Output.esp", Some("fo4")).unwrap();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            store.get_mut(&handle).unwrap().parsed.header.flags |= 0x80;
+        }
+        let reserved = reserve_record_localized_strings_native(
+            handle,
+            projection.record.clone(),
+            &schema,
+            &interner,
+        )
+        .unwrap();
+        assert_eq!(reserved.len(), 3);
+        add_record_native(handle, projection.record, &schema, &interner).unwrap();
+
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_path = temp.path().join("Output.esp");
+        esp_authoring_core::plugin_runtime::plugin_handle_save_no_py(
+            handle,
+            plugin_path.to_str().unwrap(),
+        )
+        .unwrap();
+        Python::initialize();
+        Python::attach(|py| {
+            esp_authoring_core::plugin_runtime::plugin_handle_save_localized_strings_native(
+                py,
+                handle,
+                Some(plugin_path.to_str().unwrap()),
+            )
+            .unwrap();
+        });
+        assert!(esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle));
+        let reopened = esp_authoring_core::plugin_runtime::plugin_handle_load_no_py(
+            plugin_path.to_str().unwrap(),
+            Some("fo4"),
+            Some(temp.path().join("Strings").to_str().unwrap()),
+            Some("en"),
+            true,
+        )
+        .unwrap();
+        let target_fk = FormKey::parse("000800@Output.esp", &interner).unwrap();
+        let topology =
+            existing_record_topology_native(reopened, target_fk, "QUST", &interner).unwrap();
+        assert_eq!(topology.occurrences, 1);
+        assert_eq!(
+            existing_authoring_record_placement_native(reopened, 0x0000_0800).unwrap(),
+            ExistingAuthoringRecordPlacement::TopLevel
+        );
+        let reopened_rows =
+            existing_localized_string_occurrences_native(reopened, target_fk, "QUST", &interner)
+                .unwrap();
+        assert_eq!(reopened_rows, reserved);
+        assert_eq!(
+            reopened_rows
+                .iter()
+                .map(|(field, table, _)| (field.as_str(), table.as_str()))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                ("CNAM", "DLSTRINGS"),
+                ("FULL", "STRINGS"),
+                ("NNAM", "STRINGS"),
+            ])
+        );
+        let decoded = crate::source_read::read_record_relayout_by_form_key(
+            reopened, &target_fk, &schema, &interner, None,
+        )
+        .unwrap();
+        let localized = decoded
+            .fields
+            .iter()
+            .filter_map(|field| match &field.value {
+                FieldValue::String(value) => interner.resolve(*value).map(str::to_string),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        assert!(localized.contains("A Live Quest"));
+        assert!(localized.contains("Stage log"));
+        assert!(localized.contains("Reach the marker"));
+        assert!(esp_authoring_core::plugin_runtime::plugin_handle_close_native(reopened));
     }
 
     fn top_group_ref<'a>(items: &'a [ParsedItem], label: &[u8; 4]) -> Option<&'a ParsedGroup> {

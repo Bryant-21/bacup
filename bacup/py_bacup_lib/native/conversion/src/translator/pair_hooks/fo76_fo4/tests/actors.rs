@@ -1,4 +1,58 @@
 
+    #[test]
+    fn pre_translate_strips_only_bee_swarm_ant_limb_replacements() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let mut bee_parts = Record::new(
+            SigCode::from_str("BPTD").unwrap(),
+            FormKey {
+                local: HONEY_BEAST_BEE_SWARM_BPTD_FORM_ID,
+                plugin,
+            },
+        );
+        bee_parts.eid = Some(interner.intern(HONEY_BEAST_BEE_SWARM_BPTD_EDITOR_ID));
+        push_field(
+            &mut bee_parts,
+            "NAM1",
+            FieldValue::String(
+                interner.intern("Actors\\DLC04\\Swarm\\CharacterAssets\\ReplaceSwarm01.nif"),
+            ),
+        );
+        push_field(&mut bee_parts, "BPND", raw_bytes(&[0; 112]));
+        push_field(
+            &mut bee_parts,
+            "NAM1",
+            FieldValue::String(
+                interner.intern("Actors\\DLC04\\Swarm\\CharacterAssets\\ReplaceSwarm02.nif"),
+            ),
+        );
+
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut bee_parts)
+            .unwrap();
+
+        assert!(bee_parts.fields.iter().all(|field| field.sig.0 != *b"NAM1"));
+        assert!(bee_parts.fields.iter().any(|field| field.sig.0 == *b"BPND"));
+
+        let mut other_parts = make_record("BPTD", &interner);
+        other_parts.eid = Some(interner.intern("OtherCreatureBodyPartData"));
+        push_field(
+            &mut other_parts,
+            "NAM1",
+            FieldValue::String(interner.intern("Actors\\Other\\Replacement.nif")),
+        );
+
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut other_parts)
+            .unwrap();
+
+        assert!(
+            other_parts
+                .fields
+                .iter()
+                .any(|field| field.sig.0 == *b"NAM1")
+        );
+    }
 
     #[test]
     fn pre_translate_chinese_stealth_arma_keeps_pipboy_visible() {
@@ -29,6 +83,71 @@
             })
             .expect("ARMA BOD2 mask");
         assert_eq!(mask, 1 << (33 - 30));
+    }
+
+    #[test]
+    fn pre_translate_maps_child_underarmor_slots_to_body() {
+        let interner = StringInterner::new();
+        let mut record = make_record("ARMO", &interner);
+        push_field(
+            &mut record,
+            "RNAM",
+            FieldValue::FormKey(FormKey {
+                local: FO4_HUMAN_CHILD_RACE_FORM_ID,
+                plugin: interner.intern("SeventySix.esm"),
+            }),
+        );
+        push_field(
+            &mut record,
+            "BOD2",
+            FieldValue::Uint(FO76_UPPER_BODY_SKIN_BIPED_MASK),
+        );
+
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let mask = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"BOD2")
+            .and_then(|entry| match entry.value {
+                FieldValue::Uint(mask) => Some(mask),
+                _ => None,
+            })
+            .expect("ARMO BOD2 mask");
+        assert_eq!(mask, FO4_BODY_BIPED_MASK);
+    }
+
+    #[test]
+    fn pre_translate_preserves_full_body_child_armor_slots() {
+        let interner = StringInterner::new();
+        let mut record = make_record("ARMO", &interner);
+        push_field(
+            &mut record,
+            "RNAM",
+            FieldValue::FormKey(FormKey {
+                local: FO4_HUMAN_CHILD_RACE_FORM_ID,
+                plugin: interner.intern("SeventySix.esm"),
+            }),
+        );
+        let full_body_mask = FO4_BODY_BIPED_MASK | FO76_UPPER_BODY_SKIN_BIPED_MASK;
+        push_field(&mut record, "BOD2", FieldValue::Uint(full_body_mask));
+
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let mask = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"BOD2")
+            .and_then(|entry| match entry.value {
+                FieldValue::Uint(mask) => Some(mask),
+                _ => None,
+            })
+            .expect("ARMO BOD2 mask");
+        assert_eq!(mask, full_body_mask);
     }
 
     fn raw_ctda(function_id: u16) -> FieldValue {
@@ -130,6 +249,81 @@
                 "DEST", "HGLB", "DSTD", "DMDL", "DMDT", "ENLT", "ENLS", "AUUV", "DSTF", "DATA",
             ]
         );
+    }
+
+    fn raw_fo76_destruction_stage(health: u8, flags: u8, explosion: u32) -> FieldValue {
+        let mut bytes = vec![0_u8; 28];
+        bytes[0] = health;
+        bytes[3] = flags;
+        bytes[8..12].copy_from_slice(&explosion.to_le_bytes());
+        raw_bytes(&bytes)
+    }
+
+    #[test]
+    fn pre_translate_normalizes_fo76_explosive_vehicle_destruction_flags() {
+        let interner = StringInterner::new();
+        let mut record = make_record("MSTT", &interner);
+        push_field(
+            &mut record,
+            "DSTD",
+            raw_fo76_destruction_stage(85, 0, 0x0022_496),
+        );
+        push_field(
+            &mut record,
+            "DSTD",
+            raw_fo76_destruction_stage(50, 0x05, 0x0023_D3B),
+        );
+        push_field(
+            &mut record,
+            "DSTD",
+            raw_fo76_destruction_stage(0, 0x08, 0),
+        );
+
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let flags: Vec<u8> = record
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.0 == *b"DSTD")
+            .map(|entry| match &entry.value {
+                FieldValue::Bytes(bytes) => bytes[3],
+                _ => panic!("DSTD should remain raw before struct relayout"),
+            })
+            .collect();
+        assert_eq!(flags, vec![0, 0x04, 0]);
+    }
+
+    #[test]
+    fn pre_translate_preserves_nonexplosive_mstt_destruction_flags() {
+        let interner = StringInterner::new();
+        let mut record = make_record("MSTT", &interner);
+        push_field(
+            &mut record,
+            "DSTD",
+            raw_fo76_destruction_stage(50, 0x05, 0),
+        );
+        push_field(
+            &mut record,
+            "DSTD",
+            raw_fo76_destruction_stage(0, 0x08, 0),
+        );
+
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let flags: Vec<u8> = record
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.0 == *b"DSTD")
+            .map(|entry| match &entry.value {
+                FieldValue::Bytes(bytes) => bytes[3],
+                _ => panic!("DSTD should remain raw before struct relayout"),
+            })
+            .collect();
+        assert_eq!(flags, vec![0x05, 0x08]);
     }
 
     fn read_vmad_string(bytes: &[u8], offset: &mut usize) -> String {
@@ -496,6 +690,63 @@
         assert!(sigs.contains(&"EDID"), "EDID should be preserved");
     }
 
+    /// Translation carries `KWDA` across verbatim; nothing here special-cases a grip.
+    /// The AlienRifle DOES end up without `AnimsGripRifleStraight`, but that happens
+    /// later and generically, in `strip_generic_grips_from_owned_weapons`, which can
+    /// see whether an additive third-person block was actually emitted for the weapon.
+    /// Deciding it per-record here cannot: the block set does not exist yet.
+    #[test]
+    fn pre_translate_carries_weapon_keywords_across_untouched() {
+        let interner = StringInterner::new();
+        let mut record = make_record("WEAP", &interner);
+        push_field(&mut record, "KSIZ", FieldValue::Uint(3));
+        push_field(
+            &mut record,
+            "KWDA",
+            FieldValue::List(vec![
+                form_key_value(&interner, FO76_ANIMS_GRIP_RIFLE_STRAIGHT_FORM_ID),
+                form_key_value(&interner, FO76_ANIMS_ALIEN_RIFLE_FORM_ID),
+                form_key_value(&interner, 0x0F4AEA),
+            ]),
+        );
+
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        let keywords = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"KWDA")
+            .expect("KWDA remains");
+        let FieldValue::List(keywords) = &keywords.value else {
+            panic!("KWDA should remain a decoded keyword list");
+        };
+        let keyword_locals: Vec<u32> = keywords
+            .iter()
+            .filter_map(|value| match value {
+                FieldValue::FormKey(keyword) => Some(keyword.local),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            keyword_locals,
+            vec![
+                FO76_ANIMS_GRIP_RIFLE_STRAIGHT_FORM_ID,
+                FO76_ANIMS_ALIEN_RIFLE_FORM_ID,
+                0x0F4AEA
+            ]
+        );
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .find(|entry| entry.sig.0 == *b"KSIZ")
+                .map(|entry| &entry.value),
+            Some(&FieldValue::Uint(3))
+        );
+    }
+
     #[test]
     fn post_translate_normalizes_npc_raw_form_refs() {
         let mut interner = StringInterner::new();
@@ -660,4 +911,238 @@
         assert_eq!(record.fields[1].value, FieldValue::Int(0x08));
         assert_eq!(record.fields[2].value, raw_bytes(&[0x08]));
         assert_eq!(record.fields[3].value, raw_bytes(&[0x28, 0xff]));
+    }
+
+    fn w05_nuke_reaction_vmad(base_outfit: Option<u32>) -> FieldValue {
+        let masters = [FO4_MASTER_NAME.to_string()];
+        let mut properties = Vec::new();
+        if let Some(form_id) = base_outfit {
+            properties.push(serde_json::json!({
+                "propertyName": W05_ACTOR_NUKE_BASE_OUTFIT_PROPERTY,
+                "Type": "Object",
+                "Flags": VMAD_PROPERTY_FLAG_EDITED,
+                "Value": {
+                    "Alias": -1,
+                    "FormID": {
+                        "reference": {
+                            "plugin": FO76_MASTER_NAME,
+                            "object_id": format!("{form_id:06X}"),
+                        },
+                    },
+                },
+            }));
+        }
+        let payload = serde_json::json!({
+            "Version": FO4_VMAD_VERSION,
+            "Object Format": FO4_VMAD_OBJECT_FORMAT,
+            "Scripts": [{
+                "ScriptName": W05_ACTOR_NUKE_REACTION_SCRIPT,
+                "Properties": properties,
+            }],
+        });
+        raw_bytes(
+            &build_vmad_bytes_from_payload(&payload, &masters, FO76_MASTER_NAME)
+                .expect("W05 actor VMAD fixture must encode"),
+        )
+    }
+
+    fn w05_nuke_reaction_base_outfit(record: &Record) -> u32 {
+        let FieldValue::Bytes(bytes) = &record
+            .fields
+            .iter()
+            .find(|field| field.sig.0 == *b"VMAD")
+            .expect("W05 actor VMAD remains")
+            .value
+        else {
+            panic!("W05 actor VMAD should remain bytes");
+        };
+        let masters = [FO4_MASTER_NAME.to_string()];
+        let payload = esp_authoring_core::plugin_runtime::authoring::authoring_serialize::compact_vmad_payload_json(
+                bytes,
+                &masters,
+                FO76_MASTER_NAME,
+                Some("NPC_"),
+            )
+            .expect("W05 actor VMAD must decode");
+        let property = payload["Scripts"][0]["Properties"]
+            .as_array()
+            .expect("properties")
+            .iter()
+            .find(|property| {
+                property["propertyName"].as_str() == Some(W05_ACTOR_NUKE_BASE_OUTFIT_PROPERTY)
+            })
+            .expect("BaseOutfit property");
+        u32::from_str_radix(
+            property["Value"]["FormID"]["reference"]["object_id"]
+                .as_str()
+                .expect("BaseOutfit object id"),
+            16,
+        )
+        .expect("hex BaseOutfit object id")
+    }
+
+    #[test]
+    fn post_translate_backfills_w05_nuke_reaction_base_outfit_from_doft() {
+        let interner = StringInterner::new();
+        let mut record = make_record("NPC_", &interner);
+        push_field(&mut record, "VMAD", w05_nuke_reaction_vmad(None));
+        push_field(&mut record, "DOFT", form_key_value(&interner, 0x58E6C7));
+        let target_masters = [FO4_MASTER_NAME.to_string()];
+        let source_masters: [String; 0] = [];
+        let mut ctx = PairCtx::with_source_and_target(
+            &interner,
+            FO76_MASTER_NAME,
+            &source_masters,
+            &target_masters,
+        );
+
+        Fo76Fo4Hook.post_translate(&mut ctx, &mut record).unwrap();
+
+        assert_eq!(w05_nuke_reaction_base_outfit(&record), 0x58E6C7);
+    }
+
+    #[test]
+    fn post_translate_preserves_explicit_w05_nuke_base_outfit_and_is_idempotent() {
+        let interner = StringInterner::new();
+        let mut record = make_record("NPC_", &interner);
+        push_field(&mut record, "VMAD", w05_nuke_reaction_vmad(Some(0x01D984)));
+        push_field(&mut record, "DOFT", form_key_value(&interner, 0x58E6C7));
+        let target_masters = [FO4_MASTER_NAME.to_string()];
+        let source_masters: [String; 0] = [];
+        let mut ctx = PairCtx::with_source_and_target(
+            &interner,
+            FO76_MASTER_NAME,
+            &source_masters,
+            &target_masters,
+        );
+
+        Fo76Fo4Hook.post_translate(&mut ctx, &mut record).unwrap();
+        let first_vmad = record
+            .fields
+            .iter()
+            .find(|field| field.sig.0 == *b"VMAD")
+            .expect("VMAD")
+            .value
+            .clone();
+        Fo76Fo4Hook.post_translate(&mut ctx, &mut record).unwrap();
+
+        assert_eq!(w05_nuke_reaction_base_outfit(&record), 0x01D984);
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .find(|field| field.sig.0 == *b"VMAD")
+                .expect("VMAD")
+                .value,
+            first_vmad
+        );
+    }
+
+    #[test]
+    fn post_translate_w05_nuke_base_outfit_fails_closed_on_duplicate_doft() {
+        let interner = StringInterner::new();
+        let mut record = make_record("NPC_", &interner);
+        push_field(&mut record, "VMAD", w05_nuke_reaction_vmad(None));
+        push_field(&mut record, "DOFT", form_key_value(&interner, 0x58E6C7));
+        push_field(&mut record, "DOFT", form_key_value(&interner, 0x01D984));
+        let original_fields = record.fields.clone();
+        let target_masters = [FO4_MASTER_NAME.to_string()];
+        let source_masters: [String; 0] = [];
+        let mut ctx = PairCtx::with_source_and_target(
+            &interner,
+            FO76_MASTER_NAME,
+            &source_masters,
+            &target_masters,
+        );
+
+        Fo76Fo4Hook.post_translate(&mut ctx, &mut record).unwrap();
+
+        assert_eq!(record.fields, original_fields);
+    }
+
+    #[test]
+    fn post_translate_w05_nuke_base_outfit_fails_closed_on_duplicate_vmad() {
+        let interner = StringInterner::new();
+        let mut record = make_record("NPC_", &interner);
+        let vmad = w05_nuke_reaction_vmad(None);
+        push_field(&mut record, "VMAD", vmad.clone());
+        push_field(&mut record, "VMAD", vmad);
+        push_field(&mut record, "DOFT", form_key_value(&interner, 0x58E6C7));
+        let original_fields = record.fields.clone();
+        let target_masters = [FO4_MASTER_NAME.to_string()];
+        let source_masters: [String; 0] = [];
+        let mut ctx = PairCtx::with_source_and_target(
+            &interner,
+            FO76_MASTER_NAME,
+            &source_masters,
+            &target_masters,
+        );
+
+        Fo76Fo4Hook.post_translate(&mut ctx, &mut record).unwrap();
+
+        assert_eq!(record.fields, original_fields);
+    }
+
+    #[test]
+    fn post_translate_w05_nuke_base_outfit_requires_one_matching_script() {
+        let interner = StringInterner::new();
+        let masters = [FO4_MASTER_NAME.to_string()];
+        let payload = serde_json::json!({
+            "Version": FO4_VMAD_VERSION,
+            "Object Format": FO4_VMAD_OBJECT_FORMAT,
+            "Scripts": [
+                {
+                    "ScriptName": W05_ACTOR_NUKE_REACTION_SCRIPT,
+                    "Properties": [],
+                },
+                {
+                    "ScriptName": W05_ACTOR_NUKE_REACTION_SCRIPT,
+                    "Properties": [],
+                },
+            ],
+        });
+        let vmad = raw_bytes(
+            &build_vmad_bytes_from_payload(&payload, &masters, FO76_MASTER_NAME)
+                .expect("duplicate-script VMAD fixture must encode"),
+        );
+        let mut record = make_record("NPC_", &interner);
+        push_field(&mut record, "VMAD", vmad);
+        push_field(&mut record, "DOFT", form_key_value(&interner, 0x58E6C7));
+        let original_fields = record.fields.clone();
+        let source_masters: [String; 0] = [];
+        let mut ctx = PairCtx::with_source_and_target(
+            &interner,
+            FO76_MASTER_NAME,
+            &source_masters,
+            &masters,
+        );
+
+        Fo76Fo4Hook.post_translate(&mut ctx, &mut record).unwrap();
+
+        assert_eq!(record.fields, original_fields);
+    }
+
+    #[test]
+    fn post_translate_w05_nuke_base_outfit_fails_closed_on_malformed_vmad() {
+        let interner = StringInterner::new();
+        let mut record = make_record("NPC_", &interner);
+        push_field(
+            &mut record,
+            "VMAD",
+            raw_bytes(b"W05_ActorNukeReactionScript"),
+        );
+        push_field(&mut record, "DOFT", form_key_value(&interner, 0x58E6C7));
+        let original_fields = record.fields.clone();
+        let target_masters = [FO4_MASTER_NAME.to_string()];
+        let source_masters: [String; 0] = [];
+        let mut ctx = PairCtx::with_source_and_target(
+            &interner,
+            FO76_MASTER_NAME,
+            &source_masters,
+            &target_masters,
+        );
+
+        Fo76Fo4Hook.post_translate(&mut ctx, &mut record).unwrap();
+
+        assert_eq!(record.fields, original_fields);
     }

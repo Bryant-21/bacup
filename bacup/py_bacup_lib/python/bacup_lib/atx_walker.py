@@ -1,42 +1,19 @@
 """Atomic Shop (ATX) skin walker + heuristic weapon-sound discovery.
 
-The main dependency walker (``walker.py``) follows record→record and
-record→asset references but cannot find content that lives outside the
-record graph entirely:
+Scans the filesystem for content the record-graph dependency walker can't reach:
 
-  1. **ATX skins** — Fallout 76 ships paid weapon and armor paint variants
-     under ``materials/atx/<category>/<slug>/`` (and the matching textures
-     under ``textures/atx/<category>/<slug>/``), where ``<category>`` is
-     ``weapons`` or ``armor``. These are referenced by
-     ``MaterialSwap`` records in the FO76 master ESM, but the master ESM
-     records often live behind content-pack flags the walker doesn't
-     traverse, so the BGSMs/DDS are never discovered. Result: ported
-     weapons end up with the base skin only.
+- ATX skins: FO76 paint variants live under ``materials/atx/<weapons|armor>/<slug>/``
+  (textures under ``textures/atx/...``). Their MaterialSwap records sit behind
+  content-pack flags the walker doesn't traverse, so ported weapons get only the
+  base skin. For each weapon material slug in the graph, sibling ATX BGSMs are
+  parsed and one ``MaterialSwap`` is synthesized per skin variant, matched by
+  filename (``atx_<slug>_<part>_<variant>.bgsm``).
+- Weapon sounds: samples live under ``sound/fx/wpn/<weapon_name>/``, but FO76
+  SNDRs sometimes point at vanilla SMG paths or lack ``SoundFiles``. Subdirectories
+  whose names contain the weapon EditorID's tokens are added as sound assets
+  (``GaussPistol`` matches ``pistolgauss``; sound dirs swap the word order).
 
-  2. **Per-weapon sound samples** — FO76 weapons store fire/charge/reload
-     samples under ``sound/fx/wpn/<weapon_name>/``. These should be
-     pulled in via the ``SoundDescriptor.SoundFiles`` field on each
-     SNDR record, but the FO76 SNDRs sometimes reference vanilla SMG
-     paths (or are missing the field entirely), so the actual gauss
-     ``.wav`` files never make it into the mod even though the SNDR
-     records do.
-
-This module patches both gaps by walking the *filesystem* directly:
-
-  - For each weapon material slug already in the dependency graph
-    (e.g. ``gausspistol``), discover sibling ATX BGSMs, parse their
-    texture references, and synthesize one ``MaterialSwap`` record per
-    skin variant. The original→ATX substitution list is built from
-    filename pattern matching (``atx_<slug>_<part>_<variant>.bgsm``).
-
-  - For each weapon root, scan ``sound/fx/wpn/`` for subdirectories
-    whose names contain tokens from the weapon's EditorID. ``GaussPistol``
-    matches ``pistolgauss`` (Bethesda swaps the order in sound dirs).
-    All discovered ``.wav`` files are added as sound assets so the
-    scaffold phase copies them into the mod.
-
-Both discoveries are best-effort and silent on no-match: if no ATX
-content or sound files exist for the weapon, nothing is added.
+Both are best-effort; no match adds nothing.
 """
 from __future__ import annotations
 
@@ -59,8 +36,8 @@ _log = logging.getLogger("conversion.atx_walker")
 _ATX_BGSM_RE = re.compile(r"^atx_(.+)_([^_]+)\.bgsm$", re.IGNORECASE)
 
 
-# Texture field names on BGSMData that may carry references we want to walk.
-# Mirrors the field list in orchestrator._convert_bgsm.
+# Texture field names on BGSMData that may carry references to walk.
+# Mirrors the field list in workflows.asset_phases._convert_bgsm.
 _BGSM_TEXTURE_FIELDS = (
     "DiffuseTexture", "NormalTexture", "SmoothSpecTexture",
     "GreyscaleTexture", "GlowTexture", "WrinklesTexture",
@@ -80,17 +57,11 @@ class AtxDiscoveryResult:
 
 
 def _infer_extracted_dir(graph: DependencyGraph) -> str | None:
-    """Walk graph assets to find an extracted_dir root.
+    """Infer the extracted_dir root from a resolved asset; the graph doesn't store it.
 
-    The orchestrator stores ``extracted_dir`` on the runner, not the graph,
-    so we infer it from any resolved asset by stripping its source_path tail
-    off the resolved_path head.
-
-    Caveat: some assets store ``source_path`` *without* the standard data
-    subdir prefix — e.g. NIFs are stored as ``Weapons/Gun.nif`` not
-    ``Meshes/Weapons/Gun.nif``. Stripping naively would leave the inferred
-    root as ``.../extracted/fo76/Meshes`` instead of ``.../extracted/fo76``.
-    Fix: after the strip, peel off any trailing standard data subdir.
+    The root is resolved_path minus source_path. Some source paths omit the data
+    subdir (NIFs are ``Weapons/Gun.nif``, not ``Meshes/Weapons/Gun.nif``), so a
+    trailing standard subdir is peeled off the result.
     """
     standard_subdirs = ("meshes", "materials", "textures", "sound", "music", "interface", "scripts", "strings")
     for a in graph.all_assets:
@@ -195,22 +166,13 @@ def discover_atx_skins(
 ) -> AtxDiscoveryResult:
     """Discover ATX skin BGSMs+textures and synthesize MaterialSwap records.
 
-    For each unique ``materials/<category>/<slug>/`` directory referenced in
-    the existing dependency graph (``<category>`` is ``weapons`` or ``armor``;
-    both ship ATX paints), look for a ``materials/atx/<category>/<slug>/``
-    sibling under ``extracted_dir`` and pull in every ``atx_*.bgsm`` it finds.
-    Parses each ATX BGSM to capture its referenced textures (which may live
-    under ``textures/atx/<category>/<slug>/`` with a slightly different naming
-    convention — Bethesda inconsistency).
-
-    Groups the discovered ATX BGSMs by skin variant (matteblack,
-    secretservice, ...) and emits one synthesized ``MaterialSwap``
-    ``RecordNode`` per variant. The Substitutions list maps each original
-    BGSM path to the corresponding ATX BGSM, ready for the translator
-    and YAML writer to handle in their normal passes.
-
-    Returns an ``AtxDiscoveryResult`` with new assets and records that the
-    caller should append to ``graph.all_assets`` / ``graph.all_records``.
+    For each ``materials/<weapons|armor>/<slug>/`` dir in the graph, pulls every
+    ``atx_*.bgsm`` from the ``materials/atx/<category>/<slug>/`` sibling under
+    ``extracted_dir``, plus the textures each references (often under
+    ``textures/atx/<category>/<slug>/`` with inconsistent naming). Emits one
+    ``MaterialSwap`` per skin variant (matteblack, secretservice, ...) mapping each
+    original BGSM to its ATX counterpart. The caller appends the result to
+    ``graph.all_assets`` / ``graph.all_records``.
     """
     if extracted_dir is None:
         extracted_dir = _infer_extracted_dir(graph)
@@ -221,22 +183,15 @@ def discover_atx_skins(
     if not slugs:
         return AtxDiscoveryResult([], [], [])
 
-    # Slug guard: only walk slugs that belong to the root weapon's
-    # family. When a shared ATX style entry references materials for multiple
-    # weapon families (e.g. "MatteBlack" for gausspistol + gaussrifle +
-    # gaussshotgun), all three slugs appear in the graph. Without this guard
-    # we'd pull in ~48 MB of unrelated weapon textures per conversion.
+    # Walk only slugs from the root weapon's family. A shared ATX style (e.g.
+    # "MatteBlack" for gausspistol + gaussrifle + gaussshotgun) puts every family's
+    # slug in the graph, which would pull ~48 MB of unrelated textures per conversion.
     #
-    # ATX slugs are lowercased compound words (e.g. "gausspistol") with no
-    # internal separators. Root EditorIDs are CamelCase (e.g. "GaussPistol").
-    # We check substring containment: a slug is "primary" for this weapon if
-    # ALL root EID tokens that appear in at least one collected slug are
-    # present in that slug's string. Tokens that don't appear in any slug
-    # (e.g. mod author prefixes like "b21") are excluded from the filter —
-    # they can't distinguish weapon families anyway.
-    #
-    # If the root has no useful tokens (empty EID or only generic tokens),
-    # fall through with no filtering — safe fallback.
+    # ATX slugs are lowercased compound words ("gausspistol"); root EditorIDs are
+    # CamelCase ("GaussPistol"). A slug is kept if it contains every root EID token
+    # that appears in at least one collected slug. Tokens found in no slug (author
+    # prefixes like "b21") can't distinguish families and are ignored. No useful
+    # tokens means no filtering.
     root_tokens = _editor_id_tokens(graph.root.editor_id) if graph.root.editor_id else []
     if root_tokens:
         # Only keep tokens that actually appear in at least one slug string —
@@ -401,17 +356,11 @@ def discover_weapon_sounds(
     graph: DependencyGraph,
     extracted_dir: str | None = None,
 ) -> list[AssetRef]:
-    """Scan ``sound/fx/wpn/`` for files matching the weapon root's EID tokens.
+    """Collect ``.wav`` files from ``sound/fx/wpn/`` dirs whose name contains every
+    distinctive token of the weapon root's EditorID (case-insensitive).
 
-    For weapon roots, walks ``extracted_dir/sound/fx/wpn/`` and copies any
-    ``.wav`` whose containing directory name contains at least one
-    distinctive token from the weapon's EditorID. Token matching is
-    case-insensitive.
-
-    This is a heuristic — it will not find sounds in unusual layouts and
-    can over-match weapons whose names share substrings (e.g. ``Pistol``
-    matches every pistol). The token filter ``_GENERIC_WEAPON_TOKENS``
-    drops the obvious offenders.
+    Heuristic: unusual layouts are missed. ``_GENERIC_WEAPON_TOKENS`` are dropped
+    from the EditorID before matching.
     """
     if extracted_dir is None:
         extracted_dir = _infer_extracted_dir(graph)
@@ -475,13 +424,11 @@ def discover_weapon_sounds(
 # Per-weapon animation discovery
 # ----------------------------------------------------------------------------
 
-# FO76 weapon-specific animation clips live under per-weapon subdirectories of
-# these roots (3rd- and 1st-person, character and power-armor). A converted
-# weapon's additive RACE references these via SAPT paths, but the SGNM
-# behaviour graphs are all vanilla FO4 — so only the clip .hkx files need
-# converting + packing. The native dependency walker does not extract RACE
-# SAPT directories, so these are invisible to it; this filesystem pass fills
-# the gap, exactly as discover_weapon_sounds does for sound/fx/wpn.
+# FO76 weapon clips live in per-weapon subdirectories of these roots (3rd/1st
+# person, character and power armor). The converted weapon's additive RACE points
+# at them via SAPT, while the SGNM behaviour graphs are vanilla FO4, so only the
+# clip .hkx files need converting and packing. The native walker doesn't extract
+# RACE SAPT dirs; this filesystem pass covers them.
 _WEAPON_ANIM_ROOTS = (
     ("meshes", "actors", "character", "animations", "weapon"),
     ("meshes", "actors", "character", "_1stperson", "animations"),
@@ -496,14 +443,11 @@ def discover_weapon_animations(
 ) -> list[AssetRef]:
     """Scan FO76 per-weapon animation dirs for clips matching the root EID.
 
-    For each weapon-animation root (see ``_WEAPON_ANIM_ROOTS``), matches the
-    immediate subdirectory whose name contains *all* distinctive EditorID
-    tokens (e.g. ``GaussPistol`` -> ``gausspistol``) and emits every ``.hkx``
-    underneath as an ``animation`` asset. The all-tokens rule is what keeps
-    this scoped: a bare ``pistol`` or sibling ``gaussrifle`` dir does NOT match,
-    so we never convert (and thus override) vanilla shared-class animations.
-
-    Heuristic, like discover_weapon_sounds: silent when nothing matches.
+    Under each ``_WEAPON_ANIM_ROOTS`` entry, the immediate subdirectory whose name
+    contains *all* distinctive EditorID tokens (``GaussPistol`` -> ``gausspistol``)
+    contributes every ``.hkx`` beneath it as an ``animation`` asset. A bare
+    ``pistol`` or sibling ``gaussrifle`` dir never matches, so vanilla shared-class
+    animations are never overridden. Silent when nothing matches.
     """
     if extracted_dir is None:
         extracted_dir = _infer_extracted_dir(graph)

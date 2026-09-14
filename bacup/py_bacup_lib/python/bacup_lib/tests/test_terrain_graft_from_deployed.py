@@ -1,17 +1,13 @@
-"""Terrain graft sourcing for upgrade runs (Task 5).
+"""Terrain graft sourcing for upgrade runs.
 
-In upgrade mode the terrain LAND/NAVM graft sources from the live deployed
+In upgrade mode the terrain LAND/NAVM graft sources from the deployed
 ``SeventySix.esm`` instead of the run-local ``.regen_land_cache.esm``, and the
-legacy land-cache check/restore is skipped. These tests pin the two decision
-seams that implement that: ``_resolve_terrain_graft`` (the plan) and
-``_terrain_graft_source`` (the repointed prior-handle open-site), plus the
+land-cache check/restore is skipped. These tests pin ``_resolve_terrain_graft``
+(the plan), ``_terrain_graft_source`` (which prior handle is opened), and the
 threading through ``_build_options`` -> ``PluginPortOptions``.
 
-A full native-graft integration test is intentionally omitted: the native
-``graft_terrain`` phase is unchanged (it already accepts any prior FO4 output
-handle) and driving it needs a live ConversionRun with FO4 fixtures. The change
-under test is purely *which* prior handle is opened and *whether* the cache
-block runs -- exactly what these seams encapsulate.
+There is no native-graft integration test: ``graft_terrain`` accepts any prior
+FO4 output handle, and driving it needs a live ConversionRun with FO4 fixtures.
 """
 from pathlib import Path
 

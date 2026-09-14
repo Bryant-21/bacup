@@ -8,6 +8,7 @@ preferences, extraction, and database building.
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 
 from imgui_bundle import hello_imgui, imgui, immapp
@@ -18,8 +19,10 @@ from creation_lib.core.game_profiles import GAME_PROFILES
 from .app import set_window_icon as _set_window_icon
 from .app_paths import get_app_root, get_db_dir
 from .db_builder import DbBuilder
-from .path_detector import detect_game_path, validate_game_path
+from creation_lib.core.path_detector import detect_game_path, validate_game_path
 from .settings import ToolkitSettings
+from creation_lib.ui.theme import configure_runner_appearance, get_theme
+from creation_lib.ui.widgets.modern import action_button, heading, scaled, section, semantic_color, toggle
 
 _log = logging.getLogger("toolkit.setup_wizard")
 _DEFAULT_EXTRACT_WORKERS = 8
@@ -92,15 +95,28 @@ def _post_init() -> None:
 class _GameExtractor:
     """Background thread runner for extracting BA2/BSA archives."""
 
-    def __init__(self, games: list[tuple[str, str]], *, output_root: Path | None = None):
+    def __init__(
+        self,
+        games: list[tuple[str, str]],
+        *,
+        output_root: Path | None = None,
+        output_dirs: dict[str, Path] | None = None,
+    ):
         """games: list of (game_id, game_root_dir) tuples to extract.
 
         output_root: directory under which each game's `<game_id>/` extracted
         tree is written. Defaults to ``get_app_root()/extracted`` — never
         ``get_code_root()`` (that is ``_MEIPASS``, read-only in frozen builds).
+
+        output_dirs: optional per-game destinations that override output_root.
         """
         self._games = games
-        self._output_root = output_root if output_root is not None else get_app_root() / "extracted"
+        self._output_root = (
+            output_root
+            if output_root is not None
+            else get_app_root() / "extracted"
+        )
+        self._output_dirs = dict(output_dirs or {})
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._progress: float = 0.0
@@ -169,7 +185,7 @@ class _GameExtractor:
             game_base = idx / n
             game_share = 1.0 / n
 
-            output_dir = self._output_root / game_id
+            output_dir = self._output_dirs.get(game_id, self._output_root / game_id)
             self._set_state(
                 status=f"Extracting {profile.display_name} ({idx + 1}/{n})...",
                 progress=game_base,
@@ -188,6 +204,7 @@ class _GameExtractor:
                     continue
 
                 total = len(archives)
+                extraction_started = time.perf_counter()
                 workers = _default_extract_workers()
                 completed = 0
                 total_files = 0
@@ -217,7 +234,13 @@ class _GameExtractor:
                     return _progress
 
                 for archive_group in group_archives_by_update_phase(archives):
-                    for batch in plan_archive_extraction_batches(archive_group, workers):
+                    planning_started = time.perf_counter()
+                    batches = plan_archive_extraction_batches(archive_group, workers)
+                    _log.info(
+                        "Archive extraction planning: game=%s archives=%d elapsed_s=%.3f",
+                        game_id, len(archive_group), time.perf_counter() - planning_started,
+                    )
+                    for batch in batches:
                         _log.info(
                             "Archive extraction batch: game=%s %s",
                             game_id,
@@ -258,10 +281,11 @@ class _GameExtractor:
                     status=f"Extracted {profile.display_name} ({total} archives)",
                 )
                 _log.info(
-                    "Archive extraction finished: game=%s archives=%d files=%d",
+                    "Archive extraction finished: game=%s archives=%d files=%d elapsed_s=%.3f",
                     game_id,
                     total,
                     total_files,
+                    time.perf_counter() - extraction_started,
                 )
 
                 # Write manifest
@@ -341,7 +365,7 @@ class SetupWizard:
         params = hello_imgui.RunnerParams()
         params.app_window_params.window_title = "ModBox21 — Setup"
         set_ini_folder(params, "setup", get_ini_dir())
-        params.app_window_params.window_geometry.size = (700, 550)
+        params.app_window_params.window_geometry.size = (900, 680)
         params.app_window_params.window_geometry.window_size_state = (
             hello_imgui.WindowSizeState.standard
         )
@@ -359,6 +383,8 @@ class SetupWizard:
         params.fps_idling.enable_idling = True
         params.fps_idling.fps_idle = 20.0
 
+        theme = get_theme(self._settings.theme)
+        configure_runner_appearance(params, theme, getattr(self._settings, "theme_colors", {}).get(theme.id))
         immapp.run(runner_params=params)
         return self._completed
 
@@ -378,46 +404,44 @@ class SetupWizard:
         imgui.begin("##wizard", flags=flags)
 
         self._draw_header()
-        imgui.separator()
         imgui.spacing()
 
-        avail = imgui.get_content_region_avail()
-        imgui.begin_child("##step_content", imgui.ImVec2(0, avail.y - 50))
-        if self._step == STEP_WELCOME:
-            self._draw_welcome()
-        elif self._step == STEP_GAME_SELECT:
-            self._draw_game_select()
-        elif self._step == STEP_GAME_PATHS:
-            self._draw_game_paths()
-        elif self._step == STEP_EXTRACT:
-            self._draw_extract()
-        elif self._step == STEP_MOD_PREFIX:
-            self._draw_mod_prefix()
-        elif self._step == STEP_BUILD:
-            self._draw_build()
-        imgui.end_child()
+        height = max(scaled(80), imgui.get_content_region_avail().y - scaled(64))
+        with section("##step_content", height=height) as visible:
+            if visible:
+                if self._step == STEP_WELCOME:
+                    self._draw_welcome()
+                elif self._step == STEP_GAME_SELECT:
+                    self._draw_game_select()
+                elif self._step == STEP_GAME_PATHS:
+                    self._draw_game_paths()
+                elif self._step == STEP_EXTRACT:
+                    self._draw_extract()
+                elif self._step == STEP_MOD_PREFIX:
+                    self._draw_mod_prefix()
+                elif self._step == STEP_BUILD:
+                    self._draw_build()
 
-        imgui.separator()
+
+        imgui.spacing()
         self._draw_nav_buttons()
         imgui.end()
 
     def _draw_header(self):
-        imgui.text("Setup Wizard")
-        imgui.same_line(imgui.get_content_region_avail().x - 220)
-        imgui.text_disabled(
-            f"Step {self._step + 1} of {STEP_COUNT}: {_STEP_TITLES[self._step]}"
-        )
+        heading("ModBox21 Setup", large=True)
+        imgui.text_disabled(f"Step {self._step + 1} of {STEP_COUNT} · {_STEP_TITLES[self._step]}")
+        imgui.progress_bar((self._step + 1) / STEP_COUNT, imgui.ImVec2(-1, scaled(5)), "")
 
     def _draw_nav_buttons(self):
-        btn_w = 100.0
-        spacing = 10.0
+        btn_w = scaled(120)
+        spacing = imgui.get_style().item_spacing.x
 
         # Don't show Cancel/Back/Next during active extraction or build
         extracting = self._extractor and not self._extractor.done
         footer_avail_x = imgui.get_content_region_avail().x
 
         if self._step < STEP_BUILD and not extracting:
-            if imgui.button("Cancel", imgui.ImVec2(btn_w, 0)):
+            if action_button("Cancel", width=btn_w):
                 self._cancelled = True
                 hello_imgui.get_runner_params().app_shall_exit = True
 
@@ -430,7 +454,7 @@ class SetupWizard:
             imgui.same_line(max(0.0, footer_avail_x - right_width))
 
         if show_back:
-            if imgui.button("Back", imgui.ImVec2(btn_w, 0)):
+            if action_button("Back", width=btn_w):
                 prev = self._step - 1
                 # Skip extract step going back if all games have extracted dirs
                 if prev == STEP_EXTRACT and not self._games_needing_extraction():
@@ -445,7 +469,7 @@ class SetupWizard:
                 imgui.begin_disabled()
 
             label = "Next" if self._step < STEP_MOD_PREFIX else "Finish"
-            if imgui.button(label, imgui.ImVec2(btn_w, 0)):
+            if action_button(label, primary=True, width=btn_w):
                 if self._step == STEP_GAME_PATHS:
                     # After paths: go to extract if any games lack extracted dirs
                     if self._games_needing_extraction():
@@ -478,7 +502,7 @@ class SetupWizard:
             build_done = all_done or self._build_skipped
             if not build_done:
                 imgui.begin_disabled()
-            if imgui.button("Done", imgui.ImVec2(btn_w, 0)):
+            if action_button("Done", primary=True, width=btn_w):
                 self._completed = True
                 hello_imgui.get_runner_params().app_shall_exit = True
             if not build_done:
@@ -533,7 +557,7 @@ class SetupWizard:
     def _draw_welcome(self):
         imgui.spacing()
         imgui.spacing()
-        imgui.text("Welcome to the ModBox21!")
+        heading("Welcome to the ModBox21!")
         imgui.spacing()
         imgui.text_wrapped(
             "This wizard will help you set up the toolkit for one or more "
@@ -550,7 +574,7 @@ class SetupWizard:
         imgui.text_disabled("Click Next to begin.")
 
     def _draw_game_select(self):
-        imgui.text("Select Games to Configure")
+        heading("Select Games to Configure")
         imgui.spacing()
         imgui.text_wrapped(
             "Choose which games you want to set up. You can add more games "
@@ -560,7 +584,7 @@ class SetupWizard:
         imgui.spacing()
 
         for profile in self._moddable_games:
-            changed, val = imgui.checkbox(
+            changed, val = toggle(
                 f"{profile.display_name}##{profile.id}",
                 self._selected_games[profile.id],
             )
@@ -572,13 +596,13 @@ class SetupWizard:
             if gp["auto"] and gp["valid"]:
                 imgui.same_line()
                 imgui.text_colored(
-                    imgui.ImVec4(0.4, 0.8, 0.4, 1.0),
+                    semantic_color("success"),
                     "(auto-detected)",
                 )
             imgui.spacing()
 
     def _draw_game_paths(self):
-        imgui.text("Game Paths & Data")
+        heading("Game Paths & Data")
         imgui.spacing()
         imgui.text_wrapped(
             "Set the installation directory and (optionally) an extracted data folder "
@@ -599,7 +623,7 @@ class SetupWizard:
             imgui.text(profile.display_name)
             if gp["auto"]:
                 imgui.same_line()
-                imgui.text_colored(imgui.ImVec4(0.4, 0.8, 0.4, 1.0), "(auto-detected)")
+                imgui.text_colored(semantic_color("success"), "(auto-detected)")
 
             # Base install dir
             imgui.text_disabled("Install Directory:")
@@ -622,12 +646,12 @@ class SetupWizard:
                 if gp["valid"]:
                     exe = profile.executable_name or "executable"
                     imgui.text_colored(
-                        imgui.ImVec4(0.3, 0.9, 0.3, 1.0),
+                        semantic_color("success"),
                         f"Valid — {exe} and Data/ found.",
                     )
                 else:
                     imgui.text_colored(
-                        imgui.ImVec4(1.0, 0.3, 0.3, 1.0),
+                        semantic_color("error"),
                         "Invalid — executable or Data/ not found.",
                     )
             else:
@@ -655,12 +679,12 @@ class SetupWizard:
                 if self._extracted_dirs[gid]:
                     if self._extracted_valid[gid]:
                         imgui.text_colored(
-                            imgui.ImVec4(0.3, 0.9, 0.3, 1.0),
+                            semantic_color("success"),
                             "Valid — Meshes/ directory found.",
                         )
                     else:
                         imgui.text_colored(
-                            imgui.ImVec4(1.0, 0.8, 0.3, 1.0),
+                            semantic_color("warning"),
                             "No Meshes/ directory found — will check subdirectories.",
                         )
 
@@ -670,10 +694,10 @@ class SetupWizard:
             imgui.spacing()
 
     def _draw_extract(self):
-        imgui.text("Extract Game Data")
+        heading("Extract Game Data")
         imgui.spacing()
         imgui.text_colored(
-            imgui.ImVec4(1.0, 1.0, 1.0, 1.0),
+            semantic_color("text"),
             "Extracted game data is required for enhanced features.",
         )
         imgui.text_wrapped(
@@ -703,13 +727,13 @@ class SetupWizard:
                 if self._extractor.error:
                     imgui.spacing()
                     imgui.text_colored(
-                        imgui.ImVec4(1.0, 0.3, 0.3, 1.0),
+                        semantic_color("error"),
                         f"Extraction error: {self._extractor.error}",
                     )
                 else:
                     imgui.spacing()
                     imgui.text_colored(
-                        imgui.ImVec4(0.3, 0.9, 0.3, 1.0),
+                        semantic_color("success"),
                         "Extraction complete!",
                     )
                 imgui.spacing()
@@ -720,7 +744,7 @@ class SetupWizard:
         needs = self._games_needing_extraction()
         if not needs:
             imgui.text_colored(
-                imgui.ImVec4(0.4, 0.8, 0.4, 1.0),
+                semantic_color("success"),
                 "All selected games have extracted data directories.",
             )
             self._skip_extract_confirmed = True
@@ -746,7 +770,7 @@ class SetupWizard:
             profile = GAME_PROFILES.get(gid)
             if not profile:
                 continue
-            _, self._extract_games[gid] = imgui.checkbox(
+            _, self._extract_games[gid] = toggle(
                 f"{profile.display_name}##{gid}",
                 self._extract_games.get(gid, True),
             )
@@ -758,14 +782,14 @@ class SetupWizard:
 
         if any_selected:
             self._skip_extract_confirmed = False
-            if imgui.button("Extract Now", imgui.ImVec2(120, 0)):
+            if action_button("Extract Now", primary=True, width=scaled(140)):
                 self._start_extraction()
             imgui.same_line()
             imgui.text_disabled("This may take a while depending on game size.")
         else:
             # No games selected for extraction — show warning
             imgui.text_colored(
-                imgui.ImVec4(1.0, 0.8, 0.3, 1.0),
+                semantic_color("warning"),
                 "Warning:",
             )
             imgui.same_line()
@@ -775,7 +799,7 @@ class SetupWizard:
                 "NIF mesh and behavior indexing will also take longer."
             )
             imgui.spacing()
-            _, self._skip_extract_confirmed = imgui.checkbox(
+            _, self._skip_extract_confirmed = toggle(
                 "I understand — continue without extracting",
                 self._skip_extract_confirmed,
             )
@@ -849,7 +873,7 @@ class SetupWizard:
             self._settings.set_active_game(first_game)
 
     def _draw_build(self):
-        imgui.text("Extract YAML & Build Indexes")
+        heading("Extract YAML & Build Indexes")
         imgui.spacing()
         imgui.text_wrapped(
             "ModBox21 serializes your game's ESM/ESL plugins into YAML, "
@@ -858,7 +882,7 @@ class SetupWizard:
         )
         imgui.spacing()
         imgui.text_colored(
-            imgui.ImVec4(1.0, 1.0, 1.0, 1.0),
+            semantic_color("text"),
             "This step is optional.",
         )
         imgui.text_disabled("You can skip it and run it later from Settings > Indexes.")
@@ -876,7 +900,7 @@ class SetupWizard:
         all_exist = not any(self._build_indexes.values())
         if all_exist and not self._build_started:
             imgui.text_colored(
-                imgui.ImVec4(0.4, 0.8, 0.4, 1.0),
+                semantic_color("success"),
                 "All selected indexes already exist. No build needed.",
             )
             self._build_skipped = True
@@ -906,28 +930,28 @@ class SetupWizard:
 
                 rkey = f"{gid}:records"
                 if has_db_indexes and rkey in self._build_indexes:
-                    _, self._build_indexes[rkey] = imgui.checkbox(
+                    _, self._build_indexes[rkey] = toggle(
                         f"Extract YAML + Records Index (enables Search)##{gid}",
                         self._build_indexes[rkey],
                     )
 
                 nkey = f"{gid}:nifs"
                 if has_db_indexes and nkey in self._build_indexes:
-                    _, self._build_indexes[nkey] = imgui.checkbox(
+                    _, self._build_indexes[nkey] = toggle(
                         f"NIF Mesh Index — requires extracted files##{gid}",
                         self._build_indexes[nkey],
                     )
 
                 bkey = f"{gid}:behaviors"
                 if has_db_indexes and bkey in self._build_indexes and p.has_havok_behaviors:
-                    _, self._build_indexes[bkey] = imgui.checkbox(
+                    _, self._build_indexes[bkey] = toggle(
                         f"Havok Behavior Index — requires extracted files##{gid}",
                         self._build_indexes[bkey],
                     )
 
                 vkey = f"{gid}:voice_reference"
                 if vkey in self._build_indexes:
-                    _, self._build_indexes[vkey] = imgui.checkbox(
+                    _, self._build_indexes[vkey] = toggle(
                         f"Voice Reference Index — enables Voice Browser##{gid}",
                         self._build_indexes[vkey],
                     )
@@ -948,7 +972,7 @@ class SetupWizard:
             any_selected = any(self._build_indexes.values())
             if not any_selected:
                 imgui.begin_disabled()
-            if imgui.button("Build Now", imgui.ImVec2(100, 0)):
+            if action_button("Build Now", primary=True, width=scaled(140)):
                 self._start_build()
             if not any_selected:
                 imgui.end_disabled()
@@ -987,7 +1011,7 @@ class SetupWizard:
                 imgui.spacing()
                 if self._builder.error:
                     imgui.text_colored(
-                        imgui.ImVec4(1.0, 0.3, 0.3, 1.0),
+                        semantic_color("error"),
                         f"Build error: {self._builder.error}",
                     )
                     imgui.text_disabled(
@@ -995,7 +1019,7 @@ class SetupWizard:
                     )
                 else:
                     imgui.text_colored(
-                        imgui.ImVec4(0.3, 0.9, 0.3, 1.0), "Build complete!"
+                        semantic_color("success"), "Build complete!"
                     )
                 imgui.spacing()
                 imgui.text_disabled("Click Done to start the toolkit.")

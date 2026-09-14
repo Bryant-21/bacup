@@ -48,7 +48,7 @@ impl Fixup for RewriteRawLctnFormIdsFixup {
         mapper: &mut FormKeyMapper,
         config: &FixupConfig,
     ) -> Result<FixupReport, FixupError> {
-        rewrite_lctn_raw_formids(session, mapper, config.defer_placed_child_ref_class)
+        rewrite_lctn_raw_formids(session, mapper, config.defer_placed_child_ref_class, true)
     }
 }
 
@@ -60,13 +60,14 @@ pub fn repair_lctn_raw_formids(
     mapper: &mut FormKeyMapper,
     _config: &FixupConfig,
 ) -> Result<FixupReport, FixupError> {
-    rewrite_lctn_raw_formids(session, mapper, false)
+    rewrite_lctn_raw_formids(session, mapper, false, true)
 }
 
 fn rewrite_lctn_raw_formids(
     session: &mut PluginSession,
     mapper: &mut FormKeyMapper,
     defer_placed_child_special_refs: bool,
+    batch_unique_lctn: bool,
 ) -> Result<FixupReport, FixupError> {
     let target_schema = session
         .schema()
@@ -80,15 +81,13 @@ fn rewrite_lctn_raw_formids(
     }
 
     let mut encoded_targets = encoded_targets_by_source_object_id(mapper, session.target_masters());
-    // LCTN LCPR/LCSR rows reference placed REFR/ACHR records, which reach the
-    // target through the cell-slice copy path — that path bypasses the
-    // FormKeyMapper, so those refs never land in `source_to_target`. Their
-    // object ids are preserved on copy, so the only valid target encoding is the
-    // own-plugin one. Register every surviving own record here; otherwise the row
-    // pruning below treats each special/persistent ref as an unresolved
-    // source-local and drops the entire array, wiping the location's Special Ref
-    // data (CK "Special Ref X is not in the Special Ref data").
-    augment_encoded_targets_with_own_records(session, &mut encoded_targets, mapper.interner)?;
+    // LCPR/LCSR rows reference placed REFR/ACHR records that arrive via the
+    // cell-slice copy, which bypasses the FormKeyMapper, so they are absent from
+    // `source_to_target`. Object ids are preserved on copy, so every surviving own
+    // record is registered with its own-plugin encoding. Otherwise the row pruning
+    // below drops the whole array as unresolved source-locals, wiping the location's
+    // Special Ref data (CK "Special Ref X is not in the Special Ref data").
+    augment_encoded_targets_with_own_records(session, &mut encoded_targets);
     if encoded_targets.is_empty() {
         return Ok(FixupReport::empty());
     }
@@ -100,6 +99,10 @@ fn rewrite_lctn_raw_formids(
     });
 
     let mut report = FixupReport::empty();
+    let mut seen_lctn = FxHashSet::default();
+    let batch_lctn_replacements =
+        batch_unique_lctn && lctn_fks.iter().all(|fk| seen_lctn.insert(*fk));
+    let mut lctn_replacements = Vec::new();
     for fk in lctn_fks {
         let mut record = match session.record_decoded(&fk, target_schema.as_ref(), mapper.interner)
         {
@@ -119,11 +122,24 @@ fn rewrite_lctn_raw_formids(
             defer_placed_child_special_refs,
             persistence_index.as_ref(),
         ) {
-            session
-                .replace_record_contents(record, target_schema.as_ref(), mapper.interner)
-                .map_err(|e| FixupError::HandleError(e.to_string()))?;
+            if batch_lctn_replacements {
+                lctn_replacements.push(record);
+            } else {
+                session
+                    .replace_record_contents(record, target_schema.as_ref(), mapper.interner)
+                    .map_err(|e| FixupError::HandleError(e.to_string()))?;
+            }
             report.records_changed += 1;
         }
+    }
+    if !lctn_replacements.is_empty() {
+        session
+            .replace_records_contents_preserving_prefix(
+                lctn_replacements,
+                target_schema.as_ref(),
+                mapper.interner,
+            )
+            .map_err(|e| FixupError::HandleError(e.to_string()))?;
     }
     if !defer_placed_child_special_refs {
         report.records_changed += strip_nonpersistent_nonactor_placed_ref_xlcn(session) as u32;
@@ -164,23 +180,11 @@ fn encoded_targets_by_source_object_id(
 fn augment_encoded_targets_with_own_records(
     session: &mut PluginSession,
     encoded_targets: &mut FxHashMap<u32, u32>,
-    interner: &StringInterner,
-) -> Result<(), FixupError> {
+) {
     let target_masters = session.target_masters().to_vec();
     let own_index = target_masters.len() as u32;
-    let sigs = session
-        .target_signatures()
-        .map_err(|e| FixupError::HandleError(e.to_string()))?;
-    for sig in sigs {
-        let fks = session
-            .form_keys_of_sig(sig, interner)
-            .map_err(|e| FixupError::HandleError(e.to_string()))?;
-        let encoded = fks
-            .into_iter()
-            .filter_map(|fk| encode_target_form_id(fk, interner, &target_masters));
-        augment_with_own_encoded_form_ids(encoded_targets, encoded, own_index);
-    }
-    Ok(())
+    let signatures = session.encoded_target_record_signatures(&target_masters);
+    augment_with_own_encoded_form_ids(encoded_targets, signatures.keys().copied(), own_index);
 }
 
 fn augment_with_own_encoded_form_ids(
@@ -706,18 +710,19 @@ impl LctnPersistenceLocationIndex {
 
     fn collect_record(&mut self, record: &ParsedRecord, current_world: Option<u32>) {
         let object_id = record.form_id & 0x00FF_FFFF;
-        let subrecords = effective_subrecords_for_record(record);
         match record.signature.as_str() {
             "WRLD" => {
                 self.worlds.insert(object_id);
             }
             "LCTN" => {
+                let subrecords = effective_subrecords_for_record(record);
                 self.locations.insert(object_id);
                 if let Some(parent) = parsed_subrecords_raw_form_id(subrecords.as_ref(), "PNAM") {
                     self.location_parents.insert(object_id, parent);
                 }
             }
             "CELL" => {
+                let subrecords = effective_subrecords_for_record(record);
                 let location = parsed_subrecords_raw_form_id(subrecords.as_ref(), "XLCN");
                 self.interior_cells.insert(object_id, location);
                 if let (Some(world), Some((x, y))) =
@@ -1581,6 +1586,331 @@ mod tests {
         apply_lctn_persistence_moves(items, &mut moves, &mut changed);
         report.refs_changed = apply_ref_location_actions(items, &actions, &mut changed);
         report
+    }
+
+    #[test]
+    fn location_index_reads_only_lctn_and_cell_subrecords() {
+        const WORLD: u32 = 0x0700_0100;
+        const LOCATION: u32 = 0x0700_0200;
+        const PARENT: u32 = 0x0700_0201;
+        const CELL: u32 = 0x0700_0300;
+        let irrelevant_raw = ParsedRecord {
+            signature: "STAT".into(),
+            form_id: 0x0700_0400,
+            flags: 1 << 18,
+            version_control: 0,
+            form_version: Some(131),
+            version2: None,
+            subrecords: Vec::new(),
+            raw_payload: Some(Bytes::from_static(b"not a compressed record payload")),
+            parse_error: None,
+        };
+        let items = vec![
+            ParsedItem::Record(irrelevant_raw),
+            ParsedItem::Record(parsed_record(
+                "LCTN",
+                LOCATION,
+                vec![parsed_subrecord("PNAM", PARENT.to_le_bytes().to_vec())],
+            )),
+            ParsedItem::Record(parsed_record("WRLD", WORLD, vec![])),
+            world_children_group(
+                WORLD,
+                vec![ParsedItem::Record(parsed_cell_record(
+                    CELL,
+                    4,
+                    5,
+                    Some(LOCATION),
+                ))],
+            ),
+        ];
+
+        let index = LctnPersistenceLocationIndex::from_items(&items, 7);
+        assert!(index.worlds.contains(&(WORLD & 0x00FF_FFFF)));
+        assert!(index.locations.contains(&(LOCATION & 0x00FF_FFFF)));
+        assert_eq!(
+            index.location_parents.get(&(LOCATION & 0x00FF_FFFF)),
+            Some(&PARENT)
+        );
+        assert_eq!(
+            index.exterior_cells.get(&(WORLD & 0x00FF_FFFF, 4, 5)),
+            Some(&Some(LOCATION))
+        );
+        assert!(!index.locations.contains(&(0x0700_0400 & 0x00FF_FFFF)));
+    }
+
+    fn run_normalize_and_location_repairs(
+        handle: u64,
+        normalize: bool,
+        shared: bool,
+    ) -> (String, serde_json::Value, f64) {
+        use crate::fixups::normalize_placed_records::{
+            normalize_copied_placed_records, normalize_copied_placed_records_in_session,
+        };
+        use crate::formkey_mapper::{MapperOptions, MapperState};
+        use crate::session::open_session;
+        let signatures = ["REFR", "ACHR", "PGRE", "PHZD"].map(str::to_string);
+        let interner = StringInterner::new();
+        let mut state = MapperState::new([], MapperOptions::default());
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let started = std::time::Instant::now();
+        let mut normalization = Default::default();
+        if normalize && !shared {
+            normalization = normalize_copied_placed_records(handle, &signatures).unwrap();
+        }
+        let mut session = open_session(handle, None).unwrap();
+        if normalize && shared {
+            normalization =
+                normalize_copied_placed_records_in_session(&mut session, &interner, &signatures)
+                    .unwrap();
+            session.flush_pending_effects();
+        }
+        let report =
+            repair_lctn_raw_formids(&mut session, &mut mapper, &FixupConfig::default()).unwrap();
+        let elapsed = started.elapsed().as_secs_f64();
+        let report = serde_json::json!({
+            "changed": report.records_changed, "added": report.records_added,
+            "dropped": report.records_dropped, "elapsed_ms": report.elapsed_ms,
+            "iteration": report.iteration, "status": format!("{:?}", report.status),
+            "scope": format!("{:?}", report.scope), "addon_index_remap": report.addon_index_remap,
+            "warnings": report.warnings.iter().map(|s| interner.resolve(*s)).collect::<Vec<_>>(),
+            "diagnostics": report.diagnostics.iter().map(|s| interner.resolve(*s)).collect::<Vec<_>>(),
+            "message": report.message.and_then(|s| interner.resolve(s)),
+        });
+        (format!("{normalization:?}"), report, elapsed)
+    }
+
+    fn assert_identical_plugin_files(first: &std::path::Path, second: &std::path::Path) -> String {
+        use std::io::Read;
+        let mut first = std::io::BufReader::new(std::fs::File::open(first).unwrap());
+        let mut second = std::io::BufReader::new(std::fs::File::open(second).unwrap());
+        let mut left = vec![0u8; 1024 * 1024];
+        let mut right = vec![0u8; left.len()];
+        let mut digest = blake3::Hasher::new();
+        loop {
+            let count = first.read(&mut left).unwrap();
+            if count == 0 {
+                assert_eq!(second.read(&mut right[..1]).unwrap(), 0);
+                break;
+            }
+            second.read_exact(&mut right[..count]).unwrap();
+            assert_eq!(&left[..count], &right[..count]);
+            digest.update(&left[..count]);
+        }
+        digest.finalize().to_hex().to_string()
+    }
+
+    #[test]
+    fn shared_repair_session_preserves_pair_gates_reports_and_complete_plugin_bytes() {
+        use crate::run::OwnedPluginHandle;
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_save_no_py, plugin_handle_store_ref,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        for source in ["fo76", "skyrimse", "fnv", "fo3"] {
+            let mut reports = Vec::new();
+            for shared in [false, true] {
+                let handle = OwnedPluginHandle::new("Converted.esm", "fo4");
+                {
+                    let mut store = plugin_handle_store_ref().lock().unwrap();
+                    let slot = store.get_mut(&handle.id()).unwrap();
+                    slot.parsed.header.masters = (0..7).map(|i| format!("Master{i}.esm")).collect();
+                    slot.parsed.root_items = reconcile_test_items(None);
+                    let placed = find_record_mut(&mut slot.parsed.root_items, 0x077FF721).unwrap();
+                    placed.subrecords.push(parsed_subrecord("XOWN", vec![]));
+                    slot.invalidate_sections();
+                }
+                let (normalization, report, _) =
+                    run_normalize_and_location_repairs(handle.id(), source == "fo76", shared);
+                assert!(report["changed"].as_u64().unwrap() > 0);
+                if source == "fo76" {
+                    assert!(normalization.contains("empty_xown_stripped: 1"));
+                } else {
+                    assert!(normalization.contains("records_seen: 0"));
+                }
+                reports.push((normalization, report));
+                let output = temp.path().join(format!("{shared}.esm"));
+                plugin_handle_save_no_py(handle.id(), output.to_str().unwrap()).unwrap();
+            }
+            assert_eq!(reports[0], reports[1], "{source}");
+            assert_identical_plugin_files(
+                &temp.path().join("false.esm"),
+                &temp.path().join("true.esm"),
+            );
+        }
+    }
+
+    fn run_lctn_content_mode(
+        items: Vec<ParsedItem>,
+        batch_unique_lctn: bool,
+        output: &std::path::Path,
+    ) -> (serde_json::Value, f64) {
+        use crate::formkey_mapper::{MapperOptions, MapperState};
+        use crate::run::OwnedPluginHandle;
+        use crate::session::open_session;
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_save_no_py, plugin_handle_store_ref,
+        };
+        let handle = OwnedPluginHandle::new("Converted.esm", "fo4");
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle.id()).unwrap();
+            slot.parsed.header.masters = (0..7).map(|i| format!("Master{i}.esm")).collect();
+            slot.parsed.root_items = items;
+            slot.invalidate_sections();
+        }
+        let interner = StringInterner::new();
+        let mut state = MapperState::new([], MapperOptions::default());
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let started = std::time::Instant::now();
+        let mut session = open_session(handle.id(), None).unwrap();
+        let report =
+            rewrite_lctn_raw_formids(&mut session, &mut mapper, false, batch_unique_lctn).unwrap();
+        session.flush_pending_effects();
+        drop(session);
+        let elapsed = started.elapsed().as_secs_f64();
+        plugin_handle_save_no_py(handle.id(), output.to_str().unwrap()).unwrap();
+        let report = serde_json::json!({
+            "changed": report.records_changed,
+            "added": report.records_added,
+            "dropped": report.records_dropped,
+            "elapsed_ms": report.elapsed_ms,
+            "iteration": report.iteration,
+            "status": format!("{:?}", report.status),
+            "scope": format!("{:?}", report.scope),
+            "addon_index_remap": report.addon_index_remap,
+            "warnings": report.warnings.iter().map(|s| interner.resolve(*s)).collect::<Vec<_>>(),
+            "diagnostics": report.diagnostics.iter().map(|s| interner.resolve(*s)).collect::<Vec<_>>(),
+            "message": report.message.and_then(|s| interner.resolve(s)),
+        });
+        (report, elapsed)
+    }
+
+    #[test]
+    fn batched_lctn_contents_match_sequential_bytes_reports_and_duplicate_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        for duplicate_lctn in [false, true] {
+            let mut items = reconcile_test_items(None);
+            if duplicate_lctn {
+                let duplicate = items
+                    .iter()
+                    .find_map(|item| match item {
+                        ParsedItem::Record(record) if record.signature.as_str() == "LCTN" => {
+                            Some(ParsedItem::Record(record.clone()))
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                items.insert(1, duplicate);
+            }
+            let sequential = temp.path().join(format!("{duplicate_lctn}-sequential.esm"));
+            let batched = temp.path().join(format!("{duplicate_lctn}-batched.esm"));
+            let sequential_report = run_lctn_content_mode(items.clone(), false, &sequential).0;
+            let batched_report = run_lctn_content_mode(items, true, &batched).0;
+            assert_eq!(sequential_report, batched_report);
+            assert_identical_plugin_files(&sequential, &batched);
+        }
+    }
+
+    #[test]
+    #[ignore = "cold synthetic benchmark"]
+    fn benchmark_batched_lctn_contents_against_sequential_replacements() {
+        const BACKGROUND: u32 = 200_000;
+        const CHANGED_LCTN: u32 = 313;
+        const WORLD: u32 = 0x0705_0000;
+        let mut lctn_items = Vec::with_capacity((CHANGED_LCTN + 1) as usize);
+        lctn_items.push(ParsedItem::Record(parsed_record("WRLD", WORLD, vec![])));
+        for index in 0..CHANGED_LCTN {
+            lctn_items.push(ParsedItem::Record(lctn_cell_record(
+                0x0706_0000 + index,
+                WORLD & 0x00FF_FFFF,
+                index as i16,
+                0,
+            )));
+        }
+        let mut background = Vec::with_capacity(BACKGROUND as usize);
+        for index in 0..BACKGROUND {
+            let mut record = parsed_record("REFR", 0x0710_0000 + index, vec![]);
+            if index % 3 == 0 {
+                record.raw_payload = Some(Bytes::new());
+            }
+            background.push(ParsedItem::Record(record));
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        for late_lctn in [false, true] {
+            let mut items = Vec::with_capacity((BACKGROUND + CHANGED_LCTN + 1) as usize);
+            if late_lctn {
+                items.extend(background.iter().cloned());
+                items.extend(lctn_items.iter().cloned());
+            } else {
+                items.extend(lctn_items.iter().cloned());
+                items.extend(background.iter().cloned());
+            }
+            let mut sequential = Vec::new();
+            let mut batched = Vec::new();
+            for sample in 0..6 {
+                let modes = if sample % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                };
+                let mut reports = Vec::new();
+                let mut outputs = Vec::new();
+                for batch in modes {
+                    let output = temp
+                        .path()
+                        .join(format!("{late_lctn}-{sample}-{batch}.esm"));
+                    let (report, elapsed) = run_lctn_content_mode(items.clone(), batch, &output);
+                    if batch {
+                        batched.push(elapsed);
+                    } else {
+                        sequential.push(elapsed);
+                    }
+                    assert_eq!(report["changed"].as_u64(), Some(CHANGED_LCTN as u64));
+                    reports.push(report);
+                    outputs.push(output);
+                }
+                assert_eq!(reports[0], reports[1]);
+                assert_identical_plugin_files(&outputs[0], &outputs[1]);
+            }
+            eprintln!(
+                "lctn_content_batch late_lctn={late_lctn} background={BACKGROUND} expected_changed={CHANGED_LCTN} sequential_seconds={sequential:?} batched_seconds={batched:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires PLACED_REPAIR_CORPUS and optional PLACED_REPAIR_REPORT"]
+    fn shared_repair_session_preserves_complete_plugin_corpus() {
+        use crate::run::OwnedPluginHandle;
+        use esp_authoring_core::plugin_runtime::plugin_handle_save_no_py;
+        let path = std::path::PathBuf::from(std::env::var_os("PLACED_REPAIR_CORPUS").unwrap());
+        let temp = tempfile::tempdir().unwrap();
+        let mut reports = Vec::new();
+        let mut times = Vec::new();
+        for shared in [false, true] {
+            let handle = OwnedPluginHandle::load(&path, "fo4", None).unwrap();
+            let (normalization, report, seconds) =
+                run_normalize_and_location_repairs(handle.id(), true, shared);
+            reports.push((normalization, report));
+            times.push(seconds);
+            let output = temp.path().join(format!("{shared}.esm"));
+            plugin_handle_save_no_py(handle.id(), output.to_str().unwrap()).unwrap();
+        }
+        assert_eq!(reports[0], reports[1]);
+        let baseline = temp.path().join("false.esm");
+        let optimized = temp.path().join("true.esm");
+        let digest = assert_identical_plugin_files(&baseline, &optimized);
+        let report = serde_json::json!({
+            "source": path, "bytes": std::fs::metadata(&optimized).unwrap().len(),
+            "identical": true, "digest": digest,
+            "separate_sessions_seconds": times[0], "shared_session_seconds": times[1],
+            "normalization": reports[1].0, "location": reports[1].1,
+        });
+        eprintln!("{report}");
+        if let Some(path) = std::env::var_os("PLACED_REPAIR_REPORT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        }
     }
 
     #[test]

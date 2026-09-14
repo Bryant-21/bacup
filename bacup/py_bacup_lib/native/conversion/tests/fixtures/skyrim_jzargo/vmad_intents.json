@@ -1,0 +1,239 @@
+{
+  "version": 1,
+  "bindings": [
+    {
+      "carrier": {
+        "signature": "QUST",
+        "source_form_key": "0958B3:Skyrim.esm"
+      },
+      "attachment": {
+        "kind": "quest-stage-fragment",
+        "stages": [10, 20, 30, 200, 255]
+      },
+      "class_name": "QF_MGRJzargoSpell01_000958B3",
+      "properties": [
+        {
+          "name": "Alias_Jzargo",
+          "papyrus_type": "ReferenceAlias",
+          "flags": ["Auto", "Const"],
+          "target": {
+            "kind": "quest-alias",
+            "alias_id": 0
+          }
+        },
+        {
+          "name": "Scroll01",
+          "papyrus_type": "Form",
+          "flags": ["Auto", "Const"],
+          "target": {
+            "kind": "form",
+            "source_form_key": "0967E3:Skyrim.esm"
+          }
+        },
+        {
+          "name": "CompletionMusic",
+          "papyrus_type": "MusicType",
+          "flags": ["Auto", "Const"],
+          "target": {
+            "kind": "form",
+            "source_form_key": "07F810:Skyrim.esm"
+          }
+        }
+      ]
+    },
+    {
+      "carrier": {
+        "signature": "QUST",
+        "source_form_key": "0958B3:Skyrim.esm"
+      },
+      "attachment": {
+        "kind": "record-script"
+      },
+      "class_name": "MGRJzargoSpell01QuestScript",
+      "properties": [
+        {
+          "name": "MGRJ1Total",
+          "papyrus_type": "GlobalVariable",
+          "flags": ["Auto", "Const"],
+          "target": {
+            "kind": "form",
+            "source_form_key": "097EE6:Skyrim.esm"
+          }
+        },
+        {
+          "name": "MGRJ1Test",
+          "papyrus_type": "GlobalVariable",
+          "flags": ["Auto", "Const"],
+          "target": {
+            "kind": "form",
+            "source_form_key": "097EE5:Skyrim.esm"
+          }
+        },
+        {
+          "name": "HelpAsked",
+          "papyrus_type": "Int",
+          "flags": ["Auto"],
+          "target": {
+            "kind": "literal",
+            "value": 0
+          }
+        },
+        {
+          "name": "EffectTriggered",
+          "papyrus_type": "Int",
+          "flags": ["Auto"],
+          "target": {
+            "kind": "literal",
+            "value": 0
+          }
+        }
+      ]
+    },
+    {
+      "carrier": {
+        "signature": "MGEF",
+        "source_form_key": "097EE1:Skyrim.esm"
+      },
+      "attachment": {
+        "kind": "record-script"
+      },
+      "class_name": "MGRJzargoFlameEffectScript",
+      "properties": [
+        {
+          "name": "FireballExplosion",
+          "papyrus_type": "Explosion",
+          "flags": ["Auto", "Const"],
+          "target": {
+            "kind": "form",
+            "source_form_key": "097EE4:Skyrim.esm"
+          }
+        },
+        {
+          "name": "Jzargo01",
+          "papyrus_type": "Quest",
+          "flags": ["Auto", "Const"],
+          "target": {
+            "kind": "form",
+            "source_form_key": "0958B3:Skyrim.esm"
+          }
+        },
+        {
+          "name": "TestCast",
+          "papyrus_type": "GlobalVariable",
+          "flags": ["Auto", "Const"],
+          "target": {
+            "kind": "form",
+            "source_form_key": "097EE5:Skyrim.esm"
+          }
+        },
+        {
+          "name": "UndeadKeyword",
+          "papyrus_type": "Keyword",
+          "flags": ["Auto", "Const"],
+          "target": {
+            "kind": "form",
+            "source_form_key": "013796:Skyrim.esm"
+          }
+        }
+      ]
+    },
+    {
+      "carrier": {
+        "signature": "INFO",
+        "source_form_key": "0958B2:Skyrim.esm"
+      },
+      "attachment": {
+        "kind": "info-fragment"
+      },
+      "class_name": "TIF__000958B2",
+      "properties": []
+    },
+    {
+      "carrier": {
+        "signature": "INFO",
+        "source_form_key": "0967E2:Skyrim.esm"
+      },
+      "attachment": {
+        "kind": "info-fragment"
+      },
+      "class_name": "TIF__000967E2",
+      "properties": []
+    },
+    {
+      "carrier": {
+        "signature": "INFO",
+        "source_form_key": "0C041C:Skyrim.esm"
+      },
+      "attachment": {
+        "kind": "info-fragment"
+      },
+      "class_name": "TIF__000C041C",
+      "properties": []
+    },
+    {
+      "carrier": {
+        "signature": "INFO",
+        "source_form_key": "0C04FD:Skyrim.esm"
+      },
+      "attachment": {
+        "kind": "info-fragment"
+      },
+      "class_name": "TIF__000C04FD",
+      "properties": []
+    },
+    {
+      "carrier": {
+        "signature": "INFO",
+        "source_form_key": "0C0502:Skyrim.esm"
+      },
+      "attachment": {
+        "kind": "info-fragment"
+      },
+      "class_name": "TIF__000C0502",
+      "properties": []
+    },
+    {
+      "carrier": {
+        "signature": "INFO",
+        "source_form_key": "0C0506:Skyrim.esm"
+      },
+      "attachment": {
+        "kind": "info-fragment"
+      },
+      "class_name": "TIF__000C0506",
+      "properties": []
+    },
+    {
+      "carrier": {
+        "signature": "INFO",
+        "source_form_key": "0F1B29:Skyrim.esm"
+      },
+      "attachment": {
+        "kind": "info-fragment"
+      },
+      "class_name": "TIF__000F1B29",
+      "properties": []
+    },
+    {
+      "carrier": {
+        "signature": "QUST",
+        "source_form_key": "0958B3:Skyrim.esm"
+      },
+      "attachment": {
+        "kind": "quest-alias-script",
+        "alias_id": 0
+      },
+      "class_name": "MGRApprenticeQGScript",
+      "properties": [
+        {
+          "name": "MGRQuest",
+          "papyrus_type": "Quest",
+          "flags": ["Auto", "Const"],
+          "target": {
+            "kind": "owning-quest"
+          }
+        }
+      ]
+    }
+  ]
+}

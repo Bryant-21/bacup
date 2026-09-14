@@ -97,21 +97,43 @@ def test_scorched_statue_patches_restore_proxy_and_skin_lifecycle():
     assert "akTarget.RemoveItem(SkinScorchedStatue" in variant
 
 
-def test_scorched_statue_break_crosses_the_initial_cap_damage_stage():
+def test_scorched_statue_break_reaches_the_terminal_destruction_stage():
     patch = _script_patch_source("ScorchedStatueScript")
 
     assert patch is not None
     break_start = patch.index("Function BreakStatue()")
     break_end = patch.index("EndFunction", break_start)
     break_member = patch[break_start:break_end]
-    assert break_member.count("DamageObject(1000000.0)") == 2
-    assert "If GetCurrentDestructionStage() < 1" in break_member
-
-    merged = _merged_old_source(
-        "ScorchedStatueScript", PATCH_CASES["ScorchedStatueScript"]
+    assert break_member.count("If GetCurrentDestructionStage() < 2") == 3
+    assert break_member.count("DamageObject(1000000.0)") == 3
+    assert (
+        "If IsDestroyed() && GetCurrentDestructionStage() >= 2" in break_member
     )
-    assert merged.count("Function BreakStatue()") == 1
-    assert merged.count("If GetCurrentDestructionStage() < 1") == 1
+
+
+def test_scorched_statue_stage_change_finishes_terminal_destruction():
+    patch = _script_patch_source("ScorchedStatueScript")
+
+    assert patch is not None
+    event_start = patch.index("Event OnDestructionStageChanged")
+    event_end = patch.index("EndEvent", event_start)
+    event_member = patch[event_start:event_end]
+    assert "If aiCurrentStage >= 0" in event_member
+    assert "BreakStatue()" in event_member
+    assert 'GoToState("done")' not in event_member
+
+
+def test_scorched_statue_marks_reference_destroyed_after_loading_replacement_stage():
+    patch = _script_patch_source("ScorchedStatueScript")
+
+    assert patch is not None
+    break_start = patch.index("Function BreakStatue()")
+    break_end = patch.index("EndFunction", break_start)
+    break_member = patch[break_start:break_end]
+    assert "SetDestroyed()" in break_member
+    assert break_member.rindex("DamageObject(1000000.0)") < break_member.index(
+        "SetDestroyed()"
+    )
 
 
 def test_scorched_statue_uses_fo4_registered_hit_event_contract():

@@ -1,5 +1,7 @@
 Event OnInit()
-    If WorkshopVertibirdGrenadeKW != None
-        Self.AddKeyword(WorkshopVertibirdGrenadeKW)
+    If WorkshopVertibirdGrenadeKW == None || !WorkshopVertibirdGrenadeKW.SendStoryEventAndWait(GetCurrentLocation(), Self)
+        If SQ_WorkshopVertibirdFailMessage != None
+            SQ_WorkshopVertibirdFailMessage.Show()
+        EndIf
     EndIf
 EndEvent

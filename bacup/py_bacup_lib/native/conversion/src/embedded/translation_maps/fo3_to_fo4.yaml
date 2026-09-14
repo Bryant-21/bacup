@@ -3,6 +3,73 @@ skip_records:
   # Gamebryo NVER=11/NVMI byte layout into FO4 is structurally invalid.
   - NAVI
   - NAVM
+  # Gamebryo IDLE records do not carry FO4's behavior graph, animation event,
+  # or animation-file contract. The conversion also ships no legacy HKX files,
+  # so emitting these records makes CK build clip data from incomplete entries.
+  - IDLE
+  - IDLM
+  - ANIO
+  - HAIR
+  - MICN
+  - RADS
+  - RGDL
+  - SCPT
+
+record_routes:
+  compatible: [TES4]
+  target_projection:
+    - ADDN
+    - ASPC
+    - AVIF
+    - CAMS
+    - CLMT
+    - COBJ
+    - CONT
+    - CPTH
+    - DOBJ
+    - DOOR
+    - ECZN
+    - ENCH
+    - FLST
+    - GLOB
+    - GMST
+    - GRAS
+    - IMAD
+    - IMGS
+    - LGTM
+    - LIGH
+    - LSCR
+    - MESG
+    - PLYR
+    - REGN
+    - SCOL
+    - SPEL
+    - TACT
+    - TERM
+    - TREE
+    - VTYP
+  pair_hook:
+    - BPTD
+    - CREA
+    - CSTY
+    - DEBR
+    - FACT
+    - HDPT
+    - LAND
+    - LTEX
+    - LVLC
+    - PACK
+    - PERK
+    - SOUN
+    # SOUN is rewritten to a complete FO4 SNDR before route lookup.
+    - SNDR
+    - WATR
+    - WRLD
+    - WTHR
+  topology_rebuild: [ACHR, ACRE, CELL, PBEA, PGRE, PMIS, REFR]
+
+PWAT:
+  target_record_type: REFR
 
 WEAP:
   fields:

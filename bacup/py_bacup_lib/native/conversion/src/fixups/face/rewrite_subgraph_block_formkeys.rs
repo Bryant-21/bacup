@@ -1,16 +1,7 @@
 //! Rewrite FormKey references in parsed subgraph blocks.
 //!
-
-//! # What this does
-//! For each block's `subgraph_keywords` and `target_keywords` lists, remap
-//! every FormKey through the `FormKeyMapper`:
-//! - A ref that SUCCESSFULLY maps (`mapper.lookup` is `Some`) points at a
-//!   converted output record and is **kept** as the mapped FK.
-//! - A ref with NO mapping that still points at a source plugin is **dropped**
-//!   — it was never carried into the output, so it would dangle an invalid
-//!   master reference at deserialize time. An unmapped ref at a non-source
-//!   plugin (a base-game master) is kept as-is.
-//!
+//! Mapped refs become the mapped FK. Unmapped refs into a source plugin are
+//! dropped, since they would dangle at deserialize; unmapped base-game refs stay.
 
 use rustc_hash::FxHashSet;
 
@@ -51,14 +42,9 @@ fn remap_drop_source(
 ) -> Vec<FormKey> {
     let mut out = Vec::with_capacity(fks.len());
     for fk in fks {
-        // A ref that SUCCESSFULLY maps points at a converted output record and
-        // must be kept — even when the output plugin shares its name with a
-        // source plugin (whole-plugin FO76->FO4 regen writes `SeventySix.esm`,
-        // the same name as the source). Comparing the mapped plugin against
-        // `source_plugins` would then drop every FO76-unique keyword that was
-        // converted in-place (gauss pistol, etc.). Only an UNMAPPED ref that
-        // still dangles at a source plugin is dropped — it was never carried
-        // into the output, so it would be an invalid reference at deserialize.
+        // Keep mapped refs even when the output shares the source plugin's name
+        // (whole-plugin FO76->FO4 writes `SeventySix.esm`); comparing the mapped
+        // plugin to `source_plugins` would drop every in-place FO76 keyword.
         match mapper.lookup(*fk) {
             Some(mapped) => out.push(mapped),
             None => {

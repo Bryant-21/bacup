@@ -1,36 +1,15 @@
 //! Fixup: resolve FormKey references inside stub records injected during translation.
 //!
-
+//! Disabled: `applies_to` returns `false` for every conversion run. The per-record
+//! algorithm lives in `apply_to_record`, which tests exercise directly.
 //!
-//! # Current status
-//! This fixup is a no-op: `applies_to` returns `false` in all current
-//! conversion runs. The full per-record algorithm is implemented in
-//! `apply_to_record` and is reachable from tests so it can be verified in
-//! isolation when the gate is eventually enabled.
-//!
-//! # Algorithm (when enabled)
-//! When `applies_to` becomes active for a given record type, the fixup:
-//!
-//! 1. Collects source-plugin names (source ESM + all plugins found in the graph).
-//! 2. Scans the translated record for any FormKey strings still pointing to
-//!    source-game plugins ("stale" FormKeys).
-//! 3. For each stale FK (skipping cycle-stack members and packed-data FKs):
-//!    a. Load the source record for that FK.
-//!    b. Look up its EditorID and record_type; skip if either is absent.
-//!    c. Apply creature/creature-support/skip-type guards (same as the main sweep).
-//!    d. Query the FormKeyMapper for the target mapping.
-//!    e. If the strategy is "new_allocation" or "source_id_preserved" AND the
-//!       source FK is not already in the existing-source-FK set, inject a stub
-//!       record for it (recursive, with cycle protection via the stack set).
-//! 4. Rewrite all remaining FormKeys in the translated record using the mapper's
-//!    current mapping table.
-//!
-//! # Stub-ref semantics
-//! A "stub ref" is a FormKey embedded in a translated record that still points to
-//! a source-game plugin (e.g. `SeventySix.esm`) because the referenced record was
-//! not part of the original conversion walk.  This fixup discovers those dangling
-//! pointers and, for records that should exist in the output, injects a minimal
-//! translated stub so the ESP build can emit a real record for them.
+//! A "stub ref" is a FormKey in a translated record that still points at a
+//! source-game plugin (e.g. `SeventySix.esm`) because its target was outside the
+//! conversion walk. For each stale FK (skipping cycle-stack members and packed-data
+//! FKs), the source record's EditorID and type are looked up, the
+//! creature/creature-support/skip-type guards applied, and a stub is injected when
+//! the mapper strategy is "new_allocation" or "source_id_preserved" and the FK is
+//! not already in the graph. Remaining FormKeys are then rewritten through the mapper.
 
 use crate::fixups::{Fixup, FixupConfig, FixupContext, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -123,20 +102,12 @@ pub enum StubRefAction {
     InjectStub { new_formkey: String },
 }
 
-/// Pure per-record algorithm that decides what to do with each stale FK.
-///
-/// `stale_fks`: set of FormKey strings still pointing to source-game plugins.
-/// `existing_source_fks`: set of source FKs already in the graph (no re-injection).
-/// `stack`: cycle-prevention set (FK strings of in-progress records).
-/// `lookup_record`: closure that returns `(editor_id, record_type)` for a source FK,
-///                  or `None` if the record is not found.
-/// `is_packed_data`: closure that tests whether a FK string is packed binary data.
-/// `is_creature_race_unwalked`: closure — is this an unwalked creature race?
-/// `is_creature_support`: closure — is this a creature-support record type?
-/// `is_skip_type`: closure — is this record type in the skip list?
-/// `map_formkey`: closure that returns `(strategy, new_formkey)` for a source FK.
-///
-/// Returns one `(source_fk, StubRefAction)` entry per stale FK, in sorted order.
+/// Pure per-record algorithm: decide what to do with each stale FK (a FormKey
+/// string still pointing at a source-game plugin). FKs in `existing_source_fks` are
+/// never re-injected; `stack` holds in-progress FKs for cycle prevention.
+/// `lookup_record` returns `(editor_id, record_type)` for a source FK and
+/// `map_formkey` its `(strategy, new_formkey)`. Returns one
+/// `(source_fk, StubRefAction)` per stale FK, in sorted order.
 pub fn apply_to_record<F1, F2, F3, F4, F5, F6>(
     stale_fks: &[String],
     existing_source_fks: &std::collections::HashSet<String>,

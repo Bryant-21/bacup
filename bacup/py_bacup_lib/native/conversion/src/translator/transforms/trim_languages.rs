@@ -1,6 +1,4 @@
-//! `trim_languages` transform — filters localized-string entries by language.
-//!
-//! Python source: `translator.py` line 824.
+//! `trim_languages` transform: filters localized-string entries by language.
 //!
 //! Config keys:
 //! - `keep`   — list of language names to retain (required; empty list keeps nothing)
@@ -14,14 +12,14 @@
 //!
 //! Example YAML usages:
 //!
-//! Usage 1 — standard (fo76_to_fo4.yaml line 34):
+//! Usage 1, standard (fo76_to_fo4.yaml):
 //! ```yaml
 //! FULL:
 //!   type: trim_languages
 //!   keep: [English, Chinese, German, French, Spanish, Italian, Japanese, Polish, ...]
 //! ```
 //!
-//! Usage 2 — with `target` rename (fo76_to_fo4.yaml line 1153):
+//! Usage 2, with `target` rename (fo76_to_fo4.yaml):
 //! ```yaml
 //! FULL:
 //!   type: trim_languages
@@ -35,22 +33,9 @@ use super::super::super::record::FieldValue;
 use super::super::maps::YamlValue;
 use super::{Transform, TransformCtx, TransformError};
 
-/// Filters language entries inside a localized-string Struct.
+/// Filters language entries inside a localized-string Struct, in place.
 ///
-/// Mirrors Python:
-/// ```python
-/// keep = set(transform.get("keep", []))
-/// if isinstance(value, dict) and "Values" in value:
-///     trimmed = {**value}
-///     trimmed["Values"] = [v for v in value["Values"] if v.get("Language") in keep]
-///     result[target_key] = trimmed
-/// else:
-///     result[target_key] = value
-/// ```
-///
-/// In Rust the "result dict" renaming is advisory — the caller handles field
-/// renaming based on `TrimLanguagesTransform::target_field`. This method
-/// mutates `value` in-place: it filters the `Values` list and replaces it.
+/// Field renaming is left to the caller via `TrimLanguagesTransform::target_field`.
 pub struct TrimLanguagesTransform;
 
 impl TrimLanguagesTransform {

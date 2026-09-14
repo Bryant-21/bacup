@@ -49,6 +49,11 @@ _WORKSPACE_SPECS = (
     ("hkx_converter", "ui.toolkit.workspaces.havok_tools", "HKXConverterWorkspace"),
 
     # NIF tool workspaces
+    (
+        "nif_validation_report",
+        "ui.toolkit.workspaces.nif_tools",
+        "NIFValidationReportWorkspace",
+    ),
     ("nif_collision", "ui.toolkit.workspaces.nif_tools", "NIFCollisionWorkspace"),
     ("nif_fbx", "ui.toolkit.workspaces.nif_tools", "NIFToFBXWorkspace"),
     (
@@ -64,6 +69,11 @@ _WORKSPACE_SPECS = (
     ("subgraph_maker", "ui.toolkit.workspaces.mod_tools", "SubGraphMakerWorkspace"),
     ("bsa_extractor", "ui.toolkit.workspaces.mod_tools", "BSAExtractorWorkspace"),
     ("mass_bsa", "ui.toolkit.workspaces.mod_tools", "MassBSAWorkspace"),
+    (
+        "playstation_converter",
+        "ui.toolkit.workspaces.playstation_converter_workspace",
+        "PlayStationConverterWorkspace",
+    ),
     ("archlist_creator", "ui.toolkit.workspaces.mod_tools", "ArchlistCreatorWorkspace"),
     ("folder_renamer", "ui.toolkit.workspaces.mod_tools", "FolderRenamerWorkspace"),
     ("modlist_merger", "ui.toolkit.workspaces.mod_tools", "ModlistMergerWorkspace"),

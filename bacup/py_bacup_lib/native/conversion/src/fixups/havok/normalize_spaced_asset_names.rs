@@ -99,7 +99,7 @@ fn trimmed_spaced_file_name(name: &str) -> Option<String> {
 }
 
 /// Normalize the final path component of an hkx string reference.
-fn normalized_reference(value: &str) -> Option<String> {
+pub(crate) fn normalized_reference(value: &str) -> Option<String> {
     let split = value.rfind(['\\', '/']).map(|i| i + 1).unwrap_or(0);
     let fixed = trimmed_spaced_file_name(&value[split..])?;
     Some(format!("{}{}", &value[..split], fixed))
@@ -121,7 +121,12 @@ fn rename_spaced_files(dir: &Path) -> u32 {
         };
         if let Some(fixed) = trimmed_spaced_file_name(name) {
             let target = path.with_file_name(&fixed);
-            if !target.exists() && std::fs::rename(&path, &target).is_ok() {
+            let normalized = if target.exists() {
+                std::fs::copy(&path, &target).is_ok() && std::fs::remove_file(&path).is_ok()
+            } else {
+                std::fs::rename(&path, &target).is_ok()
+            };
+            if normalized {
                 renamed += 1;
                 if let Some((stem, _)) = fixed.rsplit_once('.') {
                     if strip_internal_spaced_name(&target, stem).unwrap_or(false) {
@@ -317,6 +322,23 @@ mod tests {
         assert!(chars.join("floatercharacter.hkx").is_file());
         assert!(!chars.join("floatercharacter .hkx").exists());
         assert!(chars.join("clean.hkx").is_file());
+    }
+
+    #[test]
+    fn fresh_spaced_file_replaces_stale_normalized_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let chars = tmp.path().join("data/Meshes/Actors/Floater/Characters");
+        std::fs::create_dir_all(&chars).unwrap();
+        std::fs::write(chars.join("floatercharacter.hkx"), b"stale").unwrap();
+        std::fs::write(chars.join("floatercharacter .hkx"), b"fresh").unwrap();
+
+        let report = normalize_spaced_asset_names_in_mod_path(tmp.path()).unwrap();
+        assert_eq!(report.records_changed, 1);
+        assert_eq!(
+            std::fs::read(chars.join("floatercharacter.hkx")).unwrap(),
+            b"fresh"
+        );
+        assert!(!chars.join("floatercharacter .hkx").exists());
     }
 
     /// End-to-end on the converted floater character fixture: renaming

@@ -35,6 +35,35 @@ PAIR_PROFILE_FILENAMES = {
     },
 }
 
+_PROFILE_ORDER = (PROFILE_NATIVE, PROFILE_HIGH_QUALITY, PROFILE_PERFORMANCE)
+
+
+def available_profiles(pair_id: str) -> tuple[str, ...]:
+    """Named profiles shipped for a pair; empty when it uses engine defaults."""
+    shipped = PAIR_PROFILE_FILENAMES.get(pair_id, {})
+    return tuple(profile for profile in _PROFILE_ORDER if profile in shipped)
+
+
+def cross_game_default_settings() -> dict:
+    """Engine-default LOD settings for a pair that ships no tuned profile."""
+    from creation_lib.lod.default_settings import fo4_default_settings
+
+    settings = fo4_default_settings()
+    settings["global"].update(
+        {
+            "worldspaces": [],
+            "stride": None,
+            "southwest_cell": None,
+            "bounds": None,
+            "generate_terrain": True,
+            "generate_objects": True,
+            "generate_trees": True,
+        }
+    )
+    settings["objects"]["source"] = "records"
+    settings.setdefault("trees", {})["trees_3d"] = True
+    return settings
+
 
 def normalize_profile(profile: str | None, lod_mode: str) -> str:
     value = (profile or PROFILE_AUTO).strip().lower().replace("_", "-")
@@ -61,6 +90,13 @@ def load_profile_settings(
     pair_id: str = "fo76:fo4",
 ) -> dict:
     resolved = normalize_profile(profile, lod_mode)
+    pair_profiles = PAIR_PROFILE_FILENAMES.get(pair_id, {})
+    # A pair with no shipped profile falls back to engine defaults rather than
+    # failing, so UI callers match what regen.py already does on the CLI.
+    if not pair_profiles:
+        return cross_game_default_settings()
+    if resolved not in pair_profiles and PROFILE_HIGH_QUALITY in pair_profiles:
+        resolved = PROFILE_HIGH_QUALITY
     checked: list[Path] = []
     for root in code_roots:
         path = profile_path(root, resolved, pair_id)

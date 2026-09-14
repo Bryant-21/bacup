@@ -5,6 +5,7 @@ Function RegisterColossusEvents(Actor akColossus)
 
 	RegisterForAnimationEvent(akColossus, animEventPoisonVomitStart)
 	RegisterForAnimationEvent(akColossus, animEventRadVomitStart)
+	RegisterForAnimationEvent(akColossus, "SpawnExplosionOnGround")
 EndFunction
 
 Function UnregisterColossusEvents(Actor akColossus)
@@ -14,6 +15,7 @@ Function UnregisterColossusEvents(Actor akColossus)
 
 	UnregisterForAnimationEvent(akColossus, animEventPoisonVomitStart)
 	UnregisterForAnimationEvent(akColossus, animEventRadVomitStart)
+	UnregisterForAnimationEvent(akColossus, "SpawnExplosionOnGround")
 EndFunction
 
 Function StartCombatStyleTimer()
@@ -114,6 +116,12 @@ EndEvent
 Event OnAnimationEvent(ObjectReference akSource, String asEventName)
 	Actor colossus = GetTargetActor()
 	If colossus == None || colossus.IsDead() || akSource != colossus
+		Return
+	EndIf
+
+	If asEventName == "SpawnExplosionOnGround"
+		; PlaceAtMe loses the caster needed by PlayerFearEffect.
+		B21_PlayerFear.SpawnColossusFear(colossus)
 		Return
 	EndIf
 

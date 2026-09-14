@@ -1,5 +1,5 @@
 fn make_ctx(interner: &StringInterner) -> PairCtx<'_> {
-    PairCtx { interner }
+    PairCtx::new(interner)
 }
 
 fn make_record(sig: &str, interner: &StringInterner) -> Record {

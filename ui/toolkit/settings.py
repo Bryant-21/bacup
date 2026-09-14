@@ -52,6 +52,7 @@ _PATHS_TEMPLATE = {
     },
     "fo76": {
         "root_dir": "",
+        "pts_root_dir": "",
         "extracted_dir": "",
         "additional_paths": [],
         "scripts_user_dir": "",
@@ -160,6 +161,7 @@ class ToolkitSettings:
         self._indexes: dict = copy.deepcopy(_INDEX_DEFAULTS)
         self._section_data: dict[str, dict] = {}
         self.theme: str = _SHARED_DEFAULTS["theme"]
+        self.theme_colors: dict[str, dict] = {}
         self.gitea: dict = copy.deepcopy(_GITEA_DEFAULTS)
         self._load()
 
@@ -200,6 +202,10 @@ class ToolkitSettings:
             self.conversion_addon_node_index_start,
         )
         self.theme = data.get("theme", self.theme)
+        raw_colors = data.get("theme_colors", {})
+        if isinstance(raw_colors, dict):
+            self.theme_colors = {key: copy.deepcopy(colors) for key, colors in raw_colors.items()
+                                 if isinstance(colors, dict)}
 
         if "ai_engines" in data:
             stored = data["ai_engines"]
@@ -289,6 +295,7 @@ class ToolkitSettings:
             "tools": self.tools,
             "paths": self._paths,
             "theme": self.theme,
+            "theme_colors": self.theme_colors,
             "indexes": self._indexes,
             "gitea": self.gitea,
             "section_data": self._section_data,

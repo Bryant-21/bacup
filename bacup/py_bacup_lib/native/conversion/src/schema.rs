@@ -3,6 +3,7 @@
 //! process-wide `OnceLock<HashMap>` so the ~600 kB JSON is only deserialized
 //! once per game per process.
 
+use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -100,21 +101,94 @@ struct AuthoringSchemaJson {
 /// so there is exactly one parse of the enum/target/flag metadata.
 pub struct AuthoringSchema {
     /// Record defs indexed by the 4-byte signature string.
-    records: HashMap<String, RecordDef>,
+    records: HashMap<String, IndexedRecordDef>,
     /// Shared authoritative schema for enum/target/flag metadata.
     compiled: Arc<esp_authoring_core::plugin_runtime::CompiledSchema>,
 }
 
+/// Starfield's `BFCB`…`BFCE` component runs reuse record-level 4CCs with
+/// unrelated payloads, and the generated schema lists every component
+/// definition ahead of the record-level ones.
+const COMPONENT_SCOPE: &str = "base_form_components";
+
+pub(crate) struct IndexedRecordDef {
+    definition: RecordDef,
+    subrecord_positions: FxHashMap<String, usize>,
+    component_positions: FxHashMap<String, usize>,
+    record_level_positions: FxHashMap<String, usize>,
+}
+
+impl IndexedRecordDef {
+    fn new(definition: RecordDef) -> Self {
+        let mut subrecord_positions = FxHashMap::default();
+        let mut component_positions = FxHashMap::default();
+        let mut record_level_positions = FxHashMap::default();
+        for (position, subrecord) in definition.subrecords.iter().enumerate() {
+            // Overloaded signatures retain the decoder's first-definition rule.
+            subrecord_positions
+                .entry(subrecord.id.clone())
+                .or_insert(position);
+            let scoped_positions = if subrecord.scope_id.as_deref() == Some(COMPONENT_SCOPE) {
+                &mut component_positions
+            } else {
+                &mut record_level_positions
+            };
+            scoped_positions
+                .entry(subrecord.id.clone())
+                .or_insert(position);
+        }
+        Self {
+            definition,
+            subrecord_positions,
+            component_positions,
+            record_level_positions,
+        }
+    }
+
+    pub(crate) fn subrecord_def(&self, sig: &str) -> Option<&SubrecordDef> {
+        self.subrecord_positions
+            .get(sig)
+            .map(|&position| &self.definition.subrecords[position])
+    }
+
+    /// Resolve an overloaded signature by whether the source reader is inside
+    /// a component run, falling back to the first definition.
+    pub(crate) fn subrecord_def_in_component_run(
+        &self,
+        sig: &str,
+        in_component_run: bool,
+    ) -> Option<&SubrecordDef> {
+        let scoped_positions = if in_component_run {
+            &self.component_positions
+        } else {
+            &self.record_level_positions
+        };
+        scoped_positions
+            .get(sig)
+            .or_else(|| self.subrecord_positions.get(sig))
+            .map(|&position| &self.definition.subrecords[position])
+    }
+}
+
 impl AuthoringSchema {
     fn from_json(
+        game: &str,
         json: &str,
         compiled: Arc<esp_authoring_core::plugin_runtime::CompiledSchema>,
     ) -> Result<Arc<Self>, String> {
         let parsed: AuthoringSchemaJson =
             serde_json::from_str(json).map_err(|e| format!("schema parse error: {e}"))?;
         let mut records = HashMap::with_capacity(parsed.records.len());
-        for rec in parsed.records {
-            records.insert(rec.id.clone(), rec);
+        for mut rec in parsed.records {
+            if game == "fo4" && matches!(rec.id.as_str(), "WEAP" | "ARMO") {
+                if let Some(damage) = rec.subrecords.iter_mut().find(|def| def.id == "DAMA") {
+                    // The maximal schema includes a curve FormID from version 152;
+                    // conversion writes FO4 version 131, where each row is 8 bytes.
+                    damage.codec = Some("array_struct:I,I".to_string());
+                    damage.fields.truncate(2);
+                }
+            }
+            records.insert(rec.id.clone(), IndexedRecordDef::new(rec));
         }
         Ok(Arc::new(AuthoringSchema { records, compiled }))
     }
@@ -122,7 +196,15 @@ impl AuthoringSchema {
     /// Return the record definition for `sig` (e.g. "WEAP"), or `None` if the
     /// schema has no entry for that signature.
     pub fn record_def(&self, sig: &str) -> Option<&RecordDef> {
+        self.records.get(sig).map(|record| &record.definition)
+    }
+
+    pub(crate) fn record_lookup(&self, sig: &str) -> Option<&IndexedRecordDef> {
         self.records.get(sig)
+    }
+
+    pub fn record_signatures(&self) -> impl Iterator<Item = &str> {
+        self.records.keys().map(String::as_str)
     }
 
     // --- Conversion-fixup metadata accessors (delegate to CompiledSchema) ---
@@ -168,9 +250,10 @@ impl AuthoringSchema {
     }
 
     /// THE shared enum-ref locator (enum analogue of `allowed_targets`).
-    /// conv-flags' Class A clamp and the validator's A2 check use this SAME
-    /// mechanism so they agree on which field carries which enum. Returns the
-    /// `enum_ref` id; pass it to `enum_def`, or use `enum_def_at` directly.
+    /// Returns the `enum_ref` id; pass it to `enum_def`, or use `enum_def_at`.
+    ///
+    /// SCOPE-BLIND — see `esp_authoring_core`'s `enum_ref_at`. Masking/clamping
+    /// callers must use `enum_def_at_in_scope`.
     pub fn enum_ref_at(&self, record_sig: &str, field_path: &str) -> Option<&str> {
         self.compiled.enum_ref_at(record_sig, field_path)
     }
@@ -182,6 +265,18 @@ impl AuthoringSchema {
         field_path: &str,
     ) -> Option<&esp_authoring_core::plugin_runtime::SchemaEnumJson> {
         self.compiled.enum_def_at(record_sig, field_path)
+    }
+
+    /// Scope-aware `enum_def_at` — required for scope-overloaded subrecords
+    /// (QUST.FNAM objectives vs aliases).
+    pub fn enum_def_at_in_scope(
+        &self,
+        record_sig: &str,
+        field_path: &str,
+        scope: Option<&str>,
+    ) -> Option<&esp_authoring_core::plugin_runtime::SchemaEnumJson> {
+        self.compiled
+            .enum_def_at_in_scope(record_sig, field_path, scope)
     }
 
     /// Authoritative compiled record def for `sig` (subrecord/field `enum_ref`s,
@@ -196,12 +291,11 @@ impl AuthoringSchema {
         self.compiled.record_def(sig)
     }
 
-    /// THE shared struct-field byte-offset layout. Yields each
-    /// field of a `struct:`-codec subrecord with its byte offset/width + enum_ref
-    /// + formlink_targets, keyed by "<SUB>.<field_id>". conv-flags masks nested
-    /// flag/enum bits in the raw subrecord bytes at `offset`; conv-refs validates
-    /// nested FKs; validator detects nested A1/A2/D. All three iterate THIS, so
-    /// they cover the identical fields and agree by construction.
+    /// Shared struct-field byte layout: each field of a `struct:`-codec
+    /// subrecord with its byte offset/width, enum_ref and formlink_targets, keyed
+    /// by "<SUB>.<field_id>". conv-flags (nested flag/enum masking at `offset`),
+    /// conv-refs (nested FK validation) and the validator (nested A1/A2/D) all
+    /// iterate this, so they cover the same fields.
     pub fn struct_field_layout(
         &self,
         record_sig: &str,
@@ -265,7 +359,7 @@ impl AuthoringSchema {
         // Deserialize outside the lock to avoid holding it during expensive JSON parse.
         let json = json_for_game(game).ok_or_else(|| format!("unsupported game: {game:?}"))?;
         let compiled = esp_authoring_core::plugin_runtime::compiled_schema_for_game_str(game)?;
-        let schema = Self::from_json(json, compiled)?;
+        let schema = Self::from_json(game, json, compiled)?;
         let mut guard = cache.lock().unwrap();
         // Another thread might have populated the cache while we were parsing.
         Ok(guard.entry(game.to_string()).or_insert(schema).clone())
@@ -282,6 +376,111 @@ fn json_for_game(game: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_subrecords_preserve_every_game_definition_and_first_match() {
+        for game in [
+            "fo76",
+            "fo4",
+            "skyrimse",
+            "fnv",
+            "fo3",
+            "starfield",
+            "oblivion",
+        ] {
+            let schema = AuthoringSchema::for_game(game).unwrap();
+            for signature in schema.record_signatures() {
+                let definition = schema.record_def(signature).unwrap();
+                let indexed = schema.record_lookup(signature).unwrap();
+                for subrecord in &definition.subrecords {
+                    let old = definition.subrecord_def(&subrecord.id).unwrap();
+                    let new = indexed.subrecord_def(&subrecord.id).unwrap();
+                    assert!(
+                        std::ptr::eq(old, new),
+                        "{game} {signature}.{}",
+                        subrecord.id
+                    );
+                }
+                for missing in ["", "XYZ", "UNKNOWN", "\0\0\0\0"] {
+                    assert_eq!(
+                        definition.subrecord_def(missing).is_some(),
+                        indexed.subrecord_def(missing).is_some()
+                    );
+                }
+            }
+            assert!(schema.record_lookup("UNKNOWN").is_none());
+        }
+        let definition: RecordDef = serde_json::from_value(serde_json::json!({
+            "id":"TEST", "subrecords":[{"id":"TNAM","codec":"float32"},{"id":"TNAM","codec":"formid"},{"id":"FULL","localized":true}]
+        })).unwrap();
+        let indexed = IndexedRecordDef::new(definition);
+        assert_eq!(
+            indexed.subrecord_def("TNAM").unwrap().codec.as_deref(),
+            Some("float32")
+        );
+        assert!(indexed.subrecord_def("FULL").unwrap().localized);
+    }
+
+    #[test]
+    #[ignore = "requires SCHEMA_LOOKUP_PLUGIN, SCHEMA_LOOKUP_GAME and SCHEMA_LOOKUP_REPORT"]
+    fn indexed_subrecords_match_complete_plugin_corpus() {
+        use crate::store2::source::SourceEsm;
+        use esp_authoring_core::plugin_runtime::effective_subrecords_for_record;
+        use std::time::Instant;
+        let path = std::env::var("SCHEMA_LOOKUP_PLUGIN").unwrap();
+        let game = std::env::var("SCHEMA_LOOKUP_GAME").unwrap();
+        let schema = AuthoringSchema::for_game(&game).unwrap();
+        let source = SourceEsm::open(std::path::Path::new(&path)).unwrap();
+        let (mut old_secs, mut new_secs, mut subrecords, mut missing) = (0.0, 0.0, 0usize, 0usize);
+        for (index, entry) in source.index.iter().enumerate() {
+            let parsed = source.view_at(index).unwrap().to_parsed_record().unwrap();
+            let signature = std::str::from_utf8(&entry.sig).unwrap();
+            let rows = effective_subrecords_for_record(&parsed);
+            let old = schema.record_def(signature);
+            let new = schema.record_lookup(signature);
+            let legacy = || {
+                let started = Instant::now();
+                let values = rows
+                    .iter()
+                    .map(|row| {
+                        old.and_then(|record| record.subrecord_def(row.signature.as_str()))
+                            .map(|def| def as *const SubrecordDef)
+                    })
+                    .collect::<Vec<_>>();
+                (values, started.elapsed().as_secs_f64())
+            };
+            let indexed = || {
+                let started = Instant::now();
+                let values = rows
+                    .iter()
+                    .map(|row| {
+                        new.and_then(|record| record.subrecord_def(row.signature.as_str()))
+                            .map(|def| def as *const SubrecordDef)
+                    })
+                    .collect::<Vec<_>>();
+                (values, started.elapsed().as_secs_f64())
+            };
+            let ((before, before_secs), (after, after_secs)) = if index % 2 == 0 {
+                let after = indexed();
+                (legacy(), after)
+            } else {
+                let before = legacy();
+                (before, indexed())
+            };
+            assert_eq!(before, after, "record {index} {signature}");
+            old_secs += before_secs;
+            new_secs += after_secs;
+            subrecords += rows.len();
+            missing += before.iter().filter(|value| value.is_none()).count();
+        }
+        let report = serde_json::json!({"plugin":path,"game":game,"records":source.record_count(),"subrecords":subrecords,"unknown_definitions":missing,"identical_definition_identity":true,"legacy_seconds":old_secs,"indexed_seconds":new_secs});
+        std::fs::write(
+            std::env::var("SCHEMA_LOOKUP_REPORT").unwrap(),
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
+        eprintln!("{report}");
+    }
 
     #[test]
     fn parse_fo4_authoring_schema() {

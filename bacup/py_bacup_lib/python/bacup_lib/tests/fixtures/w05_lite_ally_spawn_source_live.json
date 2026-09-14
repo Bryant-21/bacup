@@ -1,0 +1,86 @@
+{
+  "spawn_carrier": {
+    "source": {
+      "form_id": "5A2539",
+      "editor_id": "RaiderPunkPermanentREF",
+      "base_npc": "58E6FC",
+      "cell": "40A2C1",
+      "script": "W05_Comp_Lite_AllySpawnScript",
+      "property": "CampObjectAvailable",
+      "actor_value": "568E4A",
+      "initially_disabled": false
+    },
+    "live": {
+      "form_id": "5A2539",
+      "editor_id": "RaiderPunkPermanentREF",
+      "base_npc": "58E6FC",
+      "cell": "40A2C1",
+      "script": "W05_Comp_Lite_AllySpawnScript",
+      "property": "CampObjectAvailable",
+      "actor_value": "568E4A",
+      "initially_disabled": false
+    }
+  },
+  "availability_actor_value": {
+    "source": {
+      "form_id": "568E4A",
+      "editor_id": "COMP_AV_CampObjectAvailable_RaiderPunk",
+      "default": 0.0,
+      "type": "Variable"
+    },
+    "live": {
+      "form_id": "568E4A",
+      "editor_id": "COMP_AV_CampObjectAvailable_RaiderPunk",
+      "default": 0.0,
+      "type": "Variable"
+    }
+  },
+  "initial_effect": {
+    "source": {
+      "mgef": "597643",
+      "script": "CompanionLiteAllyEffectScript",
+      "start_keyword": "585D27",
+      "initial_quest": "568CB2",
+      "archetype": "Script",
+      "casting": "FireAndForget"
+    },
+    "live": {
+      "mgef": "597643",
+      "script": "CompanionLiteAllyEffectScript",
+      "start_keyword": "585D27",
+      "initial_quest": "568CB2",
+      "archetype": "Script",
+      "casting": "FireAndForget"
+    }
+  },
+  "initial_quest": {
+    "source": {
+      "form_id": "568CB2",
+      "event": "SCPT",
+      "quest_start_data": true,
+      "event_location": "Location1",
+      "event_ally": "Reference1"
+    },
+    "live": {
+      "form_id": "568CB2",
+      "event": null,
+      "quest_start_data": false,
+      "event_location": "Location1",
+      "event_ally": null
+    }
+  },
+  "shared_story_node": {
+    "source": {
+      "form_id": "5856CB",
+      "editor_id": "COMP_Lite_Intro_QuestNodes",
+      "parent": "3F53A3",
+      "previous": "56F719",
+      "shares_event": true,
+      "max_concurrent_quests": 0,
+      "quest_count": 5,
+      "start_keywords": ["5856CC", "585CCA", "585D27", "585CD8", "585CBF"],
+      "quests": ["582172", "582153", "568CB2", "585BD2", "582173"]
+    },
+    "live": null
+  }
+}

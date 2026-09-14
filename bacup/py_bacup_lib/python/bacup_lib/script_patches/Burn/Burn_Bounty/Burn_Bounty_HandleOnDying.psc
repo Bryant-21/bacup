@@ -7,12 +7,19 @@ Event OnDying(ObjectReference akSenderRef, Actor akKiller)
 		CorpseRefCollection.AddRef(akSenderRef)
 	EndIf
 
+	Quest bountyQuest = GetOwningQuest()
+	If IsGruntHunt
+		If bountyQuest != None && !bountyQuest.IsStageDone(300)
+			bountyQuest.SetStage(300)
+		EndIf
+		Return
+	EndIf
+
 	Actor playerRef = Game.GetPlayer()
 	If playerRef != None && BountyLegendaryLL != None
 		playerRef.AddItem(BountyLegendaryLL, 1, False)
 	EndIf
 
-	Quest bountyQuest = GetOwningQuest()
 	If bountyQuest != None
 		bountyQuest.CompleteAllObjectives()
 		bountyQuest.CompleteQuest()

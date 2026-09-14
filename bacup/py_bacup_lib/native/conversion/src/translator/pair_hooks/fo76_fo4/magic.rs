@@ -8,6 +8,7 @@ pub(super) const FO76_MGEF_DATA_FLAGS2_END: usize = 8;
 pub(super) const FO4_MGEF_DATA_ARCHETYPE_OFFSET: usize = 64;
 pub(super) const FO4_MGEF_ARCHETYPE_SCRIPT: u32 = 1;
 pub(super) const FO4_MGEF_ARCHETYPE_STAGGER: u32 = 33;
+pub(super) const FO76_MGEF_ARCHETYPE_PLAYER_FEAR: u32 = 20;
 pub(super) const FO76_MGEF_ARCHETYPE_TURBO_FERT: u32 = 50;
 pub(super) const FO76_MGEF_ARCHETYPE_CORPSE_HIGHLIGHT: u32 = 51;
 pub(super) const FO76_MGEF_ARCHETYPE_STUN: u32 = 52;
@@ -25,8 +26,6 @@ pub const EFFECTS_SYNTHETIC_RECORD_SIGS: &[[u8; 4]] = &[*b"ALCH", *b"ENCH", *b"P
 /// When `None`, no rerouting is needed. When `Some((field_sig, target_sig))`,
 /// the orchestrator should use `target_sig` as the target subrecord sig for
 /// the field identified by `field_sig`.
-///
-/// Mirrors `Fo76ToFo4Hooks::translate_effects_keys`.
 pub struct EffectsKeyRoute {
     /// The field sig to match on the source record.
     pub field_sig: SubrecordSig,
@@ -67,6 +66,9 @@ impl Fo76Fo4Hook {
         };
         let archetype = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         let normalized = match archetype {
+            // FO4's slot 20 is Telekinesis. Tales supplies the missing player-fear
+            // behavior through the ScriptEffect lifecycle instead.
+            FO76_MGEF_ARCHETYPE_PLAYER_FEAR => FO4_MGEF_ARCHETYPE_SCRIPT,
             FO76_MGEF_ARCHETYPE_STUN => FO4_MGEF_ARCHETYPE_STAGGER,
             FO76_MGEF_ARCHETYPE_TURBO_FERT | FO76_MGEF_ARCHETYPE_CORPSE_HIGHLIGHT => {
                 FO4_MGEF_ARCHETYPE_SCRIPT
@@ -77,11 +79,34 @@ impl Fo76Fo4Hook {
         chunk.copy_from_slice(&normalized.to_le_bytes());
     }
 
-    pub(super) fn drop_perk_vmad(record: &mut Record) {
+    pub(super) fn normalize_perk_entry_layout(record: &mut Record) {
         if record.sig.0 != *b"PERK" {
             return;
         }
-        record.fields.retain(|entry| entry.sig.0 != *b"VMAD");
+
+        let mut entry_data_pending = false;
+        for entry in &mut record.fields {
+            match entry.sig.0 {
+                sig if sig == *b"PRKE" => {
+                    if let FieldValue::Bytes(bytes) = &mut entry.value
+                        && bytes.len() == 2
+                    {
+                        bytes.push(0);
+                    }
+                    entry_data_pending = true;
+                }
+                sig if sig == *b"DATA" && entry_data_pending => {
+                    if let FieldValue::Bytes(bytes) = &mut entry.value
+                        && bytes.len() == 4
+                    {
+                        bytes.truncate(3);
+                    }
+                    entry_data_pending = false;
+                }
+                sig if sig == *b"PRKF" => entry_data_pending = false,
+                _ => {}
+            }
+        }
     }
 
     /// Returns `true` if this record type synthesizes its `Effects` group.
@@ -96,8 +121,6 @@ impl Fo76Fo4Hook {
 
     /// Returns the effects key rerouting for the given record type and field,
     /// or `None` if no rerouting is needed.
-    ///
-    /// Mirrors `Fo76ToFo4Hooks::translate_effects_keys`.
     ///
     /// For ALCH/ENCH/SPEL: DATA/EFID/EffectData → Effects::EFID
     /// For PERK: DATA → Effects::DATA

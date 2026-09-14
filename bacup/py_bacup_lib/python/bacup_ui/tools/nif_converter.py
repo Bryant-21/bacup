@@ -11,7 +11,7 @@ from imgui_bundle import imgui
 
 from ui.tools.base import BaseTool
 from creation_lib.ui.widgets import pick_folder
-from ui.tools.imgui_helpers import (
+from creation_lib.ui.widgets.forms import (
     begin_form,
     draw_combo_field,
     draw_path_row,
@@ -49,14 +49,8 @@ def _resolve_output_path(
 ) -> str:
     """Build the output file path, preserving relative subfolder structure.
 
-    Args:
-        rel_dir: Relative subdirectory from source root (None or "" for root).
-        filename: Source filename (e.g. "weapon.nif").
-        out_dir: Absolute output directory.
-        ext: Target extension including dot (e.g. ".nif" or ".fbx").
-
-    Returns:
-        Absolute output path.
+    ``rel_dir`` is relative to the source root (None or "" for root); ``ext``
+    includes the dot (".nif", ".fbx").
     """
     base = os.path.splitext(filename)[0] + ext
     if rel_dir:
@@ -180,15 +174,9 @@ def _export_texture_file(
 ) -> tuple[str, str]:
     """Resolve, convert, and export one texture to out_dir/Data/<tex_path>.
 
-    Args:
-        tex_path: Data-relative path with forward slashes, e.g. "Textures/Weapons/gun_d.dds".
-        mod_root: Root folder containing Textures/, Materials/, Meshes/ siblings.
-        out_dir: Conversion output root (Data/ subfolders will be created inside).
-        source_profile: Source game profile.
-        target_profile: Target game profile.
-
-    Returns:
-        (status, note) where status is "ok" / "warn" / "error".
+    ``tex_path`` is data-relative with forward slashes ("Textures/Weapons/gun_d.dds");
+    ``mod_root`` holds the Textures/, Materials/, Meshes/ siblings. Returns
+    ``(status, note)`` with status "ok" / "warn" / "error".
     """
     import shutil
     from creation_lib.textures.naming import detect_texture_role, convert_texture_name

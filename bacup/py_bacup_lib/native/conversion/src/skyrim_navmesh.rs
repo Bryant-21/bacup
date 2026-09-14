@@ -162,7 +162,7 @@ mod tests {
         let interner = StringInterner::new();
         let mut record = Record::new(
             SigCode::from_str("NAVM").unwrap(),
-            FormKey::parse("000800@Skyrim_Merged.esm", &interner).unwrap(),
+            FormKey::parse("000800@Skyrim.esm", &interner).unwrap(),
         );
         record.fields.push(FieldEntry {
             sig: SubrecordSig::from_str("NVNM").unwrap(),

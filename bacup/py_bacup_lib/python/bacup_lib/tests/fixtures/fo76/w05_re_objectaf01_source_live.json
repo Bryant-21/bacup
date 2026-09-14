@@ -1,0 +1,115 @@
+{
+  "quest": {
+    "form_id": "0056A1D1",
+    "editor_id": "W05_RE_ObjectAF01_Quest",
+    "source_root_bindings": [
+      "Aggression",
+      "DisProtectron",
+      "RepairFurniture",
+      "Scavenger",
+      "TestObject",
+      "W05_RE_ObjectAF01_Protectron_InteractMSG"
+    ],
+    "live_root_bindings": [
+      "DisProtectron",
+      "RepairFurniture",
+      "Scavenger",
+      "TestObject",
+      "W05_RE_ObjectAF01_Protectron_InteractMSG"
+    ],
+    "aliases": {
+      "test_object": 14,
+      "dis_protectron": 18,
+      "scavenger": 19,
+      "repair_furniture": 20,
+      "player_helper": 23
+    },
+    "stages": [10, 20, 23, 25, 27, 28, 30, 1000]
+  },
+  "scenes": {
+    "0056BC6B": {
+      "editor_id": "W05_RE_ObjectAF01_Attack",
+      "callbacks": ["Fragment_Phase_02_Begin", "Fragment_Phase_02_End"],
+      "source_bindings": [
+        "DisProtectron",
+        "RepairFurnitureRef",
+        "W05_RE_ObjectAF01_HumanFaction",
+        "W05_RE_ObjectAF01_RobotFaction"
+      ],
+      "live_bindings": [
+        "DisProtectron",
+        "RepairFurnitureRef",
+        "W05_RE_ObjectAF01_HumanFaction",
+        "W05_RE_ObjectAF01_RobotFaction"
+      ],
+      "declared_but_unbound": ["ScavengerRef"]
+    },
+    "0056A252": {
+      "editor_id": "W05_RE_ObjectAF01_Explosion",
+      "callbacks": ["Fragment_Phase_02_End", "Fragment_Phase_05_End"],
+      "source_bindings": [
+        "DisProtectron",
+        "RepairFurnitureRef",
+        "W05_RE_ObjectAF01_Protectron_Destruct"
+      ],
+      "live_bindings": [
+        "DisProtectron",
+        "RepairFurnitureRef",
+        "W05_RE_ObjectAF01_Protectron_Destruct"
+      ],
+      "declared_but_unbound": ["ScavengerRef"]
+    },
+    "0056A251": {
+      "editor_id": "W05_RE_ObjectAF01_FixRobot",
+      "callbacks": ["Fragment_Phase_03_End"],
+      "source_bindings": ["RepairFurnitureRef", "ScavengerRef"],
+      "live_bindings": ["RepairFurnitureRef", "ScavengerRef"],
+      "declared_but_unbound": []
+    },
+    "0056A24C": {
+      "editor_id": "W05_RE_ObjectAF01_Sandbox",
+      "callbacks": ["Fragment_Phase_01_Begin"],
+      "source_bindings": ["RepairFurnitureRef", "ScavengerRef"],
+      "live_bindings": ["RepairFurnitureRef", "ScavengerRef"],
+      "declared_but_unbound": []
+    }
+  },
+  "native_topology": {
+    "robot_faction": "0056BC69",
+    "human_faction": "0056BC6A",
+    "initial_relationship": "Ally",
+    "repair_furniture": "000D96C3",
+    "scavenger_link_keyword": "LinkCustom03",
+    "repair_package": "SitLinkCustom03",
+    "broken_robot_keyword": "007AC618",
+    "interact_message": "0059E0F7",
+    "self_destruct_spell": "0056A24F"
+  },
+  "source_client_pex": {
+    "W05_RE_ObjectAF01_Quest_Script": {
+      "bytes": 723,
+      "sha256": "2DEE10450739D09D9220876B8C08BF39E70A7218BDF85DEE1931B86813AAE621",
+      "members": []
+    },
+    "SF_W05_RE_ObjectAF01_Attack_0056BC6B": {
+      "bytes": 801,
+      "sha256": "46F85146A81A23FBBDC232357A647FF93E3152697DFE7D29FD0D3546B3A4C6B1",
+      "members": []
+    },
+    "SF_W05_RE_ObjectAF01_Explosi_0056A252": {
+      "bytes": 720,
+      "sha256": "C118D53DC24975C39B00004FD5D973C7EAC45A6662196F60B335FF2CCAAEAA68",
+      "members": []
+    },
+    "SF_W05_RE_ObjectAF01_FixRobo_0056A251": {
+      "bytes": 543,
+      "sha256": "8749D434718361904F5F2DD7B64D898266A382C42C50496CF3487DB9A98E592E",
+      "members": []
+    },
+    "SF_W05_RE_ObjectAF01_Sandbox_0056A24C": {
+      "bytes": 543,
+      "sha256": "982A0EACE19970CC3C3E2BC07134BE49903669C16F2AE1B8447F4EA1A836011A",
+      "members": []
+    }
+  }
+}

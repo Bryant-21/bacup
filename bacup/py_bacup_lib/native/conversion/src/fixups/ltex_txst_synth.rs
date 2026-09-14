@@ -29,7 +29,8 @@ impl Fixup for LtexTxstSynthFixup {
             .source_slot_opt()
             .and_then(|slot| slot.parsed.game.as_deref());
         let target_game = session.target_slot().parsed.game.as_deref();
-        matches!(source_game, Some("fnv" | "fo3")) && target_game == Some("fo4")
+        matches!(source_game, Some("fnv" | "fo3" | "skyrim" | "skyrimse"))
+            && target_game == Some("fo4")
     }
 
     fn run_with_session(
@@ -73,6 +74,7 @@ impl Fixup for LtexTxstSynthFixup {
         )?;
         let mut added_txsts = Vec::new();
         let mut changed_ltex = Vec::new();
+        let mut changed_txsts = Vec::new();
         let mut report = FixupReport::empty();
 
         for target_ltex_fk in target_ltex_fks {
@@ -84,6 +86,14 @@ impl Fixup for LtexTxstSynthFixup {
                     .as_deref()
                     == Some("TXST")
                 {
+                    if let Some(shaped) = shaped_landscape_txst(
+                        session,
+                        target_txst_fk,
+                        target_schema.as_ref(),
+                        mapper.interner,
+                    )? {
+                        changed_txsts.push(shaped);
+                    }
                     continue;
                 }
             }
@@ -170,6 +180,7 @@ impl Fixup for LtexTxstSynthFixup {
             .map_err(|error| FixupError::HandleError(error.to_string()))?
             .try_into()
             .unwrap_or(u32::MAX);
+        changed_ltex.extend(changed_txsts);
         report.records_changed = session
             .replace_records_contents(changed_ltex, target_schema.as_ref(), mapper.interner)
             .map_err(|error| FixupError::HandleError(error.to_string()))?
@@ -264,6 +275,36 @@ fn target_record_signature(
     Ok(None)
 }
 
+/// Give an LTEX's texture set the vanilla FO4 landscape shape (real object
+/// bounds + `NoSpecularMap`). Returns `None` when the record is not owned by
+/// the output plugin or already carries the shape.
+fn shaped_landscape_txst(
+    session: &mut PluginSession,
+    txst_fk: FormKey,
+    target_schema: &crate::schema::AuthoringSchema,
+    interner: &StringInterner,
+) -> Result<Option<Record>, FixupError> {
+    let key = form_key_to_read_str(&txst_fk, interner);
+    let target_id = session.target_id();
+    if session
+        .record_signature_in_handle(target_id, &key)
+        .map_err(|error| FixupError::HandleError(error.to_string()))?
+        .as_deref()
+        != Some("TXST")
+    {
+        return Ok(None);
+    }
+    let mut record = session
+        .record_decoded(&txst_fk, target_schema, interner)
+        .map_err(|error| FixupError::HandleError(error.to_string()))?;
+    let before = record.fields.clone();
+    crate::translator::pair_hooks::fo4_layouts::apply_fo4_landscape_txst_shape(
+        &mut record,
+        interner,
+    );
+    Ok((record.fields != before).then_some(record))
+}
+
 fn allocate_synthesized_txst(
     source_key: FormKey,
     texture_path: &str,
@@ -313,6 +354,10 @@ fn build_txst(
         sig: SubrecordSig::from_str("TX00").map_err(FixupError::SchemaError)?,
         value: FieldValue::String(interner.intern(texture_path)),
     });
+    crate::translator::pair_hooks::fo4_layouts::apply_fo4_landscape_txst_shape(
+        &mut record,
+        interner,
+    );
     Ok(record)
 }
 
@@ -425,7 +470,7 @@ mod tests {
     #[test]
     fn synthesizes_one_txst_per_texture_path_and_wires_ltex_tnam() {
         let interner = StringInterner::new();
-        let source_name = "FNV_FO3_Merged.esm";
+        let source_name = "FalloutNV.esm";
         let target_name = "MojaveCapital.esm";
         let source = plugin_handle_new_native(source_name, Some("fnv")).unwrap();
         let target = plugin_handle_new_native(target_name, Some("fo4")).unwrap();
@@ -596,7 +641,7 @@ mod tests {
     #[test]
     fn unavailable_source_txst_uses_icon_or_warns_and_skips() {
         let interner = StringInterner::new();
-        let source_name = "FNV_FO3_Merged.esm";
+        let source_name = "FalloutNV.esm";
         let target_name = "MojaveCapital.esm";
         let source = plugin_handle_new_native(source_name, Some("fnv")).unwrap();
         let target = plugin_handle_new_native(target_name, Some("fo4")).unwrap();

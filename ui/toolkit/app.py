@@ -23,15 +23,16 @@ from .shared_panels import AI_AVAILABLE, AIChatPanel, LogPanel
 from creation_lib.ui.theme import (
     apply_tab_style,
     apply_theme,
-    draw_theme_selector,
     get_theme,
 )
+from creation_lib.ui.theme.editor import ThemeEditor
 from .settings import ToolkitSettings
 from creation_lib.ui.shell import SettingsWindow, WorkspaceHost
 from creation_lib.ui.settings import general_section, paths_section, indexes_section
 from .variants import AppVariant, get_variant
 from .version import get_version
 from creation_lib.ui.shell import ViewMenuHelper
+from creation_lib.ui.widgets.modern import heading, semantic_color
 
 _log = logging.getLogger("toolkit.app")
 
@@ -235,7 +236,6 @@ class ToolkitApp:
         )
         self._log_panel = LogPanel()
 
-        # Activity bar
         # Settings window
         _env_path = Path(__file__).resolve().parents[2] / ".env"
         self._settings_window = SettingsWindow(
@@ -277,6 +277,7 @@ class ToolkitApp:
         self._mono_font = None
         self._small_font = None
         self._current_theme = get_theme(self._settings.theme)
+        self._theme_editor = ThemeEditor()
 
         # Apply settings to workspaces
         for ws in workspaces:
@@ -436,8 +437,9 @@ class ToolkitApp:
 
         self._active_ws = new_ws
         self._active_ws.on_activate()
-        if remember:
+        if remember and self._settings.active_workspace != workspace_id:
             self._settings.active_workspace = workspace_id
+            self._settings.save()
         _log.info("Switched to workspace: %s", new_ws.name)
         return True
 
@@ -666,7 +668,14 @@ class ToolkitApp:
 
             # --- NIF ---
             if imgui.begin_menu("NIF"):
-                self._ws_menu_items(["nif_collision", "nif_fbx", "bulk_nif"])
+                self._ws_menu_items(
+                    [
+                        "nif_validation_report",
+                        "nif_collision",
+                        "nif_fbx",
+                        "bulk_nif",
+                    ]
+                )
                 imgui.end_menu()
 
             # --- Mod Tools ---
@@ -698,13 +707,14 @@ class ToolkitApp:
                 imgui.separator()
                 if imgui.menu_item("Theme...", "", False)[0]:
                     self._show_theme_selector = True
-                rp = hello_imgui.get_runner_params()
-                _, rp.imgui_window_params.show_status_fps = imgui.menu_item(
-                    "Show FPS", "", rp.imgui_window_params.show_status_fps
-                )
-                _, rp.imgui_window_params.show_status_bar = imgui.menu_item(
-                    "Show Status Bar", "", rp.imgui_window_params.show_status_bar
-                )
+                if self._app_variant.include_status_bar:
+                    rp = hello_imgui.get_runner_params()
+                    _, rp.imgui_window_params.show_status_fps = imgui.menu_item(
+                        "Show FPS", "", rp.imgui_window_params.show_status_fps
+                    )
+                    _, rp.imgui_window_params.show_status_bar = imgui.menu_item(
+                        "Show Status Bar", "", rp.imgui_window_params.show_status_bar
+                    )
                 imgui.end_menu()
 
             imgui.separator()
@@ -733,13 +743,14 @@ class ToolkitApp:
                 imgui.separator()
                 if imgui.menu_item("Theme...", "", False)[0]:
                     self._show_theme_selector = True
-                rp = hello_imgui.get_runner_params()
-                _, rp.imgui_window_params.show_status_fps = imgui.menu_item(
-                    "Show FPS", "", rp.imgui_window_params.show_status_fps
-                )
-                _, rp.imgui_window_params.show_status_bar = imgui.menu_item(
-                    "Show Status Bar", "", rp.imgui_window_params.show_status_bar
-                )
+                if self._app_variant.include_status_bar:
+                    rp = hello_imgui.get_runner_params()
+                    _, rp.imgui_window_params.show_status_fps = imgui.menu_item(
+                        "Show FPS", "", rp.imgui_window_params.show_status_fps
+                    )
+                    _, rp.imgui_window_params.show_status_bar = imgui.menu_item(
+                        "Show Status Bar", "", rp.imgui_window_params.show_status_bar
+                    )
                 imgui.end_menu()
             imgui.separator()
             if imgui.menu_item("About", "", False)[0]:
@@ -796,15 +807,16 @@ class ToolkitApp:
             hello_imgui.get_runner_params().app_shall_exit = True
 
         # About dialog
+        about_title = f"About {self._app_variant.exe_name}##about"
         if self._show_about:
-            imgui.open_popup("About ModBox21##about")
+            imgui.open_popup(about_title)
             self._show_about = False
         center = imgui.get_main_viewport().get_center()
         imgui.set_next_window_pos(center, imgui.Cond_.appearing, imgui.ImVec2(0.5, 0.5))
         if imgui.begin_popup_modal(
-            "About ModBox21##about", None, imgui.WindowFlags_.always_auto_resize
+            about_title, None, imgui.WindowFlags_.always_auto_resize
         )[0]:
-            imgui.text("ModBox21 — Bethesda Modding Toolkit")
+            heading(self._app_variant.window_title)
             imgui.separator()
             imgui.text(f"Version:  {get_version()}")
             imgui.spacing()
@@ -813,36 +825,7 @@ class ToolkitApp:
                 imgui.close_current_popup()
             imgui.end_popup()
 
-        # Theme selector modal
-        if self._show_theme_selector:
-            imgui.open_popup("Theme##theme_modal")
-            self._show_theme_selector = False
-        if imgui.begin_popup_modal(
-            "Theme##theme_modal", None, imgui.WindowFlags_.always_auto_resize
-        )[0]:
-            imgui.text("Select a theme:")
-            imgui.spacing()
-            new_id = draw_theme_selector(self._current_theme.id)
-            if new_id is not None:
-                self._current_theme = get_theme(new_id)
-                apply_theme(self._current_theme)
-                self._settings.theme = new_id
-            imgui.spacing()
-            imgui.separator()
-            imgui.spacing()
-            # Still expose hello_imgui's built-in tweaker for fine-tuning
-            tweaked_theme = (
-                hello_imgui.get_runner_params().imgui_window_params.tweaked_theme
-            )
-            if imgui.tree_node("Advanced Tweaks"):
-                if hello_imgui.show_theme_tweak_gui(tweaked_theme):
-                    hello_imgui.apply_tweaked_theme(tweaked_theme)
-                imgui.tree_pop()
-            imgui.spacing()
-            imgui.set_cursor_pos_x((imgui.get_window_width() - 80) * 0.5)
-            if imgui.button("Close", imgui.ImVec2(80, 0)):
-                imgui.close_current_popup()
-            imgui.end_popup()
+        self._draw_theme_editor()
 
         # Active workspace
         if self._active_ws:
@@ -855,10 +838,23 @@ class ToolkitApp:
                 _log.error("Workspace error:\n%s", traceback.format_exc())
                 imgui.begin("Viewport##error")
                 imgui.text_colored(
-                    imgui.ImVec4(1, 0.3, 0.3, 1),
+                    semantic_color("error"),
                     "Workspace error — see Log panel",
                 )
                 imgui.end()
+
+    def _draw_theme_editor(self):
+        if self._show_theme_selector:
+            self._theme_editor.open(self._current_theme.id, getattr(self._settings, "theme_colors", {}))
+            self._show_theme_selector = False
+        result = self._theme_editor.draw()
+        if result == "save":
+            self._current_theme = get_theme(self._theme_editor.theme_id)
+            self._settings.theme = self._current_theme.id
+            self._settings.theme_colors = self._theme_editor.overrides
+            self._settings.save()
+        if result:
+            self._apply_tab_style()
 
     def _on_exit(self):
         """Called by hello_imgui before exit."""
@@ -883,50 +879,14 @@ class ToolkitApp:
         self._log_panel.uninstall()
 
     def _load_fonts(self):
-        """Load fonts: default + FontAwesome icons, then Cascadia Mono for the terminal."""
-        try:
-            # Load Roboto as default font, merged with FontAwesome 6 for toolbar icons.
-            # Roboto-Regular.ttf ships inside imgui_bundle assets (inside_assets=True by default).
-            hello_imgui.load_font_ttf_with_font_awesome_icons(
-                "fonts/Roboto/Roboto-Regular.ttf", 16.0
-            )
+        from creation_lib.ui.theme.appearance import load_ui_fonts
 
-            # Larger FA6 icon font for the top toolbar buttons.
-            self._toolbar_icon_font = hello_imgui.load_font(
-                "fonts/Font_Awesome_6_Free-Solid-900.otf", 20.0
-            )
-
-            # Smaller Roboto for compact overlays (e.g. controls HUD).
-            small = hello_imgui.load_font("fonts/Roboto/Roboto-Regular.ttf", 12.0)
-            if small:
-                self._small_font = small
-        except Exception:
-            _log.warning(
-                "Bundled UI fonts unavailable; using ImGui's default font",
-                exc_info=True,
-            )
-
-        candidates = [
-            r"C:\Windows\Fonts\CascadiaMono.ttf",
-            r"C:\Windows\Fonts\CascadiaCode.ttf",
-            r"C:\Windows\Fonts\consola.ttf",
-        ]
-        font_path = next((p for p in candidates if os.path.exists(p)), None)
-        if font_path is None:
-            return
-        try:
-            params = hello_imgui.FontLoadingParams()
-            params.inside_assets = False
-            font = hello_imgui.load_font(font_path, 14.0, params)
-            if font:
-                self._mono_font = font
-                if self._ai_chat:
-                    self._ai_chat.mono_font = font
-        except Exception:
-            _log.warning(
-                "Monospace UI font unavailable; using ImGui's default font",
-                exc_info=True,
-            )
+        self._ui_fonts = load_ui_fonts()
+        self._toolbar_icon_font = self._ui_fonts.icons
+        self._small_font = self._ui_fonts.small
+        self._mono_font = self._ui_fonts.mono
+        if self._ai_chat:
+            self._ai_chat.mono_font = self._mono_font
 
     def _post_init(self):
         initial_display_size = getattr(self, "_initial_display_size", None)
@@ -937,7 +897,8 @@ class ToolkitApp:
                 io.display_size = (float(width), float(height))
         set_window_icon(self._app_variant)
         set_native_dark_title_bar()
-        apply_theme(self._current_theme)
+        apply_theme(self._current_theme, color_overrides=getattr(self._settings, "theme_colors", {}).get(self._current_theme.id))
+        imgui.get_io().config_flags |= imgui.ConfigFlags_.nav_enable_keyboard
         _signal_ready_file()
         if self._mono_font:
             papyrus_ws = self._ws_map.get("papyrus")
@@ -946,7 +907,10 @@ class ToolkitApp:
 
     def _apply_tab_style(self):
         """Reapply themed tab colors each frame (hello_imgui resets on certain events)."""
-        apply_tab_style(self._current_theme)
+        if self._theme_editor.is_open:
+            apply_tab_style(get_theme(self._theme_editor.theme_id), self._theme_editor.current_overrides)
+        else:
+            apply_tab_style(self._current_theme, getattr(self._settings, "theme_colors", {}).get(self._current_theme.id))
 
     def run(self):
         """Launch the toolkit."""
@@ -956,6 +920,7 @@ class ToolkitApp:
             params.app_window_params.window_geometry.size
         )
         params.callbacks.show_gui = self._gui
+        params.callbacks.post_new_frame = self._apply_tab_style
         params.callbacks.before_exit = self._on_exit
         params.callbacks.load_additional_fonts = self._load_fonts
         params.callbacks.default_icon_font = hello_imgui.DefaultIconFont.font_awesome6
@@ -970,8 +935,9 @@ class ToolkitApp:
         params.imgui_window_params.show_menu_app = False
         params.imgui_window_params.show_menu_view = False
         params.callbacks.show_menus = self._show_menus
-        params.imgui_window_params.show_status_bar = True
-        params.imgui_window_params.show_status_fps = True
+        params.imgui_window_params.show_status_bar = self._app_variant.include_status_bar
+        params.imgui_window_params.show_status_fps = self._app_variant.include_status_bar
+        params.imgui_window_params.remember_status_bar_settings = self._app_variant.include_status_bar
         params.imgui_window_params.tweaked_theme = hello_imgui.ImGuiTweakedTheme(
             hello_imgui.ImGuiTheme_.darcula
         )

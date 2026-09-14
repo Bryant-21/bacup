@@ -1,5 +1,5 @@
     fn make_ctx(interner: &StringInterner) -> PairCtx<'_> {
-        PairCtx { interner }
+        PairCtx::new(interner)
     }
 
     fn make_record(sig: &str, interner: &StringInterner) -> Record {
@@ -109,6 +109,39 @@
         FieldValue::Bytes(SmallVec::from_vec(qust_vmad_fixture(aliases).bytes))
     }
 
+    fn qust_vmad_with_re_alias_properties(
+        script_name: &str,
+        properties: &[(&str, u8, Vec<u8>)],
+    ) -> FieldValue {
+        fn write_string(bytes: &mut Vec<u8>, value: &str) {
+            bytes.extend_from_slice(&(value.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(value.as_bytes());
+        }
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&FO76_VMAD_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&FO76_VMAD_OBJECT_FORMAT.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.push(FO76_QUST_FRAGMENT_VERSION);
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        write_string(&mut bytes, "");
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        bytes.extend_from_slice(&FO76_VMAD_ALIAS_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&FO76_VMAD_OBJECT_FORMAT.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        write_string(&mut bytes, script_name);
+        bytes.push(0);
+        bytes.extend_from_slice(&(properties.len() as u16).to_le_bytes());
+        for (name, property_type, value) in properties {
+            write_string(&mut bytes, name);
+            bytes.push(*property_type);
+            bytes.push(1);
+            bytes.extend_from_slice(value);
+        }
+        FieldValue::Bytes(SmallVec::from_vec(bytes))
+    }
+
     fn qust_vmad_with_remove_players_aliases(alias_ids: &[i16]) -> FieldValue {
         fn write_string(bytes: &mut Vec<u8>, value: &str) {
             bytes.extend_from_slice(&(value.len() as u16).to_le_bytes());
@@ -179,6 +212,37 @@
         push_field(
             record,
             "ALST",
+            FieldValue::Bytes(SmallVec::from_vec(alias_id.to_le_bytes().to_vec())),
+        );
+        push_field(record, "ALID", FieldValue::Bytes(SmallVec::new()));
+        push_field(
+            record,
+            "FNAM",
+            FieldValue::Bytes(SmallVec::from_vec(flags.to_le_bytes().to_vec())),
+        );
+        push_field(
+            record,
+            "ALFE",
+            FieldValue::Bytes(SmallVec::from_vec(event.to_le_bytes().to_vec())),
+        );
+        push_field(
+            record,
+            "ALFD",
+            FieldValue::Bytes(SmallVec::from_vec(event_data.to_le_bytes().to_vec())),
+        );
+        push_field(record, "ALED", FieldValue::None);
+    }
+
+    fn push_qust_location_event_alias(
+        record: &mut Record,
+        alias_id: u32,
+        flags: u32,
+        event: u32,
+        event_data: u32,
+    ) {
+        push_field(
+            record,
+            "ALLS",
             FieldValue::Bytes(SmallVec::from_vec(alias_id.to_le_bytes().to_vec())),
         );
         push_field(record, "ALID", FieldValue::Bytes(SmallVec::new()));

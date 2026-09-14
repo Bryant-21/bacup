@@ -1,26 +1,24 @@
-//! Fixup: synthesize FO4 workshop boundary triggers for FO76 public workshops.
+//! Fixup: restore FO4 workshop boundaries for FO76 public workshops and shelters.
 //!
-//! FO76 public workshops encode capture/build limits differently from FO4. After
-//! converting the public workbench to FO4's `WorkshopWorkbench`, the workbench can
-//! still lack `WorkshopLinkSandbox` and any `WorkshopLinkedPrimitive` trigger.
-//! FO4 workshop capture then cannot bound the enemy-clear check and reports that
-//! enemies remain even when the area is clear.
+//! A converted FO76 public workbench (now FO4 `WorkshopWorkbench`) can lack
+//! `WorkshopLinkSandbox` and any `WorkshopLinkedPrimitive` trigger, so FO4 capture
+//! cannot bound its enemy-clear check and reports enemies remaining in a clear area.
 //!
-//! FO76 also outlines public workshops with box-shaped `NoCampAllowedTrigger`
-//! references. Its large boxes prohibit CAMP placement, but FO4 interprets an
-//! edge-linked box as buildable area. This phase therefore links only the
-//! smallest box crossing each authored workshop region through
-//! `WorkshopLinkedBuildAreaEdge`, while removing stale edge links from larger
-//! exclusion volumes and leaving spheres unchanged.
+//! FO76 outlines public workshops with box `NoCampAllowedTrigger` refs. Its large
+//! boxes forbid CAMP placement, but FO4 reads an edge-linked box as buildable area,
+//! so only the smallest box crossing each authored workshop region is linked through
+//! `WorkshopLinkedBuildAreaEdge`. Stale edge links are removed from larger exclusion
+//! volumes; spheres are left alone.
 //!
-//! The workshop's location is resolved through the LCSR `WorkshopRefType` entry
-//! that claims the workbench (FO76 bakes one per public workshop), NOT through
-//! the workbench's parent cell: every FO76 workbench sits in the shared
-//! worldspace persistent cell, so a cell-based lookup resolves all workshops to
-//! one location and the Boss-ref strip never reaches the real per-workshop
-//! LCTNs. Boss special refs are stripped so the location matches the vanilla
-//! claim-on-visit shape (RedRocketTruckStopLocation: `LocTypeClearable`, zero
+//! The workshop location comes from the LCSR `WorkshopRefType` entry claiming the
+//! workbench (FO76 bakes one per public workshop), not the parent cell: every FO76
+//! workbench sits in the shared worldspace persistent cell, so a cell lookup maps
+//! all workshops to one location. Boss special refs are stripped to match the
+//! vanilla claim-on-visit shape (RedRocketTruckStopLocation: `LocTypeClearable`, no
 //! Boss LCSR rows).
+//!
+//! Shelter interiors keep their `Shelters_InteriorWorkshopArea` refs; each is linked
+//! to the shelter's interior workbench through `WorkshopLinkedPrimitive` as a border.
 
 use esp_authoring_core::plugin_runtime::{
     ParsedRecord, ParsedSubrecord, build_vmad_bytes_from_payload, effective_subrecords_for_record,
@@ -28,6 +26,8 @@ use esp_authoring_core::plugin_runtime::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::{SmallVec, smallvec};
 
+use crate::fixups::encounter_zones::model::WorkshopClass;
+use crate::fixups::face::materialize_leveled_template_npcs::read_target_or_master_record;
 use crate::fixups::{FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
@@ -39,9 +39,13 @@ const FO4_MASTER_PLUGIN: &str = "Fallout4.esm";
 const SYNTHETIC_SANDBOX_SOURCE_PLUGIN: &str = "__fo76_to_fo4_workshop_sandbox__";
 const SYNTHETIC_BUILDABLE_SOURCE_PLUGIN: &str = "__fo76_to_fo4_workshop_buildable__";
 const SYNTHETIC_LOCATION_SOURCE_PLUGIN: &str = "__fo76_to_fo4_workshop_location__";
+const SYNTHETIC_SHELTER_WORKBENCH_SOURCE_PLUGIN: &str = "__fo76_to_fo4_shelter_workbench__";
 
 const DEFAULT_EMPTY_TRIGGER_LOCAL: u32 = 0x0002_24E3;
 const WORKSHOP_WORKBENCH_LOCAL: u32 = 0x000C_1AEB;
+const WORKSHOP_WORKBENCH_INTERIOR_LOCAL: u32 = 0x0012_E2C4;
+const SHELTER_CONTROL_PANEL_LOCAL: u32 = 0x005E_4D5D;
+const SHELTER_INTERIOR_WORKSHOP_AREA_LOCAL: u32 = 0x005D_8042;
 const WORKSHOP_LINK_CENTER_LOCAL: u32 = 0x0003_8C0B;
 const WORKSHOP_LINK_SANDBOX_LOCAL: u32 = 0x0022_B5A7;
 const WORKSHOP_LINKED_PRIMITIVE_LOCAL: u32 = 0x000B_91E6;
@@ -134,6 +138,13 @@ struct WorkshopCandidate {
     form_key: FormKey,
     raw_form_id: u32,
     has_sandbox_link: bool,
+    class: WorkshopClass,
+}
+
+#[derive(Clone, Copy)]
+struct ShelterBoundary {
+    form_key: FormKey,
+    raw_form_id: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -178,8 +189,24 @@ pub fn synthesize_workshop_boundaries(
     let own_plugin = interner.intern(&session.target_slot().parsed.plugin_name);
     let refr_sig = SigCode::from_str("REFR").map_err(FixupError::SchemaError)?;
     let started = std::time::Instant::now();
-    let (candidates, buildable_link_targets, no_camp_boundaries) =
+    let (candidates, buildable_link_targets, no_camp_boundaries, shelter_boundaries) =
         collect_workshop_candidates(session, refr_sig, own_plugin, &raw_forms)?;
+    let shelter_workbench_base = if candidates
+        .iter()
+        .any(|candidate| candidate.class == WorkshopClass::Shelter)
+    {
+        let (form_key, added) = materialize_shelter_workbench_base(
+            session,
+            mapper,
+            config,
+            target_schema.as_ref(),
+            own_plugin,
+        )?;
+        report.records_added = report.records_added.saturating_add(u32::from(added));
+        Some(form_key)
+    } else {
+        None
+    };
     let workbench_locations = if candidates.is_empty() {
         FxHashMap::default()
     } else {
@@ -221,6 +248,58 @@ pub fn synthesize_workshop_boundaries(
     // per-candidate loop did) rebuilt the multi-million-record locator once per
     // workshop. All writes are deferred to pass 2.
     let pass_started = std::time::Instant::now();
+    let mut shelter_workbenches_by_cell = FxHashMap::default();
+    for candidate in &candidates {
+        if candidate.class != WorkshopClass::Shelter {
+            continue;
+        }
+        if let Some(cell_form_id) = session
+            .parent_cell_form_id_for_record(candidate.raw_form_id)
+            .map_err(|e| FixupError::HandleError(e.to_string()))?
+        {
+            shelter_workbenches_by_cell
+                .entry(cell_form_id)
+                .or_insert(candidate.form_key);
+        }
+    }
+    let mut shelter_boundary_cells = FxHashSet::default();
+    let mut shelter_boundary_records = Vec::with_capacity(shelter_boundaries.len());
+    for boundary in shelter_boundaries {
+        let Some(cell_form_id) = session
+            .parent_cell_form_id_for_record(boundary.raw_form_id)
+            .map_err(|e| FixupError::HandleError(e.to_string()))?
+        else {
+            continue;
+        };
+        let Some(workbench) = shelter_workbenches_by_cell.get(&cell_form_id).copied() else {
+            report.warnings.push(interner.intern(&format!(
+                "shelter_boundary_missing_workbench:{:06X}",
+                boundary.form_key.local & 0x00FF_FFFF
+            )));
+            continue;
+        };
+        shelter_boundary_cells.insert(cell_form_id);
+        let mut record = session
+            .record_decoded(&boundary.form_key, target_schema.as_ref(), interner)
+            .map_err(|e| FixupError::HandleError(e.to_string()))?;
+        if set_unique_link(
+            &mut record,
+            forms.linked_primitive,
+            Some(workbench),
+            interner,
+        ) {
+            shelter_boundary_records.push(record);
+        }
+    }
+    for (cell_form_id, workbench) in &shelter_workbenches_by_cell {
+        if !shelter_boundary_cells.contains(cell_form_id) {
+            report.warnings.push(interner.intern(&format!(
+                "shelter_workbench_missing_boundaries:{:06X}",
+                workbench.local & 0x00FF_FFFF
+            )));
+        }
+    }
+
     let mut plans: Vec<CandidatePlan> = Vec::with_capacity(candidates.len());
     let mut planned_cell_xlcn: FxHashMap<u32, FormKey> = FxHashMap::default();
     let mut region_shaped = 0usize;
@@ -255,11 +334,20 @@ pub fn synthesize_workshop_boundaries(
             region_shaped += 1;
         }
         let shape = edge_shape.unwrap_or(shape);
-        let workbench_changed = ensure_workshop_script(&mut workbench);
+        let mut workbench_changed = false;
+        if candidate.class == WorkshopClass::Shelter {
+            workbench_changed |= set_form_key_field(
+                &mut workbench,
+                "NAME",
+                shelter_workbench_base.expect("shelter base materialized"),
+            );
+        }
+        workbench_changed |= ensure_workshop_script(&mut workbench, candidate.class);
         let planned = if let Some(location_fk) = workbench_locations.get(&candidate.form_key) {
             plan_strip_boss_refs_at_location(
                 session,
                 location_fk,
+                candidate.class,
                 &forms,
                 &raw_forms,
                 target_schema.as_ref(),
@@ -272,6 +360,8 @@ pub fn synthesize_workshop_boundaries(
                 target_schema.as_ref(),
                 cell_form_id,
                 &workbench,
+                candidate.raw_form_id,
+                candidate.class,
                 &forms,
                 &raw_forms,
                 &target_masters,
@@ -283,7 +373,8 @@ pub fn synthesize_workshop_boundaries(
         };
         report.records_added = report.records_added.saturating_add(planned.records_added);
 
-        let triggers = if candidate.has_sandbox_link
+        let triggers = if candidate.class == WorkshopClass::Shelter
+            || candidate.has_sandbox_link
             || buildable_link_targets.contains(&candidate.raw_form_id)
         {
             None
@@ -394,6 +485,7 @@ pub fn synthesize_workshop_boundaries(
     // single-traversal replace instead of a full-tree scan per record.
     let pass_started = std::time::Instant::now();
     let mut batch: Vec<Record> = edge_records;
+    batch.extend(shelter_boundary_records);
     for mut plan in plans {
         if let Some(location) = plan.location_add {
             session
@@ -460,7 +552,84 @@ pub fn synthesize_workshop_boundaries(
     Ok(report)
 }
 
-fn ensure_workshop_script(record: &mut Record) -> bool {
+fn materialize_shelter_workbench_base(
+    session: &mut PluginSession,
+    mapper: &mut FormKeyMapper,
+    config: &FixupConfig,
+    target_schema: &crate::schema::AuthoringSchema,
+    own_plugin: Sym,
+) -> Result<(FormKey, bool), FixupError> {
+    let interner = mapper.interner;
+    let edid = interner.intern("Shelters_InteriorWorkshopWorkbench");
+    let form_key = mapper.allocate_or_resolve(
+        FormKey {
+            local: SHELTER_CONTROL_PANEL_LOCAL,
+            plugin: interner.intern(SYNTHETIC_SHELTER_WORKBENCH_SOURCE_PLUGIN),
+        },
+        Some(edid),
+        sig_code("CONT"),
+    );
+    if decode_target_record_opt(session, &form_key, target_schema, interner)?.is_some() {
+        return Ok((form_key, false));
+    }
+
+    let target_masters = session.target_masters().to_vec();
+    let mut donor = read_target_or_master_record(
+        session,
+        target_schema,
+        interner,
+        own_plugin,
+        &target_masters,
+        &config.target_master_handle_ids,
+        fo4_form_key(WORKSHOP_WORKBENCH_INTERIOR_LOCAL, interner),
+    )
+    .ok_or_else(|| {
+        FixupError::HandleError("missing Fallout4.esm WorkshopWorkbenchInterior".into())
+    })?;
+    let panel = session
+        .record_decoded(
+            &FormKey {
+                local: SHELTER_CONTROL_PANEL_LOCAL,
+                plugin: own_plugin,
+            },
+            target_schema,
+            interner,
+        )
+        .map_err(|e| FixupError::HandleError(e.to_string()))?;
+
+    donor.form_key = form_key;
+    donor.eid = Some(edid);
+    if let Some(field) = donor
+        .fields
+        .iter_mut()
+        .find(|field| field.sig.as_str() == "EDID")
+    {
+        field.value = FieldValue::String(edid);
+    }
+    for signature in ["OBND", "MODL", "MODT"] {
+        let Some(panel_field) = panel
+            .fields
+            .iter()
+            .find(|field| field.sig.as_str() == signature)
+        else {
+            continue;
+        };
+        if let Some(donor_field) = donor
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.as_str() == signature)
+        {
+            donor_field.value = panel_field.value.clone();
+        }
+    }
+
+    session
+        .add_record(donor, target_schema, interner)
+        .map_err(|e| FixupError::HandleError(e.to_string()))?;
+    Ok((form_key, true))
+}
+
+fn ensure_workshop_script(record: &mut Record, class: WorkshopClass) -> bool {
     if record
         .fields
         .iter()
@@ -477,27 +646,35 @@ fn ensure_workshop_script(record: &mut Record) -> bool {
         insert_at,
         FieldEntry {
             sig: subrecord_sig("VMAD"),
-            value: FieldValue::Bytes(SmallVec::from_vec(workshop_script_vmad_bytes())),
+            value: FieldValue::Bytes(SmallVec::from_vec(workshop_script_vmad_bytes(class))),
         },
     );
     true
 }
 
-fn workshop_script_vmad_bytes() -> Vec<u8> {
+fn workshop_script_vmad_bytes(class: WorkshopClass) -> Vec<u8> {
+    let properties = match class {
+        WorkshopClass::Shelter => vec![
+            vmad_bool_property("OwnedByPlayer", true),
+            vmad_int_property("MaxDraws", DEFAULT_WORKSHOP_MAX_DRAWS),
+            vmad_int_property("MaxTriangles", DEFAULT_WORKSHOP_MAX_TRIANGLES),
+        ],
+        WorkshopClass::Settlement | WorkshopClass::NonWorkshop => vec![
+            vmad_bool_property("EnableAutomaticPlayerOwnership", true),
+            vmad_bool_property("AllowAttacksBeforeOwned", false),
+            vmad_int_property("MaxDraws", DEFAULT_WORKSHOP_MAX_DRAWS),
+            vmad_int_property("MaxTriangles", DEFAULT_WORKSHOP_MAX_TRIANGLES),
+            vmad_bool_property("MinRecruitmentProhibitRandom", true),
+            vmad_bool_property("AllowUnownedFromLowHappiness", true),
+        ],
+    };
     let payload = serde_json::json!({
         "Version": WORKSHOP_VMAD_VERSION,
         "Object Format": WORKSHOP_VMAD_OBJECT_FORMAT,
         "Scripts": [{
             "ScriptName": WORKSHOP_SCRIPT_NAME,
             "Flags": VMAD_SCRIPT_FLAG_INHERITED,
-            "Properties": [
-                vmad_bool_property("EnableAutomaticPlayerOwnership", true),
-                vmad_bool_property("AllowAttacksBeforeOwned", false),
-                vmad_int_property("MaxDraws", DEFAULT_WORKSHOP_MAX_DRAWS),
-                vmad_int_property("MaxTriangles", DEFAULT_WORKSHOP_MAX_TRIANGLES),
-                vmad_bool_property("MinRecruitmentProhibitRandom", true),
-                vmad_bool_property("AllowUnownedFromLowHappiness", true),
-            ],
+            "Properties": properties,
         }],
     });
     build_vmad_bytes_from_payload(&payload, &[], FO4_MASTER_PLUGIN)
@@ -614,7 +791,7 @@ fn encoded_master_form_id(target_masters: &[String], plugin: &str, local: u32) -
         .map(|index| ((index as u32) << 24) | (local & 0x00FF_FFFF))
 }
 
-fn target_form_key_from_raw(
+pub(crate) fn target_form_key_from_raw(
     raw_form_id: u32,
     target_masters: &[String],
     own_plugin: Sym,
@@ -639,7 +816,15 @@ fn collect_workshop_candidates(
     refr_sig: SigCode,
     own_plugin: Sym,
     raw_forms: &RawWorkshopForms,
-) -> Result<(Vec<WorkshopCandidate>, FxHashSet<u32>, Vec<NoCampBoundary>), FixupError> {
+) -> Result<
+    (
+        Vec<WorkshopCandidate>,
+        FxHashSet<u32>,
+        Vec<NoCampBoundary>,
+        Vec<ShelterBoundary>,
+    ),
+    FixupError,
+> {
     use rayon::prelude::*;
 
     let own_index = session.target_masters().len() as u8;
@@ -662,6 +847,7 @@ fn collect_workshop_candidates(
     let mut candidates = Vec::new();
     let mut buildable_link_targets = FxHashSet::default();
     let mut no_camp_boundaries = Vec::new();
+    let mut shelter_boundaries = Vec::new();
     for hit in hits {
         if let Some(candidate) = hit.candidate {
             candidates.push(candidate);
@@ -670,14 +856,23 @@ fn collect_workshop_candidates(
         if let Some(boundary) = hit.no_camp_boundary {
             no_camp_boundaries.push(boundary);
         }
+        if let Some(boundary) = hit.shelter_boundary {
+            shelter_boundaries.push(boundary);
+        }
     }
-    Ok((candidates, buildable_link_targets, no_camp_boundaries))
+    Ok((
+        candidates,
+        buildable_link_targets,
+        no_camp_boundaries,
+        shelter_boundaries,
+    ))
 }
 
 struct WorkshopScanHit {
     candidate: Option<WorkshopCandidate>,
     buildable_link_targets: SmallVec<[u32; 1]>,
     no_camp_boundary: Option<NoCampBoundary>,
+    shelter_boundary: Option<ShelterBoundary>,
 }
 
 fn raw_record_is_own(raw_form_id: u32, own_index: u8) -> bool {
@@ -692,8 +887,9 @@ fn scan_workshop_refr(
     raw_forms: &RawWorkshopForms,
     subrecords: &[ParsedSubrecord],
 ) -> Option<WorkshopScanHit> {
-    let mut is_workbench = false;
+    let mut workshop_class = None;
     let mut is_no_camp_boundary = false;
+    let mut is_shelter_boundary = false;
     let mut has_sandbox_link = false;
     let mut has_build_area_edge = false;
     let mut buildable_link_targets = SmallVec::new();
@@ -702,9 +898,17 @@ fn scan_workshop_refr(
         match subrecord.signature.as_str() {
             "NAME" => {
                 if let Some(base) = read_raw_form_id(subrecord.data.as_ref(), 0) {
-                    is_workbench |= base == raw_forms.workbench_base;
+                    if base == raw_forms.workbench_base {
+                        workshop_class = Some(WorkshopClass::Settlement);
+                    } else if raw_record_is_own(base, own_index)
+                        && base & 0x00FF_FFFF == SHELTER_CONTROL_PANEL_LOCAL
+                    {
+                        workshop_class = Some(WorkshopClass::Shelter);
+                    }
                     is_no_camp_boundary |= raw_record_is_own(base, own_index)
                         && base & 0x00FF_FFFF == raw_forms.no_camp_allowed_trigger_local;
+                    is_shelter_boundary |= raw_record_is_own(base, own_index)
+                        && base & 0x00FF_FFFF == SHELTER_INTERIOR_WORKSHOP_AREA_LOCAL;
                 }
             }
             "XLKR" => {
@@ -724,20 +928,33 @@ fn scan_workshop_refr(
     let no_camp_boundary = is_no_camp_boundary
         .then(|| raw_no_camp_boundary(raw_form_id, own_plugin, has_build_area_edge, subrecords))
         .flatten();
-    if !is_workbench && buildable_link_targets.is_empty() && no_camp_boundary.is_none() {
+    let shelter_boundary = is_shelter_boundary.then_some(ShelterBoundary {
+        form_key: FormKey {
+            local: raw_form_id & 0x00FF_FFFF,
+            plugin: own_plugin,
+        },
+        raw_form_id,
+    });
+    if workshop_class.is_none()
+        && buildable_link_targets.is_empty()
+        && no_camp_boundary.is_none()
+        && shelter_boundary.is_none()
+    {
         return None;
     }
     Some(WorkshopScanHit {
-        candidate: is_workbench.then_some(WorkshopCandidate {
+        candidate: workshop_class.map(|class| WorkshopCandidate {
             form_key: FormKey {
                 local: raw_form_id & 0x00FF_FFFF,
                 plugin: own_plugin,
             },
             raw_form_id,
             has_sandbox_link,
+            class,
         }),
         buildable_link_targets,
         no_camp_boundary,
+        shelter_boundary,
     })
 }
 
@@ -748,7 +965,7 @@ fn raw_name_form_id(record: &ParsedRecord) -> Option<u32> {
         .and_then(|subrecord| read_raw_form_id(subrecord.data.as_ref(), 0))
 }
 
-fn read_raw_form_id(buf: &[u8], offset: usize) -> Option<u32> {
+pub(crate) fn read_raw_form_id(buf: &[u8], offset: usize) -> Option<u32> {
     let bytes = buf.get(offset..offset.checked_add(4)?)?;
     Some(u32::from_le_bytes(bytes.try_into().ok()?))
 }
@@ -760,6 +977,8 @@ fn plan_workshop_location(
     target_schema: &crate::schema::AuthoringSchema,
     cell_form_id: u32,
     workbench: &Record,
+    workbench_raw_form_id: u32,
+    class: WorkshopClass,
     forms: &WorkshopForms,
     raw_forms: &RawWorkshopForms,
     target_masters: &[String],
@@ -790,6 +1009,30 @@ fn plan_workshop_location(
         if let Some(mut location) =
             decode_target_record_opt(session, &location_fk, target_schema, interner)?
         {
+            if class == WorkshopClass::Shelter {
+                let mut changed = strip_workshop_boss_refs(
+                    &mut location,
+                    forms.boss_ref_type,
+                    raw_forms.boss_ref_type,
+                    interner,
+                );
+                changed |=
+                    ensure_workshop_location_keywords(&mut location, class, forms, raw_forms);
+                changed |= ensure_workshop_special_ref(
+                    &mut location,
+                    workbench.form_key,
+                    workbench_raw_form_id,
+                    cell_fk,
+                    cell_form_id,
+                    forms,
+                    raw_forms,
+                    interner,
+                );
+                if changed {
+                    planned.location_replace = Some(location);
+                }
+                return Ok(planned);
+            }
             if location_has_keyword(
                 &location,
                 forms.loc_type_workshop,
@@ -828,10 +1071,17 @@ fn plan_workshop_location(
     let world_cell = if let Some(location_fk) = current_location {
         decode_target_record_opt(session, &location_fk, target_schema, interner)?
             .and_then(|location| location_world_cell(&location, interner))
+            .or((class == WorkshopClass::Shelter).then_some(cell_fk))
+    } else if class == WorkshopClass::Shelter {
+        Some(cell_fk)
     } else {
         None
     };
-    let grid = cell_grid(&cell, interner).unwrap_or((0, 0));
+    let grid = if class == WorkshopClass::Shelter {
+        (i16::MAX, i16::MAX)
+    } else {
+        cell_grid(&cell, interner).unwrap_or((0, 0))
+    };
     let radius = shape.bounds[0].max(shape.bounds[1]);
     let location = build_workshop_location_record(
         location_fk,
@@ -842,6 +1092,7 @@ fn plan_workshop_location(
         world_cell,
         grid,
         radius,
+        class,
         forms,
         interner,
     );
@@ -856,7 +1107,9 @@ fn plan_workshop_location(
     // Never stamp XLCN on a grid-less cell: for FO76 sources that is the shared
     // worldspace persistent cell holding every workbench, and a location written
     // there cross-wires all workshops to whichever candidate ran first.
-    if cell_grid(&cell, interner).is_some() && set_form_key_field(&mut cell, "XLCN", location_fk) {
+    if (class == WorkshopClass::Shelter || cell_grid(&cell, interner).is_some())
+        && set_form_key_field(&mut cell, "XLCN", location_fk)
+    {
         planned_cell_xlcn.insert(cell_form_id, location_fk);
         planned.cell_replace = Some(cell);
     }
@@ -874,6 +1127,7 @@ fn build_workshop_location_record(
     world_cell: Option<FormKey>,
     grid: (i16, i16),
     radius: f32,
+    class: WorkshopClass,
     forms: &WorkshopForms,
     interner: &StringInterner,
 ) -> Record {
@@ -906,12 +1160,16 @@ fn build_workshop_location_record(
         });
     }
 
-    let keywords = vec![
-        forms.loc_type_settlement,
-        forms.loc_type_workshop,
-        forms.loc_type_workshop_settlement,
-        forms.loc_type_clearable,
-    ];
+    let keywords = match class {
+        WorkshopClass::Settlement => vec![
+            forms.loc_type_settlement,
+            forms.loc_type_workshop,
+            forms.loc_type_workshop_settlement,
+            forms.loc_type_clearable,
+        ],
+        WorkshopClass::Shelter => vec![forms.loc_type_clearable],
+        WorkshopClass::NonWorkshop => Vec::new(),
+    };
     fields.push(FieldEntry {
         sig: subrecord_sig("KSIZ"),
         value: FieldValue::Uint(keywords.len() as u64),
@@ -980,6 +1238,82 @@ fn location_special_ref_row(
             FieldValue::Int(grid.0 as i64),
         ),
     ])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_workshop_special_ref(
+    location: &mut Record,
+    workbench: FormKey,
+    workbench_raw: u32,
+    cell: FormKey,
+    cell_raw: u32,
+    forms: &WorkshopForms,
+    raw_forms: &RawWorkshopForms,
+    interner: &StringInterner,
+) -> bool {
+    if let Some(lcsr) = location
+        .fields
+        .iter_mut()
+        .find(|field| field.sig.as_str() == "LCSR")
+    {
+        match &mut lcsr.value {
+            FieldValue::List(rows) => {
+                let already_present = rows.iter().any(|row| {
+                    struct_form_key(row, "master_special_references_loc_ref_type", interner)
+                        == Some(forms.workshop_ref_type)
+                        && struct_form_key(row, "master_special_references_ref", interner)
+                            == Some(workbench)
+                });
+                if already_present {
+                    return false;
+                }
+                rows.push(location_special_ref_row(
+                    forms.workshop_ref_type,
+                    workbench,
+                    cell,
+                    (i16::MAX, i16::MAX),
+                    interner,
+                ));
+                return true;
+            }
+            FieldValue::Bytes(bytes) if bytes.len() % LCSR_ROW_STRIDE == 0 => {
+                let already_present = bytes.chunks_exact(LCSR_ROW_STRIDE).any(|row| {
+                    read_raw_form_id(row, 0) == Some(raw_forms.workshop_ref_type)
+                        && read_raw_form_id(row, 4) == Some(workbench_raw)
+                });
+                if already_present {
+                    return false;
+                }
+                bytes.extend_from_slice(&raw_forms.workshop_ref_type.to_le_bytes());
+                bytes.extend_from_slice(&workbench_raw.to_le_bytes());
+                bytes.extend_from_slice(&cell_raw.to_le_bytes());
+                bytes.extend_from_slice(&i16::MAX.to_le_bytes());
+                bytes.extend_from_slice(&i16::MAX.to_le_bytes());
+                return true;
+            }
+            _ => return false,
+        }
+    }
+
+    let insert_at = location
+        .fields
+        .iter()
+        .position(|field| matches!(field.sig.as_str(), "KSIZ" | "KWDA" | "PNAM"))
+        .unwrap_or(location.fields.len());
+    location.fields.insert(
+        insert_at,
+        FieldEntry {
+            sig: subrecord_sig("LCSR"),
+            value: FieldValue::List(vec![location_special_ref_row(
+                forms.workshop_ref_type,
+                workbench,
+                cell,
+                (i16::MAX, i16::MAX),
+                interner,
+            )]),
+        },
+    );
+    true
 }
 
 fn boundary_shape(
@@ -1305,7 +1639,7 @@ fn location_has_keyword(record: &Record, keyword: FormKey, keyword_raw: u32) -> 
 }
 
 /// One LCSR/ACSR special-ref row: [LocRefType u32][Ref u32][WorldCell u32][GridY i16][GridX i16].
-const LCSR_ROW_STRIDE: usize = 16;
+pub(crate) const LCSR_ROW_STRIDE: usize = 16;
 
 fn collect_workbench_locations(
     session: &mut PluginSession,
@@ -1605,6 +1939,7 @@ fn workshop_special_refs(
 fn plan_strip_boss_refs_at_location(
     session: &mut PluginSession,
     location_fk: &FormKey,
+    class: WorkshopClass,
     forms: &WorkshopForms,
     raw_forms: &RawWorkshopForms,
     target_schema: &crate::schema::AuthoringSchema,
@@ -1622,7 +1957,7 @@ fn plan_strip_boss_refs_at_location(
         raw_forms.boss_ref_type,
         interner,
     );
-    changed |= ensure_workshop_location_keywords(&mut location, forms, raw_forms);
+    changed |= ensure_workshop_location_keywords(&mut location, class, forms, raw_forms);
     if changed {
         planned.location_replace = Some(location);
     }
@@ -1636,21 +1971,48 @@ fn plan_strip_boss_refs_at_location(
 /// records carry decoded `List` items. Handle both.
 fn ensure_workshop_location_keywords(
     record: &mut Record,
+    class: WorkshopClass,
     forms: &WorkshopForms,
     raw_forms: &RawWorkshopForms,
 ) -> bool {
-    let required = [
-        forms.loc_type_settlement,
-        forms.loc_type_workshop,
-        forms.loc_type_workshop_settlement,
-        forms.loc_type_clearable,
-    ];
-    let required_raw = [
-        raw_forms.loc_type_settlement,
-        raw_forms.loc_type_workshop,
-        raw_forms.loc_type_workshop_settlement,
-        raw_forms.loc_type_clearable,
-    ];
+    let (required, required_raw, forbidden_locals, forbidden_raw): (
+        &[FormKey],
+        &[u32],
+        &[u32],
+        &[u32],
+    ) = match class {
+        WorkshopClass::Settlement => (
+            &[
+                forms.loc_type_settlement,
+                forms.loc_type_workshop,
+                forms.loc_type_workshop_settlement,
+                forms.loc_type_clearable,
+            ],
+            &[
+                raw_forms.loc_type_settlement,
+                raw_forms.loc_type_workshop,
+                raw_forms.loc_type_workshop_settlement,
+                raw_forms.loc_type_clearable,
+            ],
+            &[],
+            &[],
+        ),
+        WorkshopClass::Shelter => (
+            &[forms.loc_type_clearable],
+            &[raw_forms.loc_type_clearable],
+            &[
+                forms.loc_type_settlement.local,
+                forms.loc_type_workshop.local,
+                forms.loc_type_workshop_settlement.local,
+            ],
+            &[
+                raw_forms.loc_type_settlement,
+                raw_forms.loc_type_workshop,
+                raw_forms.loc_type_workshop_settlement,
+            ],
+        ),
+        WorkshopClass::NonWorkshop => return false,
+    };
     let mut changed = false;
     let kwda_index = record
         .fields
@@ -1660,7 +2022,16 @@ fn ensure_workshop_location_keywords(
     if let Some(kwda_index) = kwda_index {
         match &mut record.fields[kwda_index].value {
             FieldValue::List(items) => {
-                for keyword in required {
+                let original_len = items.len();
+                items.retain(|item| {
+                    !matches!(
+                        item,
+                        FieldValue::FormKey(form_key)
+                            if forbidden_locals.contains(&form_key.local)
+                    )
+                });
+                changed |= items.len() != original_len;
+                for keyword in required.iter().copied() {
                     if !items.contains(&FieldValue::FormKey(keyword)) {
                         items.push(FieldValue::FormKey(keyword));
                         changed = true;
@@ -1669,11 +2040,22 @@ fn ensure_workshop_location_keywords(
                 keyword_count = items.len() as u64;
             }
             FieldValue::Bytes(bytes) if bytes.len() % 4 == 0 => {
+                let mut kept: SmallVec<[u8; 32]> = SmallVec::new();
+                for row in bytes.chunks_exact(4) {
+                    if read_raw_form_id(row, 0)
+                        .is_some_and(|keyword| forbidden_raw.contains(&keyword))
+                    {
+                        changed = true;
+                    } else {
+                        kept.extend_from_slice(row);
+                    }
+                }
+                *bytes = kept;
                 let present: Vec<u32> = bytes
                     .chunks_exact(4)
                     .filter_map(|raw| read_raw_form_id(raw, 0))
                     .collect();
-                for keyword_raw in required_raw {
+                for keyword_raw in required_raw.iter().copied() {
                     if !present.contains(&keyword_raw) {
                         bytes.extend_from_slice(&keyword_raw.to_le_bytes());
                         changed = true;
@@ -2423,8 +2805,55 @@ mod tests {
         assert_eq!(candidate.form_key, fk(0x088ACF, own_plugin));
         assert_eq!(candidate.raw_form_id, raw_form_id);
         assert!(candidate.has_sandbox_link);
+        assert_eq!(candidate.class, WorkshopClass::Settlement);
         assert_eq!(hit.buildable_link_targets.as_slice(), &[buildable_target]);
         assert_eq!(hit.no_camp_boundary, None);
+        assert!(hit.shelter_boundary.is_none());
+    }
+
+    #[test]
+    fn raw_workshop_scan_collects_shelter_workbench_and_authored_border() {
+        let interner = StringInterner::new();
+        let own_plugin = interner.intern("SeventySix.esm");
+        let raw_forms = raw_workshop_forms(&["Fallout4.esm".to_owned()]).unwrap();
+        let own_index = 1u8;
+        let own_raw = |local: u32| ((own_index as u32) << 24) | local;
+
+        let workbench_hit = scan_workshop_refr(
+            own_raw(0x8A5523),
+            own_plugin,
+            own_index,
+            &raw_forms,
+            &[parsed_subrecord(
+                "NAME",
+                own_raw(SHELTER_CONTROL_PANEL_LOCAL).to_le_bytes().to_vec(),
+            )],
+        )
+        .expect("shelter workbench");
+        let candidate = workbench_hit.candidate.expect("candidate");
+        assert_eq!(candidate.class, WorkshopClass::Shelter);
+
+        let boundary_raw = own_raw(0x8A5530);
+        let boundary_hit = scan_workshop_refr(
+            boundary_raw,
+            own_plugin,
+            own_index,
+            &raw_forms,
+            &[parsed_subrecord(
+                "NAME",
+                own_raw(SHELTER_INTERIOR_WORKSHOP_AREA_LOCAL)
+                    .to_le_bytes()
+                    .to_vec(),
+            )],
+        )
+        .expect("shelter boundary");
+        assert_eq!(
+            boundary_hit
+                .shelter_boundary
+                .expect("authored shelter boundary")
+                .form_key,
+            fk(0x8A5530, own_plugin)
+        );
     }
 
     fn primitive_box_bytes(bounds: [f32; 3], primitive_type: u32) -> Vec<u8> {
@@ -2756,6 +3185,7 @@ mod tests {
 
         assert!(ensure_workshop_location_keywords(
             &mut location,
+            WorkshopClass::Settlement,
             &forms,
             &raw_forms
         ));
@@ -2769,6 +3199,7 @@ mod tests {
         ));
         assert!(!ensure_workshop_location_keywords(
             &mut location,
+            WorkshopClass::Settlement,
             &forms,
             &raw_forms
         ));
@@ -2804,6 +3235,7 @@ mod tests {
 
         assert!(ensure_workshop_location_keywords(
             &mut location,
+            WorkshopClass::Settlement,
             &forms,
             &raw_forms
         ));
@@ -2817,9 +3249,100 @@ mod tests {
         ));
         assert!(!ensure_workshop_location_keywords(
             &mut location,
+            WorkshopClass::Settlement,
             &forms,
             &raw_forms
         ));
+    }
+
+    #[test]
+    fn shelter_location_keeps_private_keywords_only() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let forms = workshop_forms(&interner);
+        let raw_forms = raw_workshop_forms(&["Fallout4.esm".to_owned()]).unwrap();
+        let fishing_excluded = fk(0x7BD03F, plugin);
+        let mut location = Record {
+            sig: sig_code("LCTN"),
+            form_key: fk(0x8A5476, plugin),
+            eid: Some(interner.intern("SheltersLocation_RestrictedArea")),
+            flags: RecordFlags::empty(),
+            fields: smallvec![
+                FieldEntry {
+                    sig: subrecord_sig("KSIZ"),
+                    value: FieldValue::Uint(4),
+                },
+                FieldEntry {
+                    sig: subrecord_sig("KWDA"),
+                    value: FieldValue::List(vec![
+                        FieldValue::FormKey(fishing_excluded),
+                        FieldValue::FormKey(forms.loc_type_workshop),
+                        FieldValue::FormKey(forms.loc_type_settlement),
+                        FieldValue::FormKey(forms.loc_type_workshop_settlement),
+                    ]),
+                },
+            ],
+            warnings: SmallVec::new(),
+        };
+
+        assert!(ensure_workshop_location_keywords(
+            &mut location,
+            WorkshopClass::Shelter,
+            &forms,
+            &raw_forms,
+        ));
+        let FieldValue::List(keywords) = &location.fields[1].value else {
+            panic!("KWDA list");
+        };
+        assert_eq!(
+            keywords,
+            &vec![
+                FieldValue::FormKey(fishing_excluded),
+                FieldValue::FormKey(forms.loc_type_clearable),
+            ]
+        );
+        assert_eq!(location.fields[0].value, FieldValue::Uint(2));
+    }
+
+    #[test]
+    fn shelter_location_adds_workshop_special_ref_for_its_interior_cell() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let forms = workshop_forms(&interner);
+        let raw_forms = raw_workshop_forms(&["Fallout4.esm".to_owned()]).unwrap();
+        let workbench = fk(0x8A5523, plugin);
+        let cell = fk(0x8A5475, plugin);
+        let mut location = Record::new(sig_code("LCTN"), fk(0x8A5476, plugin));
+
+        assert!(ensure_workshop_special_ref(
+            &mut location,
+            workbench,
+            0x018A5523,
+            cell,
+            0x018A5475,
+            &forms,
+            &raw_forms,
+            &interner,
+        ));
+        let FieldValue::List(rows) = &location.fields[0].value else {
+            panic!("LCSR rows");
+        };
+        assert_eq!(
+            struct_form_key(
+                &rows[0],
+                "master_special_references_loc_ref_type",
+                &interner,
+            ),
+            Some(forms.workshop_ref_type)
+        );
+        assert_eq!(
+            struct_form_key(&rows[0], "master_special_references_ref", &interner),
+            Some(workbench)
+        );
+        assert_eq!(
+            struct_form_key(&rows[0], "master_special_references_world_cell", &interner,),
+            Some(cell)
+        );
     }
 
     #[test]
@@ -2992,6 +3515,7 @@ mod tests {
             Some(world),
             (7, 5),
             5112.0,
+            WorkshopClass::Settlement,
             &forms,
             &interner,
         );
@@ -3144,7 +3668,10 @@ mod tests {
             warnings: SmallVec::new(),
         };
 
-        assert!(ensure_workshop_script(&mut record));
+        assert!(ensure_workshop_script(
+            &mut record,
+            WorkshopClass::Settlement
+        ));
         let vmad = record
             .fields
             .iter()
@@ -3203,9 +3730,40 @@ mod tests {
             warnings: SmallVec::new(),
         };
 
-        assert!(!ensure_workshop_script(&mut record));
+        assert!(!ensure_workshop_script(
+            &mut record,
+            WorkshopClass::Settlement
+        ));
         assert_eq!(record.fields.len(), 1);
         assert_eq!(record.fields[0].value, FieldValue::Bytes(existing));
+    }
+
+    #[test]
+    fn shelter_workshop_script_starts_owned_like_home_plate() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let mut record = Record::new(sig_code("REFR"), fk(0x8A5523, plugin));
+
+        assert!(ensure_workshop_script(&mut record, WorkshopClass::Shelter));
+        let FieldValue::Bytes(bytes) = &record
+            .fields
+            .iter()
+            .find(|field| field.sig.as_str() == "VMAD")
+            .expect("VMAD")
+            .value
+        else {
+            panic!("VMAD bytes");
+        };
+        let (_, _, properties) = read_test_workshop_vmad(bytes);
+        assert_eq!(properties.len(), 3);
+        assert!(properties.iter().any(|property| {
+            property.name == "OwnedByPlayer" && property.value == TestVmadValue::Bool(true)
+        }));
+        assert!(
+            !properties
+                .iter()
+                .any(|property| property.name == "EnableAutomaticPlayerOwnership")
+        );
     }
 
     #[test]

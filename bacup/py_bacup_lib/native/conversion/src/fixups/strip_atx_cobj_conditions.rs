@@ -1,15 +1,9 @@
 //! Fixup: strip CTDA (condition) subrecords from ATX_ ConstructibleObject records.
 //!
-
-//!
-//! # What this does
-//! FO76 Atom Store items (ATX_co_* EditorIDs) carry HasEntitlement conditions
-//! (CTDA subrecords, Function 859) that gate crafting behind a store purchase.
-//! FO4 has no Atom Store, so these conditions make the recipes invisible at the
-//! workbench.  This fixup strips every CTDA subrecord from any COBJ record whose
-//! EditorID starts with "ATX_", making those recipes freely craftable after
-//! conversion.
-//!
+//! FO76 Atom Store items (`ATX_co_*`) carry HasEntitlement conditions (Function 859)
+//! that gate crafting behind a store purchase. FO4 has no Atom Store, so those
+//! recipes would be invisible at the workbench. Every CTDA is stripped from COBJs
+//! whose EditorID starts with "ATX_".
 
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -101,10 +95,7 @@ impl Fixup for StripAtxCobjConditionsFixup {
 // Record-level mutation (extracted for unit-test access)
 // ---------------------------------------------------------------------------
 
-/// Remove all CTDA subrecords from `record`.
-///
-/// Returns `true` when at least one CTDA entry was removed.
-///
+/// Remove all CTDA subrecords from `record`; returns `true` if any were removed.
 
 pub fn apply_to_record(record: &mut Record) -> bool {
     let ctda_sig = match SubrecordSig::from_str("CTDA") {

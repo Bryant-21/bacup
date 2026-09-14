@@ -1,31 +1,37 @@
-; Method fill for the partially stripped FO76 blood transfusion pump.
-; The generated skeleton keeps the declarations and named states. Moving to the
-; default state lets this top-level activation handler replace the incomplete
-; Ready-state behavior without redistributing the original script.
-
 Event OnLoad()
     BlockActivation(False, False)
-    GoToState("")
+    GoToState("Ready")
 EndEvent
+
+State Ready
+    Event OnActivate(ObjectReference akActionRef)
+        TryTransfusion(akActionRef)
+    EndEvent
+EndState
+
+State processing
+    Event OnActivate(ObjectReference akActionRef)
+    EndEvent
+EndState
 
 Event OnActivate(ObjectReference akActionRef)
-    If akActionRef != Game.GetPlayer()
+    TryTransfusion(akActionRef)
+EndEvent
+
+Function TryTransfusion(ObjectReference akActionRef)
+    If akActionRef != Game.GetPlayer() || GetState() == "processing"
         Return
     EndIf
-
+    GoToState("processing")
     interactingPlayer = akActionRef as Actor
-    If interactingPlayer == None
-        Return
-    EndIf
-
     If interactingPlayer.HasMagicEffectWithKeyword(CooldownKeyword)
         RechargingMessage.Show()
+        GoToState("Ready")
         Return
     EndIf
 
-    BlockActivation(True, False)
     SoundID = ActivateSound.Play(Self)
-    BuffSpell.Cast(Self, interactingPlayer)
-    CooldownSpell.Cast(Self, interactingPlayer)
-    BlockActivation(False, False)
-EndEvent
+    BuffSpell.Cast(interactingPlayer, interactingPlayer)
+    CooldownSpell.Cast(interactingPlayer, interactingPlayer)
+    GoToState("Ready")
+EndFunction

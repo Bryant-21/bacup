@@ -137,7 +137,9 @@ class SwfEditorApp:
         if not self.renderer:
             return
 
+        imgui.push_style_var(imgui.StyleVar_.window_padding, imgui.ImVec2(0, 0))
         visible, _ = imgui.begin("Viewport##swf", flags=imgui.WindowFlags_.no_scrollbar)
+        imgui.pop_style_var()
         if not visible:
             imgui.end()
             return

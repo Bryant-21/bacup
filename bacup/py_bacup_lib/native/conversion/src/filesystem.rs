@@ -1,6 +1,5 @@
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use rayon::prelude::*;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -65,21 +64,8 @@ pub fn remove_path(path: &Path) -> io::Result<()> {
     let children = fs::read_dir(&resolved)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<io::Result<Vec<PathBuf>>>()?;
-    let worker_count = children.len().min(8);
-    if worker_count <= 1 {
-        for child in &children {
-            remove_entry(child)?;
-        }
-    } else {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(worker_count)
-            .build()
-            .map_err(io::Error::other)?
-            .install(|| {
-                children
-                    .par_iter()
-                    .try_for_each(|child| remove_entry(child))
-            })?;
+    for child in &children {
+        remove_entry(child)?;
     }
     fs::remove_dir(resolved)
 }
@@ -97,7 +83,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn removes_top_level_children_in_parallel() {
+    fn removes_top_level_children() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("cleanup");
         for bucket in 0..4 {

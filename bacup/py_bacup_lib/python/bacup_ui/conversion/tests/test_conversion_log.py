@@ -27,7 +27,7 @@ def test_log_draw_does_not_force_scrolled_view_to_bottom(monkeypatch):
     monkeypatch.setattr(
         conversion_log.imgui,
         "get_content_region_avail",
-        lambda: SimpleNamespace(y=100.0),
+        lambda: SimpleNamespace(x=300.0, y=100.0),
     )
     monkeypatch.setattr(conversion_log.imgui, "begin_child", lambda *_args: True)
     monkeypatch.setattr(conversion_log.imgui, "get_scroll_y", lambda: 25.0)

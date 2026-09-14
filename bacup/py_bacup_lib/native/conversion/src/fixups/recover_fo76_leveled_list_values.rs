@@ -1,8 +1,6 @@
-//! Fixup: recover FO76 leveled-list Chance-None / Max-Count into FO4 LVLD/LVLM.
+//! Fixup: recover FO76 leveled-list global-backed values into FO4 literals.
 //!
-//! # Why
-//! FO76 does not store a leveled list's Chance-None and Max-Count as the plain
-//! FO4 bytes. Each value has three source variants:
+//! FO76 stores a leveled list's Chance-None and Max-Count in three variants:
 //!
 //! | FO4 field        | GLOB ref | float value | literal byte |
 //! |------------------|----------|-------------|--------------|
@@ -11,29 +9,24 @@
 //!
 //! `LVLG`/`LVMG` point at a `GLOB` whose `FLTV` holds the value (e.g.
 //! `Container_MaxCount_Medium_Tier` = 15, `LL_Container_ChanceNone_Medium_ECON`
-//! = 35). FO4 supports `LVLG`, so the translator preserves that live global
-//! reference. FO4 does not support the other FO76 value variants, so this fixup
-//! also materializes their current values into `LVLD`/`LVLM`; for `LVLG`, the
-//! materialized `LVLD` remains only a fallback while the global stays authoritative.
+//! = 35). FO4 supports `LVLG`, so the translator keeps that live reference and the
+//! materialized `LVLD` is only a fallback; the other variants are materialized into
+//! `LVLD`/`LVLM`. A zero FO76 max count means no limit and is not written as `LVLM`.
+//! Entry minimum levels held in an `LVOG` global (no FO4 equivalent) are written to
+//! `LVLO.Level`; left at the placeholder zero, those entries are unavailable.
 //!
-//! `clean_leveled_item_entries` recovers Chance-None from `LVLG`, but only for
-//! records it already selects for entry cleanup (missing `LVLD`/`LVLM` defaults
-//! or invalid entries). Because the translator seeds those defaults, almost every
-//! list is skipped — which is why converted Chance-None is uniformly 0 — and
-//! Max-Count is never recovered at all.
-//!
-//! # What
-//! Run for every LVLI/LVLN, read the FO76 source record, and write the recovered
-//! Chance-None (`LVLD`) and Max-Count (`LVLM`) onto the output record, resolving
-//! `GLOB → float → literal` in that order. Existing `LVLG` references are retained.
-//! Nothing is written when the source has no value for a field, so a legitimately-zero
-//! list is left untouched.
+//! `clean_leveled_item_entries` recovers Chance-None from `LVLG` only for records it
+//! selects for entry cleanup, and the translator's seeded defaults make it skip
+//! almost every list (converted Chance-None is uniformly 0). It never recovers
+//! Max-Count. This pass runs for every LVLI/LVLN, reading the FO76 source record.
 
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
 use crate::record::{FieldEntry, FieldValue, Record};
 use crate::session::{EditOutcome, PluginSession};
+use crate::translator::pair_hook::{PairCtx, PairHook};
+use crate::translator::pair_hooks::fo76_fo4::Fo76Fo4Hook;
 
 /// Chance-None is a percentage; Max-Count is an unbounded `uint8` slot count.
 const CHANCE_NONE_MAX: u8 = 100;
@@ -51,9 +44,11 @@ impl Fixup for RecoverFo76LeveledListValuesFixup {
     }
 
     fn applies_to_session(&self, session: &PluginSession, _config: &FixupConfig) -> bool {
-        // No source plugin (per-record asset ports without a source slot) → the
-        // globals cannot be read, so there is nothing to recover.
-        session.source_slot_opt().is_some()
+        let source_game = session
+            .source_slot_opt()
+            .and_then(|slot| slot.parsed.game.as_deref());
+        let target_game = session.target_slot().parsed.game.as_deref();
+        source_game == Some("fo76") && target_game == Some("fo4")
     }
 
     fn run_with_session(
@@ -113,14 +108,9 @@ impl Fixup for RecoverFo76LeveledListValuesFixup {
                         CHANCE_NONE_MAX,
                         &mut resolve_global,
                     );
-                    let max_count = resolve_leveled_value(
-                        &source,
-                        "LVMG",
-                        "LVMV",
-                        "LVLM",
-                        MAX_COUNT_MAX,
-                        &mut resolve_global,
-                    );
+                    let max_count = resolve_max_count(&source, &mut resolve_global);
+                    let mut entry_levels =
+                        resolve_entry_levels(&source, mapper.interner, &mut resolve_global);
 
                     let mut changed = false;
                     if let Some(value) = chance_none {
@@ -131,14 +121,8 @@ impl Fixup for RecoverFo76LeveledListValuesFixup {
                             &["LVLM", "LVLF", "LVLG", "LLCT", "LVLO", "LVLE", "COED"],
                         );
                     }
-                    if let Some(value) = max_count {
-                        changed |= set_uint8_subrecord(
-                            &mut record,
-                            "LVLM",
-                            value,
-                            &["LVLF", "LVLG", "LLCT", "LVLO", "LVLE", "COED"],
-                        );
-                    }
+                    changed |= apply_max_count(&mut record, max_count);
+                    changed |= apply_entry_levels(&mut record, &mut entry_levels, mapper);
 
                     if !changed {
                         return Ok(EditOutcome::NoOp);
@@ -186,6 +170,187 @@ fn resolve_leveled_value(
         return Some(clamp_u8(value, clamp_max));
     }
     subrecord_literal_u8(source, literal_sig)
+}
+
+fn resolve_max_count(
+    source: &Record,
+    resolve_global: &mut impl FnMut(&FormKey) -> Option<Record>,
+) -> Option<u8> {
+    resolve_leveled_value(
+        source,
+        "LVMG",
+        "LVMV",
+        "LVLM",
+        MAX_COUNT_MAX,
+        resolve_global,
+    )
+    .filter(|value| *value > 0)
+}
+
+fn apply_max_count(record: &mut Record, max_count: Option<u8>) -> bool {
+    if let Some(value) = max_count {
+        return set_uint8_subrecord(
+            record,
+            "LVLM",
+            value,
+            &["LVLF", "LVLG", "LLCT", "LVLO", "LVLE", "COED"],
+        );
+    }
+    remove_subrecord(record, "LVLM")
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RecoveredEntryLevel {
+    source_reference: FormKey,
+    level: Option<u16>,
+    used: bool,
+}
+
+fn resolve_entry_levels(
+    source: &Record,
+    interner: &crate::sym::StringInterner,
+    resolve_global: &mut impl FnMut(&FormKey) -> Option<Record>,
+) -> Vec<RecoveredEntryLevel> {
+    let mut prepared = source.clone();
+    let mut ctx = PairCtx::new(interner);
+    if Fo76Fo4Hook.pre_translate(&mut ctx, &mut prepared).is_err() {
+        return Vec::new();
+    }
+
+    let mut entries = Vec::new();
+    let mut index = 0;
+    while index < prepared.fields.len() {
+        if prepared.fields[index].sig.as_str() != "LVLO" {
+            index += 1;
+            continue;
+        }
+
+        let next_entry = prepared.fields[index + 1..]
+            .iter()
+            .position(|entry| entry.sig.as_str() == "LVLO")
+            .map_or(prepared.fields.len(), |offset| index + 1 + offset);
+        let source_reference = first_form_key(&prepared.fields[index].value);
+        let level = prepared.fields[index + 1..next_entry]
+            .iter()
+            .find(|entry| entry.sig.as_str() == "LVOG")
+            .and_then(|entry| first_form_key(&entry.value))
+            .filter(|global_fk| global_fk.local != 0)
+            .and_then(|global_fk| resolve_global(&global_fk))
+            .and_then(|global| glob_fltv(&global))
+            .map(clamp_u16);
+
+        if let Some(source_reference) = source_reference {
+            entries.push(RecoveredEntryLevel {
+                source_reference,
+                level,
+                used: false,
+            });
+        }
+        index = next_entry;
+    }
+    entries
+}
+
+fn apply_entry_levels(
+    record: &mut Record,
+    source_entries: &mut [RecoveredEntryLevel],
+    mapper: &FormKeyMapper<'_>,
+) -> bool {
+    let interner = mapper.interner;
+    let mut changed = false;
+
+    for target_entry in record
+        .fields
+        .iter_mut()
+        .filter(|entry| entry.sig.as_str() == "LVLO")
+    {
+        let Some(target_reference) = first_form_key(&target_entry.value) else {
+            continue;
+        };
+        let matches_reference = |entry: &RecoveredEntryLevel| {
+            mapper
+                .lookup(entry.source_reference)
+                .unwrap_or(entry.source_reference)
+                == target_reference
+        };
+        let candidate = source_entries
+            .iter()
+            .position(|entry| !entry.used && matches_reference(entry));
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        source_entries[candidate].used = true;
+        if let Some(level) = source_entries[candidate].level {
+            changed |= set_lvlo_level(&mut target_entry.value, level, interner);
+        }
+    }
+
+    changed
+}
+
+fn set_lvlo_level(
+    value: &mut FieldValue,
+    level: u16,
+    interner: &crate::sym::StringInterner,
+) -> bool {
+    match value {
+        FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
+            if bytes[0..2] == level.to_le_bytes() {
+                return false;
+            }
+            bytes[0..2].copy_from_slice(&level.to_le_bytes());
+            true
+        }
+        FieldValue::Struct(fields) => {
+            if let Some((_, value)) = fields.iter_mut().find(|(name, _)| {
+                interner
+                    .resolve(*name)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("level"))
+            }) {
+                return set_u16_value(value, level);
+            }
+            fields.insert(
+                0,
+                (
+                    interner.intern("level"),
+                    FieldValue::Bytes(smallvec::SmallVec::from_slice(&level.to_le_bytes())),
+                ),
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
+fn set_u16_value(value: &mut FieldValue, replacement: u16) -> bool {
+    match value {
+        FieldValue::Uint(value) => {
+            let replacement = u64::from(replacement);
+            let changed = *value != replacement;
+            *value = replacement;
+            changed
+        }
+        FieldValue::Int(value) => {
+            let replacement = i64::from(replacement);
+            let changed = *value != replacement;
+            *value = replacement;
+            changed
+        }
+        FieldValue::Float(value) => {
+            let replacement = f32::from(replacement);
+            let changed = *value != replacement;
+            *value = replacement;
+            changed
+        }
+        FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
+            if bytes[0..2] == replacement.to_le_bytes() {
+                return false;
+            }
+            bytes[0..2].copy_from_slice(&replacement.to_le_bytes());
+            true
+        }
+        _ => false,
+    }
 }
 
 fn subrecord_form_key(record: &Record, sig: &str) -> Option<FormKey> {
@@ -256,6 +421,13 @@ fn clamp_u8(value: f32, clamp_max: u8) -> u8 {
     value.round().clamp(0.0, f32::from(clamp_max)) as u8
 }
 
+fn clamp_u16(value: f32) -> u16 {
+    if !value.is_finite() {
+        return 0;
+    }
+    value.round().clamp(0.0, u16::MAX as f32) as u16
+}
+
 /// Set `sig_str` to `value`, updating in place or inserting before the first of
 /// `before`. Returns whether the record changed.
 fn set_uint8_subrecord(record: &mut Record, sig_str: &str, value: u8, before: &[&str]) -> bool {
@@ -285,9 +457,19 @@ fn set_uint8_subrecord(record: &mut Record, sig_str: &str, value: u8, before: &[
     true
 }
 
+fn remove_subrecord(record: &mut Record, sig_str: &str) -> bool {
+    let Ok(sig) = SubrecordSig::from_str(sig_str) else {
+        return false;
+    };
+    let before = record.fields.len();
+    record.fields.retain(|entry| entry.sig != sig);
+    record.fields.len() != before
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formkey_mapper::MapperOptions;
     use crate::ids::SigCode;
     use crate::record::RecordFlags;
     use crate::sym::StringInterner;
@@ -332,6 +514,37 @@ mod tests {
         |_: &FormKey| None
     }
 
+    fn lvlo_without_level(reference: FormKey, count: u16, interner: &StringInterner) -> FieldEntry {
+        sub(
+            "LVLO",
+            FieldValue::Struct(vec![
+                (interner.intern("item"), FieldValue::FormKey(reference)),
+                (
+                    interner.intern("count"),
+                    FieldValue::Bytes(SmallVec::from_slice(&count.to_le_bytes())),
+                ),
+            ]),
+        )
+    }
+
+    fn lvlo_level(value: &FieldValue, interner: &StringInterner) -> Option<u16> {
+        let FieldValue::Struct(fields) = value else {
+            return None;
+        };
+        fields.iter().find_map(|(name, value)| {
+            interner
+                .resolve(*name)
+                .is_some_and(|name| name == "level")
+                .then(|| match value {
+                    FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
+                        Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+                    }
+                    _ => None,
+                })
+                .flatten()
+        })
+    }
+
     #[test]
     fn max_count_recovered_from_max_global() {
         let interner = StringInterner::new();
@@ -359,14 +572,30 @@ mod tests {
             CHANCE_NONE_MAX,
             &mut resolve,
         );
-        let max =
-            resolve_leveled_value(&source, "LVMG", "LVMV", "LVLM", MAX_COUNT_MAX, &mut resolve);
+        let max = resolve_max_count(&source, &mut resolve);
         assert_eq!(
             chance,
             Some(0),
             "LVCV=0.0 present → chance none 0 (no-op against default)"
         );
         assert_eq!(max, Some(15), "LVMG global FLTV 15 → Max Count 15");
+    }
+
+    #[test]
+    fn zero_max_value_removes_target_max_count() {
+        let interner = StringInterner::new();
+        let source = lvli(vec![sub("LVMV", FieldValue::Float(0.0))], &interner);
+        let mut none = never_resolves();
+        assert_eq!(resolve_max_count(&source, &mut none), None);
+
+        let mut target = lvli(vec![sub("LVLM", FieldValue::Uint(0))], &interner);
+        assert!(apply_max_count(&mut target, None));
+        assert!(
+            target
+                .fields
+                .iter()
+                .all(|entry| entry.sig.as_str() != "LVLM")
+        );
     }
 
     #[test]
@@ -447,6 +676,147 @@ mod tests {
             resolve_leveled_value(&source, "LVLG", "LVCV", "LVLD", CHANCE_NONE_MAX, &mut none),
             None
         );
+    }
+
+    #[test]
+    fn entry_minimum_levels_are_recovered_from_lvog_globals() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("SeventySix.esm");
+        let target_plugin = interner.intern("Converted.esp");
+        let source_a = FormKey {
+            local: 0x100001,
+            plugin: source_plugin,
+        };
+        let source_b = FormKey {
+            local: 0x100002,
+            plugin: source_plugin,
+        };
+        let target_a = FormKey {
+            local: 0x200001,
+            plugin: target_plugin,
+        };
+        let target_b = FormKey {
+            local: 0x200002,
+            plugin: target_plugin,
+        };
+        let level_seven = FormKey {
+            local: 0x300007,
+            plugin: source_plugin,
+        };
+        let level_one = FormKey {
+            local: 0x300001,
+            plugin: source_plugin,
+        };
+        let source = lvli(
+            vec![
+                sub("LVLO", FieldValue::FormKey(source_a)),
+                sub("LVIV", FieldValue::Float(1.0)),
+                sub("LVLV", FieldValue::Float(0.0)),
+                sub("LVLO", FieldValue::FormKey(source_a)),
+                sub("LVIV", FieldValue::Float(1.0)),
+                sub("LVLV", FieldValue::Float(0.0)),
+                sub("LVOG", FieldValue::FormKey(level_seven)),
+                sub("LVLO", FieldValue::FormKey(source_b)),
+                sub("LVIV", FieldValue::Float(1.0)),
+                sub("LVLV", FieldValue::Float(0.0)),
+                sub("LVOG", FieldValue::FormKey(level_one)),
+            ],
+            &interner,
+        );
+        let mut resolve = |fk: &FormKey| match fk.local {
+            0x300007 => Some(glob(7.0, &interner)),
+            0x300001 => Some(glob(1.0, &interner)),
+            _ => None,
+        };
+        let mut recovered = resolve_entry_levels(&source, &interner, &mut resolve);
+        assert_eq!(
+            recovered
+                .iter()
+                .map(|entry| entry.level)
+                .collect::<Vec<_>>(),
+            vec![None, Some(7), Some(1)]
+        );
+
+        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &interner);
+        mapper.add_mapping(source_a, target_a);
+        mapper.add_mapping(source_b, target_b);
+        let mut target = lvli(
+            vec![
+                lvlo_without_level(target_a, 1, &interner),
+                lvlo_without_level(target_a, 1, &interner),
+                lvlo_without_level(target_b, 1, &interner),
+            ],
+            &interner,
+        );
+
+        assert!(apply_entry_levels(&mut target, &mut recovered, &mapper));
+        let levels = target
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.as_str() == "LVLO")
+            .map(|entry| lvlo_level(&entry.value, &interner))
+            .collect::<Vec<_>>();
+        assert_eq!(levels, vec![None, Some(7), Some(1)]);
+        let schema = crate::schema::AuthoringSchema::for_game("fo4").unwrap();
+        let encoded = crate::target_write::encode_field_pub(
+            target
+                .fields
+                .iter()
+                .filter(|entry| entry.sig.as_str() == "LVLO")
+                .nth(1)
+                .unwrap(),
+            schema.record_def("LVLI"),
+            &interner,
+        )
+        .unwrap();
+        assert_eq!(&encoded[0..2], &7_u16.to_le_bytes());
+        recovered.iter_mut().for_each(|entry| entry.used = false);
+        assert!(
+            !apply_entry_levels(&mut target, &mut recovered, &mapper),
+            "second application is idempotent"
+        );
+    }
+
+    #[test]
+    fn entry_level_recovery_matches_reference_after_an_earlier_entry_was_dropped() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("SeventySix.esm");
+        let source_a = FormKey {
+            local: 0x100001,
+            plugin: source_plugin,
+        };
+        let source_b = FormKey {
+            local: 0x100002,
+            plugin: source_plugin,
+        };
+        let level_five = FormKey {
+            local: 0x300005,
+            plugin: source_plugin,
+        };
+        let level_one = FormKey {
+            local: 0x300001,
+            plugin: source_plugin,
+        };
+        let source = lvli(
+            vec![
+                sub("LVLO", FieldValue::FormKey(source_a)),
+                sub("LVOG", FieldValue::FormKey(level_five)),
+                sub("LVLO", FieldValue::FormKey(source_b)),
+                sub("LVOG", FieldValue::FormKey(level_one)),
+            ],
+            &interner,
+        );
+        let mut resolve = |fk: &FormKey| match fk.local {
+            0x300005 => Some(glob(5.0, &interner)),
+            0x300001 => Some(glob(1.0, &interner)),
+            _ => None,
+        };
+        let mut recovered = resolve_entry_levels(&source, &interner, &mut resolve);
+        let mapper = FormKeyMapper::new([], MapperOptions::default(), &interner);
+        let mut target = lvli(vec![lvlo_without_level(source_b, 1, &interner)], &interner);
+
+        assert!(apply_entry_levels(&mut target, &mut recovered, &mapper));
+        assert_eq!(lvlo_level(&target.fields[0].value, &interner), Some(1));
     }
 
     #[test]
